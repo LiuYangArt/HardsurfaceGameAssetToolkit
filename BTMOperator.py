@@ -500,6 +500,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         actobj = bpy.context.active_object
         transp_coll: bpy.types.Collection
         named_color_attributes = bpy.context.object.data.color_attributes
+        vertcolorname = "VertColor"
         set_actcolor = named_color_attributes.get(vertcolorname)
         proxy_list = []
         coll = getCollection(actobj)
