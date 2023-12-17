@@ -571,12 +571,12 @@ def batch_edit_bevel():
     props = bpy.context.scene.btmprops
 
     selobj = bpy.context.selected_objects
-    if props.sel_bevel_width:
+    if props.set_bevel_width:
         for obj in selobj:
             for mod in obj.modifiers:
                 if mod.name == 'HST Bevel':
-                    obj.modifiers['HST Bevel'].width = props.sel_bevel_width
-                    obj.modifiers['HST Bevel'].segments = props.sel_bevel_segments
+                    obj.modifiers['HST Bevel'].width = props.set_bevel_width
+                    obj.modifiers['HST Bevel'].segments = props.set_bevel_segments
                     continue
 
 def import_obj_function(file_path):

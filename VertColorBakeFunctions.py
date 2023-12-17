@@ -205,4 +205,11 @@ def checkhastvcpmodifier(selobj):
                     check_modifier += 1
             else:
                 addmod_list.append(obj)
-                MessageBox(text="Selected object missing Transferproxy,add first | 所选物体缺少TransferProxy，需要先创建", title="WARNING", icon='MODIFIER')
+
+def transferproxycol_show(transp_coll):
+    transp_coll.hide_viewport = False
+    transp_coll.hide_render = False
+
+def transferproxycol_hide(transp_coll):
+    transp_coll.hide_viewport = True
+    transp_coll.hide_render = True

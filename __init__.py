@@ -8,8 +8,8 @@ bl_info = {
     "blender" : (4, 0, 0),
     "version" : (0, 4, 1),
     "location" : "",
-    "warning" : "",
-    "category" : "Generic"
+    "warning" : "插件开发中，会带有一些临时内容以及变动",
+    "category" : ""
 }
 
 import bpy

@@ -22,13 +22,13 @@ class BTMPropGroup(PropertyGroup):
                ]
         )
 
-    sel_bevel_width: FloatProperty(
+    set_bevel_width: FloatProperty(
         description="Batch edit HST bevel width", 
         default=0.01,
         min=0.0, max=1.0
         )
 
-    sel_bevel_segments: IntProperty(
+    set_bevel_segments: IntProperty(
         description="Batch edit HST bevel segments", 
         default=1,
         min=0, max=12

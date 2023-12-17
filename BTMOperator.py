@@ -10,86 +10,6 @@ from .BTMProps import BTMPropGroup
 from .BTMPreferences import BTM_AddonPreferences
 
 
-class BTMPanel(bpy.types.Panel):
-    bl_idname = "OBJECT_PT_BTM"
-    bl_label = "Marmoset Bake Tool"
-    bl_category = "HST"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-
-    @classmethod
-    def poll(cls, context):
-        return (context.object is not None)
-
-    def draw(self, context):
-        btmprops = context.scene.btmprops
-        act_obj = bpy.context.active_object
-
-        layout = self.layout
-        box = layout.box()
-        box1 = box.box()
-        box2 = box.box()
-        box2col = box2.column()
-        box3 = box.box()
-        box3colu = box3.column()
-        boxrow = box1.row()
-        boxcol = box1.column()
-
-        boxcolrow = boxcol.row(align=True)
-        boxrow.prop(btmprops, "grouplist")
-        boxcolrow.operator('object.btmlow', text="Set Lowpoly")
-        boxcolrow.operator('object.btmhigh', text="Set Highpoly")
-        boxcol.operator('object.orgacoll', text="Organize Collections")
-
-        box2col.prop(bpy.data.brushes["TexDraw"], "color", text="Vertex Color")
-        ts = context.tool_settings
-        if ts.image_paint.palette:
-            box2col.template_palette(ts.image_paint, "palette", color=True)
-        box2col.operator('object.setvercol')
-        box2col.operator('object.getvercol')
-
-        box3colu.operator('object.exportfbx', text="Export Bake Files")
-        box3colu.operator('object.openmarmoset', text="Send To Marmoset")
-        #box3.operator('object.testbutton', text="Test Button")
-
-
-class HSTPanel(bpy.types.Panel):
-    bl_idname = "OBJECT_PT_HST"
-    bl_label = "Hard Surface Tool"
-    bl_category = "HST"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-
-
-    def draw(self, context):
-        btmprops = context.scene.btmprops
-
-        layout = self.layout
-        box = layout.box()
-        boxcol1 = box.column()
-        boxcol2 = box.column()
-
-        boxcol1.operator('object.moitransfile', text="Use Moi Import")
-        boxcol1.operator('object.reloadobj', text="Reload Object")
-        boxcol1.prop(btmprops, "add_triangulate", text='Add Triangulate')
-        boxcol1.operator('object.bevelpoly', text='Create Transfer Object')
-        boxcol1.prop(btmprops, "clean_all_mod", text='Clear all modifiers')
-        boxcol1.operator('object.renamehstobject', text='Clean HST Object')
-        boxcol1.operator('object.hst_addtransvertcolorproxy', text='Add Transfer Vertex Color Proxy')
-        boxcol1.operator('object.hst_bakeproxyvertcolrao', text='Bake Vertex Color AO')
-
-        boxcol2.label(text='Set Parameters')
-        boxcol2row = boxcol2.row(align=True)
-        # boxcol2row.operator('object.lessbevel', text='Less Bevel')
-        # boxcol2row.operator('object.addbevel', text='Add Bevel')
-        boxcol2row.prop(btmprops, "sel_bevel_width", text='Width')
-        boxcol2row.prop(btmprops, "sel_bevel_segments", text='Segments')    
-        boxcol2.operator('object.setparam', text='Set Parameters')
-        boxcol2.operator('object.cleanvert', text="Clean Vert")
-
-
-
-
 
 class BTMLowOperator(bpy.types.Operator):
     bl_idname = "object.btmlow"
@@ -326,13 +246,13 @@ class Set_Parameters_Operator(bpy.types.Operator):
         for obj in sel_objs:
             for mod in obj.modifiers:
                 if mod.name == 'HST Bevel':
-                    mod.segments = props.sel_bevel_segments
-                    mod.width = props.sel_bevel_width
+                    mod.segments = props.set_bevel_segments
+                    mod.width = props.set_bevel_width
 
                     # if length_unit == 'CENTIMETERS':
-                    #     mod.width = props.sel_bevel_width*0.1
+                    #     mod.width = props.set_bevel_width*0.1
                     # if length_unit == 'MILLIMETERS':
-                    #     mod.width = props.sel_bevel_width*0.1
+                    #     mod.width = props.set_bevel_width*0.1
         return{'FINISHED'}
 
 
@@ -588,20 +508,12 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         transp_coll = bpy.data.collections[tvcpcollname]
         proxy_list = []
 
+        transferproxycol_show(transp_coll)       
 
-        for obj in selobj:
-
-
-        #显示Proxy Collection以便进行烘焙渲染
-                
-            transp_coll.hide_viewport = False
-            transp_coll.hide_render = False
 
 
         #find transferproxy from selectd objects' datatranfer modifier, make a list
         for obj in selobj:
-
-
             named_color_attributes = bpy.context.object.data.color_attributes
             set_actcolor = named_color_attributes.get(vertcolorname)
             obj.data.attributes.active_color = set_actcolor
@@ -623,16 +535,15 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
 
 
         #reset visibility
-        transp_coll.hide_viewport = True
-        transp_coll.hide_render = True
+        transferproxycol_hide(transp_coll)
         for obj in selobj:
             obj.hide_render = False  
         
         return{'FINISHED'}
 
 classes = (
-    HSTPanel,
-    BTMPanel,
+    #HSTPanel,
+    #BTMPanel,
     BTMLowOperator,
     BTMHighOperator,
     OrgaCollOperator,
