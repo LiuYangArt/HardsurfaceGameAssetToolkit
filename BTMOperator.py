@@ -6,8 +6,8 @@ from bpy.utils import register_class, unregister_class
 
 from .BTMFunctions import *
 from .VertColorBakeFunctions import *
-from .BTMProps import BTMPropGroup
-from .BTMPreferences import BTM_AddonPreferences
+#from .UI_SidePanel import BTMPropGroup
+#from .BTMPreferences import BTM_AddonPreferences
 
 
 
@@ -182,17 +182,17 @@ class OpenmMrmosetOperator(bpy.types.Operator):
         return{'FINISHED'}
 
 #=========================================================================================
-class Rename_Objects(bpy.types.Operator):
-    bl_idname = "object.renamehstobject"
-    bl_label = "Transform Bevel Poly"
+class HST_CleanBevelObjects(bpy.types.Operator):
+    bl_idname = "object.cleanhstobject"
+    bl_label = "Transfer Bevel Poly"
 
     def execute(self, context): 
         check_coll_object_name()
         return{'FINISHED'}
 
-class Transform_Bevel_Poly(bpy.types.Operator):
-    bl_idname = "object.bevelpoly"
-    bl_label = "Transform Bevel Poly"
+class HST_BevelTransferNormal(bpy.types.Operator):
+    bl_idname = "object.hstbeveltransfernormal"
+    bl_label = "Transfoer Bevel Poly"
     
     def execute(self, context):
         obj: bpy.types.Object
@@ -232,9 +232,10 @@ class Transform_Bevel_Poly(bpy.types.Operator):
 #         batch_edit_bevel()
 #         return{'FINISHED'}
 
-class Set_Parameters_Operator(bpy.types.Operator):
-    bl_idname = "object.setparam"
-    bl_label = "Set Parameters"
+class HST_SetBevelParameters_Operator(bpy.types.Operator):
+    bl_idname = "object.hstbevelsetparam"
+    bl_label = "Set HSTBevel Parameters"
+    bl_description ="修改HST Bevel修改器参数"
 
     def execute(self, context):
         props = context.scene.btmprops
@@ -259,6 +260,7 @@ class Set_Parameters_Operator(bpy.types.Operator):
 class Clean_Vertex_Operator(bpy.types.Operator):
     bl_idname = "object.cleanvert"
     bl_label = "clean vert"
+    bl_description ="清理模型直线中的孤立顶点"
 
     def execute(self, context):
         selobj = bpy.context.selected_objects
@@ -465,14 +467,13 @@ class TestButtonOperator(bpy.types.Operator):
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "object.hst_addtransvertcolorproxy"
     bl_label = "Create Transfer VertexColor Proxy"
+    bl_description ="为选中的物体建立用于烘焙顶点色的代理模型，代理模型通过DataTransfer修改器将顶点色传递回原始模型。如果原始模型有造型修改，请重新建立代理。"
     
     def execute(self, context):
         obj: bpy.types.Object
-
         selobj = bpy.context.selected_objects
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
-
 
         if coll:
             collobjs = coll.all_objects
@@ -489,7 +490,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
                 obj.select_set(True)
             bpy.context.view_layer.objects.active = bpy.data.objects[actobj.name]
         else:
-            MessageBox(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在collections中", title="WARNING", icon='ERROR')
+            MessageBox(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中", title="WARNING", icon='ERROR')
         
         return{'FINISHED'}
 
@@ -498,47 +499,56 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 class HST_BakeProxyVertexColorAO(bpy.types.Operator):
     bl_idname = "object.hst_bakeproxyvertcolrao"
     bl_label = "Bake Proxy VertexColor AO"
+    bl_description ="烘焙代理模型的AO，需要先建立Proxy"
+ 
     
     def execute(self, context):
 
         obj: bpy.types.Object
         mod: bpy.types.Modifier
         selobj = bpy.context.selected_objects
+        actobj = bpy.context.active_object
         transp_coll: bpy.types.Collection
-        transp_coll = bpy.data.collections[tvcpcollname]
+        named_color_attributes = bpy.context.object.data.color_attributes
+        set_actcolor = named_color_attributes.get(vertcolorname)
         proxy_list = []
+        coll = getCollection(actobj)
 
-        transferproxycol_show(transp_coll)       
-
-
-
-        #find transferproxy from selectd objects' datatranfer modifier, make a list
-        for obj in selobj:
-            named_color_attributes = bpy.context.object.data.color_attributes
-            set_actcolor = named_color_attributes.get(vertcolorname)
-            obj.data.attributes.active_color = set_actcolor
-
-        #hide selected list from rendering
-            obj.hide_render = True
-            obj.select_set(False)    
-            for mod in obj.modifiers:
-                if mod.name == tvcpmod:
-                    proxy_list.append(mod.object)
-                    
-        #selecte target proxy meshes and make renderable
+        if coll:
+            transp_coll = bpy.data.collections[tvcpcollname]
+            transferproxycol_show(transp_coll)   
+            for obj in selobj:
+                if obj.type == 'MESH':
+                    obj.data.attributes.active_color = set_actcolor
+                    obj.hide_render = True
+                    obj.select_set(False)
+                    if check_TRNSPmod_exist(selobj) != 0:
+                        for mod in obj.modifiers:
+                            if mod.name == tvcpmod:
+                                if mod.object is not None:
+                                    proxy_list.append(mod.object)
+                                else:
+                                    print('modifier target object missing')
+                                    break
+                    else:
+                        print('modifier missing')
+                        break
+                else:
+                    print('is not mesh')
+                    break
             for proxy_obj in proxy_list:
+                obj.data.attributes.active_color = set_actcolor
                 proxy_obj.select_set(True)
                 proxy_obj.hide_render = False
-
-        #bake vertex ao        
-        bpy.ops.object.bake(type='AO', target='VERTEX_COLORS')
-
-
-        #reset visibility
-        transferproxycol_hide(transp_coll)
-        for obj in selobj:
-            obj.hide_render = False  
-        
+            #bake vertex ao        
+            bpy.ops.object.bake(type='AO', target='VERTEX_COLORS')
+            #reset visibility
+            transferproxycol_hide(transp_coll)
+            for obj in selobj:
+                obj.hide_render = False  
+        else:
+            MessageBox(text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy", title="WARNING", icon='ERROR')
+                
         return{'FINISHED'}
 
 classes = (
@@ -558,9 +568,9 @@ classes = (
     
     
 
-    Transform_Bevel_Poly,
-    Rename_Objects,
-    Set_Parameters_Operator,
+    HST_BevelTransferNormal,
+    HST_CleanBevelObjects,
+    HST_SetBevelParameters_Operator,
 
     HST_CreateTransferVertColorProxy,
     HST_BakeProxyVertexColorAO,

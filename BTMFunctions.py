@@ -6,7 +6,7 @@ import mathutils
 import bmesh
 import bpy
 
-from .BTMProps import BTMPropGroup
+from .UI_SidePanel import BTMPropGroup
 
 
 def MessageBox(text="", title="WARNING", icon='ERROR'):
@@ -321,7 +321,7 @@ if os.path.exists(import_list):
 
 def btb_run_toolbag():
     props = bpy.context.scene.btmprops 
-    toolbag = bpy.context.preferences.addons["Hard Surface Tool"].preferences.toolbag_app_path
+    toolbag = bpy.context.preferences.addons["HardsurfaceGameAssetToolkit"].preferences.toolbag_app_path
     folder = BTM_Export_Path()
     if toolbag:
         if folder:

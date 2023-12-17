@@ -14,7 +14,7 @@ bl_info = {
 
 import bpy
 from bpy.props import CollectionProperty, PointerProperty
-from .BTMProps import BTMCollection, BTMPropGroup
+from .UI_SidePanel import BTMCollection, BTMPropGroup
 
 from . import auto_load
 

@@ -1,12 +1,4 @@
-import os
-import subprocess
-import tempfile
-import mathutils
-
-import bmesh
 import bpy
-
-from .BTMProps import BTMPropGroup
 
 
 #定义命名
@@ -92,7 +84,6 @@ def check_TRNSPmod_exist(selobj):
 
 ##清理传递模型修改器   
 def cleanuptransproxymods(selobj):
-    from types import NoneType
     delete_list = []
 
     for obj in selobj:
@@ -124,12 +115,12 @@ def make_transpproxy_object(transp_coll):
     actobj = bpy.context.active_object
     copy_list = []
     bns_coll = None
-    
     #显示_transfcoll以便处理模型
     transp_coll.hide_viewport = False
     transp_coll.hide_render = False
     
     #清理之前的传递模型
+
     cleanuptransproxymods(selobj)
 
     for obj in selobj:
@@ -196,15 +187,19 @@ def add_proxydatatransfer_modifier(selobj):
 
 def checkhastvcpmodifier(selobj):
 
-    check_modifier = 0
     addmod_list = []
 
     for obj in selobj:
         for m in obj.modifiers:
             if m is not None and m.name == tvcpmod:
-                    check_modifier += 1
+                if m.object is None:
+                    addmod_list.append(obj)    
             else:
                 addmod_list.append(obj)
+    
+    selobj = addmod_list
+
+
 
 def transferproxycol_show(transp_coll):
     transp_coll.hide_viewport = False
