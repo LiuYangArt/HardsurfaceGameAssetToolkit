@@ -4,16 +4,20 @@ import configparser
 from bpy_extras.io_utils import ImportHelper
 from bpy.utils import register_class, unregister_class
 
-from .BTMFunctions import *
-from .VertColorBakeFunctions import *
-#from .UI_SidePanel import BTMPropGroup
-#from .BTMPreferences import BTM_AddonPreferences
+#Functions
+from .Functions.BTMFunctions import *
+from .Functions.VertexColorBake import *
+from .Functions.TransferBevelNormal import *
+
+from .UIPanel import BTMPropGroup
+from .BTMPreferences import BTM_AddonPreferences
 
 
 
 class BTMLowOperator(bpy.types.Operator):
     bl_idname = "object.btmlow"
-    bl_label = "Low Poly"
+    bl_label = "Low Poly Group"
+    bl_description ="设置选中模型的整个Collection为LowPoly组，根据Collection名字修改命名"
     
     def execute(self, context):
         is_low = None
@@ -34,8 +38,8 @@ class BTMLowOperator(bpy.types.Operator):
 
 class BTMHighOperator(bpy.types.Operator):
     bl_idname = "object.btmhigh"
-    bl_label = "high Poly"
-
+    bl_label = "High Poly Group"
+    bl_description ="设置选中模型的整个Collection为HighPoly组，根据Collection名字修改命名"
 
     def execute(self, context):
         is_low = None
@@ -185,14 +189,17 @@ class OpenmMrmosetOperator(bpy.types.Operator):
 class HST_CleanBevelObjects(bpy.types.Operator):
     bl_idname = "object.cleanhstobject"
     bl_label = "Transfer Bevel Poly"
+    bl_description ="清理所选物体对应的HST修改器和传递模型"
+    
 
     def execute(self, context): 
-        check_coll_object_name()
+        clean_hstbtnobject()
         return{'FINISHED'}
 
 class HST_BevelTransferNormal(bpy.types.Operator):
     bl_idname = "object.hstbeveltransfernormal"
-    bl_label = "Transfoer Bevel Poly"
+    bl_label = "Bevel And Transfer Normal"
+    bl_description ="添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
     
     def execute(self, context):
         obj: bpy.types.Object
@@ -213,24 +220,31 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         else:
             MessageBox(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
         return{'FINISHED'}
+    
+class HST_BatchBevel(bpy.types.Operator):
+    bl_idname = "object.hstbevelmods"
+    bl_label = "Batch Add Bevel Mods"
+    bl_description ="倒角修改器和他的朋友们"
 
-# class Add_Bevel_Operator(bpy.types.Operator):
-#     bl_idname = "object.addbevel"
-#     bl_label = "Add Bevel"
+    def execute(self, context):
+        obj: bpy.types.Object
+        bevelmod: bpy.types.BevelModifier
+
+        selobj = bpy.context.selected_objects
+        actobj = bpy.context.active_object
+        coll = getCollection(actobj)
+        if coll:
+            collobjs = coll.all_objects
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            renamemesh(self, collobjs, coll.name)
+            add_bevel_modifier(selobj)
+            add_weightednormal_modifier(selobj)
+            add_triangulate_modifier(selobj)
+        else:
+            MessageBox(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
+        return{'FINISHED'}
 
 
-#     def execute(self, context):
-#         batch_edit_bevel()
-#         return{'FINISHED'}
-
-# class Less_Bevel_Operator(bpy.types.Operator):
-#     bl_idname = "object.lessbevel"
-#     bl_label = "Less Bevel"
-
-
-#     def execute(self, context):
-#         batch_edit_bevel()
-#         return{'FINISHED'}
 
 class HST_SetBevelParameters_Operator(bpy.types.Operator):
     bl_idname = "object.hstbevelsetparam"
@@ -246,7 +260,7 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
         sel_objs = bpy.context.selected_objects
         for obj in sel_objs:
             for mod in obj.modifiers:
-                if mod.name == 'HST Bevel':
+                if mod.name == btnbevelmod:
                     mod.segments = props.set_bevel_segments
                     mod.width = props.set_bevel_width
 
@@ -286,23 +300,12 @@ class Clean_Vertex_Operator(bpy.types.Operator):
             bm.verts.ensure_lookup_table()
 
             along_vert_cand = [v for v in bm.verts if v.hide == False and len(v.link_edges) == 2]
-            # mismatch_vert_cand = [v for v in bm.verts if v.hide == False and len(v.link_edges) == 3]
-            # mismatch_face_cand = [f for f in bm.faces if f.hide == False and len(f.calc_area) == 5]
+
 
             for v in along_vert_cand :
                 along_vert_list.append(v)
                 avc.append(v.index)
 
-            # for v in mismatch_vert_cand:
-            #     mismatch_vert_list.append(v)
-            #     mvc.append(v.index)
-
-            # for f in mismatch_face_cand:
-            #     mismatch_vert_list.append(f)
-            #     mfc.append(f.index)
-
-            # for f in bm.faces:
-            #     print(f.calc_area)
 
             bmesh.ops.dissolve_verts(bm, verts=along_vert_list, use_face_split=False, use_boundary_tear=False)
             bmesh.update_edit_mesh(mesh)
@@ -311,21 +314,6 @@ class Clean_Vertex_Operator(bpy.types.Operator):
 
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            # [v for v in o.data.vertices if v.index in mvc]
-            # for v in o.data.vertices:
-            #     if v.index in mvc:
-            #         v.select = True
-
-            # [v for v in o.data.vertices if v.index in avc]
-            # for v in o.data.vertices:
-            #     if v.index in avc:
-            #         v.select = True
-
-            # [f for f in o.data.polygons if f.index in mfc]
-            # for f in o.data.polygons:
-            #     if f.index in mfc:
-            #         f.select = True
-            # # print(vert_index)
 
         return{'FINISHED'}
 
@@ -467,7 +455,7 @@ class TestButtonOperator(bpy.types.Operator):
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "object.hst_addtransvertcolorproxy"
     bl_label = "Create Transfer VertexColor Proxy"
-    bl_description ="为选中的物体建立用于烘焙顶点色的代理模型，代理模型通过DataTransfer修改器将顶点色传递回原始模型。如果原始模型有造型修改，请重新建立代理。"
+    bl_description ="为选中的物体建立用于烘焙顶点色的代理模型，代理模型通过DataTransfer修改器将顶点色传递回原始模型。如果原始模型有造型修改，请重新建立代理。注意其修改器顺序必须存在于Bevel修改器之后。"
     
     def execute(self, context):
         obj: bpy.types.Object
@@ -477,12 +465,14 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 
         if coll:
             collobjs = coll.all_objects
-            batchsetvertcolor(selobj)
+            batchsetvertcolorattr(selobj)
             bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             renamemesh(self, collobjs, coll.name)
             transp_coll = create_transproxy_coll()
             make_transpproxy_object(transp_coll)
             add_proxydatatransfer_modifier(selobj)
+            importgnwearmask()
+            add_gnwmvc_modifier(selobj)
             bpy.ops.object.select_all(action='DESELECT')
             
             #还原选择状态
@@ -490,7 +480,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
                 obj.select_set(True)
             bpy.context.view_layer.objects.active = bpy.data.objects[actobj.name]
         else:
-            MessageBox(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中", title="WARNING", icon='ERROR')
+            MessageBox(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中，注意需要在有Bevel修改器之后使用", title="WARNING", icon='ERROR')
         
         return{'FINISHED'}
 
@@ -567,7 +557,7 @@ classes = (
     TestButtonOperator,
     
     
-
+    HST_BatchBevel,
     HST_BevelTransferNormal,
     HST_CleanBevelObjects,
     HST_SetBevelParameters_Operator,

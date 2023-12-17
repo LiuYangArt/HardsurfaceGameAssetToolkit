@@ -9,7 +9,7 @@ from bpy.utils import register_class, unregister_class
 class BTM_AddonPreferences(AddonPreferences):
     bl_idname = __package__
 
-    toolbag_app_path: StringProperty(
+"""     toolbag_app_path: StringProperty(
         name="Marmoset Path",
         description="Path to executable file(toolbag.exe) for Marmoset Toolbag",
         default="C:\Program Files (x86)\Steam\steamapps\common\Toolbag 3\toolbag_steam.exe",
@@ -37,7 +37,7 @@ class BTM_AddonPreferences(AddonPreferences):
         box2 = col2.box()
         col_moi = box2.column(align=True)
         col_moi.prop(self, "moi_app_path")
-
+ """
 
 
         # box = col.box()

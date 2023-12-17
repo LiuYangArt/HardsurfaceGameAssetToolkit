@@ -79,8 +79,8 @@ class BTMPanel(bpy.types.Panel):
         boxcolrow = boxcol.row(align=True)
         #for what
         #boxrow.prop(btmprops, "grouplist")
-        boxcolrow.operator('object.btmlow', text="Set Lowpoly")
-        boxcolrow.operator('object.btmhigh', text="Set Highpoly")
+        boxcolrow.operator('object.btmlow', text="Set LowPoly")
+        boxcolrow.operator('object.btmhigh', text="Set HighPoly")
         #分类规则有待调整
         #boxcol.operator('object.orgacoll', text="Organize Collections")
 
@@ -119,10 +119,10 @@ class HSTPanel(bpy.types.Panel):
         #boxcol1.operator('object.reloadobj', text="Reload Object")
         boxcol1.label(text='Bevel Tool')
         boxcol1.prop(btmprops, "add_triangulate", text='Add Triangulate Modifier')
+        boxcol1.operator('object.hstbevelmods', text='Add Bevel')
         boxcol1.operator('object.hstbeveltransfernormal', text='Bevel & Transfer Normal')
         
-        boxcol1.prop(btmprops, "clean_all_mod", text='Clear all modifiers')
-        boxcol1.operator('object.cleanhstobject', text='Clean HST Object')
+
 
 
         boxcol2.label(text='Set HSTBevel Parameters')
@@ -131,14 +131,17 @@ class HSTPanel(bpy.types.Panel):
         # boxcol2row.operator('object.addbevel', text='Add Bevel')
         boxcol2row.prop(btmprops, "set_bevel_width", text='Width')
         boxcol2row.prop(btmprops, "set_bevel_segments", text='Segments')    
-        boxcol2.operator('object.hstbevelsetparam', text='Set Parameters')
+        boxcol2.operator('object.hstbevelsetparam', text='Set Bevel Parameters')
         
 
         boxcol3.label(text='Vertex Color Bake')
-        boxcol3.operator('object.hst_addtransvertcolorproxy', text='Create Transfer Vertex Color Proxy')
+        boxcol3.operator('object.hst_addtransvertcolorproxy', text='Make Transfer Vertex Color Proxy')
         boxcol3.operator('object.hst_bakeproxyvertcolrao', text='Bake Vertex Color AO')
 
+
+
         boxcol4.label(text='Utilities') 
+        boxcol4.operator('object.cleanhstobject', text='Clean HST Object')
         boxcol4.operator('object.cleanvert', text="Clean Vert")
 classes = (
     HSTPanel,

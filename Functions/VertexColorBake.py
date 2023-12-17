@@ -5,12 +5,28 @@ import bpy
 tvcpcollname = "_TransferProxy"
 tvcproxy = "TRNSP_"
 vertcolorname = "VertColor"
-tvcpmod = "HSTProxy DataTransfer"
+tvcpmod = "HSTVertexColorTransfer"
+tvcpgnwmvcmod = "HST_GNWMVertColor"
+wearmaskgnode = "GN_HSTWearmaskVertColor"
+addondir = "HardsurfaceGameAssetToolkit"
+assetdir = "PresetFiles"
 
+
+
+
+
+#设置Proxy Collection可见性
+def transferproxycol_show(transp_coll):
+    transp_coll.hide_viewport = False
+    transp_coll.hide_render = False
+
+def transferproxycol_hide(transp_coll):
+    transp_coll.hide_viewport = True
+    transp_coll.hide_render = True
 
 
 #添加顶点色属性
-def batchsetvertcolor(selobj):
+def batchsetvertcolorattr(selobj):
     ver_col = bpy.data.brushes["TexDraw"].color
 
 
@@ -49,8 +65,7 @@ def create_transproxy_coll():
     else:
         transp_coll = bpy.data.collections.new(name=tvcpcollname)
 
-        transp_coll.hide_viewport = True
-        transp_coll.hide_render = True
+        transferproxycol_hide(transp_coll)
         # transp_coll.hide_select = True
 
         transp_coll.color_tag = 'COLOR_08'
@@ -96,6 +111,9 @@ def cleanuptransproxymods(selobj):
                         if mod.object is not None and mod.object.parent.name == obj.name:
                             delete_list.append(mod.object)
                         obj.modifiers.remove(mod)
+                    elif mod.name == tvcpgnwmvcmod:
+                        obj.modifiers.remove(mod)
+                        
         else:
             print('is not mesh')
             break
@@ -180,8 +198,52 @@ def add_proxydatatransfer_modifier(selobj):
             datatransfermod.data_types_loops = {'COLOR_CORNER'}
             datatransfermod.loop_mapping = 'TOPOLOGY'
         else:
-            datatransfermod = obj.modifiers['HSTProxy DataTransfer']
+            datatransfermod = obj.modifiers[tvcpmod]
             datatransfermod.object = targobj
+            continue
+
+
+#导入预设Geometry Nodes
+def importgnwearmask():
+    from bpy.utils import resource_path
+    from pathlib import Path
+
+    USER = Path(resource_path('USER'))
+    src = USER / "scripts/addons" / addondir / assetdir
+
+    file_path = src / "GN_WearMaskVertexColor.blend"
+    inner_path = "NodeTree"
+    gnode_name = wearmaskgnode
+
+    for node in bpy.data.node_groups:
+        if wearmaskgnode not in node.name:
+            bpy.ops.wm.append(
+                filepath = str(file_path / inner_path / gnode_name),
+                directory = str(file_path / inner_path),
+                filename = gnode_name
+            )
+        else:
+            break
+    
+
+def add_gnwmvc_modifier(selobj):
+    gnwmvcmod: bpy.types.Modifier
+    check_modifier = 0
+
+    for obj in selobj:
+        for m in obj.modifiers:
+            if m.name == tvcpgnwmvcmod:
+                check_modifier += 1
+                continue
+    
+
+        if not check_modifier:
+            gnwmvcmod = obj.modifiers.new(name=tvcpgnwmvcmod, type='NODES')
+            
+            gnwmvcmod.node_group = bpy.data.node_groups[wearmaskgnode]
+        else:
+            gnwmvcmod = obj.modifiers[tvcpgnwmvcmod]
+            gnwmvcmod.node_group = bpy.data.node_groups[wearmaskgnode]
             continue
 
 
@@ -201,10 +263,3 @@ def checkhastvcpmodifier(selobj):
 
 
 
-def transferproxycol_show(transp_coll):
-    transp_coll.hide_viewport = False
-    transp_coll.hide_render = False
-
-def transferproxycol_hide(transp_coll):
-    transp_coll.hide_viewport = True
-    transp_coll.hide_render = True
