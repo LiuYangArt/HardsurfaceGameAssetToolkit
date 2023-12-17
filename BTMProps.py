@@ -49,3 +49,13 @@ class BTMCollection (PropertyGroup):
 
 classes = (BTMPropGroup,
            BTMCollection)
+
+""" def register():
+    global classes
+    for cls in classes:
+        register_class(cls)
+
+def unregister():
+    global classes
+    for cls in classes:
+        unregister_class(cls) """

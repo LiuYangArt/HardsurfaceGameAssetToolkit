@@ -56,5 +56,16 @@ class BTM_AddonPreferences(AddonPreferences):
     #     return context.window_manager.invoke_confirm(self, event)
 
 
-
 classes = (BTM_AddonPreferences)
+
+""" def register():
+    global classes
+    register_class(classes)
+    # for cls in classes:
+        # register_class(cls)
+
+def unregister():
+    global classes
+    unregister_class(classes)
+    # for cls in classes:
+        # unregister_class(cls) """

@@ -1,26 +1,20 @@
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTIBILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
-# General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
+# 硬表面游戏资产快捷处理工具包
+# 基于卡林的硬表面插件修改
 
 bl_info = {
     "name" : "HardsurfaceGameAssetToolkit",
-    "author" : "LiuYang",
+    "author" : "Akari,LiuYang",
     "description" : "",
-    "blender" : (2, 80, 0),
-    "version" : (0, 0, 1),
+    "blender" : (4, 0, 0),
+    "version" : (0, 4, 1),
     "location" : "",
     "warning" : "",
     "category" : "Generic"
 }
+
+import bpy
+from bpy.props import CollectionProperty, PointerProperty
+from .BTMProps import BTMCollection, BTMPropGroup
 
 from . import auto_load
 
@@ -28,6 +22,8 @@ auto_load.init()
 
 def register():
     auto_load.register()
+    bpy.types.Scene.btmprops = PointerProperty(type=BTMPropGroup)
 
 def unregister():
     auto_load.unregister()
+    del bpy.types.Scene.btmprops

@@ -588,6 +588,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         transp_coll = bpy.data.collections[tvcpcollname]
         proxy_list = []
 
+
         for obj in selobj:
 
 
@@ -628,7 +629,6 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             obj.hide_render = False  
         
         return{'FINISHED'}
-    
 
 classes = (
     HSTPanel,
@@ -654,3 +654,13 @@ classes = (
     HST_CreateTransferVertColorProxy,
     HST_BakeProxyVertexColorAO,
             )
+
+""" def register():
+    global classes
+    for cls in classes:
+        register_class(cls)
+
+def unregister():
+    global classes
+    for cls in classes:
+        unregister_class(cls) """

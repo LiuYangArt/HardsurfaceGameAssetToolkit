@@ -194,7 +194,6 @@ def add_proxydatatransfer_modifier(selobj):
             continue
 
 
-
 def checkhastvcpmodifier(selobj):
 
     check_modifier = 0
