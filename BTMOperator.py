@@ -462,6 +462,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         selobj = bpy.context.selected_objects
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
+        #objects = selobj
 
         if coll:
             collobjs = coll.all_objects
@@ -517,6 +518,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                         for mod in obj.modifiers:
                             if mod.name == tvcpmod:
                                 if mod.object is not None:
+                                    #mod.object.data.attributes.active_color = set_actcolor
                                     proxy_list.append(mod.object)
                                 else:
                                     print('modifier target object missing')
@@ -528,7 +530,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                     print('is not mesh')
                     break
             for proxy_obj in proxy_list:
-                obj.data.attributes.active_color = set_actcolor
+                #proxy_obj.data.attributes.active_color = set_actcolor
                 proxy_obj.select_set(True)
                 proxy_obj.hide_render = False
             #bake vertex ao        

@@ -31,12 +31,6 @@ def batchsetvertcolorattr(selobj):
 
 
     for obj in selobj:
-        #删除所有color attributes
-        #if obj.data.color_attributes:
-            #attrs = obj.data.color_attributes
-            #for r in range(len(obj.data.color_attributes)-1, -1, -1):
-                #attrs.remove(attrs[r])
-
         if vertcolorname in obj.data.color_attributes:
             colattr = obj.data.color_attributes[0]
         else:
@@ -44,7 +38,34 @@ def batchsetvertcolorattr(selobj):
                 name=vertcolorname,
                 type='BYTE_COLOR',
                 domain='CORNER',
-            )
+                )
+    return
+
+#清理顶点色属性
+def batchcleanupcolorattr(objects):
+    ver_col = bpy.data.brushes["TexDraw"].color
+
+
+    for obj in objects:
+        
+        if obj.data.color_attributes:
+            attrs = obj.data.color_attributes
+            for r in range(len(obj.data.color_attributes)-1, -1, -1):
+                attrs.remove(attrs[r])
+            
+            colattr = obj.data.color_attributes.new(
+                name=vertcolorname,
+                type='BYTE_COLOR',
+                domain='CORNER',
+                )
+
+
+        else:
+            colattr = obj.data.color_attributes.new(
+                name=vertcolorname,
+                type='BYTE_COLOR',
+                domain='CORNER',
+                )
     return
 
 #存放传递模型的Collection
@@ -155,12 +176,14 @@ def make_transpproxy_object(transp_coll):
                         bns_coll = coll
                 #移动proxy模型到_transfcoll内
                 bns_coll.objects.link(copy_obj)
-
+                
                 copy_list.append(copy_obj)             
         else:
             print('is not mesh')
             break
-    #选择所有复制出来的模型，应用修改器            
+    #选择所有复制出来的模型，应用修改器
+    objects=copy_list
+    batchcleanupcolorattr(objects)            
     bpy.ops.object.select_all(action='DESELECT')
     for obj in copy_list:
         obj.select_set(True)
