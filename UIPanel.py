@@ -23,19 +23,19 @@ class BTMPropGroup(PropertyGroup):
         )
 
     set_bevel_width: FloatProperty(
-        description="Batch edit HST bevel width", 
+        description="设置  HSTBevel 宽度", 
         default=0.01,
         min=0.0, max=1.0
         )
 
     set_bevel_segments: IntProperty(
-        description="Batch edit HST bevel segments", 
+        description="设置 HSTBevel 段数", 
         default=1,
         min=0, max=12
         )
 
     add_triangulate: BoolProperty(
-        description="Whether to add triangulation modifiers.", 
+        description="是否同时添加三角化修改器", 
         default=True
         )
 
@@ -119,7 +119,7 @@ class HSTPanel(bpy.types.Panel):
         #boxcol1.operator('object.reloadobj', text="Reload Object")
         boxcol1.label(text='Bevel Tool')
         boxcol1.prop(btmprops, "add_triangulate", text='Add Triangulate Modifier')
-        boxcol1.operator('object.hstbevelmods', text='Add Bevel')
+        boxcol1.operator('object.hstbevelmods', text='Batch Bevel')
         boxcol1.operator('object.hstbeveltransfernormal', text='Bevel & Transfer Normal')
         
 

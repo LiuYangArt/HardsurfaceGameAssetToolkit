@@ -224,7 +224,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
 class HST_BatchBevel(bpy.types.Operator):
     bl_idname = "object.hstbevelmods"
     bl_label = "Batch Add Bevel Mods"
-    bl_description ="倒角修改器和他的朋友们"
+    bl_description ="批量添加Bevel和WeightedNormal"
 
     def execute(self, context):
         obj: bpy.types.Object
