@@ -267,7 +267,7 @@ def clean_hstbtnobject():
     delete_list = []
     deletemod_list = []
     bevel_dict = {}
-    btn_coll = bpy.data.collections[btncollname]
+    #btn_coll = bpy.data.collections[btncollname]
 
     #if props.clean_all_mod == True:
     for obj in selobj:
