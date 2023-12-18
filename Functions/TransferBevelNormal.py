@@ -247,7 +247,7 @@ def add_weightednormal_modifier(selobj):
             weightpmod.use_face_influence = True
             weightpmod.thresh = 0.01
             weightpmod.keep_sharp = False
-            weightpmod.keep_sharp.weight = 100
+            weightpmod.weight = 100
             continue
 
 
