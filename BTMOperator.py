@@ -188,7 +188,7 @@ class OpenmMrmosetOperator(bpy.types.Operator):
 #=========================================================================================
 class HST_CleanHSTObjects(bpy.types.Operator):
     bl_idname = "object.cleanhstobject"
-    bl_label = "Transfer Bevel Poly"
+    bl_label = "Clean HST Objects"
     bl_description ="清理所选物体对应的HST修改器和传递模型"
     
 
