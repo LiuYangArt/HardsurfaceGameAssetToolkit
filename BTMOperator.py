@@ -454,7 +454,7 @@ class TestButtonOperator(bpy.types.Operator):
 #Make Transfer VertexBakeProxy Operator
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "object.hst_addtransvertcolorproxy"
-    bl_label = "Create Transfer VertexColor Proxy"
+    bl_label = "Make Transfer VertexColor Proxy"
     bl_description ="为选中的物体建立用于烘焙顶点色的代理模型，代理模型通过DataTransfer修改器将顶点色传递回原始模型。如果原始模型有造型修改，请重新建立代理。注意其修改器顺序必须存在于Bevel修改器之后。"
     
     def execute(self, context):
