@@ -78,6 +78,8 @@ def move_backup_base_object(btn_coll):
 
     for obj in selobj:
         if obj.type == 'MESH':
+            
+
             if check_BTN_exist(btn_coll, obj) != 1:
 
                 copy_obj = bpy.data.objects[obj.name].copy()
@@ -102,73 +104,78 @@ def move_backup_base_object(btn_coll):
 def add_bevel_modifier(selobj):
     bevelmod: bpy.types.Modifier
     obj: bpy.types.Object
-
-    check_modifier = 0
-    check_sharp = 0
-    check_bevel = 0
     mesh = bpy.context.object.data
 
     for obj in selobj:
+        check_modifier = 0
+        check_sharp = 0
+        check_bevelweight = 0
         bpy.data.meshes[obj.to_mesh().name].use_auto_smooth = True
-        for m in obj.modifiers:
-            if m.name == btnbevelmod:
+        for mod in obj.modifiers:
+            #检查有没有修改器
+            if mod.name == btnbevelmod:
                 check_modifier += 1
                 continue
+        #如果没有修改器
         if check_modifier == 0:
-            #check sharp edge, if yes, add bevel weight by sharp; if no, set bevel modifier type = angle
+            #如果有硬边
             if 'sharp_edge' in mesh.attributes:
                 check_sharp += 1
+                #如果有倒角权重
                 if 'bevel_weight_edge' in mesh.attributes:
-                    check_bevel += 1
+                    check_bevelweight += 1
+                #如果没有倒角权重，添加
                 else:
                     bevel_weight_attr = mesh.attributes.new("bevel_weight_edge", "FLOAT", "EDGE")
                     for idx, e in enumerate(mesh.edges):
                         bevel_weight_attr.data[idx].value = 1.0 if e.use_edge_sharp else 0.0
-
+                    check_bevelweight += 1
+            #如果有无硬边
             else:
                 check_sharp += 0
-                bevel_weight_attr = mesh.attributes.new("bevel_weight_edge", "FLOAT", "EDGE")
+                check_bevelweight += 0
+                """ bevel_weight_attr = mesh.attributes.new("bevel_weight_edge", "FLOAT", "EDGE")
                 for idx, e in enumerate(mesh.edges):
-                    bevel_weight_attr.data[idx].value = 1.0 if e.use_edge_sharp else 0.0
+                    bevel_weight_attr.data[idx].value = 1.0 if e.use_edge_sharp else 0.0 """
     
-            if 'bevel_weight_edge' in mesh.attributes:
-                check_bevel += 1
-            else:
-                check_bevel += 1
+        if 'bevel_weight_edge' in mesh.attributes:
+            check_bevelweight += 1
+        else:
+            check_bevelweight += 0
 
-            print(check_sharp)
+        print(check_sharp)
 
-            if check_sharp:
-                bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
-                bevelmod.limit_method = 'WEIGHT'
-                bevelmod.offset_type = 'WIDTH'
-                bevelmod.width = 0.005
-                bevelmod.use_clamp_overlap = False
-                bevelmod.harden_normals = True
-                bevelmod.loop_slide = True
-                bevelmod.segments = 1
-                bevelmod.profile = 0.7
-                bevelmod.face_strength_mode = 'FSTR_ALL'
-                continue
-            else:
-                bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
-                bevelmod.limit_method = 'ANGLE' 
-                bevelmod.offset_type = 'WIDTH'
-                bevelmod.width = 0.005
-                bevelmod.angle_limit = 0.523599
-                bevelmod.use_clamp_overlap = False
-                bevelmod.harden_normals = True
-                bevelmod.loop_slide = True
-                bevelmod.segments = 1
-                bevelmod.profile = 0.7
-                bevelmod.face_strength_mode = 'FSTR_ALL'
-                continue
+        #根据是否有sharp edge信息信息选择Bevel修改器类型
+        if check_sharp == 1 and check_modifier == 0:
+            bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
+            bevelmod.limit_method = 'WEIGHT'
+            bevelmod.offset_type = 'WIDTH'
+            bevelmod.width = 0.005
+            bevelmod.use_clamp_overlap = False
+            bevelmod.harden_normals = True
+            bevelmod.loop_slide = True
+            bevelmod.segments = 1
+            bevelmod.profile = 0.7
+            bevelmod.face_strength_mode = 'FSTR_ALL'
+            continue
+        elif check_sharp == 0 and check_modifier == 0: 
+            bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
+            bevelmod.limit_method = 'ANGLE' 
+            bevelmod.offset_type = 'WIDTH'
+            bevelmod.width = 0.005
+            bevelmod.angle_limit = 0.523599
+            bevelmod.use_clamp_overlap = False
+            bevelmod.harden_normals = True
+            bevelmod.loop_slide = True
+            bevelmod.segments = 1
+            bevelmod.profile = 0.7
+            bevelmod.face_strength_mode = 'FSTR_ALL'
+            continue
 
 
 #添加DataTransfer修改器 
 def add_datatransfer_modifier(selobj):
     datatransfermod: bpy.types.Modifier
-
     check_modifier = 0
 
     for obj in selobj:
