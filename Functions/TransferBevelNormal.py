@@ -135,34 +135,36 @@ def add_bevel_modifier(selobj):
     
 
 
-        print(check_sharp,check_modifier)
+        print(check_modifier)
 
         #根据是否有sharp edge信息信息选择Bevel修改器类型
-        if check_sharp == 1 and check_modifier == 0:
-            bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
-            bevelmod.limit_method = 'WEIGHT'
-            bevelmod.offset_type = 'WIDTH'
-            bevelmod.width = 0.005
-            bevelmod.use_clamp_overlap = False
-            bevelmod.harden_normals = True
-            bevelmod.loop_slide = True
-            bevelmod.segments = 1
-            bevelmod.profile = 0.7
-            bevelmod.face_strength_mode = 'FSTR_ALL'
-            continue
-        elif check_sharp == 0 and check_modifier == 0: 
-            bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
-            bevelmod.limit_method = 'ANGLE' 
-            bevelmod.offset_type = 'WIDTH'
-            bevelmod.width = 0.005
-            bevelmod.angle_limit = 0.523599
-            bevelmod.use_clamp_overlap = False
-            bevelmod.harden_normals = True
-            bevelmod.loop_slide = True
-            bevelmod.segments = 1
-            bevelmod.profile = 0.7
-            bevelmod.face_strength_mode = 'FSTR_ALL'
-            continue
+        if check_modifier == 0:
+            print(check_sharp)
+            if check_sharp == 1:
+                bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
+                bevelmod.limit_method = 'WEIGHT'
+                bevelmod.offset_type = 'WIDTH'
+                bevelmod.width = 0.005
+                bevelmod.use_clamp_overlap = False
+                bevelmod.harden_normals = True
+                bevelmod.loop_slide = True
+                bevelmod.segments = 1
+                bevelmod.profile = 0.7
+                bevelmod.face_strength_mode = 'FSTR_ALL'
+                continue
+            elif check_sharp == 0: 
+                bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
+                bevelmod.limit_method = 'ANGLE' 
+                bevelmod.offset_type = 'WIDTH'
+                bevelmod.width = 0.005
+                bevelmod.angle_limit = 0.523599
+                bevelmod.use_clamp_overlap = False
+                bevelmod.harden_normals = True
+                bevelmod.loop_slide = True
+                bevelmod.segments = 1
+                bevelmod.profile = 0.7
+                bevelmod.face_strength_mode = 'FSTR_ALL'
+                continue
 
 
 #添加DataTransfer修改器 
@@ -171,52 +173,43 @@ def add_datatransfer_modifier(selobj):
     check_modifier = 0
 
     for obj in selobj:
-        for m in obj.modifiers:
-            if m.name == btntransferpmod:
-                check_modifier += 1
-                continue
-    
         targobj = bpy.data.objects[btnmesh + obj.name]
-        print(targobj)
-        if not check_modifier:
+        if btntransferpmod in obj.modifiers:
+            datatransfermod = obj.modifiers[btntransferpmod]
+            datatransfermod.object = targobj
+    
+        
+        else:
             datatransfermod = obj.modifiers.new(name=btntransferpmod, type='DATA_TRANSFER')
             datatransfermod.object = targobj
             datatransfermod.use_loop_data = True
             datatransfermod.data_types_loops = {'CUSTOM_NORMAL'}
             datatransfermod.loop_mapping = 'POLYINTERP_LNORPROJ'
 
-        else:
-            datatransfermod = obj.modifiers[btntransferpmod]
-            datatransfermod.object = targobj
-            continue
 
 
 #添加Triangulate修改器 
 def add_triangulate_modifier(selobj):
     triangulatemod: bpy.types.Modifier
 
-    check_modifier = 0
+    check_trimod = 0
 
     for obj in selobj:
-        for m in obj.modifiers:
-            if m.name == btntrimod:
-                check_modifier += 1
-                continue
+        if btntrimod in obj.modifiers:
+            triangulatemod = obj.modifiers[btntrimod]
+            triangulatemod.keep_custom_normals = True
+            triangulatemod.min_vertices = 5
+            triangulatemod.quad_method = 'SHORTEST_DIAGONAL'
     
-        #targobj = bpy.data.objects[btnmesh + obj.name]
-        #print(targobj)
-        if not check_modifier:
+    
+
+        else:
             triangulatemod = obj.modifiers.new(name=btntrimod, type='TRIANGULATE')
             triangulatemod.keep_custom_normals = True
             triangulatemod.min_vertices = 5
             triangulatemod.quad_method = 'SHORTEST_DIAGONAL'
             
-        else:
-            triangulatemod = obj.modifiers[btntrimod]
-            triangulatemod.keep_custom_normals = True
-            triangulatemod.min_vertices = 5
-            triangulatemod.quad_method = 'SHORTEST_DIAGONAL'
-            continue
+
 
 #添加WeightedNormal修改器 
 def add_weightednormal_modifier(selobj):
@@ -225,14 +218,15 @@ def add_weightednormal_modifier(selobj):
     check_modifier = 0
 
     for obj in selobj:
-        for m in obj.modifiers:
-            if m.name == btnweightpmod:
-                check_modifier += 1
-                continue
+        if btnweightpmod in obj.modifiers:
+            weightpmod = obj.modifiers[btnweightpmod]
+            weightpmod.mode = 'FACE_AREA'
+            weightpmod.use_face_influence = True
+            weightpmod.thresh = 0.01
+            weightpmod.keep_sharp = False
+            weightpmod.weight = 100
     
-        #targobj = bpy.data.objects[btnmesh + obj.name]
-        #print(targobj)
-        if not check_modifier:
+        else:
             weightpmod = obj.modifiers.new(name=btnweightpmod, type='WEIGHTED_NORMAL')
             weightpmod.mode = 'FACE_AREA'
             weightpmod.use_face_influence = True
@@ -240,14 +234,6 @@ def add_weightednormal_modifier(selobj):
             weightpmod.keep_sharp = False
             weightpmod.weight = 100
 
-        else:
-            weightpmod = obj.modifiers[btnweightpmod]
-            weightpmod.mode = 'FACE_AREA'
-            weightpmod.use_face_influence = True
-            weightpmod.thresh = 0.01
-            weightpmod.keep_sharp = False
-            weightpmod.weight = 100
-            continue
 
 
 
