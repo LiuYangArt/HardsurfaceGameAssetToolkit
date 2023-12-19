@@ -105,41 +105,25 @@ def add_bevel_modifier(selobj):
     bevelmod: bpy.types.Modifier
     obj: bpy.types.Object
 
-    check_modifier = 0
     check_sharp = 0
 
     for obj in selobj:
 
         bpy.data.meshes[obj.to_mesh().name].use_auto_smooth = True
-        for mod in obj.modifiers:
-            #检查有没有修改器
-            if mod.name == btnbevelmod:
-                check_modifier += 1
-                continue
-        #如果没有修改器
+        #如果没有bevel修改器
+        if btnbevelmod not in obj.modifiers:
+
+            if 'sharp_edge' in obj.data.attributes:
+                check_sharp = 1
+                #如果有倒角权重
+                if 'bevel_weight_edge' not in obj.data.attributes:
+                    bevel_weight_attr = obj.data.attributes.new("bevel_weight_edge", "FLOAT", "EDGE")
+                    for idx, e in enumerate(obj.data.edges):
+                        bevel_weight_attr.data[idx].value = 1.0 if e.use_edge_sharp else 0.0
             else:
-                check_modifier == 0
-                #如果有硬边
-                if 'sharp_edge' in obj.data.attributes:
-                    check_sharp += 1
-                    #如果有倒角权重
-                    if 'bevel_weight_edge' not in obj.data.attributes:
-                        bevel_weight_attr = obj.data.attributes.new("bevel_weight_edge", "FLOAT", "EDGE")
-                        for idx, e in enumerate(obj.data.edges):
-                            bevel_weight_attr.data[idx].value = 1.0 if e.use_edge_sharp else 0.0
+                check_sharp = 0
 
-                #如果有无硬边
-                else:
-                    check_sharp += 0
-
-    
-
-
-        print(check_modifier)
-
-        #根据是否有sharp edge信息信息选择Bevel修改器类型
-        if check_modifier == 0:
-            print(check_sharp)
+            #print(check_sharp)
             if check_sharp == 1:
                 bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
                 bevelmod.limit_method = 'WEIGHT'
@@ -151,7 +135,7 @@ def add_bevel_modifier(selobj):
                 bevelmod.segments = 1
                 bevelmod.profile = 0.7
                 bevelmod.face_strength_mode = 'FSTR_ALL'
-                continue
+                
             elif check_sharp == 0: 
                 bevelmod = obj.modifiers.new(name=btnbevelmod, type='BEVEL')
                 bevelmod.limit_method = 'ANGLE' 
@@ -164,13 +148,14 @@ def add_bevel_modifier(selobj):
                 bevelmod.segments = 1
                 bevelmod.profile = 0.7
                 bevelmod.face_strength_mode = 'FSTR_ALL'
-                continue
+                
+            continue
 
 
 #添加DataTransfer修改器 
 def add_datatransfer_modifier(selobj):
     datatransfermod: bpy.types.Modifier
-    check_modifier = 0
+
 
     for obj in selobj:
         targobj = bpy.data.objects[btnmesh + obj.name]
@@ -192,7 +177,7 @@ def add_datatransfer_modifier(selobj):
 def add_triangulate_modifier(selobj):
     triangulatemod: bpy.types.Modifier
 
-    check_trimod = 0
+
 
     for obj in selobj:
         if btntrimod in obj.modifiers:
@@ -215,7 +200,7 @@ def add_triangulate_modifier(selobj):
 def add_weightednormal_modifier(selobj):
     weightpmod: bpy.types.Modifier
 
-    check_modifier = 0
+
 
     for obj in selobj:
         if btnweightpmod in obj.modifiers:
