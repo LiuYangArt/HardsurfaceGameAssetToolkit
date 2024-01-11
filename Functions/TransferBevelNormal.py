@@ -183,7 +183,7 @@ def add_triangulate_modifier(selobj):
         if btntrimod in obj.modifiers:
             triangulatemod = obj.modifiers[btntrimod]
             triangulatemod.keep_custom_normals = True
-            triangulatemod.min_vertices = 5
+            triangulatemod.min_vertices = 4
             triangulatemod.quad_method = 'SHORTEST_DIAGONAL'
     
     
