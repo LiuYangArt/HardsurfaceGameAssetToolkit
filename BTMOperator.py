@@ -378,6 +378,7 @@ class ReloadObjOperator(bpy.types.Operator):
 class GetVerColOperator(bpy.types.Operator):
     bl_idname = "object.getvercol"
     bl_label = "Get Vertex Color"
+    bl_description ="采样选中物体的顶点色"
 
     def execute(self, context):
         act_obj = bpy.context.active_object
@@ -394,6 +395,8 @@ class GetVerColOperator(bpy.types.Operator):
 class BatchSetVerColOperator(bpy.types.Operator):
     bl_idname = "object.setvercol"
     bl_label = "Batch Set Vertex Color"
+    bl_description ="为选中的物体赋予顶点色,用于烘焙ID Mask"
+
 
     def execute(self, context):
         obj: bpy.types.Object
@@ -467,7 +470,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         if coll:
             collobjs = coll.all_objects
             batchsetvertcolorattr(selobj)
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            #bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             renamemesh(self, collobjs, coll.name)
             transp_coll = create_transproxy_coll()
             make_transpproxy_object(transp_coll)
@@ -518,7 +521,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                         for mod in obj.modifiers:
                             if mod.name == tvcpmod:
                                 if mod.object is not None:
-                                    #mod.object.data.attributes.active_color = set_actcolor
+                                    mod.object.data.attributes.active_color = set_actcolor
                                     proxy_list.append(mod.object)
                                 else:
                                     print('modifier target object missing')
@@ -529,16 +532,25 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                 else:
                     print('is not mesh')
                     break
+            for tpobj in transp_coll.objects:
+                tpobj.hide_render = True
+                
+
             for proxy_obj in proxy_list:
                 #proxy_obj.data.attributes.active_color = set_actcolor
                 proxy_obj.select_set(True)
                 proxy_obj.hide_render = False
+
+                
+
             #bake vertex ao        
             bpy.ops.object.bake(type='AO', target='VERTEX_COLORS')
             #reset visibility
             transferproxycol_hide(transp_coll)
-            for obj in selobj:
-                obj.hide_render = False  
+            # for obj in selobj:
+            #     obj.hide_render = False  
+
+
         else:
             MessageBox(text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy", title="WARNING", icon='ERROR')
                 

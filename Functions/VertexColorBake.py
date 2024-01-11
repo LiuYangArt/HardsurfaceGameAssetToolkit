@@ -164,6 +164,7 @@ def make_transpproxy_object(transp_coll):
 
     for obj in selobj:
         if obj.type == 'MESH':
+            obj.hide_render = True
             if check_TRNSP_exist(transp_coll, obj) != 1:
                 #复制模型并修改命名
                 copy_obj = obj.copy()
@@ -187,6 +188,7 @@ def make_transpproxy_object(transp_coll):
     bpy.ops.object.select_all(action='DESELECT')
     for obj in copy_list:
         obj.select_set(True)
+        obj.hide_render = True
     bpy.context.view_layer.objects.active = bpy.data.objects[copy_obj.name]    
     bpy.ops.object.convert(target='MESH')
                 
