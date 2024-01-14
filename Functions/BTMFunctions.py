@@ -61,6 +61,16 @@ def cleanmatslot(self, collectionobject):
             num = num + 1
             print('remove material')
 
+def cleanuser(selobj):
+    for obj in selobj:
+        if obj.users > 1:
+            obj.data = obj.data.copy()
+
+        else:
+            # The object is already single user.
+            return
+
+
 def cleanaffix(self, actobj):
     isnumaffix = 0
     collname = None

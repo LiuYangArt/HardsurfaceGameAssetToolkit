@@ -1,6 +1,5 @@
 import bpy
 
-
 #定义命名
 tvcpcollname = "_TransferProxy"
 tvcproxy = "TRNSP_"
@@ -230,11 +229,12 @@ def add_proxydatatransfer_modifier(selobj):
 
 #导入预设Geometry Nodes
 def importgnwearmask():
+
     from bpy.utils import resource_path
     from pathlib import Path
 
     USER = Path(resource_path('USER'))
-    src = USER / "scripts/addons" / addondir / assetdir
+    src = USER / "scripts/addons/" / addondir / assetdir 
 
     file_path = src / "GN_WearMaskVertexColor.blend"
     inner_path = "NodeTree"
@@ -242,14 +242,20 @@ def importgnwearmask():
 
     for node in bpy.data.node_groups:
         if wearmaskgnode not in node.name:
-            bpy.ops.wm.append(
-                filepath = str(file_path / inner_path / gnode_name),
-                directory = str(file_path / inner_path),
-                filename = gnode_name
-            )
+            checkgn = 0
+            print ("have no gn")
         else:
+            checkgn = 1
+            print ("have gn")
             break
-    
+
+    if checkgn == 0:
+        bpy.ops.wm.append(
+            filepath = str(file_path / inner_path / gnode_name),
+            directory = str(file_path / inner_path),
+            filename = gnode_name
+            )
+        
 
 def add_gnwmvc_modifier(selobj):
     gnwmvcmod: bpy.types.Modifier

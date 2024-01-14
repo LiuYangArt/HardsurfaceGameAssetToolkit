@@ -209,6 +209,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
         if coll:
+            cleanuser(selobj)
             collobjs = coll.all_objects
             bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             renamemesh(self, collobjs, coll.name)
@@ -234,6 +235,7 @@ class HST_BatchBevel(bpy.types.Operator):
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
         if coll:
+            cleanuser(selobj)
             collobjs = coll.all_objects
             bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             renamemesh(self, collobjs, coll.name)
@@ -257,8 +259,8 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
         # length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
         # print(length_unit)
 
-        sel_objs = bpy.context.selected_objects
-        for obj in sel_objs:
+        selobjs = bpy.context.selected_objects
+        for obj in selobjs:
             for mod in obj.modifiers:
                 if mod.name == btnbevelmod:
                     mod.segments = props.set_bevel_segments
@@ -468,9 +470,11 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         #objects = selobj
 
         if coll:
+            cleanuser(selobj)
             collobjs = coll.all_objects
             batchsetvertcolorattr(selobj)
-            #bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            #bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
             renamemesh(self, collobjs, coll.name)
             transp_coll = create_transproxy_coll()
             make_transpproxy_object(transp_coll)
@@ -511,7 +515,8 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
 
         if coll:
             transp_coll = bpy.data.collections[tvcpcollname]
-            transferproxycol_show(transp_coll)   
+            transferproxycol_show(transp_coll)
+            cleanuser(selobj)   
             for obj in selobj:
                 if obj.type == 'MESH':
                     obj.data.attributes.active_color = set_actcolor
