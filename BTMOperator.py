@@ -512,8 +512,12 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         set_actcolor = named_color_attributes.get(vertcolorname)
         proxy_list = []
         coll = getCollection(actobj)
+        current_render_engine = bpy.context.scene.render.engine
+
+
 
         if coll:
+            bpy.context.scene.render.engine = 'CYCLES'
             transp_coll = bpy.data.collections[tvcpcollname]
             transferproxycol_show(transp_coll)
             cleanuser(selobj)   
@@ -554,7 +558,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             transferproxycol_hide(transp_coll)
             # for obj in selobj:
             #     obj.hide_render = False  
-
+            bpy.context.scene.render.engine = current_render_engine
 
         else:
             MessageBox(text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy", title="WARNING", icon='ERROR')
