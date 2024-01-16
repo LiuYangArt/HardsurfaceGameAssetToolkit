@@ -497,7 +497,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 class HST_BakeProxyVertexColorAO(bpy.types.Operator):
     bl_idname = "object.hst_bakeproxyvertcolrao"
     bl_label = "Bake Proxy VertexColor AO"
-    bl_description ="烘焙代理模型的AO，需要先建立Proxy"
+    bl_description ="烘焙代理模型的AO，需要先建立Proxy。场景中如存在其它可渲染的物体会对AO造成影响，建议手动关闭其它物体的可渲染开关。"
  
     
     def execute(self, context):
