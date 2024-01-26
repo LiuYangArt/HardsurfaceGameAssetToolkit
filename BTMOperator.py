@@ -208,6 +208,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         selobj = bpy.context.selected_objects
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
+        selobj=checkMeshes(objects=selobj)
         if coll:
             cleanuser(selobj)
             collobjs = coll.all_objects
@@ -234,6 +235,7 @@ class HST_BatchBevel(bpy.types.Operator):
         selobj = bpy.context.selected_objects
         actobj = bpy.context.active_object
         coll = getCollection(actobj)
+        selobj=checkMeshes(objects=selobj)
         if coll:
             cleanuser(selobj)
             collobjs = coll.all_objects
@@ -469,6 +471,9 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         coll = getCollection(actobj)
         #objects = selobj
 
+        selobj=checkMeshes(objects=selobj)
+
+
         if coll:
             cleanuser(selobj)
             collobjs = coll.all_objects
@@ -514,7 +519,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         coll = getCollection(actobj)
         current_render_engine = bpy.context.scene.render.engine
 
-
+        selobj=checkMeshes(objects=selobj)
 
         if coll:
             bpy.context.scene.render.engine = 'CYCLES'

@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+from typing import NamedTuple
 import mathutils
 
 import bmesh
@@ -9,10 +10,22 @@ import bpy
 from ..UIPanel import BTMPropGroup
 
 
+
 def MessageBox(text="", title="WARNING", icon='ERROR'):
     def draw(self, context):
         self.layout.label(text=text)
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
+
+def checkMeshes(objects):
+    meshes = []
+    for object in objects:
+        if object.type == "MESH":
+            meshes.append(object)
+            print(object.name + "is mesh")
+
+        else:
+            print(object.name + " is not mesh")
+    return meshes
 
 def editcleancollname(self, collname):
     if '.' in collname:

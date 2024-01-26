@@ -84,12 +84,12 @@ class BTMPanel(bpy.types.Panel):
         #分类规则有待调整
         #boxcol.operator('object.orgacoll', text="Organize Collections")
 
-        box2col.prop(bpy.data.brushes["TexDraw"], "color", text="Vertex Color")
-        ts = context.tool_settings
-        if ts.image_paint.palette:
-            box2col.template_palette(ts.image_paint, "palette", color=True)
-        box2col.operator('object.setvercol')
-        box2col.operator('object.getvercol')
+        # box2col.prop(bpy.data.brushes["TexDraw"], "color", text="Vertex Color")
+        # ts = context.tool_settings
+        # if ts.image_paint.palette:
+        #     box2col.template_palette(ts.image_paint, "palette", color=True)
+        # box2col.operator('object.setvercol')
+        # box2col.operator('object.getvercol')
 
         #buggy 后面找时间修
         #box3col.operator('object.exportfbx', text="Export Bake Files")
