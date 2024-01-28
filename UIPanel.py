@@ -1,8 +1,7 @@
 import bpy
-from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
-                       StringProperty)
+from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty)
 from bpy.types import PropertyGroup
-from bpy.utils import register_class, unregister_class
+# from bpy.utils import register_class, unregister_class
 
 class BTMPropGroup(PropertyGroup):
 
@@ -69,11 +68,11 @@ class BTMPanel(bpy.types.Panel):
         layout = self.layout
         box = layout.box()
         box1 = box.box()
-        box2 = box.box()
-        box2col = box2.column()
-        box3 = box.box()
-        box3col = box3.column()
-        boxrow = box1.row()
+        # box2 = box.box()
+        # box2col = box2.column()
+        # box3 = box.box()
+        # box3col = box3.column()
+        # boxrow = box1.row()
         boxcol = box1.column()
 
         boxcolrow = boxcol.row(align=True)

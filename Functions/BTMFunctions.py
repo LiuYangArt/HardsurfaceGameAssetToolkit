@@ -11,7 +11,7 @@ from ..UIPanel import BTMPropGroup
 
 
 
-def MessageBox(text="", title="WARNING", icon='ERROR'):
+def message_box(text="", title="WARNING", icon='ERROR'):
     def draw(self, context):
         self.layout.label(text=text)
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
@@ -252,7 +252,7 @@ def BTM_Export_Path():
             btm_export_path = bakedirpath
         btm_export_path = bakedirpath
     else:
-        MessageBox('Please Save File')
+        message_box('Please Save File')
     return btm_export_path
 
 def set_BTM_loader():
@@ -354,9 +354,9 @@ def btb_run_toolbag():
             print(marmoset_loader)
             subprocess.Popen([toolbag, marmoset_loader])
         else:
-            MessageBox("Export folder not defined!")
+            message_box("Export folder not defined!")
     else:
-        MessageBox("Path to Marmoset Toolbag 3 is not defined!")
+        message_box("Path to Marmoset Toolbag 3 is not defined!")
 
 #=========================================================================================
 

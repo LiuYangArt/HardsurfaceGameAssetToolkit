@@ -1,4 +1,5 @@
 import bpy
+from bpy.utils import register_class, unregister_class
 
 def message_box(text="", title="WARNING", icon="ERROR"):
     def draw(self, context):

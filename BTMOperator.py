@@ -8,10 +8,40 @@ from bpy.utils import register_class, unregister_class
 from .Functions.BTMFunctions import *
 from .Functions.VertexColorBake import *
 from .Functions.TransferBevelNormal import *
+from .Functions.CommonFunctions import (
+    set_visibility,
+    get_collection,
+    check_modifier_exist,
+    rename_meshes,
+    get_objects_with_modifier,
+    add_vertexcolor_attr,
+    set_active_vertexcolor_attr,
+    clean_user,
+    filter_type,
+    message_box,
+    import_node_group,
+    set_edge_bevel_weight_from_sharp,
+)
 
-from .UIPanel import BTMPropGroup
-from .BTMPreferences import BTM_AddonPreferences
+# from .UIPanel import BTMPropGroup
+# from .BTMPreferences import BTM_AddonPreferences
 
+# Constants
+VERTEXCOLOR = "VertColor"
+TRANSFER_COLLECTION = "_TransferNormal"
+TRANSFER_MESH_PREFIX = "Raw_"
+TRANSFER_PROXY_COLLECTION = "_TransferProxy"
+TRANSFERPROXY_PREFIX = "TRNSP_"
+BEVEL_MODIFIER = "HSTBevel"
+NORMALTRANSFER_MODIFIER = "HSTNormalTransfer"
+WEIGHTEDNORMAL_MODIFIER = "HSTWeightedNormal"
+TRIANGULAR_MODIFIER = "HSTTriangulate"
+VERTEXCOLORTRANSFER_MODIFIER = "HSTVertexColorTransfer"
+COLOR_TRANSFER_MODIFIER = "HSTVertexColorTransfer"
+COLOR_GEOMETRYNODE_MODIFIER = "HST_GNWMVertColor"
+WEARMASK_NODE = "GN_HSTWearmaskVertColor"
+ADDON_DIR = "HardsurfaceGameAssetToolkit"
+ASSET_DIR = "PresetFiles"
 
 
 class BTMLowOperator(bpy.types.Operator):
@@ -173,7 +203,7 @@ class ExportFBXOperator(bpy.types.Operator):
                 self.Set_Obj_Active(0, base_coll.all_objects)
             create_baker_file(base_colllist)
         else:
-            MessageBox(text='Please save blender file')
+            message_box(text='Please save blender file')
 
         return{'FINISHED'}
 
@@ -220,7 +250,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             add_triangulate_modifier(selobj)
             add_datatransfer_modifier(selobj)
         else:
-            MessageBox(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
+            message_box(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
         return{'FINISHED'}
     
 class HST_BatchBevel(bpy.types.Operator):
@@ -245,7 +275,7 @@ class HST_BatchBevel(bpy.types.Operator):
             add_weightednormal_modifier(selobj)
             add_triangulate_modifier(selobj)
         else:
-            MessageBox(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
+            message_box(text="There is no collection, please put the objects into the collection and continue", title="WARNING", icon='ERROR')
         return{'FINISHED'}
 
 
@@ -348,7 +378,7 @@ class MoiTransStepOperator(bpy.types.Operator, ImportHelper):
             p = subprocess.Popen([moi_path, sel_filepath])
             returncode = p.wait()
         else:
-            MessageBox("No moi software execution file selected")
+            message_box("No moi software execution file selected")
         if sel_filepath.endswith("step"):
             obj_filepath = sel_filepath.replace("step", "obj")
         elif sel_filepath.endswith("stp"):
@@ -466,34 +496,34 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     
     def execute(self, context):
         obj: bpy.types.Object
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        coll = getCollection(actobj)
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+        collection = get_collection(active_object)
         #objects = selobj
 
-        selobj=checkMeshes(objects=selobj)
+        selected_meshes=filter_type(selected_objects, type="MESH")
 
 
-        if coll:
-            cleanuser(selobj)
-            collobjs = coll.all_objects
-            batchsetvertcolorattr(selobj)
+        if collection is not None:
+            cleanuser(selected_objects)
+            collobjs = collection.all_objects
+            batchsetvertcolorattr(selected_objects)
             bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             #bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-            renamemesh(self, collobjs, coll.name)
+            renamemesh(self, collobjs, collection.name)
             transp_coll = create_transproxy_coll()
             make_transpproxy_object(transp_coll)
-            add_proxydatatransfer_modifier(selobj)
+            add_proxydatatransfer_modifier(selected_objects)
             importgnwearmask()
-            add_gnwmvc_modifier(selobj)
+            add_gnwmvc_modifier(selected_objects)
             bpy.ops.object.select_all(action='DESELECT')
             
             #还原选择状态
-            for obj in selobj:
+            for obj in selected_objects:
                 obj.select_set(True)
-            bpy.context.view_layer.objects.active = bpy.data.objects[actobj.name]
+            bpy.context.view_layer.objects.active = bpy.data.objects[active_object.name]
         else:
-            MessageBox(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中，注意需要在有Bevel修改器之后使用", title="WARNING", icon='ERROR')
+            message_box(text="Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中，注意需要在有Bevel修改器之后使用", title="WARNING", icon='ERROR')
         
         return{'FINISHED'}
 
@@ -502,73 +532,65 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 class HST_BakeProxyVertexColorAO(bpy.types.Operator):
     bl_idname = "object.hst_bakeproxyvertcolrao"
     bl_label = "Bake Proxy VertexColor AO"
-    bl_description ="烘焙代理模型的AO，需要先建立Proxy。场景中如存在其它可渲染的物体会对AO造成影响，建议手动关闭其它物体的可渲染开关。"
- 
-    
-    def execute(self, context):
+    bl_description = "烘焙代理模型的AO，需要先建立Proxy。场景中如存在其它可渲染的物体会对AO造成影响，建议手动关闭其它物体的可渲染开关。"
 
-        obj: bpy.types.Object
-        mod: bpy.types.Modifier
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        transp_coll: bpy.types.Collection
-        named_color_attributes = bpy.context.object.data.color_attributes
-        vertcolorname = "VertColor"
-        set_actcolor = named_color_attributes.get(vertcolorname)
-        proxy_list = []
-        coll = getCollection(actobj)
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+
         current_render_engine = bpy.context.scene.render.engine
 
-        selobj=checkMeshes(objects=selobj)
+        proxy_list = []
+        collection = get_collection(active_object)
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if collection is not None:
+            bpy.context.scene.render.engine = "CYCLES"
+            transfer_proxy_collection = bpy.data.collections[TRANSFER_PROXY_COLLECTION]
+            set_visibility(target_object=transfer_proxy_collection, hide=False)
 
-        if coll:
-            bpy.context.scene.render.engine = 'CYCLES'
-            transp_coll = bpy.data.collections[tvcpcollname]
-            transferproxycol_show(transp_coll)
-            cleanuser(selobj)   
-            for obj in selobj:
-                if obj.type == 'MESH':
-                    obj.data.attributes.active_color = set_actcolor
-                    obj.hide_render = True
-                    obj.select_set(False)
-                    if check_TRNSPmod_exist(selobj) != 0:
-                        for mod in obj.modifiers:
-                            if mod.name == tvcpmod:
-                                if mod.object is not None:
-                                    mod.object.data.attributes.active_color = set_actcolor
-                                    proxy_list.append(mod.object)
-                                else:
-                                    print('modifier target object missing')
-                                    break
-                    else:
-                        print('modifier missing')
-                        break
+            for object in selected_objects:
+                clean_user(object)
+                object.hide_render = True
+                object.select_set(False)
+
+            for mesh in selected_meshes:
+                bpy.context.view_layer.objects.active = mesh
+                if check_modifier_exist(mesh, COLOR_TRANSFER_MODIFIER) is True:
+                    # 检查是否有modifier，如果有则添加到proxy_list
+                    for modifier in mesh.modifiers:
+                        if modifier.name == COLOR_TRANSFER_MODIFIER:
+                            if modifier.object is not None:
+                                proxy_list.append(modifier.object)
+                            else:
+                                print("modifier target object missing")
+                                break
                 else:
-                    print('is not mesh')
+                    print("modifier missing")
                     break
-            for tpobj in transp_coll.objects:
-                tpobj.hide_render = True
-                
 
-            for proxy_obj in proxy_list:
-                #proxy_obj.data.attributes.active_color = set_actcolor
-                proxy_obj.select_set(True)
-                proxy_obj.hide_render = False
+            # 隐藏不必要烘焙的物体
+            for proxy_object in transfer_proxy_collection.objects:
+                proxy_object.hide_render = True
+            # 显示需要烘焙的物体
+            for proxy_object in proxy_list:
+                proxy_object.select_set(True)
+                proxy_object.hide_render = False
 
-                
-
-            #bake vertex ao        
-            bpy.ops.object.bake(type='AO', target='VERTEX_COLORS')
-            #reset visibility
-            transferproxycol_hide(transp_coll)
-            # for obj in selobj:
-            #     obj.hide_render = False  
+            # bake vertex ao
+            bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")
+            print("baked AO to vertexcolor")
+            # reset visibility
+            set_visibility(target_object=transfer_proxy_collection, hide=True)
             bpy.context.scene.render.engine = current_render_engine
 
         else:
-            MessageBox(text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy", title="WARNING", icon='ERROR')
-                
-        return{'FINISHED'}
+            message_box(
+                text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy",
+                title="WARNING",
+                icon="ERROR",
+            )
+
+        return {"FINISHED"}
 
 classes = (
     #HSTPanel,

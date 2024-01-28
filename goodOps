@@ -1,18 +1,20 @@
 import bpy
 
+from bpy.utils import register_class, unregister_class
+
 from .Functions.CommonFunctions import (
     set_visibility,
     get_collection,
     check_modifier_exist,
-    # rename_meshes,
-    # get_objects_with_modifier,
-    # add_vertexcolor_attr,
-    # set_active_vertexcolor_attr,
+    rename_meshes,
+    get_objects_with_modifier,
+    add_vertexcolor_attr,
+    set_active_vertexcolor_attr,
     clean_user,
     filter_type,
     message_box,
-    # import_node_group,
-    # set_edge_bevel_weight_from_sharp,
+    import_node_group,
+    set_edge_bevel_weight_from_sharp,
 )
 
 

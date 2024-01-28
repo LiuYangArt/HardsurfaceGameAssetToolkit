@@ -9,7 +9,7 @@ bl_info = {
     "version" : (0, 4, 4, 5),
     "location" : "",
     "warning" : "插件开发中，会带有一些临时内容以及变动",
-    "category" : ""
+    "category" : "Generic"
 }
 
 import bpy
@@ -20,10 +20,12 @@ from . import auto_load
 
 auto_load.init()
 
-def register():
+def register():   
+    
     auto_load.register()
-    bpy.types.Scene.btmprops = PointerProperty(type=BTMPropGroup)
+    # bpy.types.Scene.btmprops = PointerProperty(type=BTMPropGroup)
 
 def unregister():
+    
     auto_load.unregister()
-    del bpy.types.Scene.btmprops
+    # del bpy.types.Scene.btmprops

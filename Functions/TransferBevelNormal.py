@@ -1,12 +1,12 @@
-import os
-import subprocess
-import tempfile
-import mathutils
+# import os
+# import subprocess
+# import tempfile
+# import mathutils
 
-import bmesh
+# import bmesh
 import bpy
 
-from ..UIPanel import BTMPropGroup
+# from ..UIPanel import BTMPropGroup
 
 
 #定义命名
