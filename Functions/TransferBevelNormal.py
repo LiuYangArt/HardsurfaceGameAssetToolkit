@@ -224,30 +224,19 @@ def add_weightednormal_modifier(selobj):
 
 #清理HST模型 
 def clean_hstbtnobject():
-    obj: bpy.types.Object
-    mod: bpy.types.Modifier
-    copy_obj: bpy.types.Object
-    btn_coll: bpy.types.Collection
-    base_obj: bpy.types.Object
 
-    selobj = bpy.context.selected_objects
-    actobj = bpy.context.active_object
-    props = bpy.context.scene.btmprops
-    keep_list = []
+    selected_objects = bpy.context.selected_objects
+
     delete_list = []
-    deletemod_list = []
-    bevel_dict = {}
-    #btn_coll = bpy.data.collections[btncollname]
 
-    #if props.clean_all_mod == True:
-    for obj in selobj:
-        for mod in obj.modifiers:
+    for object in selected_objects:
+        for mod in object.modifiers:
             if mod.name == btntransferpmod and mod.object is not None:
                 delete_list.append(mod.object)
             if mod.name == tvcpmod and mod.object is not None:
                 delete_list.append(mod.object)
             if 'HST' in mod.name:
-                obj.modifiers.remove(mod)
+                object.modifiers.remove(mod)
 
     for delete_obj in delete_list:
         if delete_obj:

@@ -2,6 +2,7 @@ import bpy
 import subprocess
 import configparser
 from bpy_extras.io_utils import ImportHelper
+import bmesh
 
 
 # Functions
@@ -19,13 +20,13 @@ TRANSFER_COLLECTION = "_TransferNormal"
 TRANSFER_MESH_PREFIX = "Raw_"
 TRANSFER_PROXY_COLLECTION = "_TransferProxy"
 TRANSFERPROXY_PREFIX = "TRNSP_"
+MODIFIER_PREFIX = "HST"
 BEVEL_MODIFIER = "HSTBevel"
-NORMALTRANSFER_MODIFIER = "HSTNormalTransfer"
-WEIGHTEDNORMAL_MODIFIER = "HSTWeightedNormal"
-TRIANGULAR_MODIFIER = "HSTTriangulate"
-VERTEXCOLORTRANSFER_MODIFIER = "HSTVertexColorTransfer"
-COLOR_TRANSFER_MODIFIER = "HSTVertexColorTransfer"
-COLOR_GEOMETRYNODE_MODIFIER = "HST_GNWMVertColor"
+NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX+"NormalTransfer"
+WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX+"WeightedNormal"
+TRIANGULAR_MODIFIER = MODIFIER_PREFIX+"Triangulate"
+COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX+"VertexColorTransfer"
+COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX+"GNWearMask"
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
 ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
@@ -221,7 +222,20 @@ class HST_CleanHSTObjects(bpy.types.Operator):
     bl_description = "清理所选物体对应的HST修改器和传递模型"
 
     def execute(self, context):
-        clean_hstbtnobject()
+        selected_objects = bpy.context.selected_objects
+        delete_list = []
+        for object in selected_objects:
+            for mod in object.modifiers:
+                if mod.name == btntransferpmod and mod.object is not None:
+                    delete_list.append(mod.object)
+                if mod.name == tvcpmod and mod.object is not None:
+                    delete_list.append(mod.object)
+                if 'HST' in mod.name:
+                    object.modifiers.remove(mod)
+        for delete_obj in delete_list:
+            if delete_obj:
+                bpy.data.objects.remove(delete_obj)
+
         return {"FINISHED"}
 
 
