@@ -59,7 +59,7 @@ def add_gn_wearmask_modifier(mesh):
     if check_modifier is False:
         wearmask_modifier = mesh.modifiers.new(name=COLOR_GEOMETRYNODE_MODIFIER, type="NODES")
         wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
-        print(mesh.name+" add geometry node modifier" + wearmask_modifier.name)
+        print(mesh.name+" add geometry node modifier " + wearmask_modifier.name)
     else:
         wearmask_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
         wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]

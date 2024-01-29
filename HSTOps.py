@@ -1,8 +1,10 @@
+from os import removedirs
 import bpy
 from bpy.utils import resource_path
 from pathlib import Path
 
 from .Functions.BTMFunctions import *
+from .Functions.TransferBevelNormal import *
 from .Functions.VertexColorBake import *
 from .Functions.CommonFunctions import *
 
@@ -15,17 +17,100 @@ TRANSFER_PROXY_COLLECTION = "_TransferProxy"
 TRANSFERPROXY_PREFIX = "TRNSP_"
 MODIFIER_PREFIX = "HST"
 BEVEL_MODIFIER = "HSTBevel"
-NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX+"NormalTransfer"
-WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX+"WeightedNormal"
-TRIANGULAR_MODIFIER = MODIFIER_PREFIX+"Triangulate"
-COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX+"VertexColorTransfer"
-COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX+"GNWearMask"
+NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX + "NormalTransfer"
+WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX + "WeightedNormal"
+TRIANGULAR_MODIFIER = MODIFIER_PREFIX + "Triangulate"
+COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX + "VertexColorTransfer"
+COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
 ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
 USER = Path(resource_path("USER"))
 ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
 NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
+
+
+class HST_BevelTransferNormal(bpy.types.Operator):
+    bl_idname = "object.hstbeveltransfernormal"
+    bl_label = "Bevel And Transfer Normal"
+    bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
+
+    def execute(self, context):
+        obj: bpy.types.Object
+        bevelmod: bpy.types.BevelModifier
+
+        selobj = bpy.context.selected_objects
+        actobj = bpy.context.active_object
+        collection = getCollection(actobj)
+        selobj = checkMeshes(objects=selobj)
+        if collection is not None:
+            cleanuser(selobj)
+            collobjs = collection.all_objects
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            renamemesh(self, collobjs, collection.name)
+            base_coll = create_base_normal_coll()
+            move_backup_base_object(base_coll)
+            add_bevel_modifier(selobj)
+            add_triangulate_modifier(selobj)
+            add_datatransfer_modifier(selobj)
+        else:
+            message_box(
+                "There is no collection, please put the objects into the collection and continue",
+            )
+        return {"FINISHED"}
+
+
+class HST_BatchBevel(bpy.types.Operator):
+    bl_idname = "object.hstbevelmods"
+    bl_label = "Batch Add Bevel Mods"
+    bl_description = "批量添加Bevel和WeightedNormal"
+
+    def execute(self, context):
+        obj: bpy.types.Object
+        bevelmod: bpy.types.BevelModifier
+
+        selobj = bpy.context.selected_objects
+        actobj = bpy.context.active_object
+        collection = getCollection(actobj)
+        selobj = checkMeshes(objects=selobj)
+        if collection is not None:
+            cleanuser(selobj)
+            collobjs = collection.all_objects
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            renamemesh(self, collobjs, collection.name)
+            add_bevel_modifier(selobj)
+            add_weightednormal_modifier(selobj)
+            add_triangulate_modifier(selobj)
+        else:
+            message_box(
+                "There is no collection, please put the objects into the collection and continue",
+            )
+        return {"FINISHED"}
+
+
+class HST_SetBevelParameters_Operator(bpy.types.Operator):
+    bl_idname = "object.hstbevelsetparam"
+    bl_label = "Set HSTBevel Parameters"
+    bl_description = "修改HST Bevel修改器参数"
+
+    def execute(self, context):
+        props = context.scene.btmprops
+        # act_scene_name = bpy.context.object.users_scene[0].name
+        # length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
+        # print(length_unit)
+
+        selobjs = bpy.context.selected_objects
+        for obj in selobjs:
+            for mod in obj.modifiers:
+                if mod.name == btnbevelmod:
+                    mod.segments = props.set_bevel_segments
+                    mod.width = props.set_bevel_width
+
+                    # if length_unit == 'CENTIMETERS':
+                    #     mod.width = props.set_bevel_width*0.1
+                    # if length_unit == 'MILLIMETERS':
+                    #     mod.width = props.set_bevel_width*0.1
+        return {"FINISHED"}
 
 
 # Make Transfer VertexBakeProxy Operator
@@ -42,15 +127,16 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         active_object = bpy.context.active_object
 
         collection = get_collection(active_object)
+        collection_objects = collection.objects
         if collection is not None:
-            selected_meshes = filter_type(selected_objects, type="MESH")#筛选mesh
+            selected_meshes = filter_type(selected_objects, type="MESH")  # 筛选mesh
             import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
             for object in selected_objects:
                 clean_user(object)  # 清理multiuser
 
             proxy_object_list = []
             proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
-
+            rename_meshes(collection_objects,collection.name)  # 重命名mesh
             set_visibility(proxy_collection, True)
             for mesh in selected_meshes:
                 add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
@@ -153,15 +239,51 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             set_visibility(transfer_proxy_collection, False)
             bpy.context.scene.render.engine = current_render_engine
 
+
         else:
             message_box(
-                text="Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy",
+                "Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy",
             )
 
         return {"FINISHED"}
 
 
+class HST_CleanHSTObjects(bpy.types.Operator):
+    bl_idname = "object.cleanhstobject"
+    bl_label = "Clean HST Objects"
+    bl_description = "清理所选物体对应的HST修改器和传递模型"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        delete_list = []
+        selected_meshes = filter_type(selected_objects, type="MESH")
+        for mesh in selected_meshes:
+            for modifier in mesh.modifiers:
+                if (
+                    modifier.name == NORMALTRANSFER_MODIFIER
+                    and modifier.object is not None
+                ):
+                    delete_list.append(modifier.object)
+                if (
+                    modifier.name == COLOR_TRANSFER_MODIFIER
+                    and modifier.object is not None
+                ):
+                    delete_list.append(modifier.object)
+                if "HST" in modifier.name:
+                    mesh.modifiers.remove(modifier)
+        for delete_object in delete_list:
+            if delete_object is not None:
+                bpy.data.objects.remove(delete_object)
+        print("cleaned " + str(len(selected_meshes)) + " objects' HST modifiers， removed " + str(len(delete_list)) + " modifier objects")
+
+        return {"FINISHED"}
+
+
 classes = (
+    HST_BatchBevel,
+    HST_BevelTransferNormal,
+    HST_CleanHSTObjects,
+    HST_SetBevelParameters_Operator,
     HST_CreateTransferVertColorProxy,
     HST_BakeProxyVertexColorAO,
 )

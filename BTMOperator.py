@@ -50,7 +50,7 @@ class BTMLowOperator(bpy.types.Operator):
         collname = cleanaffix(self, actobj)
         cleanmatslot(self, coll.all_objects)
         collname = editcollandmat(self, is_low, is_high, collname, collobj)
-        renamemesh(self, list(collobj), collname)
+        rename_meshes(list(collobj), collname)
 
         return {"FINISHED"}
 
@@ -216,114 +216,7 @@ class OpenmMrmosetOperator(bpy.types.Operator):
 
 
 # =========================================================================================
-class HST_CleanHSTObjects(bpy.types.Operator):
-    bl_idname = "object.cleanhstobject"
-    bl_label = "Clean HST Objects"
-    bl_description = "清理所选物体对应的HST修改器和传递模型"
 
-    def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        delete_list = []
-        for object in selected_objects:
-            for mod in object.modifiers:
-                if mod.name == btntransferpmod and mod.object is not None:
-                    delete_list.append(mod.object)
-                if mod.name == tvcpmod and mod.object is not None:
-                    delete_list.append(mod.object)
-                if 'HST' in mod.name:
-                    object.modifiers.remove(mod)
-        for delete_obj in delete_list:
-            if delete_obj:
-                bpy.data.objects.remove(delete_obj)
-
-        return {"FINISHED"}
-
-
-class HST_BevelTransferNormal(bpy.types.Operator):
-    bl_idname = "object.hstbeveltransfernormal"
-    bl_label = "Bevel And Transfer Normal"
-    bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
-
-    def execute(self, context):
-        obj: bpy.types.Object
-        bevelmod: bpy.types.BevelModifier
-
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        coll = getCollection(actobj)
-        selobj = checkMeshes(objects=selobj)
-        if coll:
-            cleanuser(selobj)
-            collobjs = coll.all_objects
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            renamemesh(self, collobjs, coll.name)
-            base_coll = create_base_normal_coll()
-            move_backup_base_object(base_coll)
-            add_bevel_modifier(selobj)
-            add_triangulate_modifier(selobj)
-            add_datatransfer_modifier(selobj)
-        else:
-            message_box(
-                text="There is no collection, please put the objects into the collection and continue",
-                title="WARNING",
-                icon="ERROR",
-            )
-        return {"FINISHED"}
-
-
-class HST_BatchBevel(bpy.types.Operator):
-    bl_idname = "object.hstbevelmods"
-    bl_label = "Batch Add Bevel Mods"
-    bl_description = "批量添加Bevel和WeightedNormal"
-
-    def execute(self, context):
-        obj: bpy.types.Object
-        bevelmod: bpy.types.BevelModifier
-
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        coll = getCollection(actobj)
-        selobj = checkMeshes(objects=selobj)
-        if coll:
-            cleanuser(selobj)
-            collobjs = coll.all_objects
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            renamemesh(self, collobjs, coll.name)
-            add_bevel_modifier(selobj)
-            add_weightednormal_modifier(selobj)
-            add_triangulate_modifier(selobj)
-        else:
-            message_box(
-                text="There is no collection, please put the objects into the collection and continue",
-                title="WARNING",
-                icon="ERROR",
-            )
-        return {"FINISHED"}
-
-
-class HST_SetBevelParameters_Operator(bpy.types.Operator):
-    bl_idname = "object.hstbevelsetparam"
-    bl_label = "Set HSTBevel Parameters"
-    bl_description = "修改HST Bevel修改器参数"
-
-    def execute(self, context):
-        props = context.scene.btmprops
-        # act_scene_name = bpy.context.object.users_scene[0].name
-        # length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
-        # print(length_unit)
-
-        selobjs = bpy.context.selected_objects
-        for obj in selobjs:
-            for mod in obj.modifiers:
-                if mod.name == btnbevelmod:
-                    mod.segments = props.set_bevel_segments
-                    mod.width = props.set_bevel_width
-
-                    # if length_unit == 'CENTIMETERS':
-                    #     mod.width = props.set_bevel_width*0.1
-                    # if length_unit == 'MILLIMETERS':
-                    #     mod.width = props.set_bevel_width*0.1
-        return {"FINISHED"}
 
 
 class Clean_Vertex_Operator(bpy.types.Operator):
@@ -642,10 +535,10 @@ classes = (
     BatchSetVerColOperator,
     GetVerColOperator,
     TestButtonOperator,
-    HST_BatchBevel,
-    HST_BevelTransferNormal,
-    HST_CleanHSTObjects,
-    HST_SetBevelParameters_Operator,
+    # HST_BatchBevel,
+    # HST_BevelTransferNormal,
+    # HST_CleanHSTObjects,
+    # HST_SetBevelParameters_Operator,
     # HST_CreateTransferVertColorProxy,
     # HST_BakeProxyVertexColorAO,
 )

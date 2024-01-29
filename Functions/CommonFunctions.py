@@ -225,10 +225,10 @@ def import_node_group(file_path, node_name):
     for node in bpy.data.node_groups:#检查是否已经导入
         if node_name not in node.name:
             has_node = False
-            print("have no gn")
+            print("geomery node not exist,import")
         else:
             has_node = True
-            print("have gn")
+            print("geomery node exist,skip")
             break
 
     if has_node is False:#如果没有导入，导入
