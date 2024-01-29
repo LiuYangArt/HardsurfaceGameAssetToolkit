@@ -1,17 +1,18 @@
 import bpy
 from bpy.utils import register_class, unregister_class
 
+
 def message_box(text="", title="WARNING", icon="ERROR"):
     def draw(self, context):
         self.layout.label(text=text)
 
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 
+
 def rename_meshes(objects, name):
     for index, object in enumerate(objects):
         if object.type == "MESH":  # 检测对象是否为mesh
             object.name = name + "_" + str(index + 1).zfill(2)
-    
 
 
 def filter_type(target_object: bpy.types.Object, type: str):
@@ -77,13 +78,14 @@ def get_objects_with_modifier(target_objects: bpy.types.Object, modifier_name: s
 
 def cleanup_vertexcolor_attr(target_object: bpy.types.Object):
     """为选中的物体删除所有顶点色属性"""
-    success=False
+    success = False
     if target_object.data.color_attributes:
         colorAtrributes = target_object.data.color_attributes
         for r in range(len(colorAtrributes) - 1, -1, -1):
             colorAtrributes.remove(colorAtrributes[r])
-        success=True
+        success = True
     return success
+
 
 def add_vertexcolor_attr(target_object: bpy.types.Object, vertexcolor_name: str):
     """Add vertex color attribute to mesh object"""
@@ -99,6 +101,7 @@ def add_vertexcolor_attr(target_object: bpy.types.Object, vertexcolor_name: str)
     else:
         print(target_object + " is not mesh object")
     return color_atrribute
+
 
 def set_active_vertexcolor_attr(vertexcolor_name: str):
     context = bpy.context
@@ -137,8 +140,9 @@ def import_node_group(file_path, node_name):
         )
     return has_node
 
-def set_edge_bevel_weight_from_sharp(target_object:bpy.types.Object):
-    has_sharp:bool = False
+
+def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object):
+    has_sharp: bool = False
     if "sharp_edge" in target_object.data.attributes:
         has_sharp = True
         # 如果有倒角权重

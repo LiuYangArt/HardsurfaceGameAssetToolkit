@@ -1,13 +1,13 @@
 import os
 import subprocess
 import tempfile
-from typing import NamedTuple
+# from typing import NamedTuple
 import mathutils
 
-import bmesh
+# import bmesh
 import bpy
 
-from ..UIPanel import BTMPropGroup
+# from ..UIPanel import BTMPropGroup
 
 
 

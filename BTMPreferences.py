@@ -1,13 +1,16 @@
 import bpy
-from bpy.props import (BoolProperty, CollectionProperty, EnumProperty,
-                       FloatProperty, IntProperty, PointerProperty,
-                       StringProperty)
+
+# from bpy.props import (BoolProperty, CollectionProperty, EnumProperty,
+#                        FloatProperty, IntProperty, PointerProperty,
+#                        StringProperty)
 from bpy.types import AddonPreferences, PropertyGroup
-from bpy.utils import register_class, unregister_class
+
+# from bpy.utils import register_class, unregister_class
 
 
 class BTM_AddonPreferences(AddonPreferences):
     bl_idname = __package__
+
 
 """     toolbag_app_path: StringProperty(
         name="Marmoset Path",
@@ -40,15 +43,15 @@ class BTM_AddonPreferences(AddonPreferences):
  """
 
 
-        # box = col.box()
-        # col = box.column(align=True)
+# box = col.box()
+# col = box.column(align=True)
 
 
-    # def invoke(self, context, event):
-    #     return context.window_manager.invoke_confirm(self, event)
+# def invoke(self, context, event):
+#     return context.window_manager.invoke_confirm(self, event)
 
 
-classes = (BTM_AddonPreferences)
+classes = BTM_AddonPreferences
 
 """ def register():
     global classes
