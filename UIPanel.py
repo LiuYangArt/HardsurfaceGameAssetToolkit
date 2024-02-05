@@ -129,6 +129,11 @@ class HSTPanel(bpy.types.Panel):
         boxcol4.label(text="Utilities")
         boxcol4.operator("object.cleanhstobject", text="Clean HST Object")
         boxcol4.operator("object.cleanvert", text="Clean Vert")
+        boxcol4.operator("object.cleanupspaceclaimcadmesh", text="Clean CAD Mesh")
+        boxcol4.operator("object.makeswatchuv", text="Make Swatch UV")
+        boxcol4.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
+        
+        
 
 
 classes = (HSTPanel, BTMPanel, BTMPropGroup, BTMCollection)

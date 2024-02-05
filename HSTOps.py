@@ -133,14 +133,13 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
             for object in selected_objects:
                 clean_user(object)  # 清理multiuser
-
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             proxy_object_list = []
             proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
             rename_meshes(collection_objects,collection.name)  # 重命名mesh
             set_visibility(proxy_collection, True)
             for mesh in selected_meshes:
                 add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
-                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
                 # 清理修改器
                 remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)  # 清理modifier
                 # 清理modifier的对象

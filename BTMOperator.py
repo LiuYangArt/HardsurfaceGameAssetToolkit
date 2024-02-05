@@ -219,50 +219,7 @@ class OpenmMrmosetOperator(bpy.types.Operator):
 
 
 
-class Clean_Vertex_Operator(bpy.types.Operator):
-    bl_idname = "object.cleanvert"
-    bl_label = "clean vert"
-    bl_description = "清理模型直线中的孤立顶点"
 
-    def execute(self, context):
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_mode(type="VERT")
-        bpy.ops.mesh.select_all(action="DESELECT")
-
-        for o in selobj:
-            along_vert_list = []
-            mismatch_vert_list = []
-
-            avc = []
-            mvc = []
-            mfc = []
-
-            mesh = o.data
-            bm = bmesh.from_edit_mesh(mesh)
-
-            bm.verts.ensure_lookup_table()
-
-            along_vert_cand = [
-                v for v in bm.verts if v.hide == False and len(v.link_edges) == 2
-            ]
-
-            for v in along_vert_cand:
-                along_vert_list.append(v)
-                avc.append(v.index)
-
-            bmesh.ops.dissolve_verts(
-                bm, verts=along_vert_list, use_face_split=False, use_boundary_tear=False
-            )
-            bmesh.update_edit_mesh(mesh)
-
-            bm.free()
-
-            bpy.ops.object.mode_set(mode="OBJECT")
-
-        return {"FINISHED"}
 
 
 class MoiTransStepOperator(bpy.types.Operator, ImportHelper):
@@ -529,7 +486,7 @@ classes = (
     OrgaCollOperator,
     ExportFBXOperator,
     OpenmMrmosetOperator,
-    Clean_Vertex_Operator,
+
     MoiTransStepOperator,
     ReloadObjOperator,
     BatchSetVerColOperator,
