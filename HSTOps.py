@@ -1,3 +1,4 @@
+from ast import Attribute
 from os import removedirs
 import bpy
 from bpy.utils import resource_path
@@ -10,7 +11,7 @@ from .Functions.CommonFunctions import *
 
 
 # Constants
-VERTEXCOLOR = "VertColor"
+VERTEXCOLOR = "WearMask"
 TRANSFER_COLLECTION = "_TransferNormal"
 TRANSFER_MESH_PREFIX = "Raw_"
 TRANSFER_PROXY_COLLECTION = "_TransferProxy"
@@ -94,22 +95,26 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
     bl_description = "修改HST Bevel修改器参数"
 
     def execute(self, context):
-        props = context.scene.btmprops
-        # act_scene_name = bpy.context.object.users_scene[0].name
-        # length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
-        # print(length_unit)
+        properties = context.scene.btmprops
 
-        selobjs = bpy.context.selected_objects
-        for obj in selobjs:
-            for mod in obj.modifiers:
-                if mod.name == btnbevelmod:
-                    mod.segments = props.set_bevel_segments
-                    mod.width = props.set_bevel_width
+        selected_objects = bpy.context.selected_objects
+        # 获取当前场景的单位
+        act_scene_name = bpy.context.object.users_scene[0].name
+        length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
+        # 根据单位设置bevel宽度scale
+        if length_unit == "METERS":
+            bevel_width = properties.set_bevel_width * 0.001
+        elif length_unit == "CENTIMETERS":
+            bevel_width = properties.set_bevel_width * 0.01
+        elif length_unit == "MILLIMETERS":
+            bevel_width = properties.set_bevel_width * 0.1
 
-                    # if length_unit == 'CENTIMETERS':
-                    #     mod.width = props.set_bevel_width*0.1
-                    # if length_unit == 'MILLIMETERS':
-                    #     mod.width = props.set_bevel_width*0.1
+        for object in selected_objects:
+            for modifier in object.modifiers:
+                if modifier.name == btnbevelmod:
+                    modifier.segments = properties.set_bevel_segments
+                    modifier.width = bevel_width
+
         return {"FINISHED"}
 
 
@@ -130,33 +135,39 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         collection_objects = collection.objects
         if collection is not None:
             selected_meshes = filter_type(selected_objects, type="MESH")  # 筛选mesh
-            import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
+            # 导入wearmask nodegroup
+            import_node_group(NODE_FILE_PATH, WEARMASK_NODE)
             for object in selected_objects:
                 clean_user(object)  # 清理multiuser
             bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             proxy_object_list = []
             proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
-            rename_meshes(collection_objects,collection.name)  # 重命名mesh
+            rename_meshes(collection_objects, collection.name)  # 重命名mesh
             set_visibility(proxy_collection, True)
             for mesh in selected_meshes:
                 add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
-                # 清理修改器
                 remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)  # 清理modifier
-                # 清理modifier的对象
                 modifier_object = remove_modifier(
                     mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
-                )
+                )  # 清理modifier的对象
                 if (
                     modifier_object is not None
                     and modifier_object.parent.name == mesh.name
                 ):
                     bpy.data.objects.remove(modifier_object)
-
                 proxy_object_list.append(
                     make_transfer_proxy_mesh(
                         mesh, TRANSFERPROXY_PREFIX, proxy_collection
                     )
                 )  # 建立proxy模型
+
+                # 添加attribute __mod_weightednormals_faceweight  Face | INTEGER ，默认值为0，以便在没有bevel修改器的物体上得到效果正确的wearmask g通道
+                if mesh.data.attributes.find("__mod_weightednormals_faceweight") == -1:
+                    mesh.data.attributes.new("__mod_weightednormals_faceweight", "INT", "FACE")
+                    mesh.data.attributes["__mod_weightednormals_faceweight"].data.foreach_set(
+                        "value", [0] * len(mesh.data.polygons)
+                    )
+                    mesh.data.update()
 
                 # 添加modifier
                 add_color_transfer_modifier(mesh)
@@ -169,8 +180,8 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
                 cleanup_color_attributes(proxy_object)
                 add_vertexcolor_attribute(proxy_object, VERTEXCOLOR)
 
+            # 还原状态
             set_visibility(proxy_collection, False)
-            # 还原选择状态
             for object in selected_objects:
                 object.select_set(True)
             bpy.context.view_layer.objects.active = bpy.data.objects[active_object.name]
@@ -238,7 +249,6 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             set_visibility(transfer_proxy_collection, False)
             bpy.context.scene.render.engine = current_render_engine
 
-
         else:
             message_box(
                 "Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy",
@@ -273,7 +283,13 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         for delete_object in delete_list:
             if delete_object is not None:
                 bpy.data.objects.remove(delete_object)
-        print("cleaned " + str(len(selected_meshes)) + " objects' HST modifiers， removed " + str(len(delete_list)) + " modifier objects")
+        print(
+            "cleaned "
+            + str(len(selected_meshes))
+            + " objects' HST modifiers， removed "
+            + str(len(delete_list))
+            + " modifier objects"
+        )
 
         return {"FINISHED"}
 

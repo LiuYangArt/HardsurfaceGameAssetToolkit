@@ -6,7 +6,7 @@ bl_info = {
     "author": "Akari,LiuYang",
     "description": "",
     "blender": (4, 0, 0),
-    "version": (0, 4, 4, 5),
+    "version": (0, 5, 0),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",

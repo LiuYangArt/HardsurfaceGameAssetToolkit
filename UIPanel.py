@@ -24,7 +24,7 @@ class BTMPropGroup(PropertyGroup):
     )
 
     set_bevel_width: FloatProperty(
-        description="设置  HSTBevel 宽度", default=0.01, min=0.0, max=1.0
+        description="设置  HSTBevel 宽度", default=0.5, min=0.0, max=10.0
     )
 
     set_bevel_segments: IntProperty(
@@ -102,6 +102,8 @@ class HSTPanel(bpy.types.Panel):
         boxcol2 = box.column()
         boxcol3 = box.column()
         boxcol4 = box.column()
+        boxcol5 = box.column()
+        boxcol6 = box.column()
 
         # boxcol1.operator('object.moitransfile', text="Use Moi Import")
         # boxcol1.operator('object.reloadobj', text="Reload Object")
@@ -112,7 +114,7 @@ class HSTPanel(bpy.types.Panel):
             "object.hstbeveltransfernormal", text="Bevel & Transfer Normal"
         )
 
-        boxcol2.label(text="Set HSTBevel Parameters")
+        # boxcol2.label(text="Set HSTBevel Parameters")
         boxcol2row = boxcol2.row(align=True)
         # boxcol2row.operator('object.lessbevel', text='Less Bevel')
         # boxcol2row.operator('object.addbevel', text='Add Bevel')
@@ -126,13 +128,20 @@ class HSTPanel(bpy.types.Panel):
         )
         boxcol3.operator("object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO")
 
-        boxcol4.label(text="Utilities")
+        # boxcol4.label(text="Utilities")
         boxcol4.operator("object.cleanhstobject", text="Clean HST Object")
-        boxcol4.operator("object.cleanvert", text="Clean Vert")
-        boxcol4.operator("object.cleanupspaceclaimcadmesh", text="Clean CAD Mesh")
-        boxcol4.operator("object.makeswatchuv", text="Make Swatch UV")
-        boxcol4.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
+
+        boxcol5.label(text="Workflow")
+        boxcol5.operator("object.setuplookdevenv", text="LookDev HDR Setup")
+        boxcol5.operator("object.prepspaceclaimcadmesh", text="Prepare CAD Mesh")
+        boxcol5.operator("object.swatchmatinit", text="Swatch Mat Setup")
+        boxcol5.operator("object.addsnapsocket", text="Add Snap Socket")
         
+        boxcol6.label(text="Utilities")
+        boxcol6.operator("object.cleanvert", text="Clean Vert")
+        boxcol6.operator("object.cleanmultiuser", text="Clean Multi User")
+        boxcol6.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
+        # boxcol6.operator("object.makeswatchuv", text="Make Swatch UV")
         
 
 
