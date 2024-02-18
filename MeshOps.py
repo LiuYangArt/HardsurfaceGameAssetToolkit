@@ -1,4 +1,4 @@
-from audioop import add
+from email import message
 import bpy
 
 from .Functions.CommonFunctions import *
@@ -24,17 +24,25 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
         bpy.ops.object.mode_set(mode="OBJECT")
         # 清理multi user
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
 
-        meshes = filter_type(selected_objects, "MESH")
-        clean_mid_verts(meshes)
-        clean_loose_verts(meshes)
+        
+        clean_mid_verts(selected_meshes)
+        clean_loose_verts(selected_meshes)
 
-        for mesh in meshes:
+        for mesh in selected_meshes:
             mesh.select_set(True)
             # 处理uv layers
             has_uv = has_uv_attribute(mesh)
@@ -66,6 +74,14 @@ class MakeSwatchUVOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}        
+
         bpy.ops.object.mode_set(mode="OBJECT")
 
         # 清理multi user
@@ -74,9 +90,9 @@ class MakeSwatchUVOperator(bpy.types.Operator):
             object.select_set(False)
 
         # 获取所有选中的mesh
-        meshes = filter_type(selected_objects, "MESH")
+        
 
-        for mesh in meshes:
+        for mesh in selected_meshes:
             mesh.select_set(True)
             uv_swatch = add_uv_layers(mesh, uv_name=UV_SWATCH)
             uv_swatch.active = True
@@ -92,10 +108,16 @@ class CleanVertexOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
 
-        clean_mid_verts(meshes)
-        clean_loose_verts(meshes)
+        clean_mid_verts(selected_meshes)
+        clean_loose_verts(selected_meshes)
 
         return {"FINISHED"}
 
@@ -110,20 +132,26 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         MERGE_DISTANCE = 0.01
         DISSOLVE_ANGLE = 0.00174533
         selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
 
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+        
         bpy.ops.object.mode_set(mode="OBJECT")
         # 清理multi user
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
-        # 获取所有选中的mesh
-        meshes = filter_type(selected_objects, "MESH")
-        # 缝合边缘
-        merge_vertes_by_distance(meshes, merge_distance=MERGE_DISTANCE)
-        # 标记锐边
-        mark_sharp_edge_by_angle(meshes, sharp_angle=SHARP_ANGLE)
+
+        
+        merge_vertes_by_distance(selected_meshes, merge_distance=MERGE_DISTANCE)
+        mark_sharp_edge_by_angle(selected_meshes, sharp_angle=SHARP_ANGLE)
         # limited dissolve 清理三角面，变成ngon
-        for mesh in meshes:
+        for mesh in selected_meshes:
             mesh.select_set(True)
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
@@ -141,6 +169,12 @@ class CleanMultiUserOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            message_box(
+                "No selected object, please select objects and retry | "
+                + "没有选中物体，请选中物体后重试"
+            )
+            return {"CANCELLED"}
         for object in selected_objects:
             clean_user(object)
         return {"FINISHED"}
@@ -159,15 +193,22 @@ class AddSnapSocketOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         collection = selected_objects[0].users_collection[0]
 
+
         if bpy.context.mode == "EDIT_MESH":
-            print("in Edit Mode")
+            self.report({"INFO"}, "In edit mode, create socket from selected faces")
             rotation = get_selected_rotation_quat()
             rotation = rotate_quaternion(rotation, -90, "Y")
             bpy.ops.view3d.snap_cursor_to_selected()
             bpy.context.scene.cursor.rotation_mode = "QUATERNION"
             bpy.context.scene.cursor.rotation_quaternion = rotation
             bpy.ops.object.mode_set(mode="OBJECT")
-
+        else:
+            bpy.ops.view3d.snap_cursor_to_selected()
+            rotation = cursor.rotation_quaternion
+            rotation = rotate_quaternion(rotation, 90, "Y")
+            bpy.context.scene.cursor.rotation_mode = "QUATERNION"
+            bpy.context.scene.cursor.rotation_quaternion = rotation
+            self.report({"INFO"}, "In object mode, create socket from selected objects")
         # add empty, set name to SOCKET_XXX and location to cursor location
         socket_object = bpy.data.objects.new(name="SOCKET_", object_data=None)
         socket_object.location = cursor.location
@@ -175,9 +216,8 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.rotation_quaternion = cursor.rotation_quaternion
         socket_object.empty_display_type = "ARROWS"
         socket_object.empty_display_size = 0.5
-
-        if collection is not None:
-            collection.objects.link(socket_object)
+        collection.objects.link(socket_object)
+        
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
 
@@ -191,10 +231,17 @@ class SwatchMatInitOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
-            meshes = filter_type([object], "MESH")
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
@@ -208,7 +255,7 @@ class SwatchMatInitOperator(bpy.types.Operator):
         if scene_swatch_mat is None:  # import material if not exist
             scene_swatch_mat = import_material(PRESET_FILE_PATH, SWATCH_MATERIAL)
 
-        for mesh in meshes:
+        for mesh in selected_meshes:
             mesh.select_set(True)
             swatch_uv = check_uv_layer(mesh, UV_SWATCH)
             if swatch_uv is None:  # add uv layer if not exist

@@ -7,29 +7,29 @@ import bmesh
 
 # Functions
 from .Functions.BTMFunctions import *
-from .Functions.VertexColorBake import *
-from .Functions.TransferBevelNormal import *
+# from .Functions.VertexColorBake import *
+# from .Functions.TransferBevelNormal import *
 from .Functions.CommonFunctions import *
 
 # from .UIPanel import BTMPropGroup
 # from .BTMPreferences import BTM_AddonPreferences
 
 # Constants
-VERTEXCOLOR = "VertColor"
-TRANSFER_COLLECTION = "_TransferNormal"
-TRANSFER_MESH_PREFIX = "Raw_"
-TRANSFER_PROXY_COLLECTION = "_TransferProxy"
-TRANSFERPROXY_PREFIX = "TRNSP_"
-MODIFIER_PREFIX = "HST"
-BEVEL_MODIFIER = "HSTBevel"
-NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX+"NormalTransfer"
-WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX+"WeightedNormal"
-TRIANGULAR_MODIFIER = MODIFIER_PREFIX+"Triangulate"
-COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX+"VertexColorTransfer"
-COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX+"GNWearMask"
-WEARMASK_NODE = "GN_HSTWearmaskVertColor"
-ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
+# VERTEXCOLOR = "VertColor"
+# TRANSFER_COLLECTION = "_TransferNormal"
+# TRANSFER_MESH_PREFIX = "Raw_"
+# TRANSFER_PROXY_COLLECTION = "_TransferProxy"
+# TRANSFERPROXY_PREFIX = "TRNSP_"
+# MODIFIER_PREFIX = "HST"
+# BEVEL_MODIFIER = "HSTBevel"
+# NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX+"NormalTransfer"
+# WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX+"WeightedNormal"
+# TRIANGULAR_MODIFIER = MODIFIER_PREFIX+"Triangulate"
+# COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX+"VertexColorTransfer"
+# COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX+"GNWearMask"
+# WEARMASK_NODE = "GN_HSTWearmaskVertColor"
+# ADDON_DIR = "HardsurfaceGameAssetToolkit"
+# ASSET_DIR = "PresetFiles"
 
 
 class BTMLowOperator(bpy.types.Operator):

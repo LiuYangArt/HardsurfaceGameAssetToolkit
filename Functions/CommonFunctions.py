@@ -1,4 +1,5 @@
-import re
+from hmac import new
+import blend_render_info
 import bpy
 import bmesh
 
@@ -9,7 +10,7 @@ from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 """ 通用functions """
 
 
-def message_box(text="", title="WARNING", icon="ERROR"):
+def message_box(text="", title="WARNING", icon="ERROR") -> None:
     """弹出消息框"""
 
     def draw(self, context):
@@ -18,11 +19,12 @@ def message_box(text="", title="WARNING", icon="ERROR"):
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 
 
-def rename_meshes(objects, name):
+
+def rename_meshes(target_objects, new_name) -> None:
     """重命名mesh"""
-    for index, object in enumerate(objects):
+    for index, object in enumerate(target_objects):
         if object.type == "MESH":  # 检测对象是否为mesh
-            object.name = name + "_" + str(index + 1).zfill(2)
+            object.name = new_name + "_" + str(index + 1).zfill(2)
 
 
 def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object:
@@ -160,7 +162,9 @@ def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     return success
 
 
-def add_vertexcolor_attribute(target_object: bpy.types.Object, vertexcolor_name: str):
+def add_vertexcolor_attribute(
+    target_object: bpy.types.Object, vertexcolor_name: str
+) -> bpy.types.Object:
     """为选中的物体添加顶点色属性，返回顶点色属性"""
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
@@ -176,27 +180,25 @@ def add_vertexcolor_attribute(target_object: bpy.types.Object, vertexcolor_name:
     return color_atrribute
 
 
-def make_transfer_proxy_mesh(
-    object, proxy_prefix, proxy_collection
-) -> bpy.types.Object:
+def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
     """建立传递模型"""
 
-    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    object.hide_render = True
-
+    # bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    mesh.hide_render = True
+    mesh.select_set(False)
     # 检查是否存在传递模型
     proxy_mesh_exist = False
     for proxy_mesh in proxy_collection.all_objects:
-        if proxy_mesh.name == proxy_prefix + object.name:
+        if proxy_mesh.name == proxy_prefix + mesh.name:
             proxy_mesh_exist = True
             break
 
     if proxy_mesh_exist is False:
         # 复制模型并修改命名
-        proxy_mesh = object.copy()
-        proxy_mesh.data = object.data.copy()
-        proxy_mesh.name = proxy_prefix + object.name
-        proxy_mesh.parent = object
+        proxy_mesh = mesh.copy()
+        proxy_mesh.data = mesh.data.copy()
+        proxy_mesh.name = proxy_prefix + mesh.name
+        proxy_mesh.parent = mesh
 
         proxy_collection.objects.link(proxy_mesh)
 
@@ -217,8 +219,8 @@ def set_active_color_attribute(colorattribute_name: str) -> None:
     context.object.data.attributes.active_color = active_vertexcolor
 
 
-def import_node_group(file_path, node_name):
-    """ 从文件载入NodeGroup """
+def import_node_group(file_path, node_name) -> bpy.types.NodeGroup:
+    """从文件载入NodeGroup"""
 
     INNER_PATH = "NodeTree"
     node_exist = False
@@ -244,8 +246,7 @@ def import_node_group(file_path, node_name):
     return node_import
 
 
-
-def import_world(file_path, world_name):
+def import_world(file_path, world_name) -> bpy.types.World:
     """从文件载入World Shader"""
 
     INNER_PATH = "World"
@@ -266,11 +267,12 @@ def import_world(file_path, world_name):
         )
 
     for world in bpy.data.worlds:
-        if  world.name == world_name:
+        if world.name == world_name:
             world_import = world
             break
 
     return world_import
+
 
 def import_material(file_path, material_name) -> bool:
     """从文件载入Material"""
@@ -295,9 +297,8 @@ def import_material(file_path, material_name) -> bool:
         if mat.name == material_name:
             material_import = mat
             break
-        
-    return material_import
 
+    return material_import
 
 
 def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
@@ -339,12 +340,12 @@ def add_uv_layers(target_object: bpy.types.Object, uv_name: str) -> bpy.types.Ob
     return uv_layer
 
 
-def check_uv_layer(mesh, uv_name):
+def check_uv_layer(mesh, uv_name) -> bpy.types.Object:
     uv_layer = mesh.data.uv_layers.get(uv_name)
     return uv_layer
 
 
-def has_uv_attribute(mesh):
+def has_uv_attribute(mesh) -> bool:
     has_uv = False
     for attributes in mesh.data.attributes:
         if attributes.domain == "CORNER" and attributes.data_type == "FLOAT2":
@@ -366,7 +367,7 @@ def scale_uv(uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
         uv_layer.data[uv_index].uv = x, y
 
 
-def clean_lonely_verts(mesh):
+def clean_lonely_verts(mesh) -> None:
     """清理孤立顶点"""
     lonely_verts_list = []
 
@@ -385,7 +386,7 @@ def clean_lonely_verts(mesh):
     bm.free()
 
 
-def clean_mid_verts(meshes):
+def clean_mid_verts(meshes) -> None:
     """清理直线中的孤立顶点"""
     bm = bmesh.new()
     for mesh in meshes:
@@ -406,7 +407,7 @@ def clean_mid_verts(meshes):
     bm.free()
 
 
-def clean_loose_verts(meshes):
+def clean_loose_verts(meshes) -> None:
     """清理松散顶点"""
     bm = bmesh.new()
 
@@ -427,7 +428,7 @@ def clean_loose_verts(meshes):
     bm.free()
 
 
-def merge_vertes_by_distance(meshes, merge_distance=0.01):
+def merge_vertes_by_distance(meshes, merge_distance=0.01) -> None:
     """清理重复顶点"""
     bm = bmesh.new()
     for mesh in meshes:
@@ -440,7 +441,7 @@ def merge_vertes_by_distance(meshes, merge_distance=0.01):
     bm.free()
 
 
-def mark_sharp_edge_by_angle(meshes, sharp_angle=0.08):
+def mark_sharp_edge_by_angle(meshes, sharp_angle=0.08) -> None:
     """根据角度标记锐边"""
     bm = bmesh.new()
     for mesh in meshes:
@@ -513,16 +514,13 @@ def get_selected_rotation_quat() -> Quaternion:
     return rot
 
 
-def rotate_quaternion(quaternion, angle, axis) -> Quaternion:
+def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
     """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
     if axis == "X":
         axis = (1, 0, 0)
     elif axis == "Y":
         axis = (0, 1, 0)
     elif axis == "Z":
-        axis = (0, 0, 1)
-    else:
-        print("Invalid axis, use default axis: Z")
         axis = (0, 0, 1)
 
     angle = angle / 180 * 3.1415926
@@ -533,15 +531,15 @@ def rotate_quaternion(quaternion, angle, axis) -> Quaternion:
 
 
 def get_materials(target_object: bpy.types.Object) -> bpy.types.Material:
-    """获取所选物体的材质"""
+    """获取所选物体的材质列表"""
     materials = []
     for slot in target_object.material_slots:
         materials.append(slot.material)
     return materials
 
 
-def get_object_material(target_object, material_name: str):
-    """检查材质是否存在"""
+def get_object_material(target_object, material_name: str) -> bpy.types.Material:
+    """获取所选物体的材质"""
 
     material = None
     if target_object.material_slots is not None:
@@ -562,7 +560,8 @@ def get_material_color_texture(material) -> bpy.types.Image:
     return color_texture
 
 
-def get_scene_material(material_name):
+def get_scene_material(material_name) -> bpy.types.Material:
+    """获取场景中的材质"""
     material = None
     for mat in bpy.data.materials:
         if mat.name == material_name:
@@ -571,7 +570,8 @@ def get_scene_material(material_name):
     return material
 
 
-def find_scene_materials(material_name):
+def find_scene_materials(material_name) -> bpy.types.Material:
+    """获取场景中的材质"""
     material = None
     for mat in bpy.data.materials:
         if material_name in mat.name:
@@ -579,18 +579,19 @@ def find_scene_materials(material_name):
     return material
 
 
-def check_screen_area(area_type: str):
+def check_screen_area(area_type: str) -> bpy.types.Area:
+    """检查是否存在某种类型的screen area"""
     screen_area = None
     screen = bpy.context.window.screen
     for area in screen.areas:
         if area.type == area_type:
-            # print("has UV editor")
             screen_area = area
             break
     return screen_area
 
 
-def new_screen_area(area_type: str, direction: str = "VERTICAL"):
+def new_screen_area(area_type: str, direction: str = "VERTICAL") -> bpy.types.Area:
+    """创建新的screen area"""
     # Create a new area
     area_num = len(bpy.context.window.screen.areas)
     bpy.ops.screen.area_split(direction=direction)
@@ -600,6 +601,7 @@ def new_screen_area(area_type: str, direction: str = "VERTICAL"):
 
 
 def viewport_shading_mode(area_type: str, shading_mode: str):
+    """设置视口渲染模式"""
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:  # iterate through areas in current screen
             if area.type == area_type:
@@ -608,3 +610,62 @@ def viewport_shading_mode(area_type: str, shading_mode: str):
                 ) in area.spaces:  # iterate through spaces in current VIEW_3D area
                     if space.type == area_type:  # check if space is a 3D view
                         space.shading.type = shading_mode
+
+
+def apply_transfrom(object, location=True, rotation=True, scale=True):
+    """应用变换"""
+    matrix_basis = object.matrix_basis
+    matrix = Matrix()
+    loc, rot, scale = matrix_basis.decompose()
+
+    # rotation
+    translation = Matrix.Translation(loc)
+    # R = rot.to_matrix().to_4x4()
+    rotation = matrix_basis.to_3x3().normalized().to_4x4()
+    scale = Matrix.Diagonal(scale).to_4x4()
+
+    transform = [matrix, matrix, matrix]
+    basis = [translation, rotation, scale]
+
+    def swap(i):
+        transform[i], basis[i] = basis[i], transform[i]
+
+    if location:
+        swap(0)
+    if rotation:
+        swap(1)
+    if scale:
+        swap(2)
+
+    new_matrix = transform[0] @ transform[1] @ transform[2]
+    if hasattr(object.data, "transform"):
+        object.data.transform(new_matrix)
+    for child in object.children:
+        child.matrix_local = new_matrix @ child.matrix_local
+
+    object.matrix_basis = basis[0] @ basis[1] @ basis[2]
+
+
+def apply_modifiers(object: bpy.types.Object)->bpy.types.Object:
+    """应用所有修改器"""
+
+    object_transform = object.matrix_world.copy()
+    object_name = object.name
+    object_collection = object.users_collection[0]
+
+    deps_graph = bpy.context.view_layer.depsgraph
+    deps_graph.update()
+    object_evaluated = object.evaluated_get(deps_graph)
+    mesh_from_eval = bpy.data.meshes.new_from_object(object_evaluated, depsgraph=deps_graph)
+    
+    bpy.data.objects.remove(object, do_unlink=True)
+    new_object = bpy.data.objects.new(object_name, mesh_from_eval)
+    object_collection.objects.link(new_object)
+    new_object.name = object_name
+    new_object.matrix_world = object_transform
+    
+
+    return new_object
+
+
+        

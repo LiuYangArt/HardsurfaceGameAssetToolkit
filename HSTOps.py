@@ -1,12 +1,9 @@
-from ast import Attribute
-from os import removedirs
+from sre_constants import SUCCESS
 import bpy
 from bpy.utils import resource_path
 from pathlib import Path
 
-from .Functions.BTMFunctions import *
-from .Functions.TransferBevelNormal import *
-from .Functions.VertexColorBake import *
+from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
 
 
@@ -37,27 +34,55 @@ class HST_BevelTransferNormal(bpy.types.Operator):
     bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
 
     def execute(self, context):
-        obj: bpy.types.Object
-        bevelmod: bpy.types.BevelModifier
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+        collection = get_collection(active_object)
+        selected_meshes = filter_type(selected_objects, "MESH")
 
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        collection = getCollection(actobj)
-        selobj = checkMeshes(objects=selobj)
-        if collection is not None:
-            cleanuser(selobj)
-            collobjs = collection.all_objects
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            renamemesh(self, collobjs, collection.name)
-            base_coll = create_base_normal_coll()
-            move_backup_base_object(base_coll)
-            add_bevel_modifier(selobj)
-            add_triangulate_modifier(selobj)
-            add_datatransfer_modifier(selobj)
-        else:
+        if collection is None:
             message_box(
-                "There is no collection, please put the objects into the collection and continue",
+                "Not in collection, please put selected objects in collections and retry | "
+                + "所选物体需要在Collections中"
             )
+            return {"CANCELLED"}
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
+        collection_objects = collection.all_objects
+
+        for object in selected_objects:
+            clean_user(object)
+
+        apply_transfrom(object)
+
+        rename_meshes(collection_objects, collection.name)
+
+        transfer_collection = create_collection(TRANSFER_COLLECTION, "08")
+        set_visibility(transfer_collection, True)
+        transfer_object_list = []
+        for mesh in selected_meshes:
+            transfer_object_list.append(
+                make_transfer_proxy_mesh(
+                    mesh, TRANSFER_MESH_PREFIX, transfer_collection
+                )
+            )
+            add_bevel_modifier(mesh)
+            add_triangulate_modifier(mesh)
+            add_datatransfer_modifier(mesh)
+            mesh.select_set(True)
+
+        set_visibility(transfer_collection, False)
+        self.report(
+            {"INFO"},
+            "Added Bevel and Transfer Normal to "
+            + str(len(selected_meshes))
+            + " objects",
+        )
         return {"FINISHED"}
 
 
@@ -67,25 +92,46 @@ class HST_BatchBevel(bpy.types.Operator):
     bl_description = "批量添加Bevel和WeightedNormal"
 
     def execute(self, context):
-        obj: bpy.types.Object
-        bevelmod: bpy.types.BevelModifier
 
-        selobj = bpy.context.selected_objects
-        actobj = bpy.context.active_object
-        collection = getCollection(actobj)
-        selobj = checkMeshes(objects=selobj)
-        if collection is not None:
-            cleanuser(selobj)
-            collobjs = collection.all_objects
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            renamemesh(self, collobjs, collection.name)
-            add_bevel_modifier(selobj)
-            add_weightednormal_modifier(selobj)
-            add_triangulate_modifier(selobj)
-        else:
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+        collection = get_collection(active_object)
+        selected_meshes = filter_type(selected_objects, "MESH")
+
+        if collection is None:
             message_box(
-                "There is no collection, please put the objects into the collection and continue",
+                "Not in collection, please put selected objects in collections and retry | "
+                + "所选物体需要在Collections中"
             )
+            return {"CANCELLED"}
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
+        for object in selected_objects:
+            clean_user(object)
+            apply_transfrom(object)
+
+        collection_objects = collection.all_objects
+
+        rename_meshes(collection_objects, collection.name)
+
+        for mesh in selected_meshes:
+            add_bevel_modifier(mesh)
+            add_weightednormal_modifier(mesh)
+            add_triangulate_modifier(mesh)
+            mesh.select_set(True)
+
+        self.report(
+            {"INFO"},
+            "Added Bevel and WeightedNormal modifier to "
+            + str(len(selected_meshes))
+            + " objects",
+        )
         return {"FINISHED"}
 
 
@@ -96,11 +142,10 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
 
     def execute(self, context):
         properties = context.scene.btmprops
-
         selected_objects = bpy.context.selected_objects
         # 获取当前场景的单位
-        act_scene_name = bpy.context.object.users_scene[0].name
-        length_unit = bpy.data.scenes[act_scene_name].unit_settings.length_unit
+        current_scene = bpy.context.object.users_scene[0].name
+        length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
         # 根据单位设置bevel宽度scale
         if length_unit == "METERS":
             bevel_width = properties.set_bevel_width * 0.001
@@ -108,17 +153,30 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
             bevel_width = properties.set_bevel_width * 0.01
         elif length_unit == "MILLIMETERS":
             bevel_width = properties.set_bevel_width * 0.1
-
+        success_count = 0
         for object in selected_objects:
             for modifier in object.modifiers:
-                if modifier.name == btnbevelmod:
+                if modifier.name == BEVEL_MODIFIER:
                     modifier.segments = properties.set_bevel_segments
                     modifier.width = bevel_width
-
+                    success_count += 1
+                    continue
+        self.report(
+            {"INFO"},
+            "Set Bevel Modifier Parameters to "
+            + str(properties.set_bevel_segments)
+            + " segments and "
+            + str(properties.set_bevel_width)
+            + " "
+            + str(length_unit)
+            + " width"
+            + " for "
+            + str(success_count)
+            + " objects",
+        )
         return {"FINISHED"}
 
 
-# Make Transfer VertexBakeProxy Operator
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "object.hst_addtransvertcolorproxy"
     bl_label = "Make Transfer VertexColor Proxy"
@@ -130,70 +188,80 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         active_object = bpy.context.active_object
-
         collection = get_collection(active_object)
         collection_objects = collection.objects
-        if collection is not None:
-            selected_meshes = filter_type(selected_objects, type="MESH")  # 筛选mesh
-            # 导入wearmask nodegroup
-            import_node_group(NODE_FILE_PATH, WEARMASK_NODE)
-            for object in selected_objects:
-                clean_user(object)  # 清理multiuser
-            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-            proxy_object_list = []
-            proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
-            rename_meshes(collection_objects, collection.name)  # 重命名mesh
-            set_visibility(proxy_collection, True)
-            for mesh in selected_meshes:
-                add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
-                remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)  # 清理modifier
-                modifier_object = remove_modifier(
-                    mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
-                )  # 清理modifier的对象
-                if (
-                    modifier_object is not None
-                    and modifier_object.parent.name == mesh.name
-                ):
-                    bpy.data.objects.remove(modifier_object)
-                proxy_object_list.append(
-                    make_transfer_proxy_mesh(
-                        mesh, TRANSFERPROXY_PREFIX, proxy_collection
-                    )
-                )  # 建立proxy模型
+        selected_meshes = filter_type(selected_objects, type="MESH")
 
-                # 添加attribute __mod_weightednormals_faceweight  Face | INTEGER ，默认值为0，以便在没有bevel修改器的物体上得到效果正确的wearmask g通道
-                if mesh.data.attributes.find("__mod_weightednormals_faceweight") == -1:
-                    mesh.data.attributes.new("__mod_weightednormals_faceweight", "INT", "FACE")
-                    mesh.data.attributes["__mod_weightednormals_faceweight"].data.foreach_set(
-                        "value", [0] * len(mesh.data.polygons)
-                    )
-                    mesh.data.update()
-
-                # 添加modifier
-                add_color_transfer_modifier(mesh)
-                add_gn_wearmask_modifier(mesh)
-
-                mesh.select_set(False)
-
-            # 处理proxy模型
-            for proxy_object in proxy_object_list:
-                cleanup_color_attributes(proxy_object)
-                add_vertexcolor_attribute(proxy_object, VERTEXCOLOR)
-
-            # 还原状态
-            set_visibility(proxy_collection, False)
-            for object in selected_objects:
-                object.select_set(True)
-            bpy.context.view_layer.objects.active = bpy.data.objects[active_object.name]
-        else:
+        if collection is None:
             message_box(
-                "Not in collection, please put selected objects in collections and retry | 所选物体需要在Collections中，注意需要在有Bevel修改器之后使用",
+                "Not in collection, please put selected objects in collections and retry | "
+                + "所选物体需要在Collections中"
             )
+            return {"CANCELLED"}
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
+        import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
+        for object in selected_objects:
+            clean_user(object)  # 清理multiuser
+        apply_transfrom(object, location=True, rotation=True, scale=True)
+        proxy_object_list = []
+        proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
+        rename_meshes(collection_objects, collection.name)  # 重命名mesh
+        set_visibility(proxy_collection, True)
+        for mesh in selected_meshes:
+            add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
+            remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)  # 清理modifier
+            modifier_object = remove_modifier(
+                mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
+            )  # 清理modifier的对象
+            if modifier_object is not None and modifier_object.parent.name == mesh.name:
+                bpy.data.objects.remove(modifier_object)
+            proxy_object_list.append(
+                make_transfer_proxy_mesh(mesh, TRANSFERPROXY_PREFIX, proxy_collection)
+            )  # 建立proxy模型
+
+            # 添加attribute __mod_weightednormals_faceweight  Face | INTEGER ，默认值为0，以便在没有bevel修改器的物体上得到效果正确的wearmask g通道
+            if mesh.data.attributes.find("__mod_weightednormals_faceweight") == -1:
+                mesh.data.attributes.new(
+                    "__mod_weightednormals_faceweight", "INT", "FACE"
+                )
+                mesh.data.attributes[
+                    "__mod_weightednormals_faceweight"
+                ].data.foreach_set("value", [0] * len(mesh.data.polygons))
+                mesh.data.update()
+
+            # 添加modifier
+            add_color_transfer_modifier(mesh)
+            add_gn_wearmask_modifier(mesh)
+            mesh.select_set(False)
+            continue
+
+        # 处理proxy模型
+        for proxy_object in proxy_object_list:
+            cleanup_color_attributes(proxy_object)
+            add_vertexcolor_attribute(proxy_object, VERTEXCOLOR)
+
+        # 还原状态
+        set_visibility(proxy_collection, False)
+        for object in selected_objects:
+            object.select_set(True)
+        bpy.context.view_layer.objects.active = bpy.data.objects[active_object.name]
+        self.report(
+            {"INFO"},
+            "Created "
+            + str(len(selected_meshes))
+            + " transfer vertex color proxy objects",
+        )
 
         return {"FINISHED"}
 
 
-# 烘焙ProxyMesh的顶点色AO Operator
 class HST_BakeProxyVertexColorAO(bpy.types.Operator):
     bl_idname = "object.hst_bakeproxyvertcolrao"
     bl_label = "Bake Proxy VertexColor AO"
@@ -209,50 +277,58 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         collection = get_collection(active_object)
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if collection is not None:  # 检查是否在collection中
-            bpy.context.scene.render.engine = "CYCLES"
-            transfer_proxy_collection = bpy.data.collections[TRANSFER_PROXY_COLLECTION]
-            set_visibility(transfer_proxy_collection, True)
-
-            for object in selected_objects:
-                clean_user(object)
-                object.hide_render = True
-                object.select_set(False)
-
-            for mesh in selected_meshes:
-                bpy.context.view_layer.objects.active = mesh
-                if check_modifier_exist(mesh, COLOR_TRANSFER_MODIFIER) is True:
-                    # 检查是否有modifier，如果有则添加到proxy_list
-                    for modifier in mesh.modifiers:
-                        if modifier.name == COLOR_TRANSFER_MODIFIER:
-                            if modifier.object is not None:
-                                proxy_list.append(modifier.object)
-                            else:
-                                print("modifier target object missing")
-                                break
-                else:
-                    print("modifier missing")
-                    break
-
-            # 隐藏不必要烘焙的物体
-            for proxy_object in transfer_proxy_collection.objects:
-                proxy_object.hide_render = True
-            # 显示需要烘焙的物体，并设置为选中
-            for proxy_object in proxy_list:
-                proxy_object.select_set(True)
-                proxy_object.hide_render = False
-
-            # 烘焙AO到顶点色
-            bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")
-            print("baked AO to vertexcolor")
-            # 重置可见性和渲染引擎
-            set_visibility(transfer_proxy_collection, False)
-            bpy.context.scene.render.engine = current_render_engine
-
-        else:
+        if collection is None:
             message_box(
-                "Not in collection, please put selected objects in collections and create transfer proxy then retry | 所选物体需要在Collections中，并先建立TransferProxy",
+                "Not in collection, please put selected objects in collections and retry | "
+                + "所选物体需要在Collections中"
             )
+            return {"CANCELLED"}
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
+        bpy.context.scene.render.engine = "CYCLES"
+        transfer_proxy_collection = bpy.data.collections[TRANSFER_PROXY_COLLECTION]
+        set_visibility(transfer_proxy_collection, True)
+
+        for object in selected_objects:
+            clean_user(object)
+            object.hide_render = True
+            object.select_set(False)
+
+        for mesh in selected_meshes:
+            bpy.context.view_layer.objects.active = mesh
+            if check_modifier_exist(mesh, COLOR_TRANSFER_MODIFIER) is True:
+                # 检查是否有modifier，如果有则添加到proxy_list
+                for modifier in mesh.modifiers:
+                    if modifier.name == COLOR_TRANSFER_MODIFIER:
+                        if modifier.object is not None:
+                            proxy_list.append(modifier.object)
+                        else:
+                            print("modifier target object missing")
+                            break
+            else:
+                print("modifier missing")
+                break
+
+        # 隐藏不必要烘焙的物体
+        for proxy_object in transfer_proxy_collection.objects:
+            proxy_object.hide_render = True
+        # 显示需要烘焙的物体，并设置为选中
+        for proxy_object in proxy_list:
+            proxy_object.select_set(True)
+            proxy_object.hide_render = False
+
+        # 烘焙AO到顶点色
+        bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")
+        self.report({"INFO"}, "Baked " + str(len(proxy_list)) + " objects' AO to vertex color")
+        # 重置可见性和渲染引擎
+        set_visibility(transfer_proxy_collection, False)
+        bpy.context.scene.render.engine = current_render_engine
 
         return {"FINISHED"}
 
@@ -273,22 +349,27 @@ class HST_CleanHSTObjects(bpy.types.Operator):
                     and modifier.object is not None
                 ):
                     delete_list.append(modifier.object)
+
                 if (
                     modifier.name == COLOR_TRANSFER_MODIFIER
                     and modifier.object is not None
                 ):
                     delete_list.append(modifier.object)
+
                 if "HST" in modifier.name:
                     mesh.modifiers.remove(modifier)
+            mesh.select_set(False)
         for delete_object in delete_list:
             if delete_object is not None:
                 bpy.data.objects.remove(delete_object)
-        print(
-            "cleaned "
+
+        self.report(
+            {"INFO"},
+            "Cleaned "
             + str(len(selected_meshes))
             + " objects' HST modifiers， removed "
             + str(len(delete_list))
-            + " modifier objects"
+            + " modifier objects",
         )
 
         return {"FINISHED"}
