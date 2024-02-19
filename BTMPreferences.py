@@ -28,7 +28,7 @@ class BTM_AddonPreferences(AddonPreferences):
     def draw(self, context):
         layout: bpy.types.UILayout
         
-        props = context.scene.btmprops
+        props = context.scene.hst_params
         layout = self.layout
         col1 = layout.column(align=True)
         box1 = col1.box()

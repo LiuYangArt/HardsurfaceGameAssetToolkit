@@ -47,7 +47,7 @@ def editcleancollname(self, collname):
 
 
 def setcollcountname(self, collname):
-    countprop = bpy.context.scene.btmprops
+    countprop = bpy.context.scene.hst_params
     countcollname = collname + countprop.grouplist
     return countcollname
 
@@ -369,7 +369,7 @@ if os.path.exists(import_list):
 
 
 def btb_run_toolbag():
-    props = bpy.context.scene.btmprops
+    props = bpy.context.scene.hst_params
     toolbag = bpy.context.preferences.addons[
         "HardsurfaceGameAssetToolkit"
     ].preferences.toolbag_app_path

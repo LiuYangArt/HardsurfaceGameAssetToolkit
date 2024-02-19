@@ -2,7 +2,7 @@ import bpy
 import subprocess
 import configparser
 from bpy_extras.io_utils import ImportHelper
-import bmesh
+# import bmesh
 
 
 # Functions
@@ -189,7 +189,7 @@ class ExportFBXOperator(bpy.types.Operator):
         base_coll: bpy.types.Collection
         base_obj: bpy.types.Object
 
-        props = bpy.context.scene.btmprops
+        props = bpy.context.scene.hst_params
         filename = bpy.path.basename(bpy.data.filepath).split(".")[0]
 
         get_export_path = BTM_Export_Path()

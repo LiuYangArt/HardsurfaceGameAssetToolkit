@@ -1,6 +1,5 @@
 import bpy
 
-
 # 定义命名
 VERTEXCOLOR = "WearMask"
 TRANSFER_COLLECTION = "_TransferNormal"
@@ -21,7 +20,15 @@ ASSET_DIR = "PresetFiles"
 
 
 # 添加Bevel修改器
-def add_bevel_modifier(mesh):
+def add_bevel_modifier(mesh,width=0.5,segments=1,length_unit="CENTIMETERS"):
+    # 根据单位设置bevel宽度scale
+    match length_unit:
+        case "METERS":
+            bevel_width = width * 0.001
+        case "CENTIMETERS":
+            bevel_width = width * 0.01
+        case "MILLIMETERS":
+            bevel_width = width * 0.1
 
     check_sharp = False
     bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
@@ -54,11 +61,11 @@ def add_bevel_modifier(mesh):
             bevel_modifier.angle_limit = 0.523599
 
         bevel_modifier.offset_type = "WIDTH"
-        bevel_modifier.width = 0.005
+        bevel_modifier.width = bevel_width
         bevel_modifier.use_clamp_overlap = False
         bevel_modifier.harden_normals = True
         bevel_modifier.loop_slide = True
-        bevel_modifier.segments = 1
+        bevel_modifier.segments = segments
         bevel_modifier.profile = 0.7
         bevel_modifier.face_strength_mode = "FSTR_ALL"
 
@@ -130,11 +137,9 @@ def add_color_transfer_modifier(mesh):
         transfer_modifier.use_loop_data = True
         transfer_modifier.data_types_loops = {"COLOR_CORNER"}
         transfer_modifier.loop_mapping = "TOPOLOGY"
-        print(mesh.name + " add color transfer modifier,assign " + proxy_object.name)
     else:  # 如果有则使用原有的
         transfer_modifier = mesh.modifiers[VERTEXCOLORTRANSFER_MODIFIER]
         transfer_modifier.object = proxy_object
-        print(mesh.name + " use existing color transfer modifier")
 
 
 ##添加Geometry Nodes WearMask Modifier
@@ -153,10 +158,8 @@ def add_gn_wearmask_modifier(mesh):
             name=COLOR_GEOMETRYNODE_MODIFIER, type="NODES"
         )
         wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
-        print(mesh.name + " add geometry node modifier " + wearmask_modifier.name)
     else:
         wearmask_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
         wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
-        print(mesh.name + " use existing geometry node modifier")
 
 

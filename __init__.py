@@ -6,7 +6,7 @@ bl_info = {
     "author": "Akari,LiuYang",
     "description": "",
     "blender": (4, 0, 0),
-    "version": (0, 5, 0),
+    "version": (0, 5, 1),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",
@@ -14,7 +14,8 @@ bl_info = {
 
 import bpy
 from bpy.props import CollectionProperty, PointerProperty
-from .UIPanel import BTMCollection, BTMPropGroup
+# from .UIPanel import BTMCollection, BTMPropGroup
+from .UIPanel import UIParams
 
 from . import auto_load
 
@@ -23,9 +24,8 @@ auto_load.init()
 
 def register():
     auto_load.register()
-    bpy.types.Scene.btmprops = PointerProperty(type=BTMPropGroup)
-
+    bpy.types.Scene.hst_params = PointerProperty(type=UIParams)
 
 def unregister():
     auto_load.unregister()
-    del bpy.types.Scene.btmprops
+    del bpy.types.Scene.hst_params

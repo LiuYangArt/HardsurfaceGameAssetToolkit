@@ -1,5 +1,4 @@
-from hmac import new
-import blend_render_info
+from weakref import proxy
 import bpy
 import bmesh
 
@@ -17,7 +16,6 @@ def message_box(text="", title="WARNING", icon="ERROR") -> None:
         self.layout.label(text=text)
 
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
-
 
 
 def rename_meshes(target_objects, new_name) -> None:
@@ -91,11 +89,11 @@ def create_collection(
     return collection
 
 
-def clean_user(target_object: bpy.types.Object) -> bpy.types.Object:
+def clean_user(target_object: bpy.types.Object)->None:
     """如果所选object有多个user，转为single user"""
     if target_object.users > 1:
         target_object.data = target_object.data.copy()
-    return target_object
+
 
 
 def set_visibility(target_object: bpy.types.Object, visible=bool) -> bool:
@@ -126,12 +124,27 @@ def remove_modifier(
     modifier_object = None
     # 有 transfer修改器时
     for modifier in object.modifiers:
+        print(modifier_name)
+        print(modifier.name)
         if modifier.name == modifier_name:
+            print("has matched modifier")
             # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
             if has_subobject is True and modifier.object is not None:
-                # if modifier.object is not None:
                 modifier_object = modifier.object
-            object.modifiers.remove(modifier)
+                print("has modifier_object")
+                print(modifier_object)
+            # object.modifiers.remove(modifier)
+    print("modifier_object")
+    print(modifier_object)
+    print("object.name")
+    print(object.name)
+    # print("modifier_object.parent.name")
+    # print(modifier_object.parent.name)
+    # if modifier_object is not None:
+    #     print("remove modifier_object")
+    # if modifier_object is not None and modifier_object.parent.name == object.name:
+    #     print("remove modifier_object")
+    #     bpy.data.objects.remove(modifier_object)
 
     return modifier_object
 
@@ -154,7 +167,8 @@ def get_objects_with_modifier(
 def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     """为选中的物体删除所有顶点色属性"""
     success = False
-    if target_object.data.color_attributes:
+    
+    if target_object.data.color_attributes is not None:
         colorAtrributes = target_object.data.color_attributes
         for r in range(len(colorAtrributes) - 1, -1, -1):
             colorAtrributes.remove(colorAtrributes[r])
@@ -183,9 +197,6 @@ def add_vertexcolor_attribute(
 def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
     """建立传递模型"""
 
-    # bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-    mesh.hide_render = True
-    mesh.select_set(False)
     # 检查是否存在传递模型
     proxy_mesh_exist = False
     for proxy_mesh in proxy_collection.all_objects:
@@ -194,20 +205,19 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.
             break
 
     if proxy_mesh_exist is False:
-        # 复制模型并修改命名
+
         proxy_mesh = mesh.copy()
         proxy_mesh.data = mesh.data.copy()
         proxy_mesh.name = proxy_prefix + mesh.name
         proxy_mesh.parent = mesh
-
         proxy_collection.objects.link(proxy_mesh)
-
-        proxy_mesh.select_set(True)
         proxy_mesh.hide_render = True
 
-        bpy.context.view_layer.objects.active = bpy.data.objects[proxy_mesh.name]
-        bpy.ops.object.convert(target="MESH")  # 应用修改器
+        proxy_mesh=apply_modifiers(proxy_mesh)
 
+    proxy_mesh.hide_viewport = True
+    proxy_mesh.hide_render = True
+    proxy_mesh.select_set(False)
     return proxy_mesh
 
 
@@ -386,92 +396,88 @@ def clean_lonely_verts(mesh) -> None:
     bm.free()
 
 
-def clean_mid_verts(meshes) -> None:
+def clean_mid_verts(mesh) -> None:
     """清理直线中的孤立顶点"""
     bm = bmesh.new()
-    for mesh in meshes:
-        mesh = mesh.data
-        mid_verts_list = []
+    mesh = mesh.data
+    mid_verts_list = []
+    bm.from_mesh(mesh)
 
-        bm.from_mesh(mesh)
-        bm.verts.ensure_lookup_table()
-        for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
-            if vertex.hide is False and len(vertex.link_edges) == 2:
-                mid_verts_list.append(vertex)
-        bmesh.ops.dissolve_verts(
-            bm, verts=mid_verts_list, use_face_split=False, use_boundary_tear=False
-        )
-        bm.to_mesh(mesh)
-        mesh.update()
-        bm.clear()
+    bm.verts.ensure_lookup_table()
+    for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
+        if vertex.hide is False and len(vertex.link_edges) == 2:
+            mid_verts_list.append(vertex)
+    bmesh.ops.dissolve_verts(
+        bm, verts=mid_verts_list, use_face_split=False, use_boundary_tear=False
+    )
+
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.clear()
     bm.free()
 
 
-def clean_loose_verts(meshes) -> None:
+def clean_loose_verts(mesh) -> None:
     """清理松散顶点"""
     bm = bmesh.new()
+    mesh = mesh.data
+    bm.from_mesh(mesh)
+    # verts with no linked faces
+    verts = [v for v in bm.verts if not v.link_faces]
+    for vert in verts:
+        bm.verts.remove(vert)
 
-    for mesh in meshes:
-        mesh = mesh.data
-        bm.from_mesh(mesh)
-        # verts with no linked faces
-        verts = [v for v in bm.verts if not v.link_faces]
-
-        print(f"{mesh.name}: removed {len(verts)} verts")
-        # equiv of bmesh.ops.delete(bm, geom=verts, context='VERTS')
-        for vert in verts:
-            bm.verts.remove(vert)
-
-        bm.to_mesh(mesh)
-        mesh.update()
-        bm.clear()
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.clear()
     bm.free()
 
 
-def merge_vertes_by_distance(meshes, merge_distance=0.01) -> None:
+def merge_vertes_by_distance(mesh, merge_distance=0.01) -> None:
     """清理重复顶点"""
     bm = bmesh.new()
-    for mesh in meshes:
-        mesh = mesh.data
-        bm.from_mesh(mesh)
-        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
-        bm.to_mesh(mesh)
-        mesh.update()
-        bm.clear()
+    mesh = mesh.data
+    bm.from_mesh(mesh)
+
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
+
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.clear()
     bm.free()
 
 
-def mark_sharp_edge_by_angle(meshes, sharp_angle=0.08) -> None:
+def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
     """根据角度标记锐边"""
     bm = bmesh.new()
-    for mesh in meshes:
-        mesh = mesh.data
-        to_mark_sharp = []
-        has_sharp_edge = False
-        # get sharp edge index by angle
-        bm.from_mesh(mesh)
-        for edge in bm.edges:
-            if edge.calc_face_angle() >= sharp_angle:
-                to_mark_sharp.append(edge.index)
-        bm.to_mesh(mesh)
-        mesh.update()
-        bm.clear()
-        # add sharp edge attribute
-        for attributes in mesh.attributes:
-            if "sharp_edge" in attributes.name:
-                has_sharp_edge = True
-                break
-        # if no sharp edge attribute, add it
-        if has_sharp_edge is False:
-            mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
-        # mark sharp edge
-        for edge in mesh.edges:
-            if edge.index in to_mark_sharp:
-                edge.use_edge_sharp = True
-            else:
-                edge.use_edge_sharp = False
+    mesh = mesh.data
+    to_mark_sharp = []
+    has_sharp_edge = False
 
-        bm.free()
+    bm.from_mesh(mesh)
+
+    for edge in bm.edges:  # get sharp edge index by angle
+        if edge.calc_face_angle() >= sharp_angle:
+            to_mark_sharp.append(edge.index)
+
+    for attributes in mesh.attributes:  # add sharp edge attribute
+        if "sharp_edge" in attributes.name:
+            has_sharp_edge = True
+            break
+
+    if has_sharp_edge is False:  # if no sharp edge attribute, add it
+        mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
+
+    for edge in mesh.edges:  # mark sharp edge
+        if edge.index in to_mark_sharp:
+            edge.use_edge_sharp = True
+        else:
+            edge.use_edge_sharp = False
+
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.clear()
+    bm.free()
 
 
 # def get_selected_rotation_matrix():
@@ -496,42 +502,38 @@ def mark_sharp_edge_by_angle(meshes, sharp_angle=0.08) -> None:
 
 
 def get_selected_rotation_quat() -> Quaternion:
-    # 在编辑模式中获取选中元素的位置与旋转
+    """在编辑模式中获取选中元素的位置与旋转"""
+    scene = bpy.context.scene
+    orientation_slots = scene.transform_orientation_slots
 
     bpy.ops.transform.create_orientation(
         name="3Points", use_view=False, use=True, overwrite=True
     )
-
-    bpy.context.scene.transform_orientation_slots[0].custom_orientation.matrix.copy()
-
-    custom_matrix = bpy.context.scene.transform_orientation_slots[
-        0
-    ].custom_orientation.matrix.copy()
-
+    orientation_slots[0].custom_orientation.matrix.copy()
+    custom_matrix = orientation_slots[0].custom_orientation.matrix.copy()
     bpy.ops.transform.delete_orientation()
 
-    loc, rot, scale = custom_matrix.to_4x4().decompose()
-    return rot
-
+    loc, rotation, scale = custom_matrix.to_4x4().decompose()
+    return rotation
 
 def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
     """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
-    if axis == "X":
-        axis = (1, 0, 0)
-    elif axis == "Y":
-        axis = (0, 1, 0)
-    elif axis == "Z":
-        axis = (0, 0, 1)
+    match axis:
+        case "X":
+            axis = (1, 0, 0)
+        case "Y":
+            axis = (0, 1, 0)
+        case "Z":
+            axis = (0, 0, 1)
 
     angle = angle / 180 * 3.1415926
-
     rotation = Quaternion(axis, angle)
-
     return quaternion @ rotation
 
 
 def get_materials(target_object: bpy.types.Object) -> bpy.types.Material:
     """获取所选物体的材质列表"""
+
     materials = []
     for slot in target_object.material_slots:
         materials.append(slot.material)
@@ -552,6 +554,7 @@ def get_object_material(target_object, material_name: str) -> bpy.types.Material
 
 def get_material_color_texture(material) -> bpy.types.Image:
     """获取材质的颜色纹理"""
+
     color_texture = None
     for node in material.node_tree.nodes.node_tree.nodes:
         if node.type == "TEX_IMAGE":
@@ -562,6 +565,7 @@ def get_material_color_texture(material) -> bpy.types.Image:
 
 def get_scene_material(material_name) -> bpy.types.Material:
     """获取场景中的材质"""
+
     material = None
     for mat in bpy.data.materials:
         if mat.name == material_name:
@@ -571,7 +575,8 @@ def get_scene_material(material_name) -> bpy.types.Material:
 
 
 def find_scene_materials(material_name) -> bpy.types.Material:
-    """获取场景中的材质"""
+    """按名称关键字查找场景中的材质"""
+
     material = None
     for mat in bpy.data.materials:
         if material_name in mat.name:
@@ -581,6 +586,7 @@ def find_scene_materials(material_name) -> bpy.types.Material:
 
 def check_screen_area(area_type: str) -> bpy.types.Area:
     """检查是否存在某种类型的screen area"""
+
     screen_area = None
     screen = bpy.context.window.screen
     for area in screen.areas:
@@ -592,7 +598,7 @@ def check_screen_area(area_type: str) -> bpy.types.Area:
 
 def new_screen_area(area_type: str, direction: str = "VERTICAL") -> bpy.types.Area:
     """创建新的screen area"""
-    # Create a new area
+
     area_num = len(bpy.context.window.screen.areas)
     bpy.ops.screen.area_split(direction=direction)
     new_area = bpy.context.window.screen.areas[area_num]
@@ -614,13 +620,12 @@ def viewport_shading_mode(area_type: str, shading_mode: str):
 
 def apply_transfrom(object, location=True, rotation=True, scale=True):
     """应用变换"""
+
     matrix_basis = object.matrix_basis
     matrix = Matrix()
     loc, rot, scale = matrix_basis.decompose()
 
-    # rotation
     translation = Matrix.Translation(loc)
-    # R = rot.to_matrix().to_4x4()
     rotation = matrix_basis.to_3x3().normalized().to_4x4()
     scale = Matrix.Diagonal(scale).to_4x4()
 
@@ -646,26 +651,35 @@ def apply_transfrom(object, location=True, rotation=True, scale=True):
     object.matrix_basis = basis[0] @ basis[1] @ basis[2]
 
 
-def apply_modifiers(object: bpy.types.Object)->bpy.types.Object:
-    """应用所有修改器"""
+def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
+    """应用所有修改器，删除原mesh并替换为新mesh"""
 
     object_transform = object.matrix_world.copy()
     object_name = object.name
     object_collection = object.users_collection[0]
+    object_parent = object.parent
+    object_hide_viewport = object.hide_viewport
+    object_hide_render = object.hide_render
+    object_hide_select = object.hide_select
 
     deps_graph = bpy.context.view_layer.depsgraph
     deps_graph.update()
     object_evaluated = object.evaluated_get(deps_graph)
-    mesh_from_eval = bpy.data.meshes.new_from_object(object_evaluated, depsgraph=deps_graph)
-    
+    mesh_from_eval = bpy.data.meshes.new_from_object(
+        object_evaluated, depsgraph=deps_graph
+    )
+
+    object.data = mesh_from_eval
+
     bpy.data.objects.remove(object, do_unlink=True)
     new_object = bpy.data.objects.new(object_name, mesh_from_eval)
+
     object_collection.objects.link(new_object)
     new_object.name = object_name
     new_object.matrix_world = object_transform
-    
+    new_object.parent = object_parent
+    new_object.hide_viewport = object_hide_viewport
+    new_object.hide_render = object_hide_render
+    new_object.hide_select = object_hide_select
 
     return new_object
-
-
-        

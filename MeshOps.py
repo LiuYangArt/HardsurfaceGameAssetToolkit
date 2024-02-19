@@ -33,27 +33,24 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         bpy.ops.object.mode_set(mode="OBJECT")
-        # 清理multi user
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
 
-        
-        clean_mid_verts(selected_meshes)
-        clean_loose_verts(selected_meshes)
-
         for mesh in selected_meshes:
             mesh.select_set(True)
-            # 处理uv layers
-            has_uv = has_uv_attribute(mesh)
+            clean_mid_verts(mesh)
+            clean_loose_verts(mesh)
+            
+            has_uv = has_uv_attribute(mesh)# 处理uv layers
             if has_uv is True:
                 uv_base = rename_uv_layers(mesh, new_name=UV_BASE, uv_index=0)
             else:
                 uv_base = add_uv_layers(mesh, uv_name=UV_BASE)
             uv_base.active = True
 
-            # 从锐边生成UV Seam
-            for edge in mesh.data.edges:
+            
+            for edge in mesh.data.edges:# 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
 
         # uv unwrap
@@ -63,7 +60,8 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             method="CONFORMAL", fill_holes=True, correct_aspect=True, margin=0.005
         )
         bpy.ops.object.mode_set(mode="OBJECT")
-
+        
+        self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
 
@@ -84,20 +82,17 @@ class MakeSwatchUVOperator(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # 清理multi user
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
-
-        # 获取所有选中的mesh
         
-
         for mesh in selected_meshes:
             mesh.select_set(True)
             uv_swatch = add_uv_layers(mesh, uv_name=UV_SWATCH)
             uv_swatch.active = True
             scale_uv(uv_layer=uv_swatch, scale=(0.001, 0.001), pivot=(0.5, 0.5))
 
+        self.report({"INFO"}, "Swatch UV added")
         return {"FINISHED"}
 
 
@@ -115,10 +110,12 @@ class CleanVertexOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
+        
+        for mesh in selected_meshes:
+            clean_mid_verts(mesh)
+            clean_loose_verts(mesh)
 
-        clean_mid_verts(selected_meshes)
-        clean_loose_verts(selected_meshes)
-
+        self.report({"INFO"}, "Selected meshes cleaned")
         return {"FINISHED"}
 
 
@@ -146,19 +143,17 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
-
-        
-        merge_vertes_by_distance(selected_meshes, merge_distance=MERGE_DISTANCE)
-        mark_sharp_edge_by_angle(selected_meshes, sharp_angle=SHARP_ANGLE)
-        # limited dissolve 清理三角面，变成ngon
         for mesh in selected_meshes:
+            merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
+            mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)
+        
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
         bpy.ops.mesh.select_all(action="DESELECT")
         bpy.ops.object.mode_set(mode="OBJECT")
-
+        self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 
 
@@ -177,6 +172,7 @@ class CleanMultiUserOperator(bpy.types.Operator):
             return {"CANCELLED"}
         for object in selected_objects:
             clean_user(object)
+            self.report({"INFO"}, "Multi user cleaned")
         return {"FINISHED"}
 
 
@@ -192,7 +188,9 @@ class AddSnapSocketOperator(bpy.types.Operator):
         cursor_current_transform = cursor.matrix
         selected_objects = bpy.context.selected_objects
         collection = selected_objects[0].users_collection[0]
-
+        parameters = context.scene.hst_params
+        SOCKET_SIZE = 0.3
+        IN_FRONT = False
 
         if bpy.context.mode == "EDIT_MESH":
             self.report({"INFO"}, "In edit mode, create socket from selected faces")
@@ -210,12 +208,13 @@ class AddSnapSocketOperator(bpy.types.Operator):
             bpy.context.scene.cursor.rotation_quaternion = rotation
             self.report({"INFO"}, "In object mode, create socket from selected objects")
         # add empty, set name to SOCKET_XXX and location to cursor location
-        socket_object = bpy.data.objects.new(name="SOCKET_", object_data=None)
+        socket_object = bpy.data.objects.new(name="SOCKET_" + parameters.socket_name, object_data=None)
         socket_object.location = cursor.location
         socket_object.rotation_mode = "QUATERNION"
         socket_object.rotation_quaternion = cursor.rotation_quaternion
         socket_object.empty_display_type = "ARROWS"
-        socket_object.empty_display_size = 0.5
+        socket_object.empty_display_size = SOCKET_SIZE
+        socket_object.show_in_front = IN_FRONT
         collection.objects.link(socket_object)
         
 
@@ -281,7 +280,7 @@ class SwatchMatInitOperator(bpy.types.Operator):
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED")
-        # bpy.ops.object.mode_set(mode="EDIT")
+        self.report({"INFO"}, "Swatch material initialized")
 
         return {"FINISHED"}
 
@@ -304,7 +303,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED")
-
+        self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
 
