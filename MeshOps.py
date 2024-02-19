@@ -1,19 +1,8 @@
-from email import message
 import bpy
+from .Const import *
 
 from .Functions.CommonFunctions import *
-from bpy.utils import resource_path
-from pathlib import Path
 
-UV_BASE = "UV0_Base"
-UV_SWATCH = "UV1_Swatch"
-SWATCH_MATERIAL = "MI_HSPropSwatch"
-LOOKDEV_HDR = "HDR_LookDev_Mid"
-ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
-USER = Path(resource_path("USER"))
-ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
-PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 
 
 class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
@@ -41,16 +30,15 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             mesh.select_set(True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
-            
-            has_uv = has_uv_attribute(mesh)# 处理uv layers
+
+            has_uv = has_uv_attribute(mesh)  # 处理uv layers
             if has_uv is True:
                 uv_base = rename_uv_layers(mesh, new_name=UV_BASE, uv_index=0)
             else:
                 uv_base = add_uv_layers(mesh, uv_name=UV_BASE)
             uv_base.active = True
 
-            
-            for edge in mesh.data.edges:# 从锐边生成UV Seam
+            for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
 
         # uv unwrap
@@ -60,7 +48,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             method="CONFORMAL", fill_holes=True, correct_aspect=True, margin=0.005
         )
         bpy.ops.object.mode_set(mode="OBJECT")
-        
+
         self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
@@ -78,14 +66,14 @@ class MakeSwatchUVOperator(bpy.types.Operator):
                 "No selected mesh object, please select mesh objects and retry | "
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
-            return {"CANCELLED"}        
+            return {"CANCELLED"}
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
         for object in selected_objects:
             clean_user(object)
             object.select_set(False)
-        
+
         for mesh in selected_meshes:
             mesh.select_set(True)
             uv_swatch = add_uv_layers(mesh, uv_name=UV_SWATCH)
@@ -110,7 +98,7 @@ class CleanVertexOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
-        
+
         for mesh in selected_meshes:
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
@@ -137,7 +125,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
-        
+
         bpy.ops.object.mode_set(mode="OBJECT")
         # 清理multi user
         for object in selected_objects:
@@ -147,7 +135,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
             mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)
-        
+
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
@@ -208,7 +196,9 @@ class AddSnapSocketOperator(bpy.types.Operator):
             bpy.context.scene.cursor.rotation_quaternion = rotation
             self.report({"INFO"}, "In object mode, create socket from selected objects")
         # add empty, set name to SOCKET_XXX and location to cursor location
-        socket_object = bpy.data.objects.new(name="SOCKET_" + parameters.socket_name, object_data=None)
+        socket_object = bpy.data.objects.new(
+            name="SOCKET_" + parameters.socket_name, object_data=None
+        )
         socket_object.location = cursor.location
         socket_object.rotation_mode = "QUATERNION"
         socket_object.rotation_quaternion = cursor.rotation_quaternion
@@ -216,7 +206,6 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.empty_display_size = SOCKET_SIZE
         socket_object.show_in_front = IN_FRONT
         collection.objects.link(socket_object)
-        
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
 

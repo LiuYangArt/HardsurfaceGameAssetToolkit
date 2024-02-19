@@ -1,9 +1,6 @@
-from weakref import proxy
 import bpy
 import bmesh
 
-# import math
-# import mathutils
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 
 """ 通用functions """
@@ -89,11 +86,10 @@ def create_collection(
     return collection
 
 
-def clean_user(target_object: bpy.types.Object)->None:
+def clean_user(target_object: bpy.types.Object) -> None:
     """如果所选object有多个user，转为single user"""
     if target_object.users > 1:
         target_object.data = target_object.data.copy()
-
 
 
 def set_visibility(target_object: bpy.types.Object, visible=bool) -> bool:
@@ -167,7 +163,7 @@ def get_objects_with_modifier(
 def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     """为选中的物体删除所有顶点色属性"""
     success = False
-    
+
     if target_object.data.color_attributes is not None:
         colorAtrributes = target_object.data.color_attributes
         for r in range(len(colorAtrributes) - 1, -1, -1):
@@ -213,7 +209,7 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.
         proxy_collection.objects.link(proxy_mesh)
         proxy_mesh.hide_render = True
 
-        proxy_mesh=apply_modifiers(proxy_mesh)
+        proxy_mesh = apply_modifiers(proxy_mesh)
 
     proxy_mesh.hide_viewport = True
     proxy_mesh.hide_render = True
@@ -515,6 +511,7 @@ def get_selected_rotation_quat() -> Quaternion:
 
     loc, rotation, scale = custom_matrix.to_4x4().decompose()
     return rotation
+
 
 def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
     """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""

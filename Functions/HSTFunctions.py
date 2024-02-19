@@ -1,27 +1,9 @@
 import bpy
+from ..Const import *
 
-# 定义命名
-VERTEXCOLOR = "WearMask"
-TRANSFER_COLLECTION = "_TransferNormal"
-TRANSFER_MESH_PREFIX = "Raw_"
-TRANSFER_PROXY_COLLECTION = "_TransferProxy"
-TRANSFERPROXY_PREFIX = "TRNSP_"
-MODIFIER_PREFIX = "HST"
-BEVEL_MODIFIER = MODIFIER_PREFIX + "Bevel"
-NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX + "NormalTransfer"
-WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX + "WeightedNormal"
-TRIANGULAR_MODIFIER = MODIFIER_PREFIX + "Triangulate"
-COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX + "VertexColorTransfer"
-COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
-WEARMASK_NODE = "GN_HSTWearmaskVertColor"
-ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
+def add_bevel_modifier(mesh, width=0.5, segments=1, length_unit="CENTIMETERS"):
+    """添加Bevel Modifier"""
 
-
-
-# 添加Bevel修改器
-def add_bevel_modifier(mesh,width=0.5,segments=1,length_unit="CENTIMETERS"):
-    # 根据单位设置bevel宽度scale
     match length_unit:
         case "METERS":
             bevel_width = width * 0.001
@@ -32,8 +14,8 @@ def add_bevel_modifier(mesh,width=0.5,segments=1,length_unit="CENTIMETERS"):
 
     check_sharp = False
     bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
-    # 如果没有bevel修改器
-    if BEVEL_MODIFIER not in mesh.modifiers:
+    
+    if BEVEL_MODIFIER not in mesh.modifiers:# 如果没有bevel修改器
 
         if "sharp_edge" in mesh.data.attributes:
             check_sharp = True
@@ -49,12 +31,9 @@ def add_bevel_modifier(mesh,width=0.5,segments=1,length_unit="CENTIMETERS"):
         else:
             check_sharp = False
 
-        # print(check_sharp)
         if check_sharp is True:
             bevel_modifier = mesh.modifiers.new(name=BEVEL_MODIFIER, type="BEVEL")
             bevel_modifier.limit_method = "WEIGHT"
-
-
         elif check_sharp is False:
             bevel_modifier = mesh.modifiers.new(name=BEVEL_MODIFIER, type="BEVEL")
             bevel_modifier.limit_method = "ANGLE"
@@ -71,7 +50,7 @@ def add_bevel_modifier(mesh,width=0.5,segments=1,length_unit="CENTIMETERS"):
 
 
 def add_datatransfer_modifier(mesh):
-
+    """添加DataTransfer Modifier传递法线"""
     transfer_source_mesh = bpy.data.objects[TRANSFER_MESH_PREFIX + mesh.name]
     if NORMALTRANSFER_MODIFIER in mesh.modifiers:
         datatransfermod = mesh.modifiers[NORMALTRANSFER_MODIFIER]
@@ -87,14 +66,15 @@ def add_datatransfer_modifier(mesh):
     datatransfermod.loop_mapping = "POLYINTERP_LNORPROJ"
 
 
-# 添加Triangulate修改器
 def add_triangulate_modifier(mesh):
-
+    """添加Triangulate Modifier"""
     if TRIANGULAR_MODIFIER in mesh.modifiers:
         triangulate_modifier = mesh.modifiers[TRIANGULAR_MODIFIER]
 
     else:
-        triangulate_modifier = mesh.modifiers.new(name=TRIANGULAR_MODIFIER, type="TRIANGULATE")
+        triangulate_modifier = mesh.modifiers.new(
+            name=TRIANGULAR_MODIFIER, type="TRIANGULATE"
+        )
 
     triangulate_modifier.keep_custom_normals = True
     triangulate_modifier.min_vertices = 4
@@ -102,47 +82,46 @@ def add_triangulate_modifier(mesh):
 
 
 def add_weightednormal_modifier(mesh):
-
-
+    """添加WeightedNormal Modifier"""
     if WEIGHTEDNORMAL_MODIFIER in mesh.modifiers:
         weightpmod = mesh.modifiers[WEIGHTEDNORMAL_MODIFIER]
 
     else:
-        weightpmod = mesh.modifiers.new(name=WEIGHTEDNORMAL_MODIFIER, type="WEIGHTED_NORMAL")
-    
+        weightpmod = mesh.modifiers.new(
+            name=WEIGHTEDNORMAL_MODIFIER, type="WEIGHTED_NORMAL"
+        )
+
     weightpmod.mode = "FACE_AREA"
     weightpmod.use_face_influence = True
     weightpmod.thresh = 0.01
     weightpmod.keep_sharp = False
     weightpmod.weight = 100
 
-##添加DataTransfer Modifier传递顶点色
+
 def add_color_transfer_modifier(mesh):
     """添加DataTransfer Modifier传递顶点色"""
-    VERTEXCOLORTRANSFER_MODIFIER = "HSTVertexColorTransfer"
-    TRANSFERPROXY_PREFIX = "TRNSP_"
+
     proxy_object = bpy.data.objects[TRANSFERPROXY_PREFIX + mesh.name]
     check_modifier = False
 
     for modifier in mesh.modifiers:  # 检查是否有modifier
-        if modifier.name == VERTEXCOLORTRANSFER_MODIFIER:
+        if modifier.name == COLOR_TRANSFER_MODIFIER:
             check_modifier = True
             break
 
     if check_modifier is False:  # 如果没有则添加
         transfer_modifier = mesh.modifiers.new(
-            name=VERTEXCOLORTRANSFER_MODIFIER, type="DATA_TRANSFER"
+            name=COLOR_TRANSFER_MODIFIER, type="DATA_TRANSFER"
         )
         transfer_modifier.object = proxy_object
         transfer_modifier.use_loop_data = True
         transfer_modifier.data_types_loops = {"COLOR_CORNER"}
         transfer_modifier.loop_mapping = "TOPOLOGY"
     else:  # 如果有则使用原有的
-        transfer_modifier = mesh.modifiers[VERTEXCOLORTRANSFER_MODIFIER]
+        transfer_modifier = mesh.modifiers[COLOR_TRANSFER_MODIFIER]
         transfer_modifier.object = proxy_object
 
 
-##添加Geometry Nodes WearMask Modifier
 def add_gn_wearmask_modifier(mesh):
     """添加Geometry Nodes WearMask Modifier"""
 
@@ -154,12 +133,10 @@ def add_gn_wearmask_modifier(mesh):
             break
 
     if check_modifier is False:
-        wearmask_modifier = mesh.modifiers.new(
+        geo_node_modifier = mesh.modifiers.new(
             name=COLOR_GEOMETRYNODE_MODIFIER, type="NODES"
         )
-        wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
+        geo_node_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
     else:
-        wearmask_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
-        wearmask_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
-
-
+        geo_node_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
+        geo_node_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]

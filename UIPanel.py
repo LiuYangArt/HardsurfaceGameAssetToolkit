@@ -1,7 +1,7 @@
 import bpy
 from bpy.props import (
-    BoolProperty,
-    EnumProperty,
+    # BoolProperty,
+    # EnumProperty,
     FloatProperty,
     IntProperty,
     StringProperty,
@@ -10,10 +10,13 @@ from bpy.types import PropertyGroup
 
 
 class UIParams(PropertyGroup):
-    """ UI参数 """
+    """UI参数"""
 
     set_bevel_width: FloatProperty(
-        description="设置  HSTBevel 宽度，单位与场景单位一致", default=0.5, min=0.0, max=10.0
+        description="设置  HSTBevel 宽度，单位与场景单位一致",
+        default=0.5,
+        min=0.0,
+        max=10.0,
     )
 
     set_bevel_segments: IntProperty(
@@ -25,7 +28,6 @@ class UIParams(PropertyGroup):
         default="Box",
         maxlen=24,
     )
-
 
 
 class BTMPanel(bpy.types.Panel):
@@ -40,9 +42,6 @@ class BTMPanel(bpy.types.Panel):
     #     return context.object is not None
 
     def draw(self, context):
-        # hst_params = context.scene.hst_params
-        # act_obj = bpy.context.active_object
-
         layout = self.layout
         box = layout.box()
         group_column = box.column()
@@ -50,7 +49,6 @@ class BTMPanel(bpy.types.Panel):
         group_row = group_column.row(align=True)
         group_row.operator("object.btmlow", text="Set LowPoly")
         group_row.operator("object.btmhigh", text="Set HighPoly")
-
 
 
 class HSTPanel(bpy.types.Panel):
@@ -66,7 +64,6 @@ class HSTPanel(bpy.types.Panel):
         layout = self.layout
         box = layout.box()
         box_column = box.column()
-
 
         box_column.label(text="Bevel Tool")
         box_column.operator("object.hstbevelmods", text="Batch Bevel")
@@ -84,7 +81,9 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator(
             "object.hst_addtransvertcolorproxy", text="Make Transfer Vertex Color Proxy"
         )
-        box_column.operator("object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO")
+        box_column.operator(
+            "object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO"
+        )
 
         box_column.separator()
         box_column.operator("object.cleanhstobject", text="Clean HST Object")
@@ -105,6 +104,5 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator("object.cleanmultiuser", text="Clean Multi User")
         box_column.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
         # boxcol.operator("object.makeswatchuv", text="Make Swatch UV")
-
 
 classes = (HSTPanel, BTMPanel, UIParams)

@@ -1,30 +1,8 @@
+from weakref import proxy
 import bpy
-from bpy.utils import resource_path
-from pathlib import Path
-
+from .Const import *
 from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
-
-
-# Constants
-VERTEXCOLOR = "WearMask"
-TRANSFER_COLLECTION = "_TransferNormal"
-TRANSFER_MESH_PREFIX = "Raw_"
-TRANSFER_PROXY_COLLECTION = "_TransferProxy"
-TRANSFERPROXY_PREFIX = "TRNSP_"
-MODIFIER_PREFIX = "HST"
-BEVEL_MODIFIER = "HSTBevel"
-NORMALTRANSFER_MODIFIER = MODIFIER_PREFIX + "NormalTransfer"
-WEIGHTEDNORMAL_MODIFIER = MODIFIER_PREFIX + "WeightedNormal"
-TRIANGULAR_MODIFIER = MODIFIER_PREFIX + "Triangulate"
-COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX + "VertexColorTransfer"
-COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
-WEARMASK_NODE = "GN_HSTWearmaskVertColor"
-ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
-USER = Path(resource_path("USER"))
-ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
-NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
 
 
 class HST_BevelTransferNormal(bpy.types.Operator):
@@ -233,7 +211,9 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         for mesh in selected_meshes:
             add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
             remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)  # 清理modifier
-            remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)  # 清理modifier的对象
+            remove_modifier(
+                mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
+            )  # 清理modifier的对象
 
             proxy_mesh = make_transfer_proxy_mesh(
                 mesh, TRANSFERPROXY_PREFIX, proxy_collection
@@ -314,27 +294,24 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             object.select_set(False)
 
         for mesh in selected_meshes:
-            # bpy.context.view_layer.objects.active = mesh
-            if check_modifier_exist(mesh, COLOR_TRANSFER_MODIFIER) is True:
-                # 检查是否有modifier，如果有则添加到proxy_list
-                for modifier in mesh.modifiers:
-                    if modifier.name == COLOR_TRANSFER_MODIFIER:
-                        if modifier.object is not None:
-                            bake_list.append(modifier.object)
-                        else:
-                            print("modifier target object missing")
-                            break
-            else:
-                print("modifier missing")
-                break
+            for modifier in mesh.modifiers:
+                if modifier.name == COLOR_TRANSFER_MODIFIER:
+                    if modifier.object is None:
+                        print("modifier target object missing")
+                        continue
+                    else:
+                        bake_list.append(modifier.object)
+
+
 
         # 隐藏不必要烘焙的物体
         for proxy_object in transfer_proxy_collection.objects:
             set_visibility(proxy_object, False)
         # 显示需要烘焙的物体，并设置为选中
         for proxy_bake_object in bake_list:
+            print(proxy_bake_object.name)
             set_visibility(proxy_bake_object, True)
-            bpy.context.view_layer.objects.active = proxy_bake_object
+            # bpy.context.view_layer.objects.active = proxy_bake_object
             proxy_bake_object.select_set(True)
 
         # 烘焙AO到顶点色
@@ -378,7 +355,9 @@ class HST_CleanHSTObjects(bpy.types.Operator):
                     mesh.modifiers.remove(modifier)
             mesh.select_set(False)
         for delete_object in delete_list:
-            if delete_object is not None:
+            if delete_object is None:
+                continue
+            else:
                 bpy.data.objects.remove(delete_object)
 
         self.report(
