@@ -144,11 +144,10 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 
-
-class CleanMultiUserOperator(bpy.types.Operator):
-    bl_idname = "object.cleanmultiuser"
-    bl_label = "CleanMultiUser"
-    bl_description = "清理多用户，可用于Asset Library导入资产去除引用"
+class SeparateMultiUserOperator(bpy.types.Operator):
+    bl_idname = "object.sepmultiuser"
+    bl_label = "SeparateMultiUser"
+    bl_description = "清理多用户，可用于Asset Library导入资产去除引用，可能会造成冗余资源，请及时清除"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -160,7 +159,7 @@ class CleanMultiUserOperator(bpy.types.Operator):
             return {"CANCELLED"}
         for object in selected_objects:
             clean_user(object)
-            self.report({"INFO"}, "Multi user cleaned")
+            self.report({"INFO"}, "Multi user separated")
         return {"FINISHED"}
 
 
@@ -301,7 +300,7 @@ classes = (
     MakeSwatchUVOperator,
     CleanVertexOperator,
     FixSpaceClaimObjOperator,
-    CleanMultiUserOperator,
+    SeparateMultiUserOperator,
     AddSnapSocketOperator,
     SwatchMatInitOperator,
     SetupLookDevEnvOperator,

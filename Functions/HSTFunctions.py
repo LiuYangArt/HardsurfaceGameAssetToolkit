@@ -1,16 +1,8 @@
 import bpy
 from ..Const import *
 
-def add_bevel_modifier(mesh, width=0.5, segments=1, length_unit="CENTIMETERS"):
+def add_bevel_modifier(mesh, width=0.05, segments=1):
     """添加Bevel Modifier"""
-
-    match length_unit:
-        case "METERS":
-            bevel_width = width * 0.001
-        case "CENTIMETERS":
-            bevel_width = width * 0.01
-        case "MILLIMETERS":
-            bevel_width = width * 0.1
 
     check_sharp = False
     bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
@@ -40,13 +32,18 @@ def add_bevel_modifier(mesh, width=0.5, segments=1, length_unit="CENTIMETERS"):
             bevel_modifier.angle_limit = 0.523599
 
         bevel_modifier.offset_type = "WIDTH"
-        bevel_modifier.width = bevel_width
+        bevel_modifier.width = width
         bevel_modifier.use_clamp_overlap = False
         bevel_modifier.harden_normals = True
         bevel_modifier.loop_slide = True
         bevel_modifier.segments = segments
         bevel_modifier.profile = 0.7
         bevel_modifier.face_strength_mode = "FSTR_ALL"
+
+    elif BEVEL_MODIFIER in mesh.modifiers:
+        bevel_modifier = mesh.modifiers[BEVEL_MODIFIER]
+        bevel_modifier.width = width
+        bevel_modifier.segments = segments
 
 
 def add_datatransfer_modifier(mesh):
@@ -140,3 +137,14 @@ def add_gn_wearmask_modifier(mesh):
     else:
         geo_node_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
         geo_node_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
+
+def add_face_weight_attribute(mesh,value=1):
+    """添加面权重属性"""
+    if "__mod_weightednormals_faceweight" not in mesh.data.attributes:
+                mesh.data.attributes.new(
+                    "__mod_weightednormals_faceweight", "INT", "FACE"
+                )
+                mesh.data.attributes[
+                    "__mod_weightednormals_faceweight"
+                ].data.foreach_set("value", [value] * len(mesh.data.polygons))
+                mesh.data.update()

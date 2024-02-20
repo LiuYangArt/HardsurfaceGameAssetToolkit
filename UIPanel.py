@@ -70,11 +70,11 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator(
             "object.hstbeveltransfernormal", text="Bevel & Transfer Normal"
         )
-        box_column.separator()
+        # box_column.separator()
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")
-        box_column.operator("object.hstbevelsetparam", text="Modify Bevel Parameters")
+        # box_column.operator("object.hstbevelsetparam", text="Modify Bevel Parameters")
 
         box_column.separator()
         box_column.label(text="Vertex Color Bake")
@@ -84,6 +84,7 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator(
             "object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO"
         )
+        box_column.operator("object.previewwearmask", text="Preview Wear Mask")
 
         box_column.separator()
         box_column.operator("object.cleanhstobject", text="Clean HST Object")
@@ -101,7 +102,7 @@ class HSTPanel(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="Utilities")
         box_column.operator("object.cleanvert", text="Clean Vert")
-        box_column.operator("object.cleanmultiuser", text="Clean Multi User")
+        box_column.operator("object.sepmultiuser", text="Separate Multi User")
         box_column.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
         # boxcol.operator("object.makeswatchuv", text="Make Swatch UV")
 

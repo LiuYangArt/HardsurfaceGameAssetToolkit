@@ -115,34 +115,27 @@ def check_modifier_exist(target_object: bpy.types.Object, modifier_name: str) ->
 
 def remove_modifier(
     object, modifier_name: str, has_subobject: bool = False
-) -> bpy.types.Object:
+):
     """删除某个modifier,返回modifier对应的子object"""
-    modifier_object = None
+    modifier_objects = []
     # 有 transfer修改器时
     for modifier in object.modifiers:
-        print(modifier_name)
-        print(modifier.name)
         if modifier.name == modifier_name:
-            print("has matched modifier")
             # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
             if has_subobject is True and modifier.object is not None:
-                modifier_object = modifier.object
-                print("has modifier_object")
-                print(modifier_object)
-            # object.modifiers.remove(modifier)
-    print("modifier_object")
-    print(modifier_object)
-    print("object.name")
-    print(object.name)
-    # print("modifier_object.parent.name")
-    # print(modifier_object.parent.name)
-    # if modifier_object is not None:
-    #     print("remove modifier_object")
-    # if modifier_object is not None and modifier_object.parent.name == object.name:
-    #     print("remove modifier_object")
-    #     bpy.data.objects.remove(modifier_object)
+                modifier_objects.append(modifier.object)
+            object.modifiers.remove(modifier)
+    
+    if len(modifier_objects) > 0:
+        for modifier_object in modifier_objects:
+            if modifier_object.parent.name == object.name:
+                old_mesh = modifier_object.data
+                old_mesh.name="OldTP_"+old_mesh.name
+                print("remove modifier object: " + modifier_object.name)
+                bpy.data.objects.remove(modifier_object)
+                bpy.data.meshes.remove(old_mesh)
 
-    return modifier_object
+    return
 
 
 def get_objects_with_modifier(
@@ -178,7 +171,7 @@ def add_vertexcolor_attribute(
     """为选中的物体添加顶点色属性，返回顶点色属性"""
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
-            color_atrribute = target_object.data.color_attributes[0]
+            color_atrribute = target_object.data.color_attributes.get(vertexcolor_name)
         else:
             color_atrribute = target_object.data.color_attributes.new(
                 name=vertexcolor_name,
@@ -188,6 +181,17 @@ def add_vertexcolor_attribute(
     else:
         print(target_object + " is not mesh object")
     return color_atrribute
+
+def set_active_color_attribute(target_object,vertexcolor_name: str) -> None:
+    """设置顶点色属性为激活状态"""
+    if target_object.type == "MESH":
+        if vertexcolor_name in target_object.data.color_attributes:
+            color_atrribute = target_object.data.color_attributes.get(vertexcolor_name)
+            target_object.data.attributes.active_color = color_atrribute
+        else:
+            print("No vertex color attribute named " + vertexcolor_name)
+    else:
+        print(target_object + " is not mesh object")
 
 
 def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
@@ -215,14 +219,6 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.
     proxy_mesh.hide_render = True
     proxy_mesh.select_set(False)
     return proxy_mesh
-
-
-def set_active_color_attribute(colorattribute_name: str) -> None:
-    """设置顶点色属性为激活状态"""
-    context = bpy.context
-    named_color_attributes = context.object.data.color_attributes
-    active_vertexcolor = named_color_attributes.get(colorattribute_name)
-    context.object.data.attributes.active_color = active_vertexcolor
 
 
 def import_node_group(file_path, node_name) -> bpy.types.NodeGroup:
@@ -605,6 +601,7 @@ def new_screen_area(area_type: str, direction: str = "VERTICAL") -> bpy.types.Ar
 
 def viewport_shading_mode(area_type: str, shading_mode: str):
     """设置视口渲染模式"""
+    viewport_space=None
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:  # iterate through areas in current screen
             if area.type == area_type:
@@ -613,6 +610,8 @@ def viewport_shading_mode(area_type: str, shading_mode: str):
                 ) in area.spaces:  # iterate through spaces in current VIEW_3D area
                     if space.type == area_type:  # check if space is a 3D view
                         space.shading.type = shading_mode
+                        viewport_space=space
+    return viewport_space
 
 
 def apply_transfrom(object, location=True, rotation=True, scale=True):
@@ -651,32 +650,37 @@ def apply_transfrom(object, location=True, rotation=True, scale=True):
 def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
     """应用所有修改器，删除原mesh并替换为新mesh"""
 
-    object_transform = object.matrix_world.copy()
-    object_name = object.name
-    object_collection = object.users_collection[0]
-    object_parent = object.parent
-    object_hide_viewport = object.hide_viewport
-    object_hide_render = object.hide_render
-    object_hide_select = object.hide_select
-
+    old_mesh = object.data
+    
     deps_graph = bpy.context.view_layer.depsgraph
     deps_graph.update()
     object_evaluated = object.evaluated_get(deps_graph)
-    mesh_from_eval = bpy.data.meshes.new_from_object(
+    mesh_evaluated = bpy.data.meshes.new_from_object(
         object_evaluated, depsgraph=deps_graph
     )
 
-    object.data = mesh_from_eval
+    object.data = mesh_evaluated
+    for modifier in object.modifiers:
+        object.modifiers.remove(modifier)
+    new_object = object
 
-    bpy.data.objects.remove(object, do_unlink=True)
-    new_object = bpy.data.objects.new(object_name, mesh_from_eval)
+    old_mesh.name="Old_"+old_mesh.name
+    old_mesh.user_clear()
+    bpy.data.meshes.remove(old_mesh)
 
-    object_collection.objects.link(new_object)
-    new_object.name = object_name
-    new_object.matrix_world = object_transform
-    new_object.parent = object_parent
-    new_object.hide_viewport = object_hide_viewport
-    new_object.hide_render = object_hide_render
-    new_object.hide_select = object_hide_select
 
     return new_object
+
+def convert_length_by_scene_unit(length: float) -> float:   
+    """根据场景单位设置转换长度"""
+    current_scene = bpy.context.object.users_scene[0].name
+    length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
+    match length_unit:
+        case "METERS":
+            new_length = length * 0.001
+        case "CENTIMETERS":
+            new_length = length * 0.01
+        case "MILLIMETERS":
+            new_length = length * 0.1
+    
+    return new_length
