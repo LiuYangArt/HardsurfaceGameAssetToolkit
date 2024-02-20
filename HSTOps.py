@@ -142,7 +142,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_label = "Make Transfer VertexColor Proxy"
     bl_description = "为选中的物体建立用于烘焙顶点色的代理模型，\
         代理模型通过DataTransfer修改器将顶点色传递回原始模型。\
-        如果原始模型有造型修改，请重新建立代理。\
+        如果原始模型有造型修改，请重新运行建立代理。\
         注意其修改器顺序必须存在于Bevel修改器之后。"
 
     def execute(self, context):
@@ -317,46 +317,11 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class PreviewWearMaskOperator(bpy.types.Operator):
-    bl_idname = "object.previewwearmask"
-    bl_label = "PreviewWearMask"
-    bl_description = "预览WearMask效果"
-
-    def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        selected_meshes = filter_type(selected_objects, "MESH")
-
-        if len(selected_meshes) == 0:
-            self.report(
-                {"INFO"},
-                "No selected mesh object,"
-                + " if mesh's active vertex color is not 'wearmask',"
-                + " you might not be able to preview the correct result."
-                + " | 没有选中Mesh物体，如果Mesh的active顶点色不是'wearmask'，"
-                + "可能无法预览正确结果",
-            )
-
-        for mesh in selected_meshes:
-            set_active_color_attribute(mesh, VERTEXCOLOR)
-
-        viewports = viewport_shading_mode("VIEW_3D", "SOLID", mode="CONTEXT")
-
-        for viewport in viewports:
-            viewport.shading.color_type = "VERTEX"
-
-        self.report(
-            {"INFO"},
-            "Switch preview w earMask in viewport | 在viewport切换预览WearMask",
-        )
-
-        return {"FINISHED"}
-
-
-classes = (
-    HST_BatchBevel,
-    HST_BevelTransferNormal,
-    HST_CleanHSTObjects,
-    HST_SetBevelParameters_Operator,
-    HST_CreateTransferVertColorProxy,
-    HST_BakeProxyVertexColorAO,
-)
+# classes = (
+#     HST_BatchBevel,
+#     HST_BevelTransferNormal,
+#     HST_CleanHSTObjects,
+#     HST_SetBevelParameters_Operator,
+#     HST_CreateTransferVertColorProxy,
+#     HST_BakeProxyVertexColorAO,
+# )

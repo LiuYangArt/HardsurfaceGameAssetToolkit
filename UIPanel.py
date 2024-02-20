@@ -98,7 +98,6 @@ class HSTPanel(bpy.types.Panel):
     def draw(self, context):
         # scene=bpy.context.scene
         parameters = context.scene.hst_params
-
         layout = self.layout
         box = layout.box()
         box_column = box.column()
@@ -123,22 +122,26 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator(
             "object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO"
         )
-        # box_column.prop(parameters, "b_wearmask_preview", toggle=1)
-        box_column.operator("object.previewwearmask", text="Preview Wear Mask")
 
         box_column.separator()
         box_column.operator("object.cleanhstobject", text="Clean HST Object")
 
         box_column.separator()
         box_column.label(text="Workflow")
-        box_column.operator("object.setuplookdevenv", text="LookDev HDR Setup")
         box_column.operator("object.prepspaceclaimcadmesh", text="Prepare CAD Mesh")
-        box_column.operator("object.swatchmatsetup", text="Setup Swatch Mat")
-        box_column.operator("object.baseuveditmode", text="Base UV Edit Mode")
+        uv_mode_row = box_column.row(align=True)
+        uv_mode_row.operator("object.swatchmatsetup", text="SetSwatch")
+        uv_mode_row.operator("object.baseuveditmode", text="BaseUV")
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
         box_column.prop(parameters, "socket_name", text="Name")
+
+        box_column.separator()
+        box_column.label(text="View Modes")
+        view_row = box_column.row(align=True)
+        view_row.operator("object.setuplookdevenv", text="LookDev View")
+        view_row.operator("object.previewwearmask", text="Wear Mask View")
 
         box_column.separator()
         box_column.label(text="Utilities")

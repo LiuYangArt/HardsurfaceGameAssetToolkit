@@ -348,15 +348,15 @@ class TestButtonOperator(bpy.types.Operator):
 
 
 
-classes = (
-    BTMLowOperator,
-    BTMHighOperator,
-    OrgaCollOperator,
-    ExportFBXOperator,
-    OpenmMrmosetOperator,
-    MoiTransStepOperator,
-    ReloadObjOperator,
-    BatchSetVerColOperator,
-    GetVerColOperator,
-    TestButtonOperator,
-)
+# classes = (
+#     BTMLowOperator,
+#     BTMHighOperator,
+#     OrgaCollOperator,
+#     ExportFBXOperator,
+#     OpenmMrmosetOperator,
+#     MoiTransStepOperator,
+#     ReloadObjOperator,
+#     BatchSetVerColOperator,
+#     GetVerColOperator,
+#     TestButtonOperator,
+# )

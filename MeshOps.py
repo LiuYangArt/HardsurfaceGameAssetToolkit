@@ -67,10 +67,6 @@ class MakeSwatchUVOperator(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # for object in selected_objects:
-        #     clean_user(object)
-        #     object.select_set(False)
-
         for mesh in selected_meshes:
             mesh.select_set(True)
             uv_swatch = add_uv_layers(mesh, uv_name=UV_SWATCH)
@@ -146,7 +142,8 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
 class SeparateMultiUserOperator(bpy.types.Operator):
     bl_idname = "object.sepmultiuser"
     bl_label = "SeparateMultiUser"
-    bl_description = "清理多用户，可用于Asset Library导入资产去除引用，可能会造成冗余资源，请及时清除"
+    bl_description = "清理多用户，可用于AssetLibrary导入资产去除引用，\
+        可能会造成冗余资源，请及时清除"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -325,7 +322,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
 
     bl_idname = "object.setuplookdevenv"
     bl_label = "SetupLookDevEnv"
-    bl_description = "设置LookDev光照环境"
+    bl_description = "设置LookDev预览环境"
 
     def execute(self, context):
         file_path = PRESET_FILE_PATH
@@ -343,14 +340,49 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
+class PreviewWearMaskOperator(bpy.types.Operator):
+    bl_idname = "object.previewwearmask"
+    bl_label = "PreviewWearMask"
+    bl_description = "预览WearMask效果，需要Mesh有顶点色属性'WearMask'\
+        选中模型后运行，可以自动切换激活的顶点色"
 
-classes = (
-    PrepSpaceClaimCADMeshOperator,
-    MakeSwatchUVOperator,
-    CleanVertexOperator,
-    FixSpaceClaimObjOperator,
-    SeparateMultiUserOperator,
-    AddSnapSocketOperator,
-    SwatchMatSetupOperator,
-    SetupLookDevEnvOperator,
-)
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+
+        if len(selected_meshes) == 0:
+            self.report(
+                {"INFO"},
+                "No selected mesh object,"
+                + " if mesh's active vertex color is not 'wearmask',"
+                + " you might not be able to preview the correct result."
+                + " | 没有选中Mesh物体，如果Mesh当前顶点色没有'WearMask'，"
+                + "则无法预览正确结果",
+            )
+
+        for mesh in selected_meshes:
+            set_active_color_attribute(mesh, VERTEXCOLOR)
+
+        viewports = viewport_shading_mode("VIEW_3D", "SOLID", mode="CONTEXT")
+
+        for viewport in viewports:
+            viewport.shading.color_type = "VERTEX"
+
+        self.report(
+            {"INFO"},
+            "Switch preview w earMask in viewport | 在viewport切换预览WearMask",
+        )
+
+        return {"FINISHED"}
+
+# classes = (
+#     PrepSpaceClaimCADMeshOperator,
+#     MakeSwatchUVOperator,
+#     CleanVertexOperator,
+#     FixSpaceClaimObjOperator,
+#     SeparateMultiUserOperator,
+#     AddSnapSocketOperator,
+#     SwatchMatSetupOperator,
+#     SetupLookDevEnvOperator,
+#     PreviewWearMaskOperator
+# )
