@@ -1,8 +1,6 @@
 import bpy
 from .Const import *
-
 from .Functions.CommonFunctions import *
-
 
 
 class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
@@ -23,7 +21,6 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="OBJECT")
         for object in selected_objects:
-            clean_user(object)
             object.select_set(False)
 
         for mesh in selected_meshes:
@@ -70,9 +67,9 @@ class MakeSwatchUVOperator(bpy.types.Operator):
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        for object in selected_objects:
-            clean_user(object)
-            object.select_set(False)
+        # for object in selected_objects:
+        #     clean_user(object)
+        #     object.select_set(False)
 
         for mesh in selected_meshes:
             mesh.select_set(True)
@@ -137,12 +134,14 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             mesh.select_set(True)
 
         bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
         bpy.ops.mesh.select_all(action="DESELECT")
         bpy.ops.object.mode_set(mode="OBJECT")
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
+
 
 class SeparateMultiUserOperator(bpy.types.Operator):
     bl_idname = "object.sepmultiuser"
@@ -211,10 +210,10 @@ class AddSnapSocketOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SwatchMatInitOperator(bpy.types.Operator):
-    bl_idname = "object.swatchmatinit"
+class SwatchMatSetupOperator(bpy.types.Operator):
+    bl_idname = "object.swatchmatsetup"
     bl_label = "SwatchEditMode"
-    bl_description = "初始化Swatch材质，初始化UV，准备Swatch材质的编辑环境"
+    bl_description = "设置Swatch材质的编辑环境"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -227,7 +226,7 @@ class SwatchMatInitOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         for object in selected_objects:
-            clean_user(object)
+            # clean_user(object)
             object.select_set(False)
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
@@ -247,8 +246,9 @@ class SwatchMatInitOperator(bpy.types.Operator):
             swatch_uv = check_uv_layer(mesh, UV_SWATCH)
             if swatch_uv is None:  # add uv layer if not exist
                 swatch_uv = add_uv_layers(mesh, uv_name=UV_SWATCH)
-                swatch_uv.active = True
+                # swatch_uv.active = True
                 scale_uv(uv_layer=swatch_uv, scale=(0.001, 0.001), pivot=(0.5, 0.5))
+            swatch_uv.active = True
 
             swatch_mat = get_object_material(mesh, SWATCH_MATERIAL)
             if swatch_mat is None:  # add material if not exist
@@ -264,16 +264,61 @@ class SwatchMatInitOperator(bpy.types.Operator):
         # setup uv editor
         uv_space.image = swatch_texture
         uv_space.display_channels = "COLOR"
+        uv_editor_fit_view(uv_editor)
         bpy.context.scene.tool_settings.use_uv_select_sync = True
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
-        viewport_shading_mode("VIEW_3D", "RENDERED")
+        viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
         self.report({"INFO"}, "Swatch material initialized")
 
         return {"FINISHED"}
 
 
+class BaseUVEditModeOperator(bpy.types.Operator):
+    bl_idname = "object.baseuveditmode"
+    bl_label = "BaseUVEditMode"
+    bl_description = "Base UV编辑环境"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+
+        for object in selected_objects:
+            object.select_set(False)
+
+        uv_editor = check_screen_area("IMAGE_EDITOR")
+        if uv_editor is None:
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL")
+            uv_editor.ui_type = "UV"
+        for space in uv_editor.spaces:
+            if space.type == "IMAGE_EDITOR":
+                uv_space = space
+
+        for mesh in selected_meshes:
+            mesh.select_set(True)
+            has_uv = has_uv_attribute(mesh)  # 处理uv layers
+            if has_uv is True:
+                uv_base = rename_uv_layers(mesh, new_name=UV_BASE, uv_index=0)
+            else:
+                uv_base = add_uv_layers(mesh, uv_name=UV_BASE)
+            uv_base.active = True
+
+        # setup uv editor
+        uv_space.image = None
+        uv_editor_fit_view(uv_editor)
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+        self.report({"INFO"}, "Base UV edit mode")
+        return {"FINISHED"}
+
+
 class SetupLookDevEnvOperator(bpy.types.Operator):
+
     bl_idname = "object.setuplookdevenv"
     bl_label = "SetupLookDevEnv"
     bl_description = "设置LookDev光照环境"
@@ -302,6 +347,6 @@ classes = (
     FixSpaceClaimObjOperator,
     SeparateMultiUserOperator,
     AddSnapSocketOperator,
-    SwatchMatInitOperator,
+    SwatchMatSetupOperator,
     SetupLookDevEnvOperator,
 )

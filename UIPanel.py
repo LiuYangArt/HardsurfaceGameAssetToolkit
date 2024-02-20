@@ -1,12 +1,43 @@
+from ctypes import alignment
+import operator
 import bpy
 from bpy.props import (
-    # BoolProperty,
-    # EnumProperty,
+    BoolProperty,
+    EnumProperty,
     FloatProperty,
     IntProperty,
     StringProperty,
 )
 from bpy.types import PropertyGroup
+
+# from .Functions.CommonFunctions import *
+# from .Const import *
+
+# def switch_wearkmask_preview(self, context):
+#     print(self.b_wearmask_preview)
+#     selected_objects = bpy.context.selected_objects
+#     selected_meshes = filter_type(selected_objects, "MESH")
+
+#     for mesh in selected_meshes:
+#         set_active_color_attribute(mesh, VERTEXCOLOR)
+
+#     current_viewport=bpy.context.area.spaces
+#     current_shading_type=current_viewport[0].shading.type
+#     current_color_type=current_viewport[0].shading.color_type
+#     print(current_shading_type)
+#     print(current_color_type)
+
+
+#     if self.b_wearmask_preview is False:
+#         print("Close Wear Mask Preview")
+#         current_viewport[0].shading.type=current_shading_type
+#         current_viewport[0].shading.color_type=current_color_type
+
+#     if self.b_wearmask_preview is True:
+#         print("Preview Wear Mask")
+#         viewports=viewport_shading_mode("VIEW_3D", "SOLID",mode="CONTEXT")
+#         for viewport in viewports:
+#             viewport.shading.color_type = "VERTEX"
 
 
 class UIParams(PropertyGroup):
@@ -28,6 +59,12 @@ class UIParams(PropertyGroup):
         default="Box",
         maxlen=24,
     )
+
+    # b_wearmask_preview: BoolProperty(
+    #     description="Preview Wear Mask",
+    #     default=False,
+    #     update=switch_wearkmask_preview,
+    # )
 
 
 class BTMPanel(bpy.types.Panel):
@@ -59,6 +96,7 @@ class HSTPanel(bpy.types.Panel):
     bl_region_type = "UI"
 
     def draw(self, context):
+        # scene=bpy.context.scene
         parameters = context.scene.hst_params
 
         layout = self.layout
@@ -73,6 +111,7 @@ class HSTPanel(bpy.types.Panel):
         # box_column.separator()
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
+        bevel_setting_row.separator()
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")
         # box_column.operator("object.hstbevelsetparam", text="Modify Bevel Parameters")
 
@@ -84,6 +123,7 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator(
             "object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO"
         )
+        # box_column.prop(parameters, "b_wearmask_preview", toggle=1)
         box_column.operator("object.previewwearmask", text="Preview Wear Mask")
 
         box_column.separator()
@@ -93,7 +133,8 @@ class HSTPanel(bpy.types.Panel):
         box_column.label(text="Workflow")
         box_column.operator("object.setuplookdevenv", text="LookDev HDR Setup")
         box_column.operator("object.prepspaceclaimcadmesh", text="Prepare CAD Mesh")
-        box_column.operator("object.swatchmatinit", text="Swatch Mat Setup")
+        box_column.operator("object.swatchmatsetup", text="Setup Swatch Mat")
+        box_column.operator("object.baseuveditmode", text="Base UV Edit Mode")
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
@@ -104,6 +145,6 @@ class HSTPanel(bpy.types.Panel):
         box_column.operator("object.cleanvert", text="Clean Vert")
         box_column.operator("object.sepmultiuser", text="Separate Multi User")
         box_column.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
-        # boxcol.operator("object.makeswatchuv", text="Make Swatch UV")
+
 
 classes = (HSTPanel, BTMPanel, UIParams)

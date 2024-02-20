@@ -1,3 +1,4 @@
+import re
 import bpy
 import bmesh
 
@@ -113,9 +114,7 @@ def check_modifier_exist(target_object: bpy.types.Object, modifier_name: str) ->
     return modifier_exist
 
 
-def remove_modifier(
-    object, modifier_name: str, has_subobject: bool = False
-):
+def remove_modifier(object, modifier_name: str, has_subobject: bool = False):
     """删除某个modifier,返回modifier对应的子object"""
     modifier_objects = []
     # 有 transfer修改器时
@@ -125,12 +124,12 @@ def remove_modifier(
             if has_subobject is True and modifier.object is not None:
                 modifier_objects.append(modifier.object)
             object.modifiers.remove(modifier)
-    
+
     if len(modifier_objects) > 0:
         for modifier_object in modifier_objects:
             if modifier_object.parent.name == object.name:
                 old_mesh = modifier_object.data
-                old_mesh.name="OldTP_"+old_mesh.name
+                old_mesh.name = "OldTP_" + old_mesh.name
                 print("remove modifier object: " + modifier_object.name)
                 bpy.data.objects.remove(modifier_object)
                 bpy.data.meshes.remove(old_mesh)
@@ -182,7 +181,8 @@ def add_vertexcolor_attribute(
         print(target_object + " is not mesh object")
     return color_atrribute
 
-def set_active_color_attribute(target_object,vertexcolor_name: str) -> None:
+
+def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     """设置顶点色属性为激活状态"""
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
@@ -472,27 +472,6 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
     bm.free()
 
 
-# def get_selected_rotation_matrix():
-#     bpy.context.object.update_from_editmode()
-#     selected_verts = [vert for vert in bpy.context.object.data.vertices if vert.select]
-#     if selected_verts:
-#         try:
-#             bpy.ops.transform.create_orientation(
-#                 name="keTF", use_view=False, use=True, overwrite=True
-#             )
-#             rotation_matrix = bpy.context.scene.transform_orientation_slots[
-#                 0
-#             ].custom_orientation.matrix.copy()
-#             bpy.ops.transform.delete_orientation()
-#             # restore_transform(og)
-#         except RuntimeError:
-#             print("Fallback: Invalid selection for Orientation - Using Local")
-#             # Normal O. with a entire cube selected will fail create_o.
-#             bpy.ops.transform.select_orientation(orientation="LOCAL")
-#             rotation_matrix = bpy.context.object.matrix_world.to_3x3()
-#     return rotation_matrix
-
-
 def get_selected_rotation_quat() -> Quaternion:
     """在编辑模式中获取选中元素的位置与旋转"""
     scene = bpy.context.scene
@@ -599,19 +578,29 @@ def new_screen_area(area_type: str, direction: str = "VERTICAL") -> bpy.types.Ar
     return new_area
 
 
-def viewport_shading_mode(area_type: str, shading_mode: str):
-    """设置视口渲染模式"""
-    viewport_space=None
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:  # iterate through areas in current screen
-            if area.type == area_type:
-                for (
-                    space
-                ) in area.spaces:  # iterate through spaces in current VIEW_3D area
-                    if space.type == area_type:  # check if space is a 3D view
-                        space.shading.type = shading_mode
-                        viewport_space=space
-    return viewport_space
+def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT")->list:
+    """设置视口渲染模式,mode为CONTEXT时只设置当前viewport，ALL时设置所有同类型viewport，返回viewport area列表"""
+    viewport_spaces = []
+    match mode:
+        case "CONTEXT":
+            viewport = bpy.context.area
+            if viewport.type == area_type:
+                viewport_spaces.append(bpy.context.area.spaces[0])
+            print("viewport_context")
+        case "ALL":
+            for window in bpy.context.window_manager.windows:
+                for area in window.screen.areas:
+                    if area.type == area_type:
+                        for space in area.spaces:
+                            if space.type == area_type:
+                                viewport_spaces.append(space)
+            print("viewport_all")
+    print(viewport_spaces)
+
+    for viewport_space in viewport_spaces:
+        viewport_space.shading.type = shading_type
+
+    return viewport_spaces
 
 
 def apply_transfrom(object, location=True, rotation=True, scale=True):
@@ -651,7 +640,7 @@ def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
     """应用所有修改器，删除原mesh并替换为新mesh"""
 
     old_mesh = object.data
-    
+
     deps_graph = bpy.context.view_layer.depsgraph
     deps_graph.update()
     object_evaluated = object.evaluated_get(deps_graph)
@@ -664,14 +653,14 @@ def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
         object.modifiers.remove(modifier)
     new_object = object
 
-    old_mesh.name="Old_"+old_mesh.name
+    old_mesh.name = "Old_" + old_mesh.name
     old_mesh.user_clear()
     bpy.data.meshes.remove(old_mesh)
 
-
     return new_object
 
-def convert_length_by_scene_unit(length: float) -> float:   
+
+def convert_length_by_scene_unit(length: float) -> float:
     """根据场景单位设置转换长度"""
     current_scene = bpy.context.object.users_scene[0].name
     length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
@@ -682,5 +671,16 @@ def convert_length_by_scene_unit(length: float) -> float:
             new_length = length * 0.01
         case "MILLIMETERS":
             new_length = length * 0.1
-    
+
     return new_length
+
+def uv_editor_fit_view(area):
+    """ 缩放uv视图填充窗口 """
+    context=bpy.context
+    if area.type == 'IMAGE_EDITOR':
+        for region in area.regions:
+            if region.type == 'WINDOW':
+                with context.temp_override(area=area, region=region):
+                    bpy.ops.image.view_all(fit_view=True)
+    else:
+        print("No Image Editor")

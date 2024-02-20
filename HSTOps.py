@@ -5,6 +5,7 @@ from .Const import *
 from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
 
+
 class HST_BevelTransferNormal(bpy.types.Operator):
     bl_idname = "object.hstbeveltransfernormal"
     bl_label = "Bevel And Transfer Normal"
@@ -15,7 +16,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        bevel_width=convert_length_by_scene_unit(parameters.set_bevel_width)
+        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
         if collection is None:
             message_box(
@@ -73,7 +74,7 @@ class HST_BatchBevel(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, "MESH")
-        bevel_width=convert_length_by_scene_unit(parameters.set_bevel_width)
+        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
         if len(selected_meshes) == 0:
             message_box(
@@ -115,7 +116,7 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
     def execute(self, context):
         parameters = context.scene.hst_params
         selected_objects = bpy.context.selected_objects
-        bevel_width=convert_length_by_scene_unit(parameters.set_bevel_width)
+        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
         success_count = 0
         for object in selected_objects:
@@ -166,7 +167,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             return {"CANCELLED"}
 
         collection_objects = collection.all_objects
-        import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup  
+        import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
         proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
         rename_meshes(collection_objects, collection.name)  # 重命名mesh
@@ -175,9 +176,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
             add_vertexcolor_attribute(mesh, VERTEXCOLOR)  # 添加顶点色
             remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
-            remove_modifier(
-                mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
-            )
+            remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
 
             proxy_mesh = make_transfer_proxy_mesh(
                 mesh, TRANSFERPROXY_PREFIX, proxy_collection
@@ -187,8 +186,8 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             add_color_transfer_modifier(mesh)
             add_gn_wearmask_modifier(mesh)
             mesh.hide_render = True
-        
-        for proxy_object in proxy_object_list:# 处理proxy模型
+
+        for proxy_object in proxy_object_list:  # 处理proxy模型
             cleanup_color_attributes(proxy_object)
             add_vertexcolor_attribute(proxy_object, VERTEXCOLOR)
 
@@ -241,7 +240,6 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         set_visibility(transfer_proxy_collection, True)
 
         for object in selected_objects:
-            # clean_user(object)
             object.hide_render = True
             object.select_set(False)
 
@@ -254,14 +252,11 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                     else:
                         bake_list.append(modifier.object)
 
-
-
         # 隐藏不必要烘焙的物体
         for proxy_object in transfer_proxy_collection.objects:
             set_visibility(proxy_object, False)
         # 显示需要烘焙的物体，并设置为选中
         for proxy_bake_object in bake_list:
-            print(proxy_bake_object.name)
             set_visibility(proxy_bake_object, True)
             # bpy.context.view_layer.objects.active = proxy_bake_object
             proxy_bake_object.select_set(True)
@@ -334,25 +329,29 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
 
         if len(selected_meshes) == 0:
-            self.report({"INFO"}, "No selected mesh object,"
-                        + " if mesh's active vertex color is not 'wearmask',"
-                        + " you might not be able to preview the correct result."
-                        + " | 没有选中Mesh物体，如果Mesh的active顶点色不是'wearmask'，"
-                        + "可能无法预览正确结果")
+            self.report(
+                {"INFO"},
+                "No selected mesh object,"
+                + " if mesh's active vertex color is not 'wearmask',"
+                + " you might not be able to preview the correct result."
+                + " | 没有选中Mesh物体，如果Mesh的active顶点色不是'wearmask'，"
+                + "可能无法预览正确结果",
+            )
 
         for mesh in selected_meshes:
             set_active_color_attribute(mesh, VERTEXCOLOR)
 
-        viewport=viewport_shading_mode("VIEW_3D", "SOLID")
-        # viewport.shading.color_type = "VERTEX"
-        if viewport.shading.color_type != "VERTEX":
+        viewports = viewport_shading_mode("VIEW_3D", "SOLID", mode="CONTEXT")
+
+        for viewport in viewports:
             viewport.shading.color_type = "VERTEX"
-        else:
-            viewport.shading.color_type = "MATERIAL"
-        
 
-        return {'FINISHED'}
+        self.report(
+            {"INFO"},
+            "Switch preview w earMask in viewport | 在viewport切换预览WearMask",
+        )
 
+        return {"FINISHED"}
 
 
 classes = (

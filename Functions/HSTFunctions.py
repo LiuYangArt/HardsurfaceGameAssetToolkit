@@ -1,13 +1,14 @@
 import bpy
 from ..Const import *
 
+
 def add_bevel_modifier(mesh, width=0.05, segments=1):
     """添加Bevel Modifier"""
 
     check_sharp = False
     bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
-    
-    if BEVEL_MODIFIER not in mesh.modifiers:# 如果没有bevel修改器
+
+    if BEVEL_MODIFIER not in mesh.modifiers:  # 如果没有bevel修改器
 
         if "sharp_edge" in mesh.data.attributes:
             check_sharp = True
@@ -138,13 +139,12 @@ def add_gn_wearmask_modifier(mesh):
         geo_node_modifier = mesh.modifiers[COLOR_GEOMETRYNODE_MODIFIER]
         geo_node_modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
 
-def add_face_weight_attribute(mesh,value=1):
+
+def add_face_weight_attribute(mesh, value=1):
     """添加面权重属性"""
     if "__mod_weightednormals_faceweight" not in mesh.data.attributes:
-                mesh.data.attributes.new(
-                    "__mod_weightednormals_faceweight", "INT", "FACE"
-                )
-                mesh.data.attributes[
-                    "__mod_weightednormals_faceweight"
-                ].data.foreach_set("value", [value] * len(mesh.data.polygons))
-                mesh.data.update()
+        mesh.data.attributes.new("__mod_weightednormals_faceweight", "INT", "FACE")
+        mesh.data.attributes["__mod_weightednormals_faceweight"].data.foreach_set(
+            "value", [value] * len(mesh.data.polygons)
+        )
+        mesh.data.update()
