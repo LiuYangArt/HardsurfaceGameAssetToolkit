@@ -1,4 +1,3 @@
-import re
 import bpy
 import bmesh
 
@@ -523,6 +522,14 @@ def get_object_material(target_object, material_name: str) -> bpy.types.Material
                 break
     return material
 
+def get_object_material_slots(target_object)->list:
+    """获取所选物体的材质槽列表"""
+    material_slots = []
+    if target_object.material_slots is not None:
+        for slot in target_object.material_slots:
+            material_slots.append(slot)
+    return material_slots
+
 
 def get_material_color_texture(material) -> bpy.types.Image:
     """获取材质的颜色纹理"""
@@ -568,11 +575,11 @@ def check_screen_area(area_type: str) -> bpy.types.Area:
     return screen_area
 
 
-def new_screen_area(area_type: str, direction: str = "VERTICAL") -> bpy.types.Area:
+def new_screen_area(area_type: str, direction: str = "VERTICAL",size=0.5) -> bpy.types.Area:
     """创建新的screen area"""
 
     area_num = len(bpy.context.window.screen.areas)
-    bpy.ops.screen.area_split(direction=direction)
+    bpy.ops.screen.area_split(direction=direction,factor=size)
     new_area = bpy.context.window.screen.areas[area_num]
     new_area.type = area_type
     return new_area

@@ -231,7 +231,7 @@ class SwatchMatSetupOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL")
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL",0.4)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -251,8 +251,12 @@ class SwatchMatSetupOperator(bpy.types.Operator):
             swatch_uv.active = True
 
             swatch_mat = get_object_material(mesh, SWATCH_MATERIAL)
-            if swatch_mat is None:  # add material if not exist
-                mesh.data.materials.append(scene_swatch_mat)
+            mat_slot=get_object_material_slots(mesh)
+            if swatch_mat is None:
+                if len(mat_slot)==0:  # add material if not exist
+                    mesh.data.materials.append(scene_swatch_mat)
+                elif len(mat_slot)>0:
+                    mat_slot[0].material=scene_swatch_mat
 
         for subnode in scene_swatch_mat.node_tree.nodes:  # find swatch texture
             if subnode.type == "GROUP":
@@ -294,7 +298,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL")
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL",0.4)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":

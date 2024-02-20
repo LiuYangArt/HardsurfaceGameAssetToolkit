@@ -1,5 +1,3 @@
-from calendar import c
-import select
 import bpy
 from .Const import *
 from .Functions.HSTFunctions import *
