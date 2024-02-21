@@ -6,6 +6,7 @@ from bpy_extras.io_utils import ImportHelper
 from .Functions.BTMFunctions import *
 from .Functions.CommonFunctions import *
 
+
 class BTMLowOperator(bpy.types.Operator):
     bl_idname = "object.btmlow"
     bl_label = "Low Poly Group"
@@ -344,8 +345,6 @@ class TestButtonOperator(bpy.types.Operator):
         # print(context.tool_settings.image_paint.palette)
 
         return {"FINISHED"}
-
-
 
 
 # classes = (

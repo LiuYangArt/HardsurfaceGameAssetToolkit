@@ -3,11 +3,11 @@ bl_info = {
     "author": "Akari,LiuYang",
     "description": "用于tf项目自定义流程游戏资产制作的blender插件",
     "blender": (4, 0, 0),
-    "version": (0, 5, 2),
+    "version": (2024, 2),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",
-    "url": "https://github.com/LiuYangArt/HardsurfaceGameAssetToolkit"
+    "url": "https://github.com/LiuYangArt/HardsurfaceGameAssetToolkit",
 }
 
 import bpy
@@ -18,10 +18,10 @@ from . import auto_load
 auto_load.init()
 
 
-
 def register():
     auto_load.register()
     bpy.types.Scene.hst_params = PointerProperty(type=UIParams)
+
 
 def unregister():
     auto_load.unregister()

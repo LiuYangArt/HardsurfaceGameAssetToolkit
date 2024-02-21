@@ -1,7 +1,7 @@
 from bpy.utils import resource_path
 from pathlib import Path
 
-#hard surface props
+# hard surface props
 UV_BASE = "UV0_Base"
 UV_SWATCH = "UV1_Swatch"
 VERTEXCOLOR = "WearMask"
@@ -9,7 +9,7 @@ TRANSFER_COLLECTION = "_TransferNormal"
 TRANSFER_MESH_PREFIX = "Raw_"
 TRANSFER_PROXY_COLLECTION = "_TransferProxy"
 TRANSFERPROXY_PREFIX = "TRNSP_"
-COLLECTION_COLOR="02"
+COLLECTION_COLOR = "02"
 
 MODIFIER_PREFIX = "HST"
 BEVEL_MODIFIER = "HSTBevel"
@@ -19,7 +19,7 @@ TRIANGULAR_MODIFIER = MODIFIER_PREFIX + "Triangulate"
 COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX + "VertexColorTransfer"
 COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
 
-#import asset
+# import asset
 ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
 USER = Path(resource_path("USER"))
@@ -32,8 +32,8 @@ LOOKDEV_HDR = "HDR_LookDev_Mid"
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
 SOCKET_SIZE = 0.3
 
-DEFAULT_TEX_DENSITY=1024
-DEFAULT_TEX_SIZE=2048
+DEFAULT_TEX_DENSITY = 1024
+DEFAULT_TEX_SIZE = 2048
 
 AXIS_COLLECTION = "_UE_AXIS_"
 AXIS_OBJECT_PREFIX = "_HST_"

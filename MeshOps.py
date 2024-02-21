@@ -1,5 +1,3 @@
-import select
-from webbrowser import get
 import bpy
 from .Const import *
 from .Functions.CommonFunctions import *
@@ -20,9 +18,9 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
-        
-        set_scene_units()
-        
+
+        set_default_scene_units()
+
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -120,7 +118,9 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
+        store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
+
         # 清理multi user
         for object in selected_objects:
             clean_user(object)
@@ -135,7 +135,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
         bpy.ops.mesh.select_all(action="DESELECT")
-        bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.mode_set(mode=store_object_mode)
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 
@@ -173,7 +173,6 @@ class AddSnapSocketOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        
 
         if len(selected_meshes) == 0:
             message_box(
@@ -181,7 +180,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
                 + "没有选中Mesh，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
-        
+
         collection = selected_objects[0].users_collection[0]
 
         if bpy.context.mode == "EDIT_MESH":
@@ -359,15 +358,8 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if len(selected_meshes) == 0:
-            self.report(
-                {"INFO"},
-                "No selected mesh object,"
-                + " if mesh's active vertex color is not 'wearmask',"
-                + " you might not be able to preview the correct result."
-                + " | 没有选中Mesh物体，如果Mesh当前顶点色没有'WearMask'，"
-                + "则无法预览正确结果",
-            )
+        # if len(selected_meshes) == 0:
+        #     print("No selected mesh object, please select mesh objects and retry | 没有选中Mesh物体，请选中Mesh物体后重试")
 
         for mesh in selected_meshes:
             set_active_color_attribute(mesh, VERTEXCOLOR)
@@ -424,7 +416,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
             scale_uv(uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
 
         bpy.ops.object.mode_set(mode=store_object_mode)
-
+        self.report({"INFO"}, "Texel Density set to " + str(texel_density))
         return {"FINISHED"}
 
 
@@ -437,7 +429,6 @@ class AxisCheckOperator(bpy.types.Operator):
         properties = context.scene.hst_params
         axis_toggle = properties.axis_toggle
         axis_objects = []
-
 
         if axis_toggle == False:
             for object in bpy.data.objects:
@@ -458,12 +449,11 @@ class AxisCheckOperator(bpy.types.Operator):
                     old_mesh.user_clear()
                     bpy.data.meshes.remove(old_mesh)
 
-
             # bpy.data.collections.remove(bpy.data.collections.get(AXIS_COLLECTION))
-            self.report({"INFO"}, "Axis check disabled")
+            return {"FINISHED"}
 
         if axis_toggle == True:
-            
+
             # up_arrow = import_object(PRESET_FILE_PATH, AXIS_UP_ARROW)
             # front_arrow = import_object(PRESET_FILE_PATH,  AXIS_FRONT_ARROW)
             # origin = import_object(PRESET_FILE_PATH, AXIS_ORIGIN)
@@ -506,8 +496,7 @@ class AxisCheckOperator(bpy.types.Operator):
                 obj.hide_viewport = False
                 obj.hide_select = True
 
-            self.report({"INFO"}, "Axis check enabled")
-        return {"FINISHED"}
+            return {"FINISHED"}
 
 
 class SetSceneUnitsOperator(bpy.types.Operator):
@@ -515,11 +504,10 @@ class SetSceneUnitsOperator(bpy.types.Operator):
     bl_label = "SetSceneUnits"
     bl_description = "设置场景单位为厘米"
 
-
     def execute(self, context):
-        set_scene_units()
+        set_default_scene_units()
         self.report({"INFO"}, "Scene units set to centimeters")
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 # classes = (

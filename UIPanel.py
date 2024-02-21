@@ -10,8 +10,10 @@ from bpy.types import PropertyGroup
 
 from .Const import *
 
+
 def axis_check_toggle(self, context):
     bpy.ops.object.axischeck()
+
 
 class UIParams(PropertyGroup):
     """UI参数"""
@@ -29,7 +31,7 @@ class UIParams(PropertyGroup):
 
     socket_name: StringProperty(
         description="Socket Name",
-        default="Box",
+        default="",
         maxlen=24,
     )
 
@@ -47,8 +49,10 @@ class UIParams(PropertyGroup):
             ("2048", "2048", "Texture Size 2048x2048"),
             ("4096", "4096", "Texture Size 4096x4096"),
             ("8192", "8192", "Texture Size 8192x8192"),
-        ],default=str(DEFAULT_TEX_SIZE))
-    
+        ],
+        default=str(DEFAULT_TEX_SIZE),
+    )
+
     axis_toggle: BoolProperty(
         description="查看Unreal引擎中的前方向",
         default=False,
@@ -59,8 +63,6 @@ class UIParams(PropertyGroup):
     #     default=False,
     #     update=switch_wearkmask_preview,
     # )
-
-
 
 
 class BTMPanel(bpy.types.Panel):
@@ -128,12 +130,15 @@ class HSTPanel(bpy.types.Panel):
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("object.swatchmatsetup", text="SetSwatch")
         uv_mode_row.operator("object.baseuveditmode", text="BaseUV")
-        box_column.operator("object.setbaseuvtexeldensity", text="Set BaseUV Texel Density")
+        box_column.operator(
+            "object.setbaseuvtexeldensity", text="Set BaseUV Texel Density"
+        )
         td_row = box_column.row(align=True)
-        td_row.prop(parameters, "texture_density", text="TD")
-        td_row.label(text="px/m")
+        td_row.label(text="Texel Density")
+        td_row.prop(parameters, "texture_density", text="")
         td_row.separator()
-        td_row.prop(parameters, "texture_size", text="Tex",icon="TEXTURE_DATA")
+        td_row.label(text="px/m")
+        box_column.prop(parameters, "texture_size", text="Tex Size", icon="TEXTURE_DATA")
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
@@ -142,10 +147,16 @@ class HSTPanel(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)
-        view_row.operator("object.setuplookdevenv", text="LookDev View", icon="SHADING_RENDERED")
+        view_row.operator(
+            "object.setuplookdevenv", text="LookDev View", icon="SHADING_RENDERED"
+        )
         view_row.separator()
-        view_row.operator("object.previewwearmask", text="WearMask View",icon="SHADING_SOLID")
-        box_column.prop(parameters, "axis_toggle", text="Check Front Axis", icon="EMPTY_AXIS")
+        view_row.operator(
+            "object.previewwearmask", text="WearMask View", icon="SHADING_SOLID"
+        )
+        box_column.prop(
+            parameters, "axis_toggle", text="Check Front Axis", icon="EMPTY_AXIS"
+        )
         # box_column.operator("object.axischeck", text="Axis Check",icon="EMPTY_AXIS")
 
         box_column.separator()

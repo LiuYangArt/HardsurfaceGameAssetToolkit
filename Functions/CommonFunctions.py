@@ -1,6 +1,5 @@
 import bpy
 import bmesh
-
 import math
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 
@@ -304,6 +303,7 @@ def import_material(file_path, material_name) -> bool:
 
     return material_import
 
+
 def import_object(file_path, object_name):
     """从文件载入World Shader"""
 
@@ -372,11 +372,13 @@ def add_uv_layers(target_object: bpy.types.Object, uv_name: str) -> bpy.types.Ob
 
 
 def check_uv_layer(mesh, uv_name) -> bpy.types.Object:
+    """检查是否存在uv_layer，返回uv_layer"""
     uv_layer = mesh.data.uv_layers.get(uv_name)
     return uv_layer
 
 
 def has_uv_attribute(mesh) -> bool:
+    """检查是否存在uv属性，返回bool"""
     has_uv = False
     for attributes in mesh.data.attributes:
         if attributes.domain == "CORNER" and attributes.data_type == "FLOAT2":
@@ -429,7 +431,7 @@ def clean_lonely_verts(mesh) -> None:
 def clean_mid_verts(mesh) -> None:
     """清理直线中的孤立顶点"""
     mid_verts_list = []
-    
+
     bm = bmesh.new()
     mesh = mesh.data
     bm.from_mesh(mesh)
@@ -787,14 +789,10 @@ def culculate_td_areas(mesh, texture_size_x, texture_size_y) -> list:
     calculated_obj_td_area = []
     scale_length = bpy.context.scene.unit_settings.scale_length
     face_count = len(mesh.faces)
-    texture_size_x=int(texture_size_x)
-    texture_size_y=int(texture_size_y)
+    texture_size_x = int(texture_size_x)
+    texture_size_y = int(texture_size_y)
     aspect_ratio = texture_size_x / texture_size_y
-    largest_side = (
-        texture_size_x
-        if texture_size_x > texture_size_y
-        else texture_size_y
-    )
+    largest_side = texture_size_x if texture_size_x > texture_size_y else texture_size_y
     # print("unit: " + str(unit_leghth) + " face_count: " + str(face_count) + " texture_size_cur_x: " + str(texture_size_cur_x) + " texture_size_cur_y: " + str(texture_size_cur_y) + " aspect_ratio: " + str(aspect_ratio) + " largest_side: " + str(largest_side))
 
     for x in range(0, face_count):
@@ -833,8 +831,9 @@ def culculate_td_areas(mesh, texture_size_x, texture_size_y) -> list:
 
 
 def get_texel_density(target_object, texture_size_x=1024, texture_size_y=1024):
-    texture_size_x=int(texture_size_x)
-    texture_size_y=int(texture_size_y)
+    """获取UV的Texel Density"""
+    texture_size_x = int(texture_size_x)
+    texture_size_y = int(texture_size_y)
     area = 0
     texel_density = 0
     local_area_list = []
@@ -849,7 +848,6 @@ def get_texel_density(target_object, texture_size_x=1024, texture_size_y=1024):
 
     for face_id in range(0, face_count):
         selected_faces.append(face_id)
-
 
     for face_id in range(face_count):
         face_td_area_list = culculate_td_areas(bm, texture_size_x, texture_size_y)
@@ -884,7 +882,9 @@ def get_texel_density(target_object, texture_size_x=1024, texture_size_y=1024):
     # print("density: " + str(density))
     return texel_density
 
-def set_scene_units():
-    bpy.context.scene.unit_settings.system = 'METRIC'
+
+def set_default_scene_units():
+    """设置默认场景单位"""
+    bpy.context.scene.unit_settings.system = "METRIC"
     bpy.context.scene.unit_settings.scale_length = 1
-    bpy.context.scene.unit_settings.length_unit = 'CENTIMETERS'
+    bpy.context.scene.unit_settings.length_unit = "CENTIMETERS"
