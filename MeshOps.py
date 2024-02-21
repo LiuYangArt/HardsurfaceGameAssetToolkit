@@ -102,7 +102,8 @@ class CleanVertexOperator(bpy.types.Operator):
 class FixSpaceClaimObjOperator(bpy.types.Operator):
     bl_idname = "object.fixspaceclaimobj"
     bl_label = "FixSpaceClaimObj"
-    bl_description = "修理spaceclaim输出的obj"
+    bl_description = "修理spaceclaim输出的obj\
+        自动合并面，并根据角度标记锐边"
 
     def execute(self, context):
         SHARP_ANGLE = 0.08

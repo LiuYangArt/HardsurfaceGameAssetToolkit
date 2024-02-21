@@ -7,11 +7,11 @@ from bpy.props import (
     StringProperty,
 )
 from bpy.types import PropertyGroup
-
 from .Const import *
 
 
 def axis_check_toggle(self, context):
+    """当在UI中点击按钮时，调用axischeck操作"""
     bpy.ops.object.axischeck()
 
 
@@ -58,11 +58,6 @@ class UIParams(PropertyGroup):
         default=False,
         update=axis_check_toggle,
     )
-    # b_wearmask_preview: BoolProperty(
-    #     description="Preview Wear Mask",
-    #     default=False,
-    #     update=switch_wearkmask_preview,
-    # )
 
 
 class BTMPanel(bpy.types.Panel):
@@ -94,7 +89,6 @@ class HSTPanel(bpy.types.Panel):
     bl_region_type = "UI"
 
     def draw(self, context):
-        # scene=bpy.context.scene
         parameters = context.scene.hst_params
         layout = self.layout
         box = layout.box()
@@ -135,10 +129,13 @@ class HSTPanel(bpy.types.Panel):
         )
         td_row = box_column.row(align=True)
         td_row.label(text="Texel Density")
+        td_row.separator()
         td_row.prop(parameters, "texture_density", text="")
         td_row.separator()
         td_row.label(text="px/m")
-        box_column.prop(parameters, "texture_size", text="Tex Size", icon="TEXTURE_DATA")
+        box_column.prop(
+            parameters, "texture_size", text="Tex Size", icon="TEXTURE_DATA"
+        )
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
@@ -155,9 +152,8 @@ class HSTPanel(bpy.types.Panel):
             "object.previewwearmask", text="WearMask View", icon="SHADING_SOLID"
         )
         box_column.prop(
-            parameters, "axis_toggle", text="Check Front Axis", icon="EMPTY_AXIS"
+            parameters, "axis_toggle", text="Check UE Front Axis", icon="EMPTY_AXIS"
         )
-        # box_column.operator("object.axischeck", text="Axis Check",icon="EMPTY_AXIS")
 
         box_column.separator()
         box_column.label(text="Utilities")
