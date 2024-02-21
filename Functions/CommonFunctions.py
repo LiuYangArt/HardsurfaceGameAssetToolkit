@@ -1,6 +1,7 @@
 import bpy
 import bmesh
 
+import math
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 
 """ 通用functions """
@@ -357,8 +358,12 @@ def has_uv_attribute(mesh) -> bool:
 
 def scale_uv(uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
     """缩放UV,输入参数为uv_layer,缩放比例，缩放中心点"""
+
     pivot = Vector(pivot)
     scale = Vector(scale)
+
+    # bpy.context.temp_override(active_object=mesh)
+
     for uv_index in range(len(uv_layer.data)):  # 根据缩放参数重新计算uv每个点的位置
         v = uv_layer.data[uv_index].uv
         s = scale
@@ -371,9 +376,12 @@ def scale_uv(uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
 def clean_lonely_verts(mesh) -> None:
     """清理孤立顶点"""
     lonely_verts_list = []
+    if mesh.mode == "EDIT":
+        bpy.ops.object.mode_set(mode="OBJECT")
 
-    bm = bmesh.from_edit_mesh(mesh.data)
-    bm.verts.ensure_lookup_table()
+    bm = bmesh.new()
+    mesh = mesh.data
+    bm.from_mesh(mesh)
 
     for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
         if vertex.hide is False and len(vertex.link_edges) == 2:
@@ -383,18 +391,21 @@ def clean_lonely_verts(mesh) -> None:
         bm, verts=lonely_verts_list, use_face_split=False, use_boundary_tear=False
     )
 
-    bmesh.update_edit_mesh(mesh.data)
+    bm.to_mesh(mesh)
+    mesh.update()
+    bm.clear()
     bm.free()
 
 
 def clean_mid_verts(mesh) -> None:
     """清理直线中的孤立顶点"""
+    mid_verts_list = []
+    
     bm = bmesh.new()
     mesh = mesh.data
-    mid_verts_list = []
     bm.from_mesh(mesh)
 
-    bm.verts.ensure_lookup_table()
+    # bm.verts.ensure_lookup_table()
     for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
         if vertex.hide is False and len(vertex.link_edges) == 2:
             mid_verts_list.append(vertex)
@@ -522,7 +533,8 @@ def get_object_material(target_object, material_name: str) -> bpy.types.Material
                 break
     return material
 
-def get_object_material_slots(target_object)->list:
+
+def get_object_material_slots(target_object) -> list:
     """获取所选物体的材质槽列表"""
     material_slots = []
     if target_object.material_slots is not None:
@@ -575,17 +587,19 @@ def check_screen_area(area_type: str) -> bpy.types.Area:
     return screen_area
 
 
-def new_screen_area(area_type: str, direction: str = "VERTICAL",size=0.5) -> bpy.types.Area:
+def new_screen_area(
+    area_type: str, direction: str = "VERTICAL", size=0.5
+) -> bpy.types.Area:
     """创建新的screen area"""
 
     area_num = len(bpy.context.window.screen.areas)
-    bpy.ops.screen.area_split(direction=direction,factor=size)
+    bpy.ops.screen.area_split(direction=direction, factor=size)
     new_area = bpy.context.window.screen.areas[area_num]
     new_area.type = area_type
     return new_area
 
 
-def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT")->list:
+def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> list:
     """设置视口渲染模式,mode为CONTEXT时只设置当前viewport，ALL时设置所有同类型viewport，返回viewport area列表"""
     viewport_spaces = []
     match mode:
@@ -681,13 +695,163 @@ def convert_length_by_scene_unit(length: float) -> float:
 
     return new_length
 
+
 def uv_editor_fit_view(area):
-    """ 缩放uv视图填充窗口 """
-    context=bpy.context
-    if area.type == 'IMAGE_EDITOR':
+    """缩放uv视图填充窗口"""
+    context = bpy.context
+    if area.type == "IMAGE_EDITOR":
         for region in area.regions:
-            if region.type == 'WINDOW':
+            if region.type == "WINDOW":
                 with context.temp_override(area=area, region=region):
                     bpy.ops.image.view_all(fit_view=True)
     else:
         print("No Image Editor")
+
+
+def uv_unwrap(target_objects, method="ANGLE_BASED", margin=0.005, correct_aspect=True):
+    """UV展开"""
+
+    bpy.ops.object.select_all(action="DESELECT")
+    for object in target_objects:
+        if object.type == "MESH":
+            object.select_set(True)
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.unwrap(
+        method=method, fill_holes=True, correct_aspect=correct_aspect, margin=margin
+    )
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    return
+
+
+def uv_average_scale(target_objects, uv_layer_name="UVMap"):
+    """UV平均缩放"""
+
+    bpy.ops.object.select_all(action="DESELECT")
+    for object in target_objects:
+        if object.type == "MESH":
+            object.select_set(True)
+            object.data.uv_layers.active = object.data.uv_layers[uv_layer_name]
+
+    store_area_type = bpy.context.screen.areas[0].type
+
+    for area in bpy.context.screen.areas:
+        if area.type == "IMAGE_EDITOR":
+            area.ui_type = "UV"
+            break
+        else:
+            bpy.context.screen.areas[0].type = "IMAGE_EDITOR"
+            bpy.context.screen.areas[0].ui_type = "UV"
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.uv.select_all(action="SELECT")
+    bpy.ops.uv.average_islands_scale()
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    bpy.context.screen.areas[0].type = store_area_type
+
+
+def culculate_td_areas(mesh, texture_size_x, texture_size_y) -> list:
+    """计算TD每个面的大小，输出列表"""
+    calculated_obj_td_area = []
+    scale_length = bpy.context.scene.unit_settings.scale_length
+    face_count = len(mesh.faces)
+    texture_size_x=int(texture_size_x)
+    texture_size_y=int(texture_size_y)
+    aspect_ratio = texture_size_x / texture_size_y
+    largest_side = (
+        texture_size_x
+        if texture_size_x > texture_size_y
+        else texture_size_y
+    )
+    # print("unit: " + str(unit_leghth) + " face_count: " + str(face_count) + " texture_size_cur_x: " + str(texture_size_cur_x) + " texture_size_cur_y: " + str(texture_size_cur_y) + " aspect_ratio: " + str(aspect_ratio) + " largest_side: " + str(largest_side))
+
+    for x in range(0, face_count):
+        area = 0
+
+        # Calculate total UV area
+        loops = []
+        for loop in mesh.faces[x].loops:
+            loops.append(loop[mesh.loops.layers.uv.active].uv)
+
+        loops_count = len(loops)
+        a = loops_count - 1
+
+        for b in range(0, loops_count):
+            area += (loops[a].x + loops[b].x) * (loops[a].y - loops[b].y)
+            a = b
+
+        area = abs(0.5 * area)
+
+        # Geometry Area
+        face_area = mesh.faces[x].calc_area()
+        # TexelDensity calculating from selected in panel texture size
+        if face_area > 0 and area > 0:
+            texel_density = (
+                ((largest_side / math.sqrt(aspect_ratio)) * math.sqrt(area))
+                / (math.sqrt(face_area) * 100)
+                / scale_length
+            )
+        else:
+            texel_density = 0.0001
+
+        td_area_list = [texel_density, area]
+        calculated_obj_td_area.append(td_area_list)
+
+    return calculated_obj_td_area
+
+
+def get_texel_density(target_object, texture_size_x=1024, texture_size_y=1024):
+    texture_size_x=int(texture_size_x)
+    texture_size_y=int(texture_size_y)
+    area = 0
+    texel_density = 0
+    local_area_list = []
+    local_td_list = []
+
+    # Calculate the total area of the UVs
+    bm = bmesh.new()
+    bm.from_mesh(target_object.data)
+    bm.faces.ensure_lookup_table()
+    selected_faces = []
+    face_count = len(bm.faces)
+
+    for face_id in range(0, face_count):
+        selected_faces.append(face_id)
+
+
+    for face_id in range(face_count):
+        face_td_area_list = culculate_td_areas(bm, texture_size_x, texture_size_y)
+        local_area = 0
+        local_texel_density = 0
+
+        # Calculate UV area and TD per object
+        for face_id in selected_faces:
+            local_area += face_td_area_list[face_id][1]
+
+        for face_id in selected_faces:
+            local_texel_density += (
+                face_td_area_list[face_id][0]
+                * face_td_area_list[face_id][1]
+                / local_area
+            )
+        # Store local Area and local TD to lists
+        local_area_list.append(local_area)
+        local_td_list.append(local_texel_density)
+        # Calculate Total UV Area
+        area += local_area
+    # Calculate Final TD
+    if area > 0:
+        # and finally calculate total TD
+        for local_area, local_texel_density in zip(local_area_list, local_td_list):
+            texel_density += local_texel_density * local_area / area
+
+    #     uv_space = "%.4f" % round(area * 100, 4) + " %"
+    #     density = "%.3f" % round(texel_density, 3)
+
+    # print("texel_density: " + str(texel_density))
+    # print("density: " + str(density))
+    return texel_density
+

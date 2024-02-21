@@ -18,13 +18,10 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
-
+        store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
-        for object in selected_objects:
-            object.select_set(False)
 
         for mesh in selected_meshes:
-            mesh.select_set(True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
 
@@ -38,14 +35,11 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
 
-        # uv unwrap
-        bpy.context.scene.tool_settings.use_uv_select_sync = True
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.uv.unwrap(
-            method="CONFORMAL", fill_holes=True, correct_aspect=True, margin=0.005
+        uv_unwrap(
+            selected_meshes, method="ANGLE_BASED", margin=0.005, correct_aspect=True
         )
-        bpy.ops.object.mode_set(mode="OBJECT")
-
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+        bpy.ops.object.mode_set(mode=store_object_mode)
         self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
@@ -92,10 +86,12 @@ class CleanVertexOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
+        store_object_mode = bpy.context.active_object.mode
+        bpy.ops.object.mode_set(mode="OBJECT")
         for mesh in selected_meshes:
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
-
+        bpy.ops.object.mode_set(mode=store_object_mode)
         self.report({"INFO"}, "Selected meshes cleaned")
         return {"FINISHED"}
 
@@ -228,7 +224,7 @@ class SwatchMatSetupOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL",0.4)
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -248,12 +244,12 @@ class SwatchMatSetupOperator(bpy.types.Operator):
             swatch_uv.active = True
 
             swatch_mat = get_object_material(mesh, SWATCH_MATERIAL)
-            mat_slot=get_object_material_slots(mesh)
+            mat_slot = get_object_material_slots(mesh)
             if swatch_mat is None:
-                if len(mat_slot)==0:  # add material if not exist
+                if len(mat_slot) == 0:  # add material if not exist
                     mesh.data.materials.append(scene_swatch_mat)
-                elif len(mat_slot)>0:
-                    mat_slot[0].material=scene_swatch_mat
+                elif len(mat_slot) > 0:
+                    mat_slot[0].material = scene_swatch_mat
 
         for subnode in scene_swatch_mat.node_tree.nodes:  # find swatch texture
             if subnode.type == "GROUP":
@@ -295,7 +291,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL",0.4)
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -340,6 +336,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
+
 class PreviewWearMaskOperator(bpy.types.Operator):
     bl_idname = "object.previewwearmask"
     bl_label = "PreviewWearMask"
@@ -374,6 +371,48 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         )
 
         return {"FINISHED"}
+
+
+class SetTexelDensityOperator(bpy.types.Operator):
+    bl_idname = "object.setbaseuvtexeldensity"
+    bl_label = "SetBaseUVTexelDensity"
+    bl_description = "设置选中模型的BaseUV的Texel Density\
+        选中模型后运行，可以自动计算当前模型的Texel Density并设置\
+            贴图大小和TD使用默认值即可，通常不需要设置"
+
+    def execute(self, context):
+        parameters = context.scene.hst_params
+        texel_density = parameters.texture_density * 0.01  # fix unit to cm
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        texture_size_x = parameters.texture_size
+        texture_size_y = parameters.texture_size
+
+        store_object_mode = bpy.context.active_object.mode
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        for mesh in selected_meshes:  
+            uv_layer = check_uv_layer(mesh, UV_BASE)
+            if uv_layer is None:
+                message_box("Selected mesh has no UV layer named 'UV0_Base', setup uv layer first"
+                            + " | 选中的模型没有名为'UV0_Base'的UV，请先正确设置UV")
+                return {"CANCELLED"}
+
+        uv_average_scale(selected_objects, uv_layer_name=UV_BASE)
+
+        for mesh in selected_meshes:
+            uv_layer = check_uv_layer(mesh, UV_BASE)
+            print("mesh_name: " + mesh.name)
+            old_td = get_texel_density(mesh, texture_size_x, texture_size_y)
+            print("old_td: " + str(old_td))
+            scale_factor = texel_density / old_td
+            print("scale_factor: " + str(scale_factor))
+            scale_uv(uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
+
+        bpy.ops.object.mode_set(mode=store_object_mode)
+
+        return {"FINISHED"}
+
 
 # classes = (
 #     PrepSpaceClaimCADMeshOperator,

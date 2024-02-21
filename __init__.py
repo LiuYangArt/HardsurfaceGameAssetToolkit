@@ -1,19 +1,17 @@
-# 硬表面游戏资产快捷处理工具包
-# 基于卡林的硬表面插件修改
-
 bl_info = {
     "name": "HardsurfaceGameAssetToolkit",
     "author": "Akari,LiuYang",
-    "description": "",
+    "description": "用于tf项目自定义流程游戏资产制作的blender插件",
     "blender": (4, 0, 0),
     "version": (0, 5, 2),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",
+    "url": "https://github.com/LiuYangArt/HardsurfaceGameAssetToolkit"
 }
 
 import bpy
-from bpy.props import CollectionProperty, PointerProperty
+from bpy.props import PointerProperty
 from .UIPanel import UIParams
 from . import auto_load
 

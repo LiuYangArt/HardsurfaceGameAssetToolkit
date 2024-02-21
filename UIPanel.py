@@ -1,5 +1,3 @@
-from ctypes import alignment
-import operator
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -10,35 +8,7 @@ from bpy.props import (
 )
 from bpy.types import PropertyGroup
 
-# from .Functions.CommonFunctions import *
-# from .Const import *
-
-# def switch_wearkmask_preview(self, context):
-#     print(self.b_wearmask_preview)
-#     selected_objects = bpy.context.selected_objects
-#     selected_meshes = filter_type(selected_objects, "MESH")
-
-#     for mesh in selected_meshes:
-#         set_active_color_attribute(mesh, VERTEXCOLOR)
-
-#     current_viewport=bpy.context.area.spaces
-#     current_shading_type=current_viewport[0].shading.type
-#     current_color_type=current_viewport[0].shading.color_type
-#     print(current_shading_type)
-#     print(current_color_type)
-
-
-#     if self.b_wearmask_preview is False:
-#         print("Close Wear Mask Preview")
-#         current_viewport[0].shading.type=current_shading_type
-#         current_viewport[0].shading.color_type=current_color_type
-
-#     if self.b_wearmask_preview is True:
-#         print("Preview Wear Mask")
-#         viewports=viewport_shading_mode("VIEW_3D", "SOLID",mode="CONTEXT")
-#         for viewport in viewports:
-#             viewport.shading.color_type = "VERTEX"
-
+from .Const import *
 
 class UIParams(PropertyGroup):
     """UI参数"""
@@ -59,6 +29,22 @@ class UIParams(PropertyGroup):
         default="Box",
         maxlen=24,
     )
+
+    texture_density: IntProperty(
+        description="Texture Density",
+        default=DEFAULT_TEX_DENSITY,
+        min=1,
+        max=8192,
+    )
+
+    texture_size: EnumProperty(
+        items=[
+            ("512", "512", "Texture Size 512x512"),
+            ("1024", "1024", "Texture Size 1024x1024"),
+            ("2048", "2048", "Texture Size 2048x2048"),
+            ("4096", "4096", "Texture Size 4096x4096"),
+            ("8192", "8192", "Texture Size 8192x8192"),
+        ],default=str(DEFAULT_TEX_SIZE))
 
     # b_wearmask_preview: BoolProperty(
     #     description="Preview Wear Mask",
@@ -132,6 +118,12 @@ class HSTPanel(bpy.types.Panel):
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("object.swatchmatsetup", text="SetSwatch")
         uv_mode_row.operator("object.baseuveditmode", text="BaseUV")
+        box_column.operator("object.setbaseuvtexeldensity", text="Set BaseUV Texel Density")
+        td_row = box_column.row(align=True)
+        td_row.prop(parameters, "texture_density", text="TD")
+        td_row.label(text="px/m")
+        td_row.separator()
+        td_row.prop(parameters, "texture_size", text="Tex",icon="TEXTURE_DATA")
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
@@ -140,8 +132,9 @@ class HSTPanel(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)
-        view_row.operator("object.setuplookdevenv", text="LookDev View")
-        view_row.operator("object.previewwearmask", text="Wear Mask View")
+        view_row.operator("object.setuplookdevenv", text="LookDev View", icon="SHADING_RENDERED")
+        view_row.separator()
+        view_row.operator("object.previewwearmask", text="WearMask View",icon="SHADING_SOLID")
 
         box_column.separator()
         box_column.label(text="Utilities")
