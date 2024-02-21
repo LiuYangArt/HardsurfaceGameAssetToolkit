@@ -31,7 +31,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
 
         collection_objects = collection.all_objects
         rename_meshes(collection_objects, collection.name)
-        transfer_collection = create_collection(TRANSFER_COLLECTION, "08")
+        transfer_collection = create_collection(TRANSFER_COLLECTION, COLLECTION_COLOR)
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:
@@ -167,7 +167,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         collection_objects = collection.all_objects
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
-        proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, "08")
+        proxy_collection = create_collection(TRANSFER_PROXY_COLLECTION, COLLECTION_COLOR)
         rename_meshes(collection_objects, collection.name)  # 重命名mesh
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:

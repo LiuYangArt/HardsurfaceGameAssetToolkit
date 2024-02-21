@@ -231,6 +231,7 @@ def import_node_group(file_path, node_name) -> bpy.types.NodeGroup:
             node_exist = False
         else:
             node_exist = True
+            node_import = node
             break
 
     if node_exist is False:  # 如果没有导入，导入
@@ -258,6 +259,7 @@ def import_world(file_path, world_name) -> bpy.types.World:
             world_exist = False
         else:
             world_exist = True
+            world_import = world
             break
 
     if world_exist is False:  # 如果没有导入，导入
@@ -265,7 +267,6 @@ def import_world(file_path, world_name) -> bpy.types.World:
             filepath=str(file_path),
             directory=str(file_path / INNER_PATH),
             filename=world_name,
-            link=False,
         )
 
     for world in bpy.data.worlds:
@@ -286,6 +287,7 @@ def import_material(file_path, material_name) -> bool:
             exist = False
         else:
             exist = True
+            material_import = mat
             break
 
     if exist is False:  # 如果没有导入，导入
@@ -301,6 +303,33 @@ def import_material(file_path, material_name) -> bool:
             break
 
     return material_import
+
+def import_object(file_path, object_name):
+    """从文件载入World Shader"""
+
+    INNER_PATH = "Object"
+    object_exist = False
+    for object in bpy.data.objects:
+        if object_name not in object.name:
+            object_exist = False
+        else:
+            object_exist = True
+            object_import = object
+            break
+
+    if object_exist is False:  # 如果没有导入，导入
+        bpy.ops.wm.append(
+            filepath=str(file_path),
+            directory=str(file_path / INNER_PATH),
+            filename=object_name,
+        )
+
+    for object in bpy.data.objects:
+        if object.name == object_name:
+            object_import = object
+            break
+
+    return object_import
 
 
 def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
@@ -855,3 +884,7 @@ def get_texel_density(target_object, texture_size_x=1024, texture_size_y=1024):
     # print("density: " + str(density))
     return texel_density
 
+def set_scene_units():
+    bpy.context.scene.unit_settings.system = 'METRIC'
+    bpy.context.scene.unit_settings.scale_length = 1
+    bpy.context.scene.unit_settings.length_unit = 'CENTIMETERS'

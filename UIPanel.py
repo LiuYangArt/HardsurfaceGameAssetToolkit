@@ -10,6 +10,9 @@ from bpy.types import PropertyGroup
 
 from .Const import *
 
+def axis_check_toggle(self, context):
+    bpy.ops.object.axischeck()
+
 class UIParams(PropertyGroup):
     """UI参数"""
 
@@ -45,12 +48,19 @@ class UIParams(PropertyGroup):
             ("4096", "4096", "Texture Size 4096x4096"),
             ("8192", "8192", "Texture Size 8192x8192"),
         ],default=str(DEFAULT_TEX_SIZE))
-
+    
+    axis_toggle: BoolProperty(
+        description="查看Unreal引擎中的前方向",
+        default=False,
+        update=axis_check_toggle,
+    )
     # b_wearmask_preview: BoolProperty(
     #     description="Preview Wear Mask",
     #     default=False,
     #     update=switch_wearkmask_preview,
     # )
+
+
 
 
 class BTMPanel(bpy.types.Panel):
@@ -135,9 +145,12 @@ class HSTPanel(bpy.types.Panel):
         view_row.operator("object.setuplookdevenv", text="LookDev View", icon="SHADING_RENDERED")
         view_row.separator()
         view_row.operator("object.previewwearmask", text="WearMask View",icon="SHADING_SOLID")
+        box_column.prop(parameters, "axis_toggle", text="Check Front Axis", icon="EMPTY_AXIS")
+        # box_column.operator("object.axischeck", text="Axis Check",icon="EMPTY_AXIS")
 
         box_column.separator()
         box_column.label(text="Utilities")
+        box_column.operator("object.setsceneunits", text="Set Scene Units")
         box_column.operator("object.cleanvert", text="Clean Vert")
         box_column.operator("object.sepmultiuser", text="Separate Multi User")
         box_column.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")

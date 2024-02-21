@@ -1,3 +1,5 @@
+import select
+from webbrowser import get
 import bpy
 from .Const import *
 from .Functions.CommonFunctions import *
@@ -18,6 +20,9 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试"
             )
             return {"CANCELLED"}
+        
+        set_scene_units()
+        
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -166,10 +171,18 @@ class AddSnapSocketOperator(bpy.types.Operator):
         cursor = bpy.context.scene.cursor
         cursor_current_transform = cursor.matrix
         selected_objects = bpy.context.selected_objects
-        collection = selected_objects[0].users_collection[0]
+        selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        SOCKET_SIZE = 0.3
-        IN_FRONT = False
+        
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+        
+        collection = selected_objects[0].users_collection[0]
 
         if bpy.context.mode == "EDIT_MESH":
             self.report({"INFO"}, "In edit mode, create socket from selected faces")
@@ -195,7 +208,6 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.rotation_quaternion = cursor.rotation_quaternion
         socket_object.empty_display_type = "ARROWS"
         socket_object.empty_display_size = SOCKET_SIZE
-        socket_object.show_in_front = IN_FRONT
         collection.objects.link(socket_object)
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
@@ -391,11 +403,13 @@ class SetTexelDensityOperator(bpy.types.Operator):
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        for mesh in selected_meshes:  
+        for mesh in selected_meshes:
             uv_layer = check_uv_layer(mesh, UV_BASE)
             if uv_layer is None:
-                message_box("Selected mesh has no UV layer named 'UV0_Base', setup uv layer first"
-                            + " | 选中的模型没有名为'UV0_Base'的UV，请先正确设置UV")
+                message_box(
+                    "Selected mesh has no UV layer named 'UV0_Base', setup uv layer first"
+                    + " | 选中的模型没有名为'UV0_Base'的UV，请先正确设置UV"
+                )
                 return {"CANCELLED"}
 
         uv_average_scale(selected_objects, uv_layer_name=UV_BASE)
@@ -412,6 +426,100 @@ class SetTexelDensityOperator(bpy.types.Operator):
         bpy.ops.object.mode_set(mode=store_object_mode)
 
         return {"FINISHED"}
+
+
+class AxisCheckOperator(bpy.types.Operator):
+    bl_idname = "object.axischeck"
+    bl_label = "AxisCheck"
+    bl_description = "显示UE模型坐标轴参考"
+
+    def execute(self, context):
+        properties = context.scene.hst_params
+        axis_toggle = properties.axis_toggle
+        axis_objects = []
+
+
+        if axis_toggle == False:
+            for object in bpy.data.objects:
+                if AXIS_EMPTY in object.name:
+                    bpy.data.objects.remove(object)
+
+            for object in bpy.data.objects:
+                if object.name.startswith(AXIS_OBJECT_PREFIX):
+                    axis_objects.append(object)
+
+            if len(axis_objects) > 0:
+                for obj in axis_objects:
+                    for material in obj.data.materials:
+                        material.user_clear()
+                        bpy.data.materials.remove(material)
+                    old_mesh = obj.data
+                    bpy.data.objects.remove(obj)
+                    old_mesh.user_clear()
+                    bpy.data.meshes.remove(old_mesh)
+
+
+            # bpy.data.collections.remove(bpy.data.collections.get(AXIS_COLLECTION))
+            self.report({"INFO"}, "Axis check disabled")
+
+        if axis_toggle == True:
+            
+            # up_arrow = import_object(PRESET_FILE_PATH, AXIS_UP_ARROW)
+            # front_arrow = import_object(PRESET_FILE_PATH,  AXIS_FRONT_ARROW)
+            # origin = import_object(PRESET_FILE_PATH, AXIS_ORIGIN)
+            axis = import_object(PRESET_FILE_PATH, AXIS_AXIS)
+            # axis_objects.append(up_arrow)
+            # axis_objects.append(front_arrow)
+            # axis_objects.append(origin)
+            axis_objects.append(axis)
+
+            # socket_object = bpy.data.objects.new(
+            # name=AXIS_EMPTY, object_data=None
+            # )
+            # socket_object.location = (0,0,0)
+            # socket_object.rotation_mode = "QUATERNION"
+            # socket_object.rotation_quaternion = rotate_quaternion(Quaternion(), 90, "X")
+            # socket_object.empty_display_type = "SINGLE_ARROW"
+            # socket_object.empty_display_size = 3
+            # socket_object.show_in_front = True
+            # axis_objects.append(socket_object)
+
+            # collection = get_collection(axis)
+            # if collection is None:
+            #     collection_exsit = False
+            #     axis_collection = create_collection(AXIS_COLLECTION, COLLECTION_COLOR)
+            # else:
+            #     collection_exsit = True
+            #     axis_collection = collection
+
+            # axis_collection.hide_select = True
+            # axis_collection.hide_render = True
+
+            for obj in axis_objects:
+                # if collection_exsit == False:
+                #     axis_collection.objects.link(obj)
+                #     if obj.name != AXIS_EMPTY:
+                #         bpy.context.scene.collection.objects.unlink(obj)
+
+                obj.show_in_front = True
+                obj.hide_render = True
+                obj.hide_viewport = False
+                obj.hide_select = True
+
+            self.report({"INFO"}, "Axis check enabled")
+        return {"FINISHED"}
+
+
+class SetSceneUnitsOperator(bpy.types.Operator):
+    bl_idname = "object.setsceneunits"
+    bl_label = "SetSceneUnits"
+    bl_description = "设置场景单位为厘米"
+
+
+    def execute(self, context):
+        set_scene_units()
+        self.report({"INFO"}, "Scene units set to centimeters")
+        return {'FINISHED'}
 
 
 # classes = (
