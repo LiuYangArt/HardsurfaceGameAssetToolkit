@@ -60,30 +60,30 @@ class UIParams(PropertyGroup):
     )
 
 
-class BTMPanel(bpy.types.Panel):
-    bl_idname = "OBJECT_PT_BTM"
-    bl_label = "Bake Prep Tool"
-    bl_category = "HST"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
+# class BTMPanel(bpy.types.Panel):
+#     bl_idname = "OBJECT_PT_BTM"
+#     bl_label = "Bake Prep Tool"
+#     bl_category = "HST"
+#     bl_space_type = "VIEW_3D"
+#     bl_region_type = "UI"
 
-    # @classmethod
-    # def poll(cls, context):
-    #     return context.object is not None
+#     # @classmethod
+#     # def poll(cls, context):
+#     #     return context.object is not None
 
-    def draw(self, context):
-        layout = self.layout
-        box = layout.box()
-        group_column = box.column()
-        group_column.label(text="Group Tools")
-        group_row = group_column.row(align=True)
-        group_row.operator("object.btmlow", text="Set LowPoly")
-        group_row.operator("object.btmhigh", text="Set HighPoly")
+#     def draw(self, context):
+#         layout = self.layout
+#         box = layout.box()
+#         group_column = box.column()
+#         group_column.label(text="Group Tools")
+#         group_row = group_column.row(align=True)
+#         group_row.operator("object.btmlow", text="Set LowPoly", icon="COLLECTION_NEW")
+#         group_row.operator("object.btmhigh", text="Set HighPoly", icon="COLLECTION_NEW")
 
 
 class HSTPanel(bpy.types.Panel):
     bl_idname = "OBJECT_PT_HST"
-    bl_label = "Hard Surface Tool"
+    bl_label = "Hard Surface Prop Toolkit"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
@@ -95,9 +95,11 @@ class HSTPanel(bpy.types.Panel):
         box_column = box.column()
 
         box_column.label(text="Bevel Tool")
-        box_column.operator("object.hstbevelmods", text="Batch Bevel")
+        box_column.operator("object.hstbevelmods", text="Batch Bevel", icon="MOD_BEVEL")
         box_column.operator(
-            "object.hstbeveltransfernormal", text="Bevel & Transfer Normal"
+            "object.hstbeveltransfernormal",
+            text="Bevel & Transfer Normal",
+            icon="MOD_DATA_TRANSFER",
         )
         # box_column.separator()
         bevel_setting_row = box_column.row(align=True)
@@ -109,33 +111,44 @@ class HSTPanel(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="Vertex Color Bake")
         box_column.operator(
-            "object.hst_addtransvertcolorproxy", text="Make Transfer Vertex Color Proxy"
+            "object.hst_addtransvertcolorproxy",
+            text="Make Transfer Vertex Color Proxy",
+            icon="GROUP_VERTEX",
         )
         box_column.operator(
-            "object.hst_bakeproxyvertcolrao", text="Bake Vertex Color AO"
+            "object.hst_bakeproxyvertcolrao",
+            text="Bake Vertex Color AO",
+            icon="RESTRICT_RENDER_OFF",
         )
 
         box_column.separator()
-        box_column.operator("object.cleanhstobject", text="Clean HST Object")
+        box_column.operator(
+            "object.cleanhstobject", text="Clean HST Object", icon="TRASH"
+        )
 
         box_column.separator()
         box_column.label(text="Workflow")
+
+        # fbx_io_row = box_column.row(align=True)
+        # fbx_io_row.operator("object.importcadfbx", text="Import FBX", icon="IMPORT")
+        # fbx_io_row.operator("object.staticmeshexport", text="Export FBX", icon="EXPORT")
+        # box_column.separator()
+
         box_column.operator("object.prepspaceclaimcadmesh", text="Prepare CAD Mesh")
         uv_mode_row = box_column.row(align=True)
-        uv_mode_row.operator("object.swatchmatsetup", text="SetSwatch")
-        uv_mode_row.operator("object.baseuveditmode", text="BaseUV")
+        uv_mode_row.operator("object.swatchmatsetup", text="SetSwatch", icon="MATERIAL")
+        uv_mode_row.operator("object.baseuveditmode", text="BaseUV", icon="UV")
         box_column.operator(
-            "object.setbaseuvtexeldensity", text="Set BaseUV Texel Density"
+            "object.setbaseuvtexeldensity",
+            text="Set BaseUV Texel Density",
+            icon="TEXTURE_DATA",
         )
         td_row = box_column.row(align=True)
-        td_row.label(text="Texel Density")
-        td_row.separator()
-        td_row.prop(parameters, "texture_density", text="")
+
+        td_row.prop(parameters, "texture_density", text="TD")
         td_row.separator()
         td_row.label(text="px/m")
-        box_column.prop(
-            parameters, "texture_size", text="Tex Size", icon="TEXTURE_DATA"
-        )
+        td_row.prop(parameters, "texture_size", text="Tex", icon="TEXTURE_DATA")
 
         box_column.separator()
         box_column.operator("object.addsnapsocket", text="Add Snap Socket")
@@ -149,18 +162,25 @@ class HSTPanel(bpy.types.Panel):
         )
         view_row.separator()
         view_row.operator(
-            "object.previewwearmask", text="WearMask View", icon="SHADING_SOLID"
+            "object.previewwearmask", text="WearMask View", icon="SHADING_WIRE"
         )
         box_column.prop(
-            parameters, "axis_toggle", text="Check UE Front Axis", icon="EMPTY_AXIS"
+            parameters, "axis_toggle", text="Check UE Front Axis", icon="EMPTY_ARROWS"
         )
 
         box_column.separator()
         box_column.label(text="Utilities")
-        box_column.operator("object.setsceneunits", text="Set Scene Units")
-        box_column.operator("object.cleanvert", text="Clean Vert")
-        box_column.operator("object.sepmultiuser", text="Separate Multi User")
-        box_column.operator("object.fixspaceclaimobj", text="Fix SpaceClaim Obj")
+        box_column.operator(
+            "object.setsceneunits", text="Set Scene Units", icon="SCENE_DATA"
+        )
+        box_column.operator("object.cleanvert", text="Clean Verts", icon="VERTEXSEL")
+        box_column.operator(
+            "object.sepmultiuser", text="Separate Multi Users", icon="USER"
+        )
+        box_column.operator(
+            "object.fixspaceclaimobj", text="Fix SpaceClaim Obj", icon="MESH_CUBE"
+        )
+        # box_column.operator("object.checkassets", text="Check Assets", icon="ERROR")
 
 
-classes = (HSTPanel, BTMPanel, UIParams)
+# classes = (HSTPanel, BTMPanel, UIParams)

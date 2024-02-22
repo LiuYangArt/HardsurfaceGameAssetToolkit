@@ -1,12 +1,14 @@
 import bpy
 from .Const import *
 from .Functions.CommonFunctions import *
+from .Functions.AssetCheckFunctions import *
 
 
 class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
     bl_idname = "object.prepspaceclaimcadmesh"
     bl_label = "CleanupSpaceClaimCADMesh"
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
+        需要保持模型水密\
         如果模型的面是分开的请先使用FixSpaceClaimObj工具修理"
 
     def execute(self, context):
@@ -25,6 +27,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         bpy.ops.object.mode_set(mode="OBJECT")
 
         for mesh in selected_meshes:
+            apply_transfrom(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
 
@@ -102,13 +105,14 @@ class CleanVertexOperator(bpy.types.Operator):
 class FixSpaceClaimObjOperator(bpy.types.Operator):
     bl_idname = "object.fixspaceclaimobj"
     bl_label = "FixSpaceClaimObj"
-    bl_description = "修理spaceclaim输出的obj\
+    bl_description = "修理spaceclaim输出的obj，以便进行后续操作\
         自动合并面，并根据角度标记锐边"
 
     def execute(self, context):
         SHARP_ANGLE = 0.08
         MERGE_DISTANCE = 0.01
         DISSOLVE_ANGLE = 0.00174533
+
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
@@ -218,7 +222,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
 class SwatchMatSetupOperator(bpy.types.Operator):
     bl_idname = "object.swatchmatsetup"
     bl_label = "SwatchEditMode"
-    bl_description = "设置Swatch材质的编辑环境"
+    bl_description = "设置Swatch材质的编辑环境，如果没有Swatchc材质会自动导入"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -382,8 +386,8 @@ class SetTexelDensityOperator(bpy.types.Operator):
     bl_idname = "object.setbaseuvtexeldensity"
     bl_label = "SetBaseUVTexelDensity"
     bl_description = "设置选中模型的BaseUV的Texel Density\
-        选中模型后运行，可以自动计算当前模型的Texel Density并设置\
-            贴图大小和TD使用默认值即可，通常不需要设置"
+        选中模型后运行，可以设置模型的Texel Density\
+        贴图大小和TD使用默认值即可，通常不需要设置"
 
     def execute(self, context):
         parameters = context.scene.hst_params
@@ -430,74 +434,71 @@ class AxisCheckOperator(bpy.types.Operator):
         properties = context.scene.hst_params
         axis_toggle = properties.axis_toggle
         axis_objects = []
+        match axis_toggle:
+            case False:
+                for object in bpy.data.objects:
+                    if AXIS_EMPTY in object.name:
+                        bpy.data.objects.remove(object)
 
-        if axis_toggle == False:
-            for object in bpy.data.objects:
-                if AXIS_EMPTY in object.name:
-                    bpy.data.objects.remove(object)
+                for object in bpy.data.objects:
+                    if object.name.startswith(AXIS_OBJECT_PREFIX):
+                        axis_objects.append(object)
 
-            for object in bpy.data.objects:
-                if object.name.startswith(AXIS_OBJECT_PREFIX):
-                    axis_objects.append(object)
-
-            if len(axis_objects) > 0:
-                for obj in axis_objects:
-                    for material in obj.data.materials:
-                        material.user_clear()
-                        bpy.data.materials.remove(material)
-                    old_mesh = obj.data
-                    bpy.data.objects.remove(obj)
-                    old_mesh.user_clear()
-                    bpy.data.meshes.remove(old_mesh)
+                if len(axis_objects) > 0:
+                    for obj in axis_objects:
+                        for material in obj.data.materials:
+                            material.user_clear()
+                            bpy.data.materials.remove(material)
+                        old_mesh = obj.data
+                        bpy.data.objects.remove(obj)
+                        old_mesh.user_clear()
+                        bpy.data.meshes.remove(old_mesh)
 
             # bpy.data.collections.remove(bpy.data.collections.get(AXIS_COLLECTION))
-            return {"FINISHED"}
+            case True:
+                # up_arrow = import_object(PRESET_FILE_PATH, AXIS_UP_ARROW)
+                # front_arrow = import_object(PRESET_FILE_PATH,  AXIS_FRONT_ARROW)
+                # origin = import_object(PRESET_FILE_PATH, AXIS_ORIGIN)
+                axis = import_object(PRESET_FILE_PATH, AXIS_ARROW)
+                # axis_objects.append(up_arrow)
+                # axis_objects.append(front_arrow)
+                # axis_objects.append(origin)
+                axis_objects.append(axis)
 
-        if axis_toggle == True:
+                # socket_object = bpy.data.objects.new(
+                # name=AXIS_EMPTY, object_data=None
+                # )
+                # socket_object.location = (0,0,0)
+                # socket_object.rotation_mode = "QUATERNION"
+                # socket_object.rotation_quaternion = rotate_quaternion(Quaternion(), 90, "X")
+                # socket_object.empty_display_type = "SINGLE_ARROW"
+                # socket_object.empty_display_size = 3
+                # socket_object.show_in_front = True
+                # axis_objects.append(socket_object)
 
-            # up_arrow = import_object(PRESET_FILE_PATH, AXIS_UP_ARROW)
-            # front_arrow = import_object(PRESET_FILE_PATH,  AXIS_FRONT_ARROW)
-            # origin = import_object(PRESET_FILE_PATH, AXIS_ORIGIN)
-            axis = import_object(PRESET_FILE_PATH, AXIS_AXIS)
-            # axis_objects.append(up_arrow)
-            # axis_objects.append(front_arrow)
-            # axis_objects.append(origin)
-            axis_objects.append(axis)
+                # collection = get_collection(axis)
+                # if collection is None:
+                #     collection_exsit = False
+                #     axis_collection = create_collection(AXIS_COLLECTION, COLLECTION_COLOR)
+                # else:
+                #     collection_exsit = True
+                #     axis_collection = collection
 
-            # socket_object = bpy.data.objects.new(
-            # name=AXIS_EMPTY, object_data=None
-            # )
-            # socket_object.location = (0,0,0)
-            # socket_object.rotation_mode = "QUATERNION"
-            # socket_object.rotation_quaternion = rotate_quaternion(Quaternion(), 90, "X")
-            # socket_object.empty_display_type = "SINGLE_ARROW"
-            # socket_object.empty_display_size = 3
-            # socket_object.show_in_front = True
-            # axis_objects.append(socket_object)
+                # axis_collection.hide_select = True
+                # axis_collection.hide_render = True
 
-            # collection = get_collection(axis)
-            # if collection is None:
-            #     collection_exsit = False
-            #     axis_collection = create_collection(AXIS_COLLECTION, COLLECTION_COLOR)
-            # else:
-            #     collection_exsit = True
-            #     axis_collection = collection
+                for obj in axis_objects:
+                    # if collection_exsit == False:
+                    #     axis_collection.objects.link(obj)
+                    #     if obj.name != AXIS_EMPTY:
+                    #         bpy.context.scene.collection.objects.unlink(obj)
 
-            # axis_collection.hide_select = True
-            # axis_collection.hide_render = True
+                    obj.show_in_front = True
+                    obj.hide_render = True
+                    obj.hide_viewport = False
+                    obj.hide_select = True
 
-            for obj in axis_objects:
-                # if collection_exsit == False:
-                #     axis_collection.objects.link(obj)
-                #     if obj.name != AXIS_EMPTY:
-                #         bpy.context.scene.collection.objects.unlink(obj)
-
-                obj.show_in_front = True
-                obj.hide_render = True
-                obj.hide_viewport = False
-                obj.hide_select = True
-
-            return {"FINISHED"}
+        return {"FINISHED"}
 
 
 class SetSceneUnitsOperator(bpy.types.Operator):
@@ -511,14 +512,68 @@ class SetSceneUnitsOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# classes = (
-#     PrepSpaceClaimCADMeshOperator,
-#     MakeSwatchUVOperator,
-#     CleanVertexOperator,
-#     FixSpaceClaimObjOperator,
-#     SeparateMultiUserOperator,
-#     AddSnapSocketOperator,
-#     SwatchMatSetupOperator,
-#     SetupLookDevEnvOperator,
-#     PreviewWearMaskOperator
-# )
+class CheckAssetsOperator(bpy.types.Operator):
+    bl_idname = "object.checkassets"
+    bl_label = "Check Assets"
+
+    text = "CheckAssetsOperator"
+
+    def draw(self, context):
+
+        layout = self.layout
+        box_column = layout.column()
+        box_column.label(
+            text="Scene Units: " + str(bpy.context.scene.unit_settings.system),
+            icon="CHECKMARK",
+        )
+        box_column.label(
+            text="Scene Scale: " + str(bpy.context.scene.unit_settings.scale_length),
+            icon="ERROR",
+        )
+        box_column.label(
+            text="Length Units: " + str(bpy.context.scene.unit_settings.length_unit),
+            icon=show_reusult(scene_unit_check()),
+        )
+        # TBD
+        # 检查资产功能
+        # 如果Collection后缀没有_Decal,检查模型是否有Swatch UV
+        # 如果Collection后缀没有_Decal,检查模型是否有Base UV
+        # 如果Collection后缀没有_Decal,检查模型是否有WearMask
+        # 如果Collection后缀没有_Decal,检查模型Scale是否为1
+        # 如果Collection后缀没有_Decal,检查模型命名是否含有_decal
+        # 场景单位是否为厘米
+        # 检查文件中材质是否有重复/未使用的材质/命名后有.00x的材质
+        # 如果Collection后缀为_Decal，检查是否有重复的Decal材质
+        # Collection命名是否首字母大写
+
+    def execute(self, context):
+        print("CheckAssetsOperator")
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+
+class StaticMeshExportOperator(bpy.types.Operator):
+    bl_idname = "object.staticmeshexport"
+    bl_label = "StaticMeshExport"
+    bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
+        只导出可见的Collection，不导出隐藏的Collection"
+
+    def execute(self, context):
+        # export_path = bpy.path.abspath("//")
+        # export_path = export_path + "StaticMesh/"
+        # export_static_mesh(export_path)
+        # self.report({"INFO"}, "Static Mesh exported to " + export_path)
+        return {"FINISHED"}
+
+
+class ImportFBXOperator(bpy.types.Operator):
+    bl_idname = "object.importcadfbx"
+    bl_label = "ImportFBX"
+    bl_description = "导入CAD模型转换而成的fbx文件"
+
+    def execute(self, context):
+        # import_fbx()
+        # self.report({"INFO"}, "FBX imported")
+        return {"FINISHED"}
