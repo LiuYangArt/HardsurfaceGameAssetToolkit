@@ -31,7 +31,7 @@ class UIParams(PropertyGroup):
 
     socket_name: StringProperty(
         description="Socket Name",
-        default="",
+        default="SNAP",
         maxlen=24,
     )
 
@@ -77,8 +77,8 @@ class UIParams(PropertyGroup):
 #         group_column = box.column()
 #         group_column.label(text="Group Tools")
 #         group_row = group_column.row(align=True)
-#         group_row.operator("object.btmlow", text="Set LowPoly", icon="COLLECTION_NEW")
-#         group_row.operator("object.btmhigh", text="Set HighPoly", icon="COLLECTION_NEW")
+#         group_row.operator("object.btmlow", text="Set LowPoly", icon="OUTLINER_COLLECTION")
+#         group_row.operator("object.btmhigh", text="Set HighPoly", icon="OUTLINER_COLLECTION")
 
 
 class HSTPanel(bpy.types.Panel):

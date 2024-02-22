@@ -1,4 +1,5 @@
 import bpy
+import string
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
@@ -169,7 +170,8 @@ class AddSnapSocketOperator(bpy.types.Operator):
     bl_idname = "object.addsnapsocket"
     bl_label = "Add Snap Socket"
     bl_description = "添加用于UE Modular Snap System的Socket，\
-        在编辑模式下使用时，先选中用于Snap的面，会自动创建朝向正确的Socket"
+        在编辑模式下使用时，先选中用于Snap的面，会自动创建朝向正确的Socket\
+        有多个同名Socket时，编号需使用下划线分割，如SOCKET_SNAP_01，SOCKET_SNAP_02"
 
     def execute(self, context):
 
@@ -178,6 +180,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
+        SOCKET_PREFIX = "SOCKET_"
 
         if len(selected_meshes) == 0:
             message_box(
@@ -203,15 +206,17 @@ class AddSnapSocketOperator(bpy.types.Operator):
             bpy.context.scene.cursor.rotation_mode = "QUATERNION"
             bpy.context.scene.cursor.rotation_quaternion = rotation
             self.report({"INFO"}, "In object mode, create socket from selected objects")
+
         # add empty, set name to SOCKET_XXX and location to cursor location
-        socket_object = bpy.data.objects.new(
-            name="SOCKET_" + parameters.socket_name, object_data=None
-        )
+        socket_name = SOCKET_PREFIX + parameters.socket_name.upper()
+        socket_object = bpy.data.objects.new(name="socket_", object_data=None)
+        rename_alt(socket_object, socket_name, num=2)
         socket_object.location = cursor.location
         socket_object.rotation_mode = "QUATERNION"
         socket_object.rotation_quaternion = cursor.rotation_quaternion
         socket_object.empty_display_type = "ARROWS"
         socket_object.empty_display_size = SOCKET_SIZE
+        # socket_object.show_name = True
         collection.objects.link(socket_object)
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
@@ -255,8 +260,9 @@ class SwatchMatSetupOperator(bpy.types.Operator):
             swatch_uv = check_uv_layer(mesh, UV_SWATCH)
             if swatch_uv is None:  # add uv layer if not exist
                 swatch_uv = add_uv_layers(mesh, uv_name=UV_SWATCH)
-                # swatch_uv.active = True
-                scale_uv(uv_layer=swatch_uv, scale=(0.001, 0.001), pivot=(0.5, 0.5))
+                scale_uv(
+                    mesh, uv_layer=swatch_uv, scale=(0.001, 0.001), pivot=(0.5, 0.5)
+                )
             swatch_uv.active = True
 
             swatch_mat = get_object_material(mesh, SWATCH_MATERIAL)
@@ -418,7 +424,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
             print("old_td: " + str(old_td))
             scale_factor = texel_density / old_td
             print("scale_factor: " + str(scale_factor))
-            scale_uv(uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
+            scale_uv(mesh, uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
 
         bpy.ops.object.mode_set(mode=store_object_mode)
         self.report({"INFO"}, "Texel Density set to " + str(texel_density))

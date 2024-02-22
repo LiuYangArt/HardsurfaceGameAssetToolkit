@@ -1,6 +1,8 @@
 import bpy
 import bmesh
 import math
+import string
+import fnmatch
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 
 """ 通用functions """
@@ -387,21 +389,21 @@ def has_uv_attribute(mesh) -> bool:
     return has_uv
 
 
-def scale_uv(uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
+def scale_uv(mesh, uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
     """缩放UV,输入参数为uv_layer,缩放比例，缩放中心点"""
 
     pivot = Vector(pivot)
     scale = Vector(scale)
 
-    # bpy.context.temp_override(active_object=mesh)
+    with bpy.context.temp_override(active_object=mesh):
 
-    for uv_index in range(len(uv_layer.data)):  # 根据缩放参数重新计算uv每个点的位置
-        v = uv_layer.data[uv_index].uv
-        s = scale
-        p = pivot
-        x = p[0] + s[0] * (v[0] - p[0])
-        y = p[1] + s[1] * (v[1] - p[1])
-        uv_layer.data[uv_index].uv = x, y
+        for uv_index in range(len(uv_layer.data)):  # 根据缩放参数重新计算uv每个点的位置
+            v = uv_layer.data[uv_index].uv
+            s = scale
+            p = pivot
+            x = p[0] + s[0] * (v[0] - p[0])
+            y = p[1] + s[1] * (v[1] - p[1])
+            uv_layer.data[uv_index].uv = x, y
 
 
 def clean_lonely_verts(mesh) -> None:
@@ -888,3 +890,41 @@ def set_default_scene_units():
     bpy.context.scene.unit_settings.system = "METRIC"
     bpy.context.scene.unit_settings.scale_length = 1
     bpy.context.scene.unit_settings.length_unit = "CENTIMETERS"
+
+
+def rename_alt(target_object, new_name, mark="_", num=3):
+    """重命名物体，如果名字已存在则在后面加_数字"""
+    name_exist = False
+    for object in bpy.data.objects:
+        if object.name == new_name:
+            name_exist = True
+            break
+
+    if name_exist is True:
+        name_objects_num = []
+        for object in bpy.data.objects:
+            if object.name.startswith(new_name + mark):
+                object_num = object.name.split(mark)[-1]
+                object_num = object_num.split(".")[0]
+                name_objects_num.append(int(object_num))
+        find_largest_digit(name_objects_num)
+        new_new_name = (
+            new_name + "_" + str(find_largest_digit(name_objects_num) + 1).zfill(num)
+        )
+
+    elif name_exist is False:
+        new_new_name = new_name
+    print(new_new_name)
+
+    target_object.name = new_new_name
+
+    return new_new_name
+
+
+def find_largest_digit(list1):
+    """找出列表中最大的数字"""
+    max_digit = 0  # 初始化最大数字为0
+    for num in list1:
+        if num > max_digit:
+            max_digit = num
+    return max_digit
