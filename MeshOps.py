@@ -26,6 +26,22 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
 
+        collections = []
+
+        for mesh in selected_meshes:
+            if mesh.users_collection[0] not in collections:
+                collections.append(mesh.users_collection[0])
+        if len(collections) > 0:
+            for collection in collections:
+                if collection.name.endswith("_Decal"):
+                    message_box("Selected collection has decal collection, operation stop")
+                    return {"CANCELLED"}
+                new_collection_name = clean_collection_name(collection.name)
+                collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
+                if collection.name != "Scene Collection":
+                    collection.name = new_collection_name
+                    rename_meshes(collection.objects, new_name=new_collection_name)
+
         for mesh in selected_meshes:
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)

@@ -9,17 +9,15 @@ def set_bake_collection(collection, type="LOW"):
     result = False
     objects = collection.all_objects
 
-    collection_name = (
-        collection.name.replace(".", "").split(LOW_SUFFIX)[0].split(HIGH_SUFFIX)[0]
-    )
-    # collection_name = text_capitalize(collection_name)
+    collection_name = clean_collection_name(collection.name)
+
     match type:
         case "LOW":
             new_name = collection_name + LOW_SUFFIX
-            color = LOW_COLOR
+            color = "COLOR_" + LOW_COLLECTION_COLOR
         case "HIGH":
             new_name = collection_name + HIGH_SUFFIX
-            color = HIGH_COLOR
+            color = "COLOR_" + HIGH_COLLECTION_COLOR
 
     collection.name = new_name
     collection.color_tag = color

@@ -1,9 +1,8 @@
 import bpy
 import bmesh
 import math
-import string
-import fnmatch
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
+from ..Const import *
 
 """ 通用functions """
 
@@ -952,3 +951,8 @@ def find_largest_digit(list1):
 def text_capitalize(text: str) -> str:
     output = "".join(x for x in text.title() if x.isalnum())
     return output
+
+def clean_collection_name(collection_name:str)->str:
+    """清理collection名字"""
+    clean_name = collection_name.replace(".", "").replace(" ", "").split(LOW_SUFFIX)[0].split(HIGH_SUFFIX)[0]
+    return clean_name
