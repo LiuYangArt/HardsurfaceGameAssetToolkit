@@ -459,45 +459,10 @@ class AxisCheckOperator(bpy.types.Operator):
                         old_mesh.user_clear()
                         bpy.data.meshes.remove(old_mesh)
 
-            # bpy.data.collections.remove(bpy.data.collections.get(AXIS_COLLECTION))
             case True:
-                # up_arrow = import_object(PRESET_FILE_PATH, AXIS_UP_ARROW)
-                # front_arrow = import_object(PRESET_FILE_PATH,  AXIS_FRONT_ARROW)
-                # origin = import_object(PRESET_FILE_PATH, AXIS_ORIGIN)
-                axis = import_object(PRESET_FILE_PATH, AXIS_ARROW)
-                # axis_objects.append(up_arrow)
-                # axis_objects.append(front_arrow)
-                # axis_objects.append(origin)
-                axis_objects.append(axis)
-
-                # socket_object = bpy.data.objects.new(
-                # name=AXIS_EMPTY, object_data=None
-                # )
-                # socket_object.location = (0,0,0)
-                # socket_object.rotation_mode = "QUATERNION"
-                # socket_object.rotation_quaternion = rotate_quaternion(Quaternion(), 90, "X")
-                # socket_object.empty_display_type = "SINGLE_ARROW"
-                # socket_object.empty_display_size = 3
-                # socket_object.show_in_front = True
-                # axis_objects.append(socket_object)
-
-                # collection = get_collection(axis)
-                # if collection is None:
-                #     collection_exsit = False
-                #     axis_collection = create_collection(AXIS_COLLECTION, COLLECTION_COLOR)
-                # else:
-                #     collection_exsit = True
-                #     axis_collection = collection
-
-                # axis_collection.hide_select = True
-                # axis_collection.hide_render = True
-
+                axis_arrow = import_object(PRESET_FILE_PATH, AXIS_ARROW)
+                axis_objects.append(axis_arrow)
                 for obj in axis_objects:
-                    # if collection_exsit == False:
-                    #     axis_collection.objects.link(obj)
-                    #     if obj.name != AXIS_EMPTY:
-                    #         bpy.context.scene.collection.objects.unlink(obj)
-
                     obj.show_in_front = True
                     obj.hide_render = True
                     obj.hide_viewport = False
