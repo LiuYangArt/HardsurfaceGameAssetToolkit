@@ -21,7 +21,7 @@ def rename_meshes(target_objects, new_name) -> None:
     """重命名mesh"""
     for index, object in enumerate(target_objects):
         if object.type == "MESH":  # 检测对象是否为mesh
-            object.name = new_name + "_" + str(index + 1).zfill(2)
+            object.name = new_name + "_" + str(index + 1).zfill(3)
 
 
 def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object:
@@ -158,9 +158,9 @@ def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     success = False
 
     if target_object.data.color_attributes is not None:
-        colorAtrributes = target_object.data.color_attributes
-        for r in range(len(colorAtrributes) - 1, -1, -1):
-            colorAtrributes.remove(colorAtrributes[r])
+        color_attributes = target_object.data.color_attributes
+        for r in range(len(color_attributes) - 1, -1, -1):
+            color_attributes.remove(color_attributes[r])
         success = True
     return success
 
@@ -171,29 +171,46 @@ def add_vertexcolor_attribute(
     """为选中的物体添加顶点色属性，返回顶点色属性"""
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
-            color_atrribute = target_object.data.color_attributes.get(vertexcolor_name)
+            color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
         else:
-            color_atrribute = target_object.data.color_attributes.new(
+            color_attribute = target_object.data.color_attributes.new(
                 name=vertexcolor_name,
                 type="BYTE_COLOR",
                 domain="CORNER",
             )
     else:
         print(target_object + " is not mesh object")
-    return color_atrribute
+    return color_attribute
 
 
 def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     """设置顶点色属性为激活状态"""
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
-            color_atrribute = target_object.data.color_attributes.get(vertexcolor_name)
-            target_object.data.attributes.active_color = color_atrribute
+            color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
+            target_object.data.attributes.active_color = color_attribute
         else:
             print("No vertex color attribute named " + vertexcolor_name)
     else:
         print(target_object + " is not mesh object")
 
+def set_object_vertexcolor(target_object, color: tuple ,vertexcolor_name:str) -> None:
+    """设置顶点色"""
+    color=tuple(color)
+    if target_object.type == "MESH":
+        mesh=target_object.data
+        if vertexcolor_name in mesh.color_attributes:
+            color_attribute = mesh.color_attributes.get(vertexcolor_name)
+            color_attribute.data.foreach_set("color_srgb", color * len(mesh.loops) * 4)
+        else:
+            print("No vertex color attribute named " + vertexcolor_name)
+    else:
+        print(target_object + " is not mesh object")
+
+
+def get_color_data(color):
+    convert_color=[color[0],color[1],color[2],color[3]]
+    return convert_color
 
 def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
     """建立传递模型"""
@@ -928,3 +945,7 @@ def find_largest_digit(list1):
         if num > max_digit:
             max_digit = num
     return max_digit
+
+def text_capitalize(text: str) -> str:
+    output = ''.join(x for x in text.title() if x.isalnum())
+    return output

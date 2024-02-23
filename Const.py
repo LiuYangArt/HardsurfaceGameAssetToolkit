@@ -1,10 +1,17 @@
 from bpy.utils import resource_path
 from pathlib import Path
 
+#bake groups
+LOW_SUFFIX = "_low"
+HIGH_SUFFIX = "_high"
+LOW_COLOR = "COLOR_05"
+HIGH_COLOR = "COLOR_06"
+BAKECOLOR_ATTR = "BakeColor"
+
 # hard surface props
 UV_BASE = "UV0_Base"
 UV_SWATCH = "UV1_Swatch"
-VERTEXCOLOR = "WearMask"
+WEARMASK_ATTR = "WearMask"
 TRANSFER_COLLECTION = "_TransferNormal"
 TRANSFER_MESH_PREFIX = "Raw_"
 TRANSFER_PROXY_COLLECTION = "_TransferProxy"
@@ -30,6 +37,8 @@ PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 SWATCH_MATERIAL = "MI_HSPropSwatch"
 LOOKDEV_HDR = "HDR_LookDev_Mid"
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
+
+SOCKET_PREFIX = "SOCKET_"
 SOCKET_SIZE = 0.3
 
 DEFAULT_TEX_DENSITY = 1024
@@ -41,4 +50,4 @@ AXIS_UP_ARROW = AXIS_OBJECT_PREFIX + "UpArrow"
 AXIS_FRONT_ARROW = AXIS_OBJECT_PREFIX + "FrontArrow"
 AXIS_ORIGIN = AXIS_OBJECT_PREFIX + "Origin"
 AXIS_EMPTY = AXIS_OBJECT_PREFIX + "FrontDirection"
-AXIS_ARROW = AXIS_OBJECT_PREFIX + "Axis"
+AXIS_ARROW = AXIS_OBJECT_PREFIX + "Arrows"

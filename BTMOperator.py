@@ -347,15 +347,3 @@ class TestButtonOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# classes = (
-#     BTMLowOperator,
-#     BTMHighOperator,
-#     OrgaCollOperator,
-#     ExportFBXOperator,
-#     OpenmMrmosetOperator,
-#     MoiTransStepOperator,
-#     ReloadObjOperator,
-#     BatchSetVerColOperator,
-#     GetVerColOperator,
-#     TestButtonOperator,
-# )

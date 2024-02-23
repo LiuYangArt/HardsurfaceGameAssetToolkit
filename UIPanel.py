@@ -18,6 +18,15 @@ def axis_check_toggle(self, context):
 class UIParams(PropertyGroup):
     """UI参数"""
 
+    bake_color: bpy.props.FloatVectorProperty(
+        name="Bake Color Picker",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(1.0, 1.0, 1.0, 1.0),
+    )
+
     set_bevel_width: FloatProperty(
         description="设置  HSTBevel 宽度，单位与场景单位一致",
         default=0.5,
@@ -31,7 +40,7 @@ class UIParams(PropertyGroup):
 
     socket_name: StringProperty(
         description="Socket Name",
-        default="SNAP",
+        default="Snap",
         maxlen=24,
     )
 
@@ -60,25 +69,40 @@ class UIParams(PropertyGroup):
     )
 
 
-# class BTMPanel(bpy.types.Panel):
-#     bl_idname = "OBJECT_PT_BTM"
-#     bl_label = "Bake Prep Tool"
-#     bl_category = "HST"
-#     bl_space_type = "VIEW_3D"
-#     bl_region_type = "UI"
+class BTMPanel(bpy.types.Panel):
+    bl_idname = "OBJECT_PT_BTM"
+    bl_label = "Bake Prep Tool"
+    bl_category = "HST"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
 
-#     # @classmethod
-#     # def poll(cls, context):
-#     #     return context.object is not None
+    # @classmethod
+    # def poll(cls, context):
+    #     return context.object is not None
 
-#     def draw(self, context):
-#         layout = self.layout
-#         box = layout.box()
-#         group_column = box.column()
-#         group_column.label(text="Group Tools")
-#         group_row = group_column.row(align=True)
-#         group_row.operator("object.btmlow", text="Set LowPoly", icon="OUTLINER_COLLECTION")
-#         group_row.operator("object.btmhigh", text="Set HighPoly", icon="OUTLINER_COLLECTION")
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+        box_column.label(text="Group Tools")
+        group_row = box_column.row(align=True)
+        group_row.operator(
+            "object.setbakecollectionlow",
+            text="Set LowPoly",
+            icon="OUTLINER_COLLECTION",
+        )
+        group_row.operator(
+            "object.setbakecollectionhigh",
+            text="Set HighPoly",
+            icon="OUTLINER_COLLECTION",
+        )
+        box_column.separator()
+        box_column.operator(
+            "object.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
+        )
+        box_column.prop(
+            context.scene.hst_params, "bake_color", text="Color ID Picker"
+        )
 
 
 class HSTPanel(bpy.types.Panel):

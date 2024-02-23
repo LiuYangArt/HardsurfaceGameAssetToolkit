@@ -180,7 +180,6 @@ class AddSnapSocketOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        SOCKET_PREFIX = "SOCKET_"
 
         if len(selected_meshes) == 0:
             message_box(
@@ -208,7 +207,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
             self.report({"INFO"}, "In object mode, create socket from selected objects")
 
         # add empty, set name to SOCKET_XXX and location to cursor location
-        socket_name = SOCKET_PREFIX + parameters.socket_name.upper()
+        socket_name = SOCKET_PREFIX + text_capitalize(parameters.socket_name)
         socket_object = bpy.data.objects.new(name="socket_", object_data=None)
         rename_alt(socket_object, socket_name, num=2)
         socket_object.location = cursor.location
@@ -373,7 +372,7 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         #     print("No selected mesh object, please select mesh objects and retry | 没有选中Mesh物体，请选中Mesh物体后重试")
 
         for mesh in selected_meshes:
-            set_active_color_attribute(mesh, VERTEXCOLOR)
+            set_active_color_attribute(mesh, WEARMASK_ATTR)
 
         viewports = viewport_shading_mode("VIEW_3D", "SOLID", mode="CONTEXT")
 
