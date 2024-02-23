@@ -100,9 +100,7 @@ class BTMPanel(bpy.types.Panel):
         box_column.operator(
             "object.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
         )
-        box_column.prop(
-            context.scene.hst_params, "bake_color", text="Color ID Picker"
-        )
+        box_column.prop(context.scene.hst_params, "bake_color", text="Color ID Picker")
 
 
 class HSTPanel(bpy.types.Panel):

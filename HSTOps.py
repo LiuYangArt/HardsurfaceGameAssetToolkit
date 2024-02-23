@@ -235,7 +235,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        #prepare wearmask   
+        # prepare wearmask
         collection_objects = collection.all_objects
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
@@ -262,8 +262,6 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         for proxy_object in proxy_object_list:  # 处理proxy模型
             cleanup_color_attributes(proxy_object)
             add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
-
-
 
         bpy.context.scene.render.engine = "CYCLES"
         transfer_proxy_collection = bpy.data.collections[TRANSFER_PROXY_COLLECTION]

@@ -194,11 +194,12 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     else:
         print(target_object + " is not mesh object")
 
-def set_object_vertexcolor(target_object, color: tuple ,vertexcolor_name:str) -> None:
+
+def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
     """设置顶点色"""
-    color=tuple(color)
+    color = tuple(color)
     if target_object.type == "MESH":
-        mesh=target_object.data
+        mesh = target_object.data
         if vertexcolor_name in mesh.color_attributes:
             color_attribute = mesh.color_attributes.get(vertexcolor_name)
             color_attribute.data.foreach_set("color_srgb", color * len(mesh.loops) * 4)
@@ -209,8 +210,9 @@ def set_object_vertexcolor(target_object, color: tuple ,vertexcolor_name:str) ->
 
 
 def get_color_data(color):
-    convert_color=[color[0],color[1],color[2],color[3]]
+    convert_color = [color[0], color[1], color[2], color[3]]
     return convert_color
+
 
 def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
     """建立传递模型"""
@@ -946,6 +948,7 @@ def find_largest_digit(list1):
             max_digit = num
     return max_digit
 
+
 def text_capitalize(text: str) -> str:
-    output = ''.join(x for x in text.title() if x.isalnum())
+    output = "".join(x for x in text.title() if x.isalnum())
     return output

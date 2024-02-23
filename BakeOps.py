@@ -108,7 +108,7 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
         vertex_color = parameters.bake_color
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        color=get_color_data(vertex_color)
+        color = get_color_data(vertex_color)
 
         if len(selected_meshes) == 0:
             message_box("No mesh selected | 未选择Mesh")
@@ -117,7 +117,7 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
         for mesh in selected_meshes:
             add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
             set_active_color_attribute(mesh, BAKECOLOR_ATTR)
-            set_object_vertexcolor(mesh, color,BAKECOLOR_ATTR)
-         
+            set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
+
         self.report({"INFO"}, "Set vertex color")
-        return {'FINISHED'}
+        return {"FINISHED"}

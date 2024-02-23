@@ -1,7 +1,7 @@
 from bpy.utils import resource_path
 from pathlib import Path
 
-#bake groups
+# bake groups
 LOW_SUFFIX = "_low"
 HIGH_SUFFIX = "_high"
 LOW_COLOR = "COLOR_05"
