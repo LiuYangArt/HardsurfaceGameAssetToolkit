@@ -3,6 +3,7 @@ from bpy.props import (
     BoolProperty,
     EnumProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     StringProperty,
 )
@@ -18,7 +19,7 @@ def axis_check_toggle(self, context):
 class UIParams(PropertyGroup):
     """UI参数"""
 
-    bake_color: bpy.props.FloatVectorProperty(
+    bake_color: FloatVectorProperty(
         name="Bake Color Picker",
         subtype="COLOR",
         size=4,
@@ -173,7 +174,7 @@ class HSTPanel(bpy.types.Panel):
         td_row.prop(parameters, "texture_size", text="Tex", icon="TEXTURE_DATA")
 
         box_column.separator()
-        box_column.operator("object.addsnapsocket", text="Add Snap Socket")
+        box_column.operator("object.addsnapsocket", text="Add Snap Socket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
 
         box_column.separator()

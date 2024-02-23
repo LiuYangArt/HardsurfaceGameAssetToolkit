@@ -347,11 +347,3 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# classes = (
-#     HST_BatchBevel,
-#     HST_BevelTransferNormal,
-#     HST_CleanHSTObjects,
-#     HST_SetBevelParameters_Operator,
-#     HST_CreateTransferVertColorProxy,
-#     HST_BakeProxyVertexColorAO,
-# )

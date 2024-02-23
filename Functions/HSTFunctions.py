@@ -17,12 +17,12 @@ def add_bevel_modifier(mesh, width=0.05, segments=1):
                 bevel_weight_attribute = mesh.data.attributes.new(
                     "bevel_weight_edge", "FLOAT", "EDGE"
                 )
-                #tbd: replace this with foreach_set
+                # tbd: replace this with foreach_set
                 for index, edge in enumerate(mesh.data.edges):
                     bevel_weight_attribute.data[index].value = (
                         1.0 if edge.use_edge_sharp else 0.0
                     )
-                
+
         else:
             check_sharp = False
         bevel_modifier = mesh.modifiers.new(name=BEVEL_MODIFIER, type="BEVEL")

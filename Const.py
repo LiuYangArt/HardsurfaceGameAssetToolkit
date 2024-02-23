@@ -26,6 +26,9 @@ TRIANGULAR_MODIFIER = MODIFIER_PREFIX + "Triangulate"
 COLOR_TRANSFER_MODIFIER = MODIFIER_PREFIX + "VertexColorTransfer"
 COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
 
+MATERIAL_PREFIX = "MI_"
+SWATCH_MATERIAL = MATERIAL_PREFIX + "HSPropSwatch"
+
 # import asset
 ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
@@ -34,16 +37,18 @@ ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
 NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
 PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 
-SWATCH_MATERIAL = "MI_HSPropSwatch"
-LOOKDEV_HDR = "HDR_LookDev_Mid"
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
+LOOKDEV_HDR = "HDR_LookDev_Mid"
 
+# socket
 SOCKET_PREFIX = "SOCKET_"
 SOCKET_SIZE = 0.3
 
+# texel density
 DEFAULT_TEX_DENSITY = 1024
 DEFAULT_TEX_SIZE = 2048
 
+# unreal axis visualizer
 AXIS_COLLECTION = "_UE_AXIS_"
 AXIS_OBJECT_PREFIX = "__HST_AXIS_"
 AXIS_UP_ARROW = AXIS_OBJECT_PREFIX + "UpArrow"

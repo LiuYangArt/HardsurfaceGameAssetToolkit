@@ -1,7 +1,6 @@
 import bpy
 
 from .Const import *
-from .Functions.BTMFunctions import *
 from .Functions.CommonFunctions import *
 
 
@@ -13,7 +12,7 @@ def set_bake_collection(collection, type="LOW"):
     collection_name = (
         collection.name.replace(".", "").split(LOW_SUFFIX)[0].split(HIGH_SUFFIX)[0]
     )
-
+    # collection_name = text_capitalize(collection_name)
     match type:
         case "LOW":
             new_name = collection_name + LOW_SUFFIX

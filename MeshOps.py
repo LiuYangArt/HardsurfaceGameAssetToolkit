@@ -1,5 +1,4 @@
 import bpy
-import string
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
