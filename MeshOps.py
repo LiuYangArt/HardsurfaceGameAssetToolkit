@@ -230,7 +230,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.rotation_quaternion = cursor.rotation_quaternion
         socket_object.empty_display_type = "ARROWS"
         socket_object.empty_display_size = SOCKET_SIZE
-        # socket_object.show_name = True
+        socket_object.show_name = True
         collection.objects.link(socket_object)
 
         bpy.context.scene.cursor.matrix = cursor_current_transform

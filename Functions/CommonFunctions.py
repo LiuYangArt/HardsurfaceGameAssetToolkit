@@ -932,7 +932,6 @@ def rename_alt(target_object, new_name, mark="_", num=3):
 
     elif name_exist is False:
         new_new_name = new_name
-    print(new_new_name)
 
     target_object.name = new_new_name
 
@@ -949,10 +948,17 @@ def find_largest_digit(list1):
 
 
 def text_capitalize(text: str) -> str:
+    """首字母大写，去除特殊字符"""
     output = "".join(x for x in text.title() if x.isalnum())
     return output
 
-def clean_collection_name(collection_name:str)->str:
+
+def clean_collection_name(collection_name: str) -> str:
     """清理collection名字"""
-    clean_name = collection_name.replace(".", "").replace(" ", "").split(LOW_SUFFIX)[0].split(HIGH_SUFFIX)[0]
+    clean_name = (
+        collection_name.replace(".", "")
+        .replace(" ", "")
+        .split(LOW_SUFFIX)[0]
+        .split(HIGH_SUFFIX)[0]
+    )
     return clean_name

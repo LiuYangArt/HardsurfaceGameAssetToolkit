@@ -174,7 +174,9 @@ class HSTPanel(bpy.types.Panel):
         td_row.prop(parameters, "texture_size", text="Tex", icon="TEXTURE_DATA")
 
         box_column.separator()
-        box_column.operator("object.addsnapsocket", text="Add Snap Socket", icon="OUTLINER_DATA_EMPTY")
+        box_column.operator(
+            "object.addsnapsocket", text="Add Snap Socket", icon="OUTLINER_DATA_EMPTY"
+        )
         box_column.prop(parameters, "socket_name", text="Name")
 
         box_column.separator()
