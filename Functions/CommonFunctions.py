@@ -991,7 +991,6 @@ def export_collection_staticmesh(
 
     for object in target_collection.all_objects:
         object.select_set(True)
-        # reset_transform(object)
 
     bpy.ops.export_scene.fbx(
         filepath=file_path,
@@ -1024,19 +1023,15 @@ def export_collection_staticmesh(
 
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
-    outliner_collection = bpy.context.view_layer.active_layer_collection.collection
-    active_collection = bpy.data.collections.get(outliner_collection.name)
     filtered_collections = []
-    if len(target_objects) == 0:
-        filtered_collections.append(active_collection)
-    else:
-        for object in target_objects:
-            print("object: " + object.name)
-            collection = get_collection(object)
-            if collection not in filtered_collections:
-                if not collection.name.startswith("_"):
-                    filtered_collections.append(collection)
-
+    for object in target_objects:
+        collection = get_collection(object)
+        if (
+            collection is not None
+            and collection not in filtered_collections
+            and not collection.name.startswith("_")
+        ):
+            filtered_collections.append(collection)
     return filtered_collections
 
 
