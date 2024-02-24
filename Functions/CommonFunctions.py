@@ -184,14 +184,16 @@ def add_vertexcolor_attribute(
 
 def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     """设置顶点色属性为激活状态"""
+    color_attribute = None
     if target_object.type == "MESH":
         if vertexcolor_name in target_object.data.color_attributes:
             color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
             target_object.data.attributes.active_color = color_attribute
-        else:
-            print("No vertex color attribute named " + vertexcolor_name)
-    else:
-        print(target_object + " is not mesh object")
+    #     else:
+    #         print("No vertex color attribute named " + vertexcolor_name)
+    # else:
+    #     print(target_object + " is not mesh object")
+    return color_attribute
 
 
 def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
@@ -393,6 +395,7 @@ def add_uv_layers(target_object: bpy.types.Object, uv_name: str) -> bpy.types.Ob
 
 def check_uv_layer(mesh, uv_name) -> bpy.types.Object:
     """检查是否存在uv_layer，返回uv_layer"""
+    uv_layer = None
     uv_layer = mesh.data.uv_layers.get(uv_name)
     return uv_layer
 
@@ -1035,9 +1038,13 @@ def filter_collections_selection(target_objects):
     return filtered_collections
 
 
-def filter_collection_types(collections):
+def filter_collection_types(collections, type="ALL"):
     """筛选collection类型，返回筛选后的collection列表，包括decal,prop,low,high"""
-    filtered_collections = []
+    bake_collections = []
+    decal_collections = []
+    prop_collections = []
+    sm_collections = []
+
     for collection in collections:
         if len(collection.objects) > 0:
             collection_color = str(collection.color_tag)
@@ -1045,29 +1052,31 @@ def filter_collection_types(collections):
                 collection.name.startswith("_")
                 and PROXY_COLLECTION_COLOR in collection_color
             ):
-                print(collection.name + " IS PROXY COLLECTION,skip")
                 continue
             elif collection.name.endswith(LOW_SUFFIX) or collection.name.endswith(
                 HIGH_SUFFIX
             ):
                 if LOW_COLLECTION_COLOR or HIGH_COLLECTION_COLOR in collection_color:
-                    print(collection.name + " IS BAKE COLLECTION")
-                    filtered_collections.append(collection)
+                    bake_collections.append(collection)
                 continue
             elif (
                 "_Decal" in collection.name
                 and DECAL_COLLECTION_COLOR in collection_color
             ):
-                print(collection.name + " IS DECAL COLLECTION")
-                filtered_collections.append(collection)
+                decal_collections.append(collection)
                 continue
             elif PROP_COLLECTION_COLOR in collection_color:
-                print(collection.name + " IS PROP COLLECTION")
-                filtered_collections.append(collection)
+                prop_collections.append(collection)
                 continue
-            # else:
-            #     print(collection.name + " IS STATICMESH COLLECTION")
-            #     filtered_collections.append(collection)
-            #     continue
+            else:
+                sm_collections.append(collection)
 
-    return filtered_collections
+    match type:
+        case "ALL":
+            return bake_collections + decal_collections + prop_collections + sm_collections
+        case "BAKE":
+            return bake_collections
+        case "DECAL":
+            return decal_collections
+        case "PROP":
+            return prop_collections

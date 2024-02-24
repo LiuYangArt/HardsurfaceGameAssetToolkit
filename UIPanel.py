@@ -216,11 +216,12 @@ class HSTPanel(bpy.types.Panel):
         )
         box_column.operator("hst.cleanvert", text="Clean Verts", icon="VERTEXSEL")
         box_column.operator(
-            "hst.sepmultiuser", text="Separate Multi Users", icon="USER"
+            "hst.sepmultiuser", text="Clean Multi Users", icon="USER"
         )
         box_column.operator(
             "hst.fixspaceclaimobj", text="Fix SpaceClaim Obj", icon="MESH_CUBE"
         )
+        box_column.operator("hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon= "MATERIAL" )
         # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
 
 

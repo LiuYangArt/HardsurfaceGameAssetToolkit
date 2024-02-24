@@ -99,7 +99,7 @@ class HST_MakeSwatchUVOperator(bpy.types.Operator):
 class CleanVertexOperator(bpy.types.Operator):
     bl_idname = "hst.cleanvert"
     bl_label = "Clean Verts"
-    bl_description = "清理模型中的孤立顶点"
+    bl_description = "清理模型中的孤立顶点，只能用在水密模型上，否则会造成模型损坏"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -166,7 +166,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
 
 class SeparateMultiUserOperator(bpy.types.Operator):
     bl_idname = "hst.sepmultiuser"
-    bl_label = "SeparateMultiUser"
+    bl_label = "Clean Multi User"
     bl_description = "清理多用户，可用于AssetLibrary导入资产去除引用，\
         可能会造成冗余资源，请及时清除"
 
@@ -178,9 +178,11 @@ class SeparateMultiUserOperator(bpy.types.Operator):
                 + "没有选中物体，请选中物体后重试"
             )
             return {"CANCELLED"}
-        for object in selected_objects:
-            clean_user(object)
-            self.report({"INFO"}, "Multi user separated")
+        bpy.ops.object.make_single_user(
+            type="SELECTED_OBJECTS", object=True, obdata=True
+        )
+
+        self.report({"INFO"}, "Done")
         return {"FINISHED"}
 
 
@@ -572,13 +574,16 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             #     self.report({"ERROR"}, decal_collection.name + " "
             #                  + "has object with wrong decal material, please check | "
             #                  + "collection内有object的Decal材质错误，请检查Decal Collection")
-  
+
             decal_collection_name = clean_collection_name(decal_collection.name)
             new_name = decal_collection_name + DECAL_SUFFIX
             decal_collection.name = new_name
             decal_collection.color_tag = color
-            self.report({"INFO"}, str(len(decal_collections)) + " Decal collection marked")
+            self.report(
+                {"INFO"}, str(len(decal_collections)) + " Decal collection marked"
+            )
         return {"FINISHED"}
+
 
 class MarkPropCollectionOperator(bpy.types.Operator):
     bl_idname = "hst.markpropcollection"
@@ -599,10 +604,12 @@ class MarkPropCollectionOperator(bpy.types.Operator):
         for prop_collection in prop_collections:
             decal_collection_name = clean_collection_name(prop_collection.name)
             new_name = decal_collection_name
-            
+
             prop_collection.name = new_name
             prop_collection.color_tag = color
-            self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")
+            self.report(
+                {"INFO"}, str(len(prop_collections)) + " Prop collection marked"
+            )
         return {"FINISHED"}
 
 
@@ -613,17 +620,69 @@ class StaticMeshExportOperator(bpy.types.Operator):
         只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体"
 
     def execute(self, context):
-        
+
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         selected_objects = bpy.context.selected_objects
 
-        bpy.ops.hst.setsceneunits() # 设置场景单位为厘米
+        bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
 
         export_collections = filter_collection_types(visible_collections)
-        
-        #tbd:check assets
+        bake_collections = filter_collection_types(visible_collections, type="BAKE")
+        prop_collections = filter_collection_types(visible_collections, type="PROP")
+        decal_collections = filter_collection_types(visible_collections, type="DECAL")
+
+        if len(export_collections) == 0:
+            message_box(
+                "No available collection for export. Please check visibility "
+                + "and ensure objects are placed in collections，"
+                + "set collection in correct type | "
+                + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试"
+            )
+            return {"CANCELLED"}
+
+        for collection in bake_collections:
+            for object in collection.all_objects:
+                set_active_color_attribute(object, BAKECOLOR_ATTR)
+                check_bake_object(object)
+                if prop_check is False:
+                    self.report(
+                        {"ERROR"},
+                        object.name
+                        + " in collection: "
+                        + collection.name
+                        + " has something wrong | "
+                        + "Bake Object 不符合规范，请检查确认",
+                    )
+
+        # make prop_object_mat_list
+
+        for collection in prop_collections:
+            for object in collection.all_objects:
+                prop_check = check_prop_object(object)
+                if prop_check is False:
+                    self.report(
+                        {"ERROR"},
+                        object.name
+                        + " in collection: "
+                        + collection.name
+                        + " has something wrong | "
+                        + "Prop 不符合规范，请检查确认",
+                    )
+
+        for collection in decal_collections:
+            for object in collection.all_objects:
+                decal_check = check_decal_object(object)
+                if decal_check is False:
+                    self.report(
+                        {"ERROR"},
+                        object.name
+                        + " in collection: "
+                        + collection.name
+                        + " has something wrong | "
+                        + "Decal 不符合规范，请检查确认",
+                    )
 
         for collection in export_collections:
             new_name = collection.name.removeprefix("SM_")
@@ -635,7 +694,47 @@ class StaticMeshExportOperator(bpy.types.Operator):
         for object in selected_objects:
             object.select_set(True)
 
-        self.report({"INFO"}, str(len(export_collections))+" StaticMeshes exported to " + export_path)
+        self.report(
+            {"INFO"},
+            str(len(export_collections)) + " StaticMeshes exported to " + export_path,
+        )
+        return {"FINISHED"}
+
+
+class FixDuplicatedMaterialOperator(bpy.types.Operator):
+    bl_idname = "hst.fixduplicatedmaterial"
+    bl_label = "Fix Duplicated Material"
+    bl_description = "修复选中模型中的重复材质，例如 MI_Mat.001替换为MI_Mat"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        bad_materials = []
+        bad_meshes = []
+
+        for mesh in selected_meshes:
+            for material_slot in mesh.material_slots:
+                mat= material_slot.material
+                if mat not in bad_materials:
+                    mat_name_split = mat.name.split(".00")
+                    if len(mat_name_split) > 1:
+                        mat_name = mat_name_split[0]
+                        mat_good = get_scene_material(mat_name)
+                        if mat_good is not None:
+                            material_slot.material = mat_good
+                        else:
+                            mat.name = mat_name
+                        bad_materials.append(material_slot.material)
+                        bad_meshes.append(mesh)
+
+        self.report(
+            {"INFO"},
+            str(len(bad_materials))
+            + " Materials in "
+            + str(len(bad_meshes))
+            + " Meshes fixed",
+        )
+
         return {"FINISHED"}
 
 
