@@ -27,76 +27,56 @@ def set_bake_collection(collection, type="LOW"):
 
 
 class SetBakeCollectionLowOperator(bpy.types.Operator):
-    bl_idname = "object.setbakecollectionlow"
-    bl_label = "SetBakeCollectionLow"
+    bl_idname = "hst.setbakecollectionlow"
+    bl_label = "HST Set Bake-Collection Low"
     bl_description = (
         "设置选中模型的整个Collection为LowPoly组，根据Collection名字修改命名"
     )
 
     def execute(self, context):
-        active_object = bpy.context.active_object
-        collection = get_collection(active_object)
-
-        if collection is None:
+        selected_objects = bpy.context.selected_objects
+        bake_collections = filter_collections_selection(selected_objects)
+        if len(bake_collections) == 0:
             message_box(
-                "Not in collection, please put selected objects in collections and retry | "
-                + "所选物体需要在Collections中"
+                "No selected collection, please select collections and retry | "
+                + "没有选中Collection，请选中Collection后重试"
             )
             return {"CANCELLED"}
-
-        if (
-            collection.name == TRANSFER_PROXY_COLLECTION
-            or collection.name == TRANSFER_COLLECTION
-        ):
-            message_box(
-                "Selected collection is TransferProxy collection, please select other collections | "
-                + "所选Collection是Transfer Collection，请选择其他Collection"
-            )
-            return {"CANCELLED"}
-
-        set_bake_collection(collection, type="LOW")
+        
+        for collection in bake_collections:
+            set_bake_collection(collection, type="LOW")
 
         self.report({"INFO"}, "Set bake collection to low poly")
         return {"FINISHED"}
 
 
 class SetBakeCollectionHighOperator(bpy.types.Operator):
-    bl_idname = "object.setbakecollectionhigh"
-    bl_label = "SetBakeCollectionHigh"
+    bl_idname = "hst.setbakecollectionhigh"
+    bl_label = "HST Set Bake-Collection High"
     bl_description = (
         "设置选中模型的整个Collection为HighPoly组，根据Collection名字修改命名"
     )
 
     def execute(self, context):
-        active_object = bpy.context.active_object
-        collection = get_collection(active_object)
-
-        if collection is None:
+        selected_objects = bpy.context.selected_objects
+        bake_collections = filter_collections_selection(selected_objects)
+        if len(bake_collections) == 0:
             message_box(
-                "Not in collection, please put selected objects in collections and retry | "
-                + "所选物体需要在Collections中"
+                "No selected collection, please select collections and retry | "
+                + "没有选中Collection，请选中Collection后重试"
             )
             return {"CANCELLED"}
-
-        if (
-            collection.name == TRANSFER_PROXY_COLLECTION
-            or collection.name == TRANSFER_COLLECTION
-        ):
-            message_box(
-                "Selected collection is TransferProxy collection, please select other collections | "
-                + "所选Collection是Transfer Collection，请选择其他Collection"
-            )
-            return {"CANCELLED"}
-
-        set_bake_collection(collection, type="HIGH")
+        
+        for collection in bake_collections:
+            set_bake_collection(collection, type="HIGH")
 
         self.report({"INFO"}, "Set bake collection to high poly")
         return {"FINISHED"}
 
 
 class SetObjectVertexColorOperator(bpy.types.Operator):
-    bl_idname = "object.setobjectvertexcolor"
-    bl_label = "SetObjectVertexColor"
+    bl_idname = "hst.setobjectvertexcolor"
+    bl_label = "Batch Set Object VertexColor"
     bl_description = "设置选中模型的顶点色,顶点色名字为BakeColor\
         用于烘焙贴图时的ColorID"
 

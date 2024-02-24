@@ -960,5 +960,119 @@ def clean_collection_name(collection_name: str) -> str:
         .replace(" ", "")
         .split(LOW_SUFFIX)[0]
         .split(HIGH_SUFFIX)[0]
+        .split(DECAL_SUFFIX)[0]
     )
     return clean_name
+
+
+def filter_collection_by_visibility(type="VISIBLE"):
+    """筛选可见或不可见的collection"""
+    collections = []
+    for collection in bpy.data.collections:
+        if collection.hide_viewport == False and type == "VISIBLE":
+            collections.append(collection)
+        elif collection.hide_viewport == True and type == "HIDDEN":
+            collections.append(collection)
+    return collections
+
+
+def reset_transform(target_object: bpy.types.Object) -> None:
+    """重置物体的位置，旋转，缩放"""
+    target_object.location = (0, 0, 0)
+    target_object.rotation_euler = (0, 0, 0)
+    target_object.scale = (1, 1, 1)
+
+
+def export_collection_staticmesh(
+    target_collection: bpy.types.Collection, file_path: str
+):
+    """导出collection为staticmesh fbx"""
+    bpy.ops.object.select_all(action="DESELECT")
+
+    for object in target_collection.all_objects:
+        object.select_set(True)
+        # reset_transform(object)
+
+    bpy.ops.export_scene.fbx(
+        filepath=file_path,
+        use_selection=True,
+        use_active_collection=False,
+        use_visible=True,
+        axis_forward="-Z",
+        axis_up="Y",
+        global_scale=1.0,
+        apply_unit_scale=True,
+        apply_scale_options="FBX_SCALE_NONE",
+        colors_type="LINEAR",
+        object_types={"MESH", "EMPTY"},
+        use_mesh_modifiers=True,
+        mesh_smooth_type="FACE",
+        use_triangles=True,
+        use_tspace=True,
+        bake_space_transform=True,
+        path_mode="AUTO",
+        embed_textures=False,
+        batch_mode="OFF",
+        # use_batch_own_dir=True,
+        use_metadata=False,
+        use_custom_props=False,
+        add_leaf_bones=False,
+        use_armature_deform_only=False,
+        bake_anim=False,
+    )
+
+
+def filter_collections_selection(target_objects):
+    """筛选所选物体所在的collection"""
+    outliner_collection = bpy.context.view_layer.active_layer_collection.collection
+    active_collection = bpy.data.collections.get(outliner_collection.name)
+    filtered_collections = []
+    if len(target_objects) == 0:
+        filtered_collections.append(active_collection)
+    else:
+        for object in target_objects:
+            print("object: " + object.name)
+            collection = get_collection(object)
+            if collection not in filtered_collections:
+                if not collection.name.startswith("_"):
+                    filtered_collections.append(collection)
+
+    return filtered_collections
+
+
+def filter_collection_types(collections):
+    """筛选collection类型，返回筛选后的collection列表，包括decal,prop,low,high"""
+    filtered_collections = []
+    for collection in collections:
+        if len(collection.objects) > 0:
+            collection_color = str(collection.color_tag)
+            if (
+                collection.name.startswith("_")
+                and PROXY_COLLECTION_COLOR in collection_color
+            ):
+                print(collection.name + " IS PROXY COLLECTION,skip")
+                continue
+            elif collection.name.endswith(LOW_SUFFIX) or collection.name.endswith(
+                HIGH_SUFFIX
+            ):
+                if LOW_COLLECTION_COLOR or HIGH_COLLECTION_COLOR in collection_color:
+                    print(collection.name + " IS BAKE COLLECTION")
+                    filtered_collections.append(collection)
+                continue
+            elif (
+                "_Decal" in collection.name
+                and DECAL_COLLECTION_COLOR in collection_color
+            ):
+                print(collection.name + " IS DECAL COLLECTION")
+                filtered_collections.append(collection)
+                continue
+            elif PROP_COLLECTION_COLOR in collection_color:
+                print(collection.name + " IS PROP COLLECTION")
+                filtered_collections.append(collection)
+                continue
+            # else:
+            #     print(collection.name + " IS STATICMESH COLLECTION")
+            #     filtered_collections.append(collection)
+            #     continue
+
+    return filtered_collections

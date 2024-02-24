@@ -5,8 +5,8 @@ from .Functions.CommonFunctions import *
 
 
 class HST_BevelTransferNormal(bpy.types.Operator):
-    bl_idname = "object.hstbeveltransfernormal"
-    bl_label = "Bevel And Transfer Normal"
+    bl_idname = "hst.hstbeveltransfernormal"
+    bl_label = "HST Batch Bevel And Transfer Normal"
     bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
 
     def execute(self, context):
@@ -62,8 +62,8 @@ class HST_BevelTransferNormal(bpy.types.Operator):
 
 
 class HST_BatchBevel(bpy.types.Operator):
-    bl_idname = "object.hstbevelmods"
-    bl_label = "Batch Add Bevel Mods"
+    bl_idname = "hst.hstbevelmods"
+    bl_label = "Batch Add Bevel Modifiers"
     bl_description = "批量添加Bevel和WeightedNormal\
         在已有Bevel修改器的情况下使用会根据参数设置修改Bevel修改器宽度和段数"
 
@@ -107,7 +107,7 @@ class HST_BatchBevel(bpy.types.Operator):
 
 
 class HST_SetBevelParameters_Operator(bpy.types.Operator):
-    bl_idname = "object.hstbevelsetparam"
+    bl_idname = "hst.hstbevelsetparam"
     bl_label = "Set HSTBevel Parameters"
     bl_description = "修改HST Bevel修改器参数"
 
@@ -138,8 +138,8 @@ class HST_SetBevelParameters_Operator(bpy.types.Operator):
 
 
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
-    bl_idname = "object.hst_addtransvertcolorproxy"
-    bl_label = "Make Transfer VertexColor Proxy"
+    bl_idname = "hst.hst_addtransvertcolorproxy"
+    bl_label = "HST Make Transfer VertexColor Proxy"
     bl_description = "为选中的物体建立用于烘焙顶点色的代理模型\
         代理模型通过DataTransfer修改器将顶点色传递回原始模型\
         如果原始模型有造型修改，请重新运行建立代理\
@@ -206,8 +206,8 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 
 
 class HST_BakeProxyVertexColorAO(bpy.types.Operator):
-    bl_idname = "object.hst_bakeproxyvertcolrao"
-    bl_label = "Bake Proxy VertexColor AO"
+    bl_idname = "hst.hst_bakeproxyvertcolrao"
+    bl_label = "HST Bake Proxy VertexColor AO"
     bl_description = "烘焙代理模型的AO，需要先建立Proxy\
         场景中如存在其它可渲染的物体会对AO造成影响\
         建议手动关闭其它物体的可渲染开关\
@@ -304,7 +304,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
 
 
 class HST_CleanHSTObjects(bpy.types.Operator):
-    bl_idname = "object.cleanhstobject"
+    bl_idname = "hst.cleanhstobject"
     bl_label = "Clean HST Objects"
     bl_description = "清理所选物体对应的HST修改器和传递模型"
 

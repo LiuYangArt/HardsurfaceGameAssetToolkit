@@ -5,8 +5,8 @@ from .Functions.AssetCheckFunctions import *
 
 
 class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
-    bl_idname = "object.prepspaceclaimcadmesh"
-    bl_label = "CleanupSpaceClaimCADMesh"
+    bl_idname = "hst.prepspaceclaimcadmesh"
+    bl_label = "Cleanup SpaceClaim FBX Mesh"
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
         需要保持模型水密\
         如果模型的面是分开的请先使用FixSpaceClaimObj工具修理"
@@ -34,7 +34,10 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         if len(collections) > 0:
             for collection in collections:
                 if collection.name.endswith("_Decal"):
-                    message_box("Selected collection has decal collection, operation stop")
+                    message_box(
+                        "Selected collections has decal collection, operation stop | "
+                        + "选中的Collection包含Decal Collection，操作停止"
+                    )
                     return {"CANCELLED"}
                 new_collection_name = clean_collection_name(collection.name)
                 collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
@@ -66,9 +69,9 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MakeSwatchUVOperator(bpy.types.Operator):
-    bl_idname = "object.makeswatchuv"
-    bl_label = "MakeSwatchUV"
+class HST_MakeSwatchUVOperator(bpy.types.Operator):
+    bl_idname = "hst.makeswatchuv"
+    bl_label = "HST Make Swatch UV"
     bl_description = "为CAD模型添加Swatch UV"
 
     def execute(self, context):
@@ -94,8 +97,8 @@ class MakeSwatchUVOperator(bpy.types.Operator):
 
 
 class CleanVertexOperator(bpy.types.Operator):
-    bl_idname = "object.cleanvert"
-    bl_label = "clean vert"
+    bl_idname = "hst.cleanvert"
+    bl_label = "Clean Verts"
     bl_description = "清理模型中的孤立顶点"
 
     def execute(self, context):
@@ -119,7 +122,7 @@ class CleanVertexOperator(bpy.types.Operator):
 
 
 class FixSpaceClaimObjOperator(bpy.types.Operator):
-    bl_idname = "object.fixspaceclaimobj"
+    bl_idname = "hst.fixspaceclaimobj"
     bl_label = "FixSpaceClaimObj"
     bl_description = "修理spaceclaim输出的obj，以便进行后续操作\
         自动合并面，并根据角度标记锐边"
@@ -162,7 +165,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
 
 
 class SeparateMultiUserOperator(bpy.types.Operator):
-    bl_idname = "object.sepmultiuser"
+    bl_idname = "hst.sepmultiuser"
     bl_label = "SeparateMultiUser"
     bl_description = "清理多用户，可用于AssetLibrary导入资产去除引用，\
         可能会造成冗余资源，请及时清除"
@@ -182,7 +185,7 @@ class SeparateMultiUserOperator(bpy.types.Operator):
 
 
 class AddSnapSocketOperator(bpy.types.Operator):
-    bl_idname = "object.addsnapsocket"
+    bl_idname = "hst.addsnapsocket"
     bl_label = "Add Snap Socket"
     bl_description = "添加用于UE Modular Snap System的Socket，\
         在编辑模式下使用时，先选中用于Snap的面，会自动创建朝向正确的Socket\
@@ -235,12 +238,16 @@ class AddSnapSocketOperator(bpy.types.Operator):
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
 
+        for object in selected_objects:
+            object.select_set(False)
+        socket_object.select_set(True)
+
         return {"FINISHED"}
 
 
-class SwatchMatSetupOperator(bpy.types.Operator):
-    bl_idname = "object.swatchmatsetup"
-    bl_label = "SwatchEditMode"
+class HST_SwatchMatSetupOperator(bpy.types.Operator):
+    bl_idname = "hst.swatchmatsetup"
+    bl_label = "HST Swatch Edit Mode"
     bl_description = "设置Swatch材质的编辑环境，如果没有Swatchc材质会自动导入"
 
     def execute(self, context):
@@ -308,8 +315,8 @@ class SwatchMatSetupOperator(bpy.types.Operator):
 
 
 class BaseUVEditModeOperator(bpy.types.Operator):
-    bl_idname = "object.baseuveditmode"
-    bl_label = "BaseUVEditMode"
+    bl_idname = "hst.baseuveditmode"
+    bl_label = "HST BaseUV Edit Mode"
     bl_description = "Base UV编辑环境"
 
     def execute(self, context):
@@ -352,7 +359,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
 
 class SetupLookDevEnvOperator(bpy.types.Operator):
 
-    bl_idname = "object.setuplookdevenv"
+    bl_idname = "hst.setuplookdevenv"
     bl_label = "SetupLookDevEnv"
     bl_description = "设置LookDev预览环境"
 
@@ -374,7 +381,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
 
 
 class PreviewWearMaskOperator(bpy.types.Operator):
-    bl_idname = "object.previewwearmask"
+    bl_idname = "hst.previewwearmask"
     bl_label = "PreviewWearMask"
     bl_description = "预览WearMask效果，需要Mesh有顶点色属性'WearMask'\
         选中模型后运行，可以自动切换激活的顶点色"
@@ -403,7 +410,7 @@ class PreviewWearMaskOperator(bpy.types.Operator):
 
 
 class SetTexelDensityOperator(bpy.types.Operator):
-    bl_idname = "object.setbaseuvtexeldensity"
+    bl_idname = "hst.setbaseuvtexeldensity"
     bl_label = "SetBaseUVTexelDensity"
     bl_description = "设置选中模型的BaseUV的Texel Density\
         选中模型后运行，可以设置模型的Texel Density\
@@ -446,7 +453,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
 
 
 class AxisCheckOperator(bpy.types.Operator):
-    bl_idname = "object.axischeck"
+    bl_idname = "hst.axischeck"
     bl_label = "AxisCheck"
     bl_description = "显示UE模型坐标轴参考"
 
@@ -486,8 +493,8 @@ class AxisCheckOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetSceneUnitsOperator(bpy.types.Operator):
-    bl_idname = "object.setsceneunits"
+class HST_SetSceneUnitsOperator(bpy.types.Operator):
+    bl_idname = "hst.setsceneunits"
     bl_label = "SetSceneUnits"
     bl_description = "设置场景单位为厘米"
 
@@ -498,7 +505,7 @@ class SetSceneUnitsOperator(bpy.types.Operator):
 
 
 class CheckAssetsOperator(bpy.types.Operator):
-    bl_idname = "object.checkassets"
+    bl_idname = "hst.checkassets"
     bl_label = "Check Assets"
 
     text = "CheckAssetsOperator"
@@ -539,26 +546,106 @@ class CheckAssetsOperator(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
+class MarkDecalCollectionOperator(bpy.types.Operator):
+    bl_idname = "hst.markdecalcollection"
+    bl_label = "Mark Decal Collection"
+    bl_description = "设置所选为Decal Collection"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        decal_collections = filter_collections_selection(selected_objects)
+        color = "COLOR_" + DECAL_COLLECTION_COLOR
+        if len(decal_collections) == 0:
+            message_box(
+                "No selected collection, please select collections and retry | "
+                + "没有选中Collection，请选中Collection后重试"
+            )
+            return {"CANCELLED"}
+
+        for decal_collection in decal_collections:
+            print("mark decal collection: " + decal_collection.name)
+            decal_objects = decal_collection.all_objects
+
+            # for object in decal_objects:
+            #     check_result = check_decal_materials(object)
+            # if check_result is False:
+            #     self.report({"ERROR"}, decal_collection.name + " "
+            #                  + "has object with wrong decal material, please check | "
+            #                  + "collection内有object的Decal材质错误，请检查Decal Collection")
+  
+            decal_collection_name = clean_collection_name(decal_collection.name)
+            new_name = decal_collection_name + DECAL_SUFFIX
+            decal_collection.name = new_name
+            decal_collection.color_tag = color
+            self.report({"INFO"}, str(len(decal_collections)) + " Decal collection marked")
+        return {"FINISHED"}
+
+class MarkPropCollectionOperator(bpy.types.Operator):
+    bl_idname = "hst.markpropcollection"
+    bl_label = "Mark Prop Collection"
+    bl_description = "设置所选为Prop Collection"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        prop_collections = filter_collections_selection(selected_objects)
+        color = "COLOR_" + PROP_COLLECTION_COLOR
+        if len(prop_collections) == 0:
+            message_box(
+                "No selected collection, please select collections and retry | "
+                + "没有选中Collection，请选中Collection后重试"
+            )
+            return {"CANCELLED"}
+
+        for prop_collection in prop_collections:
+            decal_collection_name = clean_collection_name(prop_collection.name)
+            new_name = decal_collection_name
+            
+            prop_collection.name = new_name
+            prop_collection.color_tag = color
+            self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")
+        return {"FINISHED"}
+
+
 class StaticMeshExportOperator(bpy.types.Operator):
-    bl_idname = "object.staticmeshexport"
-    bl_label = "StaticMeshExport"
+    bl_idname = "hst.staticmeshexport"
+    bl_label = "HST StaticMesh Export UE"
     bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
-        只导出可见的Collection，不导出隐藏的Collection"
+        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体"
 
     def execute(self, context):
-        # export_path = bpy.path.abspath("//")
-        # export_path = export_path + "StaticMesh/"
-        # export_static_mesh(export_path)
-        # self.report({"INFO"}, "Static Mesh exported to " + export_path)
+        
+        parameters = context.scene.hst_params
+        export_path = parameters.export_path.replace("\\", "/")
+        visible_collections = filter_collection_by_visibility(type="VISIBLE")
+        selected_objects = bpy.context.selected_objects
+
+        bpy.ops.hst.setsceneunits() # 设置场景单位为厘米
+
+        export_collections = filter_collection_types(visible_collections)
+        
+        #tbd:check assets
+
+        for collection in export_collections:
+            new_name = collection.name.removeprefix("SM_")
+            new_name = "SM_" + new_name
+            file_path = export_path + new_name + ".fbx"
+            export_collection_staticmesh(collection, file_path)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        for object in selected_objects:
+            object.select_set(True)
+
+        self.report({"INFO"}, str(len(export_collections))+" StaticMeshes exported to " + export_path)
         return {"FINISHED"}
 
 
-class ImportFBXOperator(bpy.types.Operator):
-    bl_idname = "object.importcadfbx"
-    bl_label = "ImportFBX"
-    bl_description = "导入CAD模型转换而成的fbx文件"
+# class ImportFBXOperator(bpy.types.Operator):
+#     bl_idname = "hst.importcadfbx"
+#     bl_label = "ImportFBX"
+#     bl_description = "导入CAD模型转换而成的fbx文件"
 
-    def execute(self, context):
-        # import_fbx()
-        # self.report({"INFO"}, "FBX imported")
-        return {"FINISHED"}
+#     def execute(self, context):
+#         bpy.ops.import_scene.fbx()
+#         # import_fbx()
+#         # self.report({"INFO"}, "FBX imported")
+#         return {"FINISHED"}
