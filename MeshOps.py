@@ -46,6 +46,10 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                     rename_meshes(collection.objects, new_name=new_collection_name)
 
         for mesh in selected_meshes:
+            check_mesh=check_open_bondary(mesh)
+            if check_mesh is True:
+                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                return {"CANCELLED"}
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
@@ -114,6 +118,10 @@ class CleanVertexOperator(bpy.types.Operator):
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
         for mesh in selected_meshes:
+            check_mesh=check_open_bondary(mesh)
+            if check_mesh is True:
+                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                return {"CANCELLED"}
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
         bpy.ops.object.mode_set(mode=store_object_mode)
@@ -147,10 +155,15 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
 
         # 清理multi user
         for object in selected_objects:
-            clean_user(object)
             object.select_set(False)
         for mesh in selected_meshes:
             merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
+
+            check_mesh=check_open_bondary(mesh)
+            if check_mesh is True:
+                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                return {"CANCELLED"}
+
             mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)
 
@@ -263,7 +276,6 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         for object in selected_objects:
-            # clean_user(object)
             object.select_set(False)
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
@@ -623,6 +635,12 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
+        if export_path == "":
+            message_box(
+                "No export path set, please set export path and retry | "
+                + "没有设置导出路径，请设置导出路径后重试"
+            )
+            return {"CANCELLED"}
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         selected_objects = bpy.context.selected_objects
 

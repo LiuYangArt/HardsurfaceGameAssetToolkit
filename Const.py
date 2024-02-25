@@ -48,7 +48,7 @@ LOOKDEV_HDR = "HDR_LookDev_Mid"
 
 # socket
 SOCKET_PREFIX = "SOCKET_"
-SOCKET_SIZE = 0.3
+SOCKET_SIZE = 0.2
 
 # texel density
 DEFAULT_TEX_DENSITY = 1024

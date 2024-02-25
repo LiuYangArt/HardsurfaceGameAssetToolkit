@@ -507,10 +507,11 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
     """根据角度标记锐边"""
     bm = bmesh.new()
     mesh = mesh.data
+    bm.from_mesh(mesh)
+
     to_mark_sharp = []
     has_sharp_edge = False
 
-    bm.from_mesh(mesh)
 
     for edge in bm.edges:  # get sharp edge index by angle
         if edge.calc_face_angle() >= sharp_angle:
@@ -520,18 +521,17 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
         if "sharp_edge" in attributes.name:
             has_sharp_edge = True
             break
-
+    print("has_sharp_edge: " + str(has_sharp_edge))
+    
     if has_sharp_edge is False:  # if no sharp edge attribute, add it
         mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
-
+        print("add sharp edge attribute")
     for edge in mesh.edges:  # mark sharp edge
         if edge.index in to_mark_sharp:
             edge.use_edge_sharp = True
         else:
             edge.use_edge_sharp = False
-
-    bm.to_mesh(mesh)
-    mesh.update()
+    
     bm.clear()
     bm.free()
 
@@ -1080,3 +1080,17 @@ def filter_collection_types(collections, type="ALL"):
             return decal_collections
         case "PROP":
             return prop_collections
+        
+def check_open_bondary(mesh):
+    bm = bmesh.new()
+    bm.from_mesh(mesh.data)
+    check_result=False
+    for edge in bm.edges:
+        if edge.is_boundary:
+            print("open edge")
+            check_result=True
+            break
+    bm.clear()
+    bm.free()
+
+    return check_result
