@@ -374,12 +374,14 @@ class BaseUVEditModeOperator(bpy.types.Operator):
 class SetupLookDevEnvOperator(bpy.types.Operator):
 
     bl_idname = "hst.setuplookdevenv"
-    bl_label = "SetupLookDevEnv"
+    bl_label = "Setup LookDev Env"
     bl_description = "设置LookDev预览环境"
 
     def execute(self, context):
         file_path = PRESET_FILE_PATH
         world_name = LOOKDEV_HDR
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
         import_world(file_path=file_path, world_name=world_name)
         for world in bpy.data.worlds:
             if world.name == world_name:
@@ -390,13 +392,16 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED")
+        for object in selected_objects:
+            object.select_set(True)
+        bpy.context.view_layer.objects.active = active_object
         self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
 
 class PreviewWearMaskOperator(bpy.types.Operator):
     bl_idname = "hst.previewwearmask"
-    bl_label = "PreviewWearMask"
+    bl_label = "Preview WearMask"
     bl_description = "预览WearMask效果，需要Mesh有顶点色属性'WearMask'\
         选中模型后运行，可以自动切换激活的顶点色"
 
@@ -425,7 +430,7 @@ class PreviewWearMaskOperator(bpy.types.Operator):
 
 class SetTexelDensityOperator(bpy.types.Operator):
     bl_idname = "hst.setbaseuvtexeldensity"
-    bl_label = "SetBaseUVTexelDensity"
+    bl_label = "Set BaseUV TexelDensity"
     bl_description = "设置选中模型的BaseUV的Texel Density\
         选中模型后运行，可以设置模型的Texel Density\
         贴图大小和TD使用默认值即可，通常不需要设置"
@@ -468,10 +473,15 @@ class SetTexelDensityOperator(bpy.types.Operator):
 
 class AxisCheckOperator(bpy.types.Operator):
     bl_idname = "hst.axischeck"
-    bl_label = "AxisCheck"
+    bl_label = "Check UE Front Axis"
     bl_description = "显示UE模型坐标轴参考"
 
     def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+        current_mode = bpy.context.active_object.mode
+        print("current_mode: " + current_mode)
+        bpy.ops.object.mode_set(mode="OBJECT")
         properties = context.scene.hst_params
         axis_toggle = properties.axis_toggle
         axis_objects = []
@@ -505,6 +515,10 @@ class AxisCheckOperator(bpy.types.Operator):
                     obj.hide_viewport = False
                     obj.hide_select = True
 
+        for object in selected_objects:
+            object.select_set(True)
+        bpy.context.view_layer.objects.active = active_object
+        bpy.ops.object.mode_set(mode=current_mode)
         return {"FINISHED"}
 
 

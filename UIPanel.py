@@ -159,11 +159,11 @@ class HSTPanel(bpy.types.Panel):
 
         box_column.operator("hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK")
         uv_mode_row = box_column.row(align=True)
-        uv_mode_row.operator("hst.swatchmatsetup", text="SetSwatch", icon="MATERIAL")
+        uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
         box_column.operator(
             "hst.setbaseuvtexeldensity",
-            text="Set BaseUV Texel Density",
+            
             icon="TEXTURE_DATA",
         )
         td_row = box_column.row(align=True)
@@ -175,7 +175,7 @@ class HSTPanel(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator(
-            "hst.addsnapsocket", text="Add Snap Socket", icon="OUTLINER_DATA_EMPTY"
+            "hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY"
         )
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
