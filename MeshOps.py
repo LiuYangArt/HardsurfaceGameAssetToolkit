@@ -497,6 +497,7 @@ class AxisCheckOperator(bpy.types.Operator):
 
             case True:
                 axis_arrow = import_object(PRESET_FILE_PATH, AXIS_ARROW)
+                axis_objects.append(axis_arrow.parent)
                 axis_objects.append(axis_arrow)
                 for obj in axis_objects:
                     obj.show_in_front = True
