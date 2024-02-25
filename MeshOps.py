@@ -23,8 +23,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
 
         set_default_scene_units()
 
-        store_object_mode = bpy.context.active_object.mode
-        bpy.ops.object.mode_set(mode="OBJECT")
+        store_mode = prep_select_mode()
 
         collections = []
 
@@ -46,9 +45,12 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                     rename_meshes(collection.objects, new_name=new_collection_name)
 
         for mesh in selected_meshes:
-            check_mesh=check_open_bondary(mesh)
+            check_mesh = check_open_bondary(mesh)
             if check_mesh is True:
-                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                self.report(
+                    {"ERROR"},
+                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                )
                 return {"CANCELLED"}
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
@@ -68,7 +70,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             selected_meshes, method="ANGLE_BASED", margin=0.005, correct_aspect=True
         )
         bpy.context.scene.tool_settings.use_uv_select_sync = True
-        bpy.ops.object.mode_set(mode=store_object_mode)
+        restore_select_mode(store_mode, selected_objects)
         self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
@@ -118,9 +120,12 @@ class CleanVertexOperator(bpy.types.Operator):
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
         for mesh in selected_meshes:
-            check_mesh=check_open_bondary(mesh)
+            check_mesh = check_open_bondary(mesh)
             if check_mesh is True:
-                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                self.report(
+                    {"ERROR"},
+                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                )
                 return {"CANCELLED"}
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
@@ -150,8 +155,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        store_object_mode = bpy.context.active_object.mode
-        bpy.ops.object.mode_set(mode="OBJECT")
+        store_mode = prep_select_mode()
 
         # 清理multi user
         for object in selected_objects:
@@ -159,9 +163,12 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         for mesh in selected_meshes:
             merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
 
-            check_mesh=check_open_bondary(mesh)
+            check_mesh = check_open_bondary(mesh)
             if check_mesh is True:
-                self.report({"ERROR"}, "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查")
+                self.report(
+                    {"ERROR"},
+                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                )
                 return {"CANCELLED"}
 
             mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
@@ -171,8 +178,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         bpy.ops.mesh.select_mode(type="FACE")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
-        bpy.ops.mesh.select_all(action="DESELECT")
-        bpy.ops.object.mode_set(mode=store_object_mode)
+        restore_select_mode(store_mode, selected_objects)
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 
@@ -275,6 +281,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
+        store_mode = prep_select_mode()
         for object in selected_objects:
             object.select_set(False)
 
@@ -323,6 +330,9 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
+
+        restore_select_mode(store_mode, selected_objects)
+
         self.report({"INFO"}, "Swatch material initialized")
 
         return {"FINISHED"}
@@ -381,7 +391,8 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         file_path = PRESET_FILE_PATH
         world_name = LOOKDEV_HDR
         selected_objects = bpy.context.selected_objects
-        active_object = bpy.context.active_object
+        store_mode = prep_select_mode()
+
         import_world(file_path=file_path, world_name=world_name)
         for world in bpy.data.worlds:
             if world.name == world_name:
@@ -392,9 +403,8 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
 
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED")
-        for object in selected_objects:
-            object.select_set(True)
-        bpy.context.view_layer.objects.active = active_object
+
+        restore_select_mode(store_mode, selected_objects)
         self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
@@ -443,8 +453,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
         texture_size_x = parameters.texture_size
         texture_size_y = parameters.texture_size
 
-        store_object_mode = bpy.context.active_object.mode
-        bpy.ops.object.mode_set(mode="OBJECT")
+        store_mode = prep_select_mode()
 
         for mesh in selected_meshes:
             uv_layer = check_uv_layer(mesh, UV_BASE)
@@ -466,7 +475,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
             print("scale_factor: " + str(scale_factor))
             scale_uv(mesh, uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
 
-        bpy.ops.object.mode_set(mode=store_object_mode)
+        restore_select_mode(store_mode, selected_objects)
         self.report({"INFO"}, "Texel Density set to " + str(texel_density))
         return {"FINISHED"}
 
@@ -478,10 +487,7 @@ class AxisCheckOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        active_object = bpy.context.active_object
-        current_mode = bpy.context.active_object.mode
-        print("current_mode: " + current_mode)
-        bpy.ops.object.mode_set(mode="OBJECT")
+        store_mode = prep_select_mode()
         properties = context.scene.hst_params
         axis_toggle = properties.axis_toggle
         axis_objects = []
@@ -515,10 +521,7 @@ class AxisCheckOperator(bpy.types.Operator):
                     obj.hide_viewport = False
                     obj.hide_select = True
 
-        for object in selected_objects:
-            object.select_set(True)
-        bpy.context.view_layer.objects.active = active_object
-        bpy.ops.object.mode_set(mode=current_mode)
+        restore_select_mode(store_mode, selected_objects)
         return {"FINISHED"}
 
 
@@ -658,7 +661,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             return {"CANCELLED"}
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         selected_objects = bpy.context.selected_objects
-
+        store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
 
         export_collections = filter_collection_types(visible_collections)
@@ -723,9 +726,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             file_path = export_path + new_name + ".fbx"
             export_collection_staticmesh(collection, file_path)
 
-        bpy.ops.object.select_all(action="DESELECT")
-        for object in selected_objects:
-            object.select_set(True)
+        restore_select_mode(store_mode, selected_objects)
 
         self.report(
             {"INFO"},
@@ -744,10 +745,10 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         bad_materials = []
         bad_meshes = []
-
+        store_mode = prep_select_mode()
         for mesh in selected_meshes:
             for material_slot in mesh.material_slots:
-                mat= material_slot.material
+                mat = material_slot.material
                 if mat not in bad_materials:
                     mat_name_split = mat.name.split(".00")
                     if len(mat_name_split) > 1:
@@ -759,7 +760,7 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
                             mat.name = mat_name
                         bad_materials.append(material_slot.material)
                         bad_meshes.append(mesh)
-
+        restore_select_mode(store_mode, selected_objects)
         self.report(
             {"INFO"},
             str(len(bad_materials))

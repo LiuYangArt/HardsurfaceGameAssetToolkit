@@ -512,7 +512,6 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
     to_mark_sharp = []
     has_sharp_edge = False
 
-
     for edge in bm.edges:  # get sharp edge index by angle
         if edge.calc_face_angle() >= sharp_angle:
             to_mark_sharp.append(edge.index)
@@ -522,7 +521,7 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
             has_sharp_edge = True
             break
     print("has_sharp_edge: " + str(has_sharp_edge))
-    
+
     if has_sharp_edge is False:  # if no sharp edge attribute, add it
         mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
         print("add sharp edge attribute")
@@ -531,7 +530,7 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
             edge.use_edge_sharp = True
         else:
             edge.use_edge_sharp = False
-    
+
     bm.clear()
     bm.free()
 
@@ -661,7 +660,6 @@ def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> 
             viewport = bpy.context.area
             if viewport.type == area_type:
                 viewport_spaces.append(bpy.context.area.spaces[0])
-            print("viewport_context")
         case "ALL":
             for window in bpy.context.window_manager.windows:
                 for area in window.screen.areas:
@@ -669,7 +667,6 @@ def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> 
                         for space in area.spaces:
                             if space.type == area_type:
                                 viewport_spaces.append(space)
-            print("viewport_all")
     print(viewport_spaces)
 
     for viewport_space in viewport_spaces:
@@ -1073,24 +1070,50 @@ def filter_collection_types(collections, type="ALL"):
 
     match type:
         case "ALL":
-            return bake_collections + decal_collections + prop_collections + sm_collections
+            return (
+                bake_collections + decal_collections + prop_collections + sm_collections
+            )
         case "BAKE":
             return bake_collections
         case "DECAL":
             return decal_collections
         case "PROP":
             return prop_collections
-        
+
+
 def check_open_bondary(mesh):
     bm = bmesh.new()
     bm.from_mesh(mesh.data)
-    check_result=False
+    check_result = False
     for edge in bm.edges:
         if edge.is_boundary:
             print("open edge")
-            check_result=True
+            check_result = True
             break
     bm.clear()
     bm.free()
 
     return check_result
+
+
+def prep_select_mode():
+    """存储当前模式,并切换到OBJECT模式. EXAMPLE: store_mode = prep_select_mode()"""
+
+    active_object = bpy.context.active_object
+    current_mode = bpy.context.active_object.mode
+    store_mode = current_mode, active_object
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    return store_mode
+
+
+def restore_select_mode(store_mode, selected_objects=None):
+    """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode, selected_objects)"""
+    if selected_objects is not None:
+        bpy.ops.object.select_all(action="DESELECT")
+        for object in selected_objects:
+            object.select_set(True)
+    current_mode, active_object = store_mode
+    bpy.context.view_layer.objects.active = active_object
+    active_object.select_set(True)
+    bpy.ops.object.mode_set(mode=current_mode)
