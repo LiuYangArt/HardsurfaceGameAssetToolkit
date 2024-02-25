@@ -157,7 +157,7 @@ class HSTPanel(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="Workflow")
 
-        box_column.operator("hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh")
+        box_column.operator("hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK")
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="SetSwatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
