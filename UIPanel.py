@@ -78,8 +78,8 @@ class UIParams(PropertyGroup):
     )
 
 
-class BTMPanel(bpy.types.Panel):
-    bl_idname = "OBJECT_PT_BTM"
+class BakeToolPanel(bpy.types.Panel):
+    bl_idname = "PANEL_BAKETOOL"
     bl_label = "Bake Prep Tool"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -113,7 +113,7 @@ class BTMPanel(bpy.types.Panel):
 
 
 class HSTPanel(bpy.types.Panel):
-    bl_idname = "OBJECT_PT_HST"
+    bl_idname = "PANEL_HST"
     bl_label = "Hard Surface Prop Toolkit"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -208,9 +208,24 @@ class HSTPanel(bpy.types.Panel):
             "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
         )
         box_column.prop(parameters, "export_path", text="Path")
-        box_column.separator()
+        # box_column.separator()
 
-        box_column.label(text="Utilities")
+
+        # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
+
+class ToolsPanel(bpy.types.Panel):
+    bl_idname = "PANEL_TOOLS"
+    bl_label = "Utilities"
+    bl_category = "HST"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+
+    def draw(self, context):
+        parameters = context.scene.hst_params
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+        # box_column.label(text="Utilities")
         box_column.operator(
             "hst.setsceneunits", text="Set Scene Units", icon="SCENE_DATA"
         )
@@ -222,7 +237,3 @@ class HSTPanel(bpy.types.Panel):
             "hst.fixspaceclaimobj", text="Fix SpaceClaim Obj", icon="MESH_CUBE"
         )
         box_column.operator("hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon= "MATERIAL" )
-        # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
-
-
-# classes = (HSTPanel, BTMPanel, UIParams)
