@@ -659,6 +659,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 + "没有设置导出路径，请设置导出路径后重试"
             )
             return {"CANCELLED"}
+        if export_path.endswith("/") is False:
+            export_path = export_path + "/"
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
@@ -770,6 +772,24 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         )
 
         return {"FINISHED"}
+    
+
+class AddUECollisionOperator(bpy.types.Operator):
+    bl_idname = "object.adduecollision"
+    bl_label = "Add UE Collision"
+    bl_description = "添加UE碰撞体"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        active_object = bpy.context.active_object
+        #select collection
+        # add a cube
+        # rename to UCX_collection.objects[0].name
+        # set collision display as wireframe , show name , no shadow
+        # add triangulate modifier
+        
+        return {'FINISHED'}
+
 
 
 # class ImportFBXOperator(bpy.types.Operator):
