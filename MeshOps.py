@@ -787,8 +787,9 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
 class SetUECollisionOperator(bpy.types.Operator):
     bl_idname = "object.adduecollision"
     bl_label = "Set UE Collision"
-    bl_description = "设置选中mesh为UE碰撞体，注意命名需要跟collection内的mesh对应\
-        例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01.001"
+    bl_description = "设置选中mesh为UE碰撞体，并设置命名与collection内的mesh对应\
+        例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01.001\
+        制作好碰撞体模型后使用本工具进行设置，如果对应模型命名有修改请重新运行本工具配置碰撞体"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
