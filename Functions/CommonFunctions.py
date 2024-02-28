@@ -1040,15 +1040,20 @@ def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
     filtered_collections = []
     SCENE = "Scene Collection"
-    for object in target_objects:
-        collection = object.users_collection[0]
-        if (
-            collection is not None
-            and SCENE not in collection.name
-            and collection not in filtered_collections
-            and not collection.name.startswith("_")
-        ):
-            filtered_collections.append(collection)
+    if target_objects is None or len(target_objects) == 0:
+        a=bpy.context.view_layer.active_layer_collection.collection
+        col = bpy.data.collections.get(a.name)
+        filtered_collections.append(col)
+    else:
+        for object in target_objects:
+            collection = object.users_collection[0]
+            if (
+                collection is not None
+                and SCENE not in collection.name
+                and collection not in filtered_collections
+                and not collection.name.startswith("_")
+            ):
+                filtered_collections.append(collection)
     return filtered_collections
 
 

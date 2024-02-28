@@ -695,42 +695,64 @@ class StaticMeshExportOperator(bpy.types.Operator):
             for object in collection.all_objects:
                 bake_check_result = check_bake_object(object)
                 if bake_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard prop object, please check: | "
-                                + "有不符合Prop规范的物体，请检查确认")
+                    self.report(
+                        {"ERROR"},
+                        "Collection: "
+                        + collection.name
+                        + " has non-standard prop object, please check: | "
+                        + "有不符合Prop规范的物体，请检查确认",
+                    )
                 break
             for object in collection.all_objects:
                 set_active_color_attribute(object, BAKECOLOR_ATTR)
                 check_bake_object(object)
                 bake_check_result = check_bake_object(object)
                 if bake_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "  Object: " + object.name + " : " + bake_check_result)
-
+                    self.report(
+                        {"ERROR"},
+                        "  Object: " + object.name + " : " + bake_check_result,
+                    )
 
         # Check Prop
         for collection in prop_collections:
             for object in collection.all_objects:
                 prop_check_result = check_prop_object(object)
                 if prop_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard prop object, please check: | "
-                                + "有不符合Prop规范的物体，请检查确认")
+                    self.report(
+                        {"ERROR"},
+                        "Collection: "
+                        + collection.name
+                        + " has non-standard prop object, please check: | "
+                        + "有不符合Prop规范的物体，请检查确认",
+                    )
                 break
             for object in collection.all_objects:
                 prop_check_result = check_prop_object(object)
                 if prop_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "  Object: " + object.name + " | " + prop_check_result)
+                    self.report(
+                        {"ERROR"},
+                        "  Object: " + object.name + " | " + prop_check_result,
+                    )
 
         # Check Decal
         for collection in decal_collections:
             for object in collection.all_objects:
                 decal_check_result = check_decal_object(object)
                 if decal_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard decal object, please check: | "
-                                + "有不符合Decal规范的物体，请检查确认")
+                    self.report(
+                        {"ERROR"},
+                        "Collection: "
+                        + collection.name
+                        + " has non-standard decal object, please check: | "
+                        + "有不符合Decal规范的物体，请检查确认",
+                    )
             for object in collection.all_objects:
                 decal_check_result = check_decal_object(object)
                 if decal_check_result != CHECK_OK:
-                    self.report({"ERROR"}, "  Object: " + object.name + " : " + decal_check_result)
-            
+                    self.report(
+                        {"ERROR"},
+                        "  Object: " + object.name + " : " + decal_check_result,
+                    )
 
         for collection in export_collections:
             new_name = collection.name.removeprefix("SM_")
@@ -815,7 +837,13 @@ class SetUECollisionOperator(bpy.types.Operator):
                     break
             for mesh in selected_meshes:
                 if mesh.users_collection[0] == collection:
-                    set_collision_object(mesh, target_mesh.name)
+                    if target_mesh is not None:
+                        set_collision_object(mesh, target_mesh.name)
+                    else:
+                        message_box(
+                            "no static mesh in collection, UCX won't work | "
+                            + "Collection内没有StaticMesh，UCX无法设置"
+                        )
 
         restore_select_mode(store_mode)
 
