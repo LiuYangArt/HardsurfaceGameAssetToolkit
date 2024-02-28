@@ -21,7 +21,8 @@ def set_bake_collection(collection, type="LOW"):
 
     collection.name = new_name
     collection.color_tag = color
-    rename_meshes(objects, new_name)
+    # rename_meshes(objects, new_name)
+    rename_prop_meshes(objects)
 
     return result
 
@@ -46,6 +47,11 @@ class SetBakeCollectionLowOperator(bpy.types.Operator):
         for collection in bake_collections:
             set_bake_collection(collection, type="LOW")
 
+            static_meshes,ucx_meshes = filter_meshes(collection)
+            if len(ucx_meshes) > 0:
+                self.report({"ERROR"}, collection.name + " has UCX mesh, please check | "
+                            + "collection内有UCX Mesh，请检查")
+
         self.report({"INFO"}, "Set bake collection to low poly")
         return {"FINISHED"}
 
@@ -69,6 +75,10 @@ class SetBakeCollectionHighOperator(bpy.types.Operator):
         
         for collection in bake_collections:
             set_bake_collection(collection, type="HIGH")
+            static_meshes,ucx_meshes = filter_meshes(collection)
+            if len(ucx_meshes) > 0:
+                self.report({"ERROR"}, collection.name + " has UCX mesh, please check | "
+                            + "collection内有UCX Mesh，请检查")
 
         self.report({"INFO"}, "Set bake collection to high poly")
         return {"FINISHED"}
@@ -90,11 +100,18 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
         if len(selected_meshes) == 0:
             message_box("No mesh selected | 未选择Mesh")
             return {"CANCELLED"}
-
+        # store_mode = prep_select_mode()
+        
         for mesh in selected_meshes:
-            add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
-            set_active_color_attribute(mesh, BAKECOLOR_ATTR)
-            set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
-
+            vertex_color=check_vertex_color(mesh)
+            if vertex_color:
+                print("has vc")
+                set_active_color_attribute(mesh, vertex_color.name)
+                set_object_vertexcolor(mesh, color, vertex_color.name)
+            else:
+                add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
+                set_active_color_attribute(mesh, BAKECOLOR_ATTR)
+                set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
+        # restore_select_mode(store_mode)
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}

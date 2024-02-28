@@ -1,6 +1,6 @@
 import bpy
 from ..Const import *
-from .CommonFunctions import set_active_color_attribute
+from .CommonFunctions import set_active_color_attribute, name_remove_digits
 
 
 def scene_unit_check():
@@ -27,7 +27,6 @@ def check_bake_object(object):
     result = False
     bake_collection = object.users_collection[0]
     print("checking " + object.name + " in " + bake_collection.name + " for export")
-
 
     if object.type == "MESH":
         mesh_check = CHECK_OK
@@ -86,28 +85,34 @@ def check_decal_object(object):
     )
 
     if object.type == "MESH":
-        if len(object.data.uv_layers) == 0:
-            uv_check = "No UV"
-        elif len(object.data.uv_layers) > 1:
-            uv_check = "Has More Than 1 UV"
+        if object.name.startswith(UCX_PREFIX):
+            mesh_check = "is UCX"
         else:
-            uv_check = CHECK_OK
+            mesh_check = CHECK_OK
+            if len(object.data.uv_layers) == 0:
+                uv_check = "No UV"
+            elif len(object.data.uv_layers) > 1:
+                uv_check = "Has More Than 1 UV"
+            else:
+                uv_check = CHECK_OK
 
-        if len(object.material_slots) == 0:
-            material_check = "No Mat"
-        else:
-            for material in object.material_slots:
-                if not material.name.startswith(MATERIAL_PREFIX):
-                    material_check = "No Prefix"
-                elif "Decal" not in material.name:
-                    material_check = "BAD"
-                elif "Decal." in material.name:
-                    material_check = "Duplicated"
-                else:
-                    material_check = CHECK_OK
+            if len(object.material_slots) == 0:
+                material_check = "No Mat"
+            else:
+                for material in object.material_slots:
+                    if not material.name.startswith(MATERIAL_PREFIX):
+                        material_check = "No Prefix"
+                    elif "Decal" not in material.name:
+                        material_check = "BAD"
+                    elif "Decal." in material.name:
+                        material_check = "Duplicated"
+                    else:
+                        material_check = CHECK_OK
 
-    if uv_check is CHECK_OK and material_check is CHECK_OK:
+    if mesh_check is CHECK_OK and uv_check is CHECK_OK and material_check is CHECK_OK:
         result = CHECK_OK
+    elif mesh_check is not CHECK_OK:
+        result = "Mesh = " + mesh_check
     else:
         result = "UV = " + uv_check + " , Material = " + material_check
     print(result)
@@ -205,15 +210,15 @@ def check_UCX(object):
     if object.name.startswith(UCX_PREFIX):
         # extract name
         name = object.name.split(UCX_PREFIX)[1]
-        name = name.split(".")[0]
+        name = name_remove_digits(name,parts=2)
 
         collection = object.users_collection[0]
-
         has_match_name = False
         for obj in collection.all_objects:
             if obj.name == name:
                 has_match_name = True
-            break
+                break
+        print(has_match_name)
         if has_match_name:
             result = CHECK_OK
         else:

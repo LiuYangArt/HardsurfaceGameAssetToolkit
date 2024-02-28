@@ -173,6 +173,7 @@ def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     return success
 
 
+
 def add_vertexcolor_attribute(
     target_object: bpy.types.Object, vertexcolor_name: str
 ) -> bpy.types.Object:
@@ -204,17 +205,42 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     #     print(target_object + " is not mesh object")
     return color_attribute
 
+def vertexcolor_to_vertices(target_mesh,color):
+    mesh = target_mesh.data
+    bpy.ops.object.mode_set(mode = 'VERTEX_PAINT')
+    selected_verts = []
+    for vert in mesh.vertices:
+        if vert.select == True:
+            selected_verts.append(vert)
+
+    for polygon in mesh.polygons:
+        for selected_vert in selected_verts:
+            for i, index in enumerate(polygon.vertices):
+                if selected_vert.index == index:
+                    loop_index = polygon.loop_indices[i]
+                    mesh.vertex_colors.active.data[loop_index].color = color
+    bpy.ops.object.mode_set(mode = 'EDIT')
 
 def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
     """设置顶点色"""
     color = tuple(color)
+    current_mode=bpy.context.active_object.mode
+    print(current_mode)
     if target_object.type == "MESH":
         mesh = target_object.data
         if vertexcolor_name in mesh.color_attributes:
             color_attribute = mesh.color_attributes.get(vertexcolor_name)
-            color_attribute.data.foreach_set("color_srgb", color * len(mesh.loops) * 4)
+            if current_mode == "OBJECT":
+                # if vertexcolor_name in mesh.color_attributes:
+                #     color_attribute = mesh.color_attributes.get(vertexcolor_name)
+                color_attribute.data.foreach_set("color_srgb", color * len(mesh.loops) * 4)
+                # else:
+                #     print("No vertex color attribute named " + vertexcolor_name)
+            elif current_mode == "EDIT":
+                vertexcolor_to_vertices(target_object,color)
         else:
             print("No vertex color attribute named " + vertexcolor_name)
+
     else:
         print(target_object + " is not mesh object")
 
@@ -921,13 +947,8 @@ def set_default_scene_units():
 
 def rename_alt(target_object, new_name, mark="_", num=3):
     """重命名物体，如果名字已存在则在后面加_数字"""
-    name_exist = False
-    for object in bpy.data.objects:
-        if object.name == new_name:
-            name_exist = True
-            break
-
-    if name_exist is True:
+    name_set = {object.name for object in bpy.data.objects}
+    if new_name in name_set:
         name_objects_num = []
         for object in bpy.data.objects:
             if object.name.startswith(new_name + mark):
@@ -938,8 +959,7 @@ def rename_alt(target_object, new_name, mark="_", num=3):
         new_new_name = (
             new_name + "_" + str(find_largest_digit(name_objects_num) + 1).zfill(num)
         )
-
-    elif name_exist is False:
+    else:
         new_new_name = new_name
 
     target_object.name = new_new_name
@@ -1040,20 +1060,24 @@ def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
     filtered_collections = []
     SCENE = "Scene Collection"
-    if target_objects is None or len(target_objects) == 0:
-        a=bpy.context.view_layer.active_layer_collection.collection
+
+    if target_objects:
+        processed_collections = set()
+        for obj in target_objects:
+            for collection in obj.users_collection:
+                if (
+                    collection is not None
+                    and SCENE not in collection.name
+                    and collection not in processed_collections
+                    and not collection.name.startswith("_")
+                ):
+                    filtered_collections.append(collection)
+                    processed_collections.add(collection)
+    else:
+        a = bpy.context.view_layer.active_layer_collection.collection
         col = bpy.data.collections.get(a.name)
         filtered_collections.append(col)
-    else:
-        for object in target_objects:
-            collection = object.users_collection[0]
-            if (
-                collection is not None
-                and SCENE not in collection.name
-                and collection not in filtered_collections
-                and not collection.name.startswith("_")
-            ):
-                filtered_collections.append(collection)
+
     return filtered_collections
 
 
@@ -1143,6 +1167,7 @@ def set_collision_object(target_object,new_name):
     target_object.show_name = True
     target_object.display_type = "WIRE"
     target_object.visible_shadow = False
+    target_object.hide_render = True
     for modifier in target_object.modifiers:
         target_object.modifiers.remove(modifier)
     for material_slot in target_object.material_slots:
@@ -1155,28 +1180,45 @@ def set_collision_object(target_object,new_name):
     # set naming
     if new_name is None:
         new_name = target_object.name
-    # collection = get_collection(target_object)
-    # if collection is not None:
-    #     collection_objs = collection.all_objects
-    #     if len(collection_objs) > 0:
-    #         for obj in collection_objs:
-    #             if (
-    #                 obj != target_object
-    #                 and obj.type == "MESH"
-    #                 and not obj.name.startswith(UCX_PREFIX)
-    #             ):
-    #                 new_name = obj.name
-    #                 break
-    target_object.name = UCX_PREFIX + new_name
+
+    # target_object.name = UCX_PREFIX + new_name
+    rename_alt(target_object, UCX_PREFIX + new_name, mark="_", num=2)
     print(target_object.name)
 
 
-def filter_staticmeshes(collection):
-    static_meshes = []
-    if collection is not None:
-        collection_objs = collection.all_objects
-        if len(collection_objs) > 0:
-            for obj in collection_objs:
-                if obj.type == "MESH" and not obj.name.startswith(UCX_PREFIX):
-                    static_meshes.append(obj)
-    return static_meshes
+def filter_meshes(collection):
+    """筛选collection中的mesh,返回staticmeshes,ucx_meshes"""
+    staticmeshes = []
+    ucx_meshes = []
+    collection_objs = [obj for obj in collection.all_objects if obj.type == "MESH"]
+    staticmeshes = [obj for obj in collection_objs if not obj.name.startswith(UCX_PREFIX)]
+    ucx_meshes = [obj for obj in collection_objs if obj.name.startswith(UCX_PREFIX)]
+    return staticmeshes, ucx_meshes
+
+def name_remove_digits(name,parts=3):
+    parts = int(parts)
+    name_split = name.split("_")
+    if len(name_split) > parts:
+        new_name = name.rsplit("_", 1)[0]
+    return new_name
+
+def rename_prop_meshes(objects):
+    """重命名prop mesh"""
+    selected_collections = filter_collections_selection(objects)
+    for collection in selected_collections:
+        static_meshes,ucx_meshes = filter_meshes(collection)
+        rename_meshes(static_meshes, collection.name)
+        if len(ucx_meshes) > 0:
+            if len(static_meshes) > 0:
+                ucx_name = UCX_PREFIX + static_meshes[0].name
+            else:
+                ucx_name = name_remove_digits(ucx_meshes[0].name)
+            rename_meshes(ucx_meshes, ucx_name)
+    return static_meshes,ucx_meshes
+
+def check_vertex_color(mesh):
+    """检查是否存在顶点色"""
+    vertex_color = None
+    if len(mesh.data.color_attributes) > 0:
+        vertex_color = mesh.data.color_attributes[0]
+    return vertex_color

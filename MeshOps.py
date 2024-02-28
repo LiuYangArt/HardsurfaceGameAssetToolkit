@@ -449,6 +449,13 @@ class SetTexelDensityOperator(bpy.types.Operator):
         texel_density = parameters.texture_density * 0.01  # fix unit to cm
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
         texture_size_x = parameters.texture_size
         texture_size_y = parameters.texture_size
 
@@ -595,14 +602,11 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
 
         for decal_collection in decal_collections:
             print("mark decal collection: " + decal_collection.name)
-            decal_objects = decal_collection.all_objects
-
-            # for object in decal_objects:
-            #     check_result = check_decal_materials(object)
-            # if check_result is False:
-            #     self.report({"ERROR"}, decal_collection.name + " "
-            #                  + "has object with wrong decal material, please check | "
-            #                  + "collection内有object的Decal材质错误，请检查Decal Collection")
+            # decal_objects = decal_collection.all_objects
+            static_meshes,ucx_meshes = filter_meshes(decal_collection)
+            if len(ucx_meshes) > 0:
+                self.report({"ERROR"}, decal_collection.name + " has UCX mesh, please check | "
+                            + "collection内有UCX Mesh，请检查")
 
             decal_collection_name = clean_collection_name(decal_collection.name)
             new_name = decal_collection_name + DECAL_SUFFIX
@@ -636,7 +640,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
 
             prop_collection.name = new_name
             prop_collection.color_tag = color
-
+        rename_prop_meshes(selected_objects)
             # collection_objs=prop_collection.all_objects
             # prop_objs = []
             # for prop_obj in collection_objs:
@@ -644,9 +648,9 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             #         prop_objs.append(prop_obj)
             # rename_meshes(prop_objs, new_name=new_name)
 
-            self.report(
-                {"INFO"}, str(len(prop_collections)) + " Prop collection marked"
-            )
+        self.report(
+            {"INFO"}, str(len(prop_collections)) + " Prop collection marked"
+        )
         return {"FINISHED"}
 
 
@@ -702,7 +706,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                         + " has non-standard prop object, please check: | "
                         + "有不符合Prop规范的物体，请检查确认",
                     )
-                break
+                    break
             for object in collection.all_objects:
                 set_active_color_attribute(object, BAKECOLOR_ATTR)
                 check_bake_object(object)
@@ -725,7 +729,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                         + " has non-standard prop object, please check: | "
                         + "有不符合Prop规范的物体，请检查确认",
                     )
-                break
+                    break
             for object in collection.all_objects:
                 prop_check_result = check_prop_object(object)
                 if prop_check_result != CHECK_OK:
@@ -746,6 +750,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                         + " has non-standard decal object, please check: | "
                         + "有不符合Decal规范的物体，请检查确认",
                     )
+                    break
             for object in collection.all_objects:
                 decal_check_result = check_decal_object(object)
                 if decal_check_result != CHECK_OK:
@@ -777,6 +782,13 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
         bad_materials = []
         bad_meshes = []
         store_mode = prep_select_mode()
@@ -810,7 +822,7 @@ class SetUECollisionOperator(bpy.types.Operator):
     bl_idname = "object.adduecollision"
     bl_label = "Set UE Collision"
     bl_description = "设置选中mesh为UE碰撞体，并设置命名与collection内的mesh对应\
-        例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01.001\
+        例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01_01\
         制作好碰撞体模型后使用本工具进行设置，如果对应模型命名有修改请重新运行本工具配置碰撞体"
 
     def execute(self, context):
@@ -829,20 +841,21 @@ class SetUECollisionOperator(bpy.types.Operator):
         selected_collections = filter_collections_selection(selected_objects)
 
         for collection in selected_collections:
-            collection_meshes = filter_staticmeshes(collection)
-            target_mesh = None
+            collection_meshes,ucx_meshes = filter_meshes(collection)
+            static_mesh = None
             for mesh in collection_meshes:
                 if mesh not in selected_meshes:
-                    target_mesh = mesh
+                    static_mesh = mesh
                     break
+            print("static_mesh: " + str(static_mesh))
             for mesh in selected_meshes:
                 if mesh.users_collection[0] == collection:
-                    if target_mesh is not None:
-                        set_collision_object(mesh, target_mesh.name)
+                    if static_mesh is not None:
+                        set_collision_object(mesh, static_mesh.name)
                     else:
                         message_box(
-                            "no static mesh in collection, UCX won't work | "
-                            + "Collection内没有StaticMesh，UCX无法设置"
+                            "no static mesh left in collection, UCX won't work | "
+                            + "Collection内没有剩余的StaticMesh，无法设置。UCX需要对应的StaticMesh以正确命名"
                         )
 
         restore_select_mode(store_mode)

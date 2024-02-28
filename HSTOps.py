@@ -11,6 +11,13 @@ class HST_BevelTransferNormal(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry\n"
+                + "没有选中的Object，请选中物体后重试",
+            )
+            return {"CANCELLED"}
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, "MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
@@ -18,23 +25,22 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
         if collection is None:
-            message_box(
-                "Not in collection, please put selected objects in collections and retry | "
-                + "所选物体需要在Collections中"
+            self.report(
+                {"ERROR"},
+                "Not in collection, please put selected objects in collections and retry\n"
+                + "所选物体需要在Collections中",
             )
             return {"CANCELLED"}
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
-        selected_collections = filter_collections_selection(selected_objects)
-        for collection in selected_collections:
-            collection_meshes = filter_staticmeshes(collection)
-            rename_meshes(collection_meshes, collection.name)
-
+        
+        rename_prop_meshes(selected_objects)
         transfer_collection = create_collection(
             TRANSFER_COLLECTION, PROXY_COLLECTION_COLOR
         )
@@ -75,23 +81,32 @@ class HST_BatchBevel(bpy.types.Operator):
 
     def execute(self, context):
         parameters = context.scene.hst_params
+        
         selected_objects = bpy.context.selected_objects
-        collection = get_collection(selected_objects[0])
-        selected_meshes = filter_type(selected_objects, "MESH")
-        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
-        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
-
-        if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry\n"
+                + "没有选中的Object，请选中物体后重试",
             )
             return {"CANCELLED"}
+        
+        selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
+        if len(selected_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
+        collection = get_collection(selected_objects[0])
 
         if collection is not None:
             selected_collections = filter_collections_selection(selected_objects)
             for collection in selected_collections:
-                collection_meshes = filter_staticmeshes(collection)
+                collection_meshes,ucx_meshes = filter_meshes(collection)
                 rename_meshes(collection_meshes, collection.name)
 
         for mesh in selected_meshes:
@@ -115,35 +130,43 @@ class HST_BatchBevel(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HST_SetBevelParameters_Operator(bpy.types.Operator):
-    bl_idname = "hst.hstbevelsetparam"
-    bl_label = "Set HSTBevel Parameters"
-    bl_description = "修改HST Bevel修改器参数"
+# class HST_SetBevelParameters_Operator(bpy.types.Operator):
+#     bl_idname = "hst.hstbevelsetparam"
+#     bl_label = "Set HSTBevel Parameters"
+#     bl_description = "修改HST Bevel修改器参数"
 
-    def execute(self, context):
-        parameters = context.scene.hst_params
-        selected_objects = bpy.context.selected_objects
-        bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
+#     def execute(self, context):
+#         parameters = context.scene.hst_params
+#         selected_objects = bpy.context.selected_objects
+#         if len(selected_objects) == 0:
+#             self.report(
+#                 {"ERROR"},
+#                 "No selected object, please select objects and retry\n"
+#                 + "没有选中的Object，请选中物体后重试",
+#             )
+#             return {"CANCELLED"}
+        
+#         bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
-        success_count = 0
-        for object in selected_objects:
-            for modifier in object.modifiers:
-                if modifier.name == BEVEL_MODIFIER:
-                    modifier.segments = parameters.set_bevel_segments
-                    modifier.width = bevel_width
-                    success_count += 1
-                    continue
-        self.report(
-            {"INFO"},
-            "Set Bevel Modifier Parameters to "
-            + str(parameters.set_bevel_segments)
-            + " segments and "
-            + str(bevel_width)
-            + " width for "
-            + str(success_count)
-            + " objects",
-        )
-        return {"FINISHED"}
+#         success_count = 0
+#         for object in selected_objects:
+#             for modifier in object.modifiers:
+#                 if modifier.name == BEVEL_MODIFIER:
+#                     modifier.segments = parameters.set_bevel_segments
+#                     modifier.width = bevel_width
+#                     success_count += 1
+#                     continue
+#         self.report(
+#             {"INFO"},
+#             "Set Bevel Modifier Parameters to "
+#             + str(parameters.set_bevel_segments)
+#             + " segments and "
+#             + str(bevel_width)
+#             + " width for "
+#             + str(success_count)
+#             + " objects",
+#         )
+#         return {"FINISHED"}
 
 
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
@@ -156,26 +179,35 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry\n"
+                + "没有选中的Object，请选中物体后重试",
+            )
+            return {"CANCELLED"}
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, type="MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
 
         if collection is None:
-            message_box(
-                "Not in collection, please put selected objects in collections and retry | "
-                + "所选物体需要在Collections中"
+            self.report(
+                {"ERROR"},
+                "Not in collection, please put selected objects in collections and retry\n"
+                + "所选物体需要在Collections中",
             )
             return {"CANCELLED"}
 
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
-        collection_meshes = filter_staticmeshes(collection)
-        rename_meshes(collection_meshes, collection.name)  # 重命名mesh
+        rename_prop_meshes(selected_objects)
+
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
         proxy_collection = create_collection(
@@ -225,30 +257,37 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry\n"
+                + "没有选中的Object，请选中物体后重试",
+            )
+            return {"CANCELLED"}
         active_object = bpy.context.active_object
         current_render_engine = bpy.context.scene.render.engine  # 记录原渲染引擎
         bake_list = []
         collection = get_collection(active_object)
         selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
 
         if collection is None:
-            message_box(
-                "Not in collection, please put selected objects in collections and retry | "
-                + "所选物体需要在Collections中"
+            self.report(
+                {"ERROR"},
+                "Not in collection, please put selected objects in collections and retry\n"
+                + "所选物体需要在Collections中",
             )
             return {"CANCELLED"}
 
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
-        selected_collections = filter_collections_selection(selected_objects)
-        for collection in selected_collections:
-            collection_meshes = filter_staticmeshes(collection)
-            rename_meshes(collection_meshes, collection.name)
+        rename_prop_meshes(selected_objects)
 
         # prepare wearmask
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
@@ -323,8 +362,16 @@ class HST_CleanHSTObjects(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry\n"
+                + "没有选中的Object，请选中物体后重试",
+            )
+            return {"CANCELLED"}
         delete_list = []
         selected_meshes = filter_type(selected_objects, type="MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
         for mesh in selected_meshes:
             for modifier in mesh.modifiers:
                 if (
