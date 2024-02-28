@@ -2,6 +2,7 @@ import bpy
 from ..Const import *
 from .CommonFunctions import set_active_color_attribute
 
+
 def scene_unit_check():
     scene_settings = bpy.context.scene.unit_settings
     if scene_settings.length_unit != "CENTIMETERS" or scene_settings.system != "METRIC":
@@ -18,27 +19,28 @@ def show_reusult(result_input):
             result_show = "CHECKMARK"
     return result_show
 
+
 def check_bake_object(object):
     uv_check = False
     material_check = False
+    mesh_check = False
     result = False
     bake_collection = object.users_collection[0]
     print("checking " + object.name + " in " + bake_collection.name + " for export")
 
-    
 
     if object.type == "MESH":
+        mesh_check = CHECK_OK
         if len(object.data.uv_layers) == 0:
-            uv_check = False
-            print("NO UV!")
+            uv_check = "No UV"
         elif len(object.data.uv_layers) > 1:
-            uv_check = False
-            print("has MORE THAN 1 UV!")
+            uv_check = "More Than 1 UV"
         else:
-            uv_check = True
-        
+            uv_check = CHECK_OK
+
         if (LOW_SUFFIX) in object.name:
             if len(object.material_slots) == 0:
+                material_check = "No Material"
                 print(
                     object.name
                     + " in Collection: "
@@ -47,18 +49,26 @@ def check_bake_object(object):
                 )
             else:
                 for material in object.material_slots:
-                    if not material.name.startswith(MATERIAL_PREFIX):
-                        print("MAT PREFIX is wrong")
-                    elif "Bake." in material.name:
-                        print("has DUPLICATED BAKE MATERIAL!")
+                    # if not material.name.startswith(MATERIAL_PREFIX):
+                    #     material_check = "No Prefix"
+                    if "Bake." in material.name:
+                        material_check = "Duplicated"
                     else:
-                        print("material GOOD")
-                        material_check = True
+                        material_check = CHECK_OK
+        elif (HIGH_SUFFIX) in object.name: # high poly not need to check
+            uv_check = CHECK_OK
+            material_check = CHECK_OK
+    
     else:
-        print("NOT MESH")
-                        
-    if uv_check and material_check:
-        result = True
+        mesh_check = "No Mesh"
+
+
+    if uv_check is CHECK_OK and material_check is CHECK_OK and mesh_check is CHECK_OK:
+        result = CHECK_OK
+    elif mesh_check is not CHECK_OK:
+        result = "Mesh = " + mesh_check
+    else:
+        result = "UV = " + uv_check + " , Material = " + material_check
     return result
 
 
@@ -67,96 +77,154 @@ def check_decal_object(object):
     material_check = False
     result = False
     decal_collection = object.users_collection[0]
-    print("checking " + object.name + " in " + decal_collection.name + "as decal for export")
+    print(
+        "checking "
+        + object.name
+        + " in "
+        + decal_collection.name
+        + "as decal for export"
+    )
 
     if object.type == "MESH":
         if len(object.data.uv_layers) == 0:
-            uv_check = False
-            print("NO UV!")
+            uv_check = "No UV"
         elif len(object.data.uv_layers) > 1:
-            uv_check = False
-            print("has MORE THAN 1 UV!")
+            uv_check = "Has More Than 1 UV"
         else:
-            uv_check = True
+            uv_check = CHECK_OK
 
         if len(object.material_slots) == 0:
-            print(
-                object.name
-                + " in Collection: "
-                + decal_collection.name
-                + " has NO MATERIAL!"
-            )
+            material_check = "No Mat"
         else:
             for material in object.material_slots:
                 if not material.name.startswith(MATERIAL_PREFIX):
-                    print("MAT PREFIX is wrong")
+                    material_check = "No Prefix"
                 elif "Decal" not in material.name:
-                    print("has NON-DECAL MATERIAL!")
-                # elif not material.name.endswith(MESHDECAL_SUFFIX):
-                #     if not material.name.endswith(INFODECAL_SUFFIX):
-                #         print("has NON-DECAL MATERIAL!")
+                    material_check = "BAD"
                 elif "Decal." in material.name:
-                    print("has DUPLICATED DECAL MATERIAL!")
+                    material_check = "Duplicated"
                 else:
-                    print("material GOOD")
-                    material_check = True
+                    material_check = CHECK_OK
+
+    if uv_check is CHECK_OK and material_check is CHECK_OK:
+        result = CHECK_OK
     else:
-        print("NOT MESH")
-    if uv_check and material_check:
-        result = True
+        result = "UV = " + uv_check + " , Material = " + material_check
+    print(result)
     return result
 
 
 def check_prop_object(object):
 
-    result = False
+    result = "BAD TYPE"
     prop_collection = object.users_collection[0]
     print("checking " + object.name + " in " + prop_collection.name + " for export")
 
+    if object.type == "MESH":
+        if not object.name.startswith(UCX_PREFIX):
+            result = check_prop_staticmesh(object)
+        else:
+            result = check_UCX(object)
+            # result = True
+    elif object.type == "EMPTY":
+        result = check_snap_socket(object)
+    else:
+        print("BAD TYPE")
+
+    return result
+
+
+def check_prop_staticmesh(object):
     if object.type == "MESH":
         if not object.name.startswith(UCX_PREFIX):
             vertex_color_check = False
             material_check = False
             uv0_check = False
             uv1_check = False
+            
             vertex_color = set_active_color_attribute(object, WEARMASK_ATTR)
-            if vertex_color is None:
-                print("NO WEARMASK!")
-            else:
+            if vertex_color is not None:
                 vertex_color_check = True
-                print("HAS WEARMASK!")
+
+            mat_result = "No Mat"
             if len(object.material_slots) > 0:
                 for material in object.material_slots:
                     if "Decal" in material.name:
-                        print("HAS decal material")
+                        mat_result = "Decal Mat"
                     elif not material.name.startswith(MATERIAL_PREFIX):
-                        print("Mat prefix is wrong")
+                        mat_result = "No MI Prefix"
                     elif "." in material.name:
-                        print("HAS duplicated material!")
+                        mat_result = "Duplicated"
                     else:
-                        print("material good")
+                        mat_result = CHECK_OK
                         material_check = True
             else:
                 print("NO MATERIAL!")
-            if object.data.uv_layers.get(UV_BASE) is None:
-                print("NO UV0!")
-            else:
+            if object.data.uv_layers.get(UV_BASE) is not None:
                 uv0_check = True
-            if object.data.uv_layers.get(UV_SWATCH) is None:
-                print("NO UV1!")
-            else:
+            if object.data.uv_layers.get(UV_SWATCH) is not None:
                 uv1_check = True
 
-            if vertex_color_check and material_check and uv0_check and uv1_check:
-                result = True
-        else:
-            print("is UCX")
-            result = True
-    elif object.type == "EMPTY":
-        if object.name.startswith(SOCKET_PREFIX):
-            print("is snap socket")
-            result = True
-    else:
-        print("BAD TYPE")
+            # check result
+            if vertex_color_check == False:
+                vertex_color_result = "Missing"
+            else:
+                vertex_color_result = CHECK_OK
+            if material_check == False:
+                mat_result = mat_result
+            else:
+                mat_result = CHECK_OK
+            if uv0_check == False:
+                uv0_result = "No UV"
+            else:
+                uv0_result = CHECK_OK
+            if uv1_check == False:
+                uv1_result = "No UV"
+            else:
+                uv1_result = CHECK_OK
 
+            if vertex_color_check and material_check and uv0_check and uv1_check:
+                result = CHECK_OK
+            else:
+                result = (
+                    "UV0 = "
+                    + uv0_result
+                    + " , UV1 = "
+                    + uv1_result
+                    + " , WearMask = "
+                    + vertex_color_result
+                    + " , Material = "
+                    + mat_result
+                )
+
+    return result
+
+
+def check_UCX(object):
+    result = "No UCX"
+    if object.name.startswith(UCX_PREFIX):
+        # extract name
+        name = object.name.split(UCX_PREFIX)[1]
+        name = name.split(".")[0]
+
+        collection = object.users_collection[0]
+
+        has_match_name = False
+        for obj in collection.all_objects:
+            if obj.name == name:
+                has_match_name = True
+            break
+        if has_match_name:
+            result = CHECK_OK
+        else:
+            result = "No Match Mesh Naming"
+    return result
+
+
+def check_snap_socket(object):
+    result = "BAD TYPE"
+    if object.type == "EMPTY":
+        if object.name.startswith(SOCKET_PREFIX):
+            print("is Snap Socket")
+            result = CHECK_OK
     return result

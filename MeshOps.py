@@ -674,8 +674,12 @@ class StaticMeshExportOperator(bpy.types.Operator):
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
 
-        bake_collections,decal_collections,prop_collections,sm_collections = filter_collection_types(visible_collections)
-        export_collections = bake_collections + decal_collections + prop_collections + sm_collections
+        bake_collections, decal_collections, prop_collections, sm_collections = (
+            filter_collection_types(visible_collections)
+        )
+        export_collections = (
+            bake_collections + decal_collections + prop_collections + sm_collections
+        )
 
         if len(export_collections) == 0:
             message_box(
@@ -686,47 +690,47 @@ class StaticMeshExportOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
+        # Check Bake
         for collection in bake_collections:
+            for object in collection.all_objects:
+                bake_check_result = check_bake_object(object)
+                if bake_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard prop object, please check: | "
+                                + "有不符合Prop规范的物体，请检查确认")
+                break
             for object in collection.all_objects:
                 set_active_color_attribute(object, BAKECOLOR_ATTR)
                 check_bake_object(object)
-                if prop_check is False:
-                    self.report(
-                        {"ERROR"},
-                        object.name
-                        + " in collection: "
-                        + collection.name
-                        + " has something wrong | "
-                        + "Bake Object 不符合规范，请检查确认",
-                    )
+                bake_check_result = check_bake_object(object)
+                if bake_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "  Object: " + object.name + " : " + bake_check_result)
 
-        # make prop_object_mat_list
 
+        # Check Prop
         for collection in prop_collections:
             for object in collection.all_objects:
-                prop_check = check_prop_object(object)
-                if prop_check is False:
-                    self.report(
-                        {"ERROR"},
-                        object.name
-                        + " in collection: "
-                        + collection.name
-                        + " has something wrong | "
-                        + "Prop 不符合规范，请检查确认",
-                    )
+                prop_check_result = check_prop_object(object)
+                if prop_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard prop object, please check: | "
+                                + "有不符合Prop规范的物体，请检查确认")
+                break
+            for object in collection.all_objects:
+                prop_check_result = check_prop_object(object)
+                if prop_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "  Object: " + object.name + " | " + prop_check_result)
 
+        # Check Decal
         for collection in decal_collections:
             for object in collection.all_objects:
-                decal_check = check_decal_object(object)
-                if decal_check is False:
-                    self.report(
-                        {"ERROR"},
-                        object.name
-                        + " in collection: "
-                        + collection.name
-                        + " has something wrong | "
-                        + "Decal 不符合规范，请检查确认",
-                    )
+                decal_check_result = check_decal_object(object)
+                if decal_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "Collection: " + collection.name + " has non-standard decal object, please check: | "
+                                + "有不符合Decal规范的物体，请检查确认")
+            for object in collection.all_objects:
+                decal_check_result = check_decal_object(object)
+                if decal_check_result != CHECK_OK:
+                    self.report({"ERROR"}, "  Object: " + object.name + " : " + decal_check_result)
+            
 
         for collection in export_collections:
             new_name = collection.name.removeprefix("SM_")
@@ -778,7 +782,7 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         )
 
         return {"FINISHED"}
-    
+
 
 class SetUECollisionOperator(bpy.types.Operator):
     bl_idname = "object.adduecollision"
@@ -798,7 +802,7 @@ class SetUECollisionOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
         store_mode = prep_select_mode()
-        
+
         selected_collections = filter_collections_selection(selected_objects)
 
         for collection in selected_collections:
@@ -806,17 +810,15 @@ class SetUECollisionOperator(bpy.types.Operator):
             target_mesh = None
             for mesh in collection_meshes:
                 if mesh not in selected_meshes:
-                    target_mesh=mesh
+                    target_mesh = mesh
                     break
             for mesh in selected_meshes:
                 if mesh.users_collection[0] == collection:
-                    set_collision_object(mesh,target_mesh.name)
+                    set_collision_object(mesh, target_mesh.name)
 
         restore_select_mode(store_mode)
 
-        
-        return {'FINISHED'}
-
+        return {"FINISHED"}
 
 
 # class ImportFBXOperator(bpy.types.Operator):
