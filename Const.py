@@ -7,6 +7,7 @@ HIGH_SUFFIX = "_high"
 LOW_COLLECTION_COLOR = "05"
 HIGH_COLLECTION_COLOR = "06"
 BAKECOLOR_ATTR = "BakeColor"
+UCX_PREFIX = "UCX_"
 
 # hard surface asset
 UV_BASE = "UV0_Base"

@@ -42,7 +42,6 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
                 if collection.name != "Scene Collection":
                     collection.name = new_collection_name
-                    rename_meshes(collection.objects, new_name=new_collection_name)
 
         for mesh in selected_meshes:
             check_mesh = check_open_bondary(mesh)
@@ -70,7 +69,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             selected_meshes, method="ANGLE_BASED", margin=0.005, correct_aspect=True
         )
         bpy.context.scene.tool_settings.use_uv_select_sync = True
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
@@ -178,7 +177,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         bpy.ops.mesh.select_mode(type="FACE")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 
@@ -331,7 +330,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
 
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
 
         self.report({"INFO"}, "Swatch material initialized")
 
@@ -404,7 +403,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED")
 
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         self.report({"INFO"}, "LookDev environment setup finished")
         return {"FINISHED"}
 
@@ -475,7 +474,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
             print("scale_factor: " + str(scale_factor))
             scale_uv(mesh, uv_layer, (scale_factor, scale_factor), (0.5, 0.5))
 
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         self.report({"INFO"}, "Texel Density set to " + str(texel_density))
         return {"FINISHED"}
 
@@ -521,7 +520,7 @@ class AxisCheckOperator(bpy.types.Operator):
                     obj.hide_viewport = False
                     obj.hide_select = True
 
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         return {"FINISHED"}
 
 
@@ -632,11 +631,19 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         for prop_collection in prop_collections:
-            decal_collection_name = clean_collection_name(prop_collection.name)
-            new_name = decal_collection_name
+            prop_collection_name = clean_collection_name(prop_collection.name)
+            new_name = prop_collection_name
 
             prop_collection.name = new_name
             prop_collection.color_tag = color
+
+            # collection_objs=prop_collection.all_objects
+            # prop_objs = []
+            # for prop_obj in collection_objs:
+            #     if not prop_obj.name.startswith(UCX_PREFIX):
+            #         prop_objs.append(prop_obj)
+            # rename_meshes(prop_objs, new_name=new_name)
+
             self.report(
                 {"INFO"}, str(len(prop_collections)) + " Prop collection marked"
             )
@@ -647,7 +654,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
     bl_label = "HST StaticMesh Export UE"
     bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
-        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体"
+        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体\
+        在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
 
     def execute(self, context):
 
@@ -666,10 +674,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
 
-        export_collections = filter_collection_types(visible_collections)
-        bake_collections = filter_collection_types(visible_collections, type="BAKE")
-        prop_collections = filter_collection_types(visible_collections, type="PROP")
-        decal_collections = filter_collection_types(visible_collections, type="DECAL")
+        bake_collections,decal_collections,prop_collections,sm_collections = filter_collection_types(visible_collections)
+        export_collections = bake_collections + decal_collections + prop_collections + sm_collections
 
         if len(export_collections) == 0:
             message_box(
@@ -728,7 +734,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             file_path = export_path + new_name + ".fbx"
             export_collection_staticmesh(collection, file_path)
 
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
 
         self.report(
             {"INFO"},
@@ -762,7 +768,7 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
                             mat.name = mat_name
                         bad_materials.append(material_slot.material)
                         bad_meshes.append(mesh)
-        restore_select_mode(store_mode, selected_objects)
+        restore_select_mode(store_mode)
         self.report(
             {"INFO"},
             str(len(bad_materials))
@@ -774,19 +780,40 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         return {"FINISHED"}
     
 
-class AddUECollisionOperator(bpy.types.Operator):
+class SetUECollisionOperator(bpy.types.Operator):
     bl_idname = "object.adduecollision"
-    bl_label = "Add UE Collision"
-    bl_description = "添加UE碰撞体"
+    bl_label = "Set UE Collision"
+    bl_description = "设置选中mesh为UE碰撞体，注意命名需要跟collection内的mesh对应\
+        例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01.001"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        active_object = bpy.context.active_object
-        #select collection
-        # add a cube
-        # rename to UCX_collection.objects[0].name
-        # set collision display as wireframe , show name , no shadow
-        # add triangulate modifier
+        collections = filter_collections_selection(selected_objects)
+        selected_meshes = filter_type(selected_objects, "MESH")
+
+        if len(selected_meshes) == 0:
+            message_box(
+                "No selected mesh object, please select mesh objects and retry | "
+                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            )
+            return {"CANCELLED"}
+        store_mode = prep_select_mode()
+        
+        selected_collections = filter_collections_selection(selected_objects)
+
+        for collection in selected_collections:
+            collection_meshes = filter_staticmeshes(collection)
+            target_mesh = None
+            for mesh in collection_meshes:
+                if mesh not in selected_meshes:
+                    target_mesh=mesh
+                    break
+            for mesh in selected_meshes:
+                if mesh.users_collection[0] == collection:
+                    set_collision_object(mesh,target_mesh.name)
+
+        restore_select_mode(store_mode)
+
         
         return {'FINISHED'}
 

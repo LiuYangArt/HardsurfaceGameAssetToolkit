@@ -34,25 +34,34 @@ def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object
     return filtered_objets
 
 
-def filter_name(target_objects: bpy.types.Object, name: str) -> bpy.types.Object:
-    """筛选某种名称的object"""
+def filter_name(
+    target_objects: bpy.types.Object, name: str, type="INCLUDE"
+) -> bpy.types.Object:
+    """筛选某种名称的object, type为INCLUDE时包含，为EXCLUDE时排除"""
     filtered_objets = []
-
-    for object in target_objects:
-        if object.name == name:
-            filtered_objets.append(object)
+    match type:
+        case "INCLUDE":
+            for object in target_objects:
+                if name in object.name:
+                    filtered_objets.append(object)
+        case "EXCLUDE":
+            for object in target_objects:
+                if name not in object.name:
+                    filtered_objets.append(object)
     return filtered_objets
 
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
     """获取所选object所在的collection"""
     target_collection = None
-
-    for collection in bpy.data.collections:
-        for object in collection.objects:
-            if object == target_object:
-                target_collection = collection
-                break
+    collection=target_object.users_collection[0]
+    if collection.name != "Scene Collection":
+        target_collection = collection
+    # for collection in bpy.data.collections:
+    #     for object in collection.objects:
+    #         if object == target_object:
+    #             target_collection = collection
+    #             break
     return target_collection
 
 
@@ -989,14 +998,19 @@ def export_collection_staticmesh(
     """导出collection为staticmesh fbx"""
     bpy.ops.object.select_all(action="DESELECT")
 
+    hide_objects = []
     for object in target_collection.all_objects:
+        if object.hide_get() is True:
+            hide_objects.append(object)
+            object.hide_set(False)
         object.select_set(True)
+
 
     bpy.ops.export_scene.fbx(
         filepath=file_path,
         use_selection=True,
         use_active_collection=False,
-        use_visible=True,
+        use_visible=False,
         axis_forward="-Z",
         axis_up="Y",
         global_scale=1.0,
@@ -1019,15 +1033,18 @@ def export_collection_staticmesh(
         use_armature_deform_only=False,
         bake_anim=False,
     )
-
+    for object in hide_objects:
+        object.hide_set(True)
 
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
     filtered_collections = []
+    SCENE = "Scene Collection"
     for object in target_objects:
-        collection = get_collection(object)
+        collection = object.users_collection[0]
         if (
             collection is not None
+            and SCENE not in collection.name
             and collection not in filtered_collections
             and not collection.name.startswith("_")
         ):
@@ -1035,7 +1052,7 @@ def filter_collections_selection(target_objects):
     return filtered_collections
 
 
-def filter_collection_types(collections, type="ALL"):
+def filter_collection_types(collections):
     """筛选collection类型，返回筛选后的collection列表，包括decal,prop,low,high"""
     bake_collections = []
     decal_collections = []
@@ -1068,17 +1085,7 @@ def filter_collection_types(collections, type="ALL"):
             else:
                 sm_collections.append(collection)
 
-    match type:
-        case "ALL":
-            return (
-                bake_collections + decal_collections + prop_collections + sm_collections
-            )
-        case "BAKE":
-            return bake_collections
-        case "DECAL":
-            return decal_collections
-        case "PROP":
-            return prop_collections
+    return bake_collections, decal_collections, prop_collections, sm_collections
 
 
 def check_open_bondary(mesh):
@@ -1100,20 +1107,71 @@ def prep_select_mode():
     """存储当前模式,并切换到OBJECT模式. EXAMPLE: store_mode = prep_select_mode()"""
 
     active_object = bpy.context.active_object
-    current_mode = bpy.context.active_object.mode
-    store_mode = current_mode, active_object
-    bpy.ops.object.mode_set(mode="OBJECT")
+    if active_object is not None:
+        current_mode = bpy.context.active_object.mode
+    else:
+        current_mode = "OBJECT"
+    selected_objects = bpy.context.selected_objects
+    store_mode = current_mode, active_object, selected_objects
+    if active_object is not None:
+        bpy.ops.object.mode_set(mode="OBJECT")
 
     return store_mode
 
 
-def restore_select_mode(store_mode, selected_objects=None):
+def restore_select_mode(store_mode):
     """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode, selected_objects)"""
+
+    current_mode, active_object , selected_objects= store_mode
     if selected_objects is not None:
         bpy.ops.object.select_all(action="DESELECT")
         for object in selected_objects:
             object.select_set(True)
-    current_mode, active_object = store_mode
-    bpy.context.view_layer.objects.active = active_object
-    active_object.select_set(True)
-    bpy.ops.object.mode_set(mode=current_mode)
+    if active_object is not None:
+        bpy.context.view_layer.objects.active = active_object
+        active_object.select_set(True)
+        bpy.ops.object.mode_set(mode=current_mode)
+
+
+def set_collision_object(target_object,new_name):
+    """设置碰撞物体"""
+    target_object.show_name = True
+    target_object.display_type = "WIRE"
+    target_object.visible_shadow = False
+    for modifier in target_object.modifiers:
+        target_object.modifiers.remove(modifier)
+    for material_slot in target_object.material_slots:
+        target_object.data.materials.clear()
+    for attribute in target_object.data.attributes:
+        if attribute.data_type == "COLOR" or attribute.data_type == "BYTE_COLOR":
+            target_object.data.attributes.remove(attribute)
+    for uv_layer in target_object.data.uv_layers:
+        target_object.data.uv_layers.remove(uv_layer)
+    # set naming
+    if new_name is None:
+        new_name = target_object.name
+    # collection = get_collection(target_object)
+    # if collection is not None:
+    #     collection_objs = collection.all_objects
+    #     if len(collection_objs) > 0:
+    #         for obj in collection_objs:
+    #             if (
+    #                 obj != target_object
+    #                 and obj.type == "MESH"
+    #                 and not obj.name.startswith(UCX_PREFIX)
+    #             ):
+    #                 new_name = obj.name
+    #                 break
+    target_object.name = UCX_PREFIX + new_name
+    print(target_object.name)
+
+
+def filter_staticmeshes(collection):
+    static_meshes = []
+    if collection is not None:
+        collection_objs = collection.all_objects
+        if len(collection_objs) > 0:
+            for obj in collection_objs:
+                if obj.type == "MESH" and not obj.name.startswith(UCX_PREFIX):
+                    static_meshes.append(obj)
+    return static_meshes

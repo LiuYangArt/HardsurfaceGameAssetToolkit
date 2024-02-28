@@ -114,41 +114,44 @@ def check_prop_object(object):
     print("checking " + object.name + " in " + prop_collection.name + " for export")
 
     if object.type == "MESH":
-        vertex_color_check = False
-        material_check = False
-        uv0_check = False
-        uv1_check = False
-        vertex_color = set_active_color_attribute(object, WEARMASK_ATTR)
-        if vertex_color is None:
-            print("NO WEARMASK!")
-        else:
-            vertex_color_check = True
-            print("HAS WEARMASK!")
-        if len(object.material_slots) > 0:
-            for material in object.material_slots:
-                if "Decal" in material.name:
-                    print("HAS decal material")
-                elif not material.name.startswith(MATERIAL_PREFIX):
-                    print("Mat prefix is wrong")
-                elif "." in material.name:
-                    print("HAS duplicated material!")
-                else:
-                    print("material good")
-                    material_check = True
-        else:
-            print("NO MATERIAL!")
-        if object.data.uv_layers.get(UV_BASE) is None:
-            print("NO UV0!")
-        else:
-            uv0_check = True
-        if object.data.uv_layers.get(UV_SWATCH) is None:
-            print("NO UV1!")
-        else:
-            uv1_check = True
+        if not object.name.startswith(UCX_PREFIX):
+            vertex_color_check = False
+            material_check = False
+            uv0_check = False
+            uv1_check = False
+            vertex_color = set_active_color_attribute(object, WEARMASK_ATTR)
+            if vertex_color is None:
+                print("NO WEARMASK!")
+            else:
+                vertex_color_check = True
+                print("HAS WEARMASK!")
+            if len(object.material_slots) > 0:
+                for material in object.material_slots:
+                    if "Decal" in material.name:
+                        print("HAS decal material")
+                    elif not material.name.startswith(MATERIAL_PREFIX):
+                        print("Mat prefix is wrong")
+                    elif "." in material.name:
+                        print("HAS duplicated material!")
+                    else:
+                        print("material good")
+                        material_check = True
+            else:
+                print("NO MATERIAL!")
+            if object.data.uv_layers.get(UV_BASE) is None:
+                print("NO UV0!")
+            else:
+                uv0_check = True
+            if object.data.uv_layers.get(UV_SWATCH) is None:
+                print("NO UV1!")
+            else:
+                uv1_check = True
 
-        if vertex_color_check and material_check and uv0_check and uv1_check:
+            if vertex_color_check and material_check and uv0_check and uv1_check:
+                result = True
+        else:
+            print("is UCX")
             result = True
-
     elif object.type == "EMPTY":
         if object.name.startswith(SOCKET_PREFIX):
             print("is snap socket")

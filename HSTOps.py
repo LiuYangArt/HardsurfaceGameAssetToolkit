@@ -13,6 +13,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
         parameters = context.scene.hst_params
         bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
@@ -29,9 +30,14 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        collection_objects = collection.all_objects
-        rename_meshes(collection_objects, collection.name)
-        transfer_collection = create_collection(TRANSFER_COLLECTION, PROXY_COLLECTION_COLOR)
+        selected_collections = filter_collections_selection(selected_objects)
+        for collection in selected_collections:
+            collection_meshes = filter_staticmeshes(collection)
+            rename_meshes(collection_meshes, collection.name)
+
+        transfer_collection = create_collection(
+            TRANSFER_COLLECTION, PROXY_COLLECTION_COLOR
+        )
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:
@@ -72,6 +78,7 @@ class HST_BatchBevel(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
         bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
 
         if len(selected_meshes) == 0:
@@ -82,8 +89,10 @@ class HST_BatchBevel(bpy.types.Operator):
             return {"CANCELLED"}
 
         if collection is not None:
-            collection_objects = collection.all_objects
-            rename_meshes(collection_objects, collection.name)
+            selected_collections = filter_collections_selection(selected_objects)
+            for collection in selected_collections:
+                collection_meshes = filter_staticmeshes(collection)
+                rename_meshes(collection_meshes, collection.name)
 
         for mesh in selected_meshes:
             # apply_transfrom(mesh)
@@ -149,6 +158,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, type="MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
 
         if collection is None:
             message_box(
@@ -164,13 +174,13 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        collection_objects = collection.all_objects
+        collection_meshes = filter_staticmeshes(collection)
+        rename_meshes(collection_meshes, collection.name)  # 重命名mesh
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
         proxy_collection = create_collection(
             TRANSFER_PROXY_COLLECTION, PROXY_COLLECTION_COLOR
         )
-        rename_meshes(collection_objects, collection.name)  # 重命名mesh
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
@@ -235,14 +245,17 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
+        selected_collections = filter_collections_selection(selected_objects)
+        for collection in selected_collections:
+            collection_meshes = filter_staticmeshes(collection)
+            rename_meshes(collection_meshes, collection.name)
+
         # prepare wearmask
-        collection_objects = collection.all_objects
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
         proxy_collection = create_collection(
             TRANSFER_PROXY_COLLECTION, PROXY_COLLECTION_COLOR
         )
-        rename_meshes(collection_objects, collection.name)  # 重命名mesh
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
@@ -345,5 +358,3 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         )
 
         return {"FINISHED"}
-
-

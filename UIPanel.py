@@ -78,8 +78,8 @@ class UIParams(PropertyGroup):
     )
 
 
-class BakeToolPanel(bpy.types.Panel):
-    bl_idname = "PANEL_BAKETOOL"
+class HST_PT_BAKETOOL(bpy.types.Panel):
+    bl_idname = "HST_PT_BAKETOOL"
     bl_label = "Bake Prep Tool"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -112,8 +112,8 @@ class BakeToolPanel(bpy.types.Panel):
         box_column.prop(context.scene.hst_params, "bake_color", text="Color ID Picker")
 
 
-class HSTPanel(bpy.types.Panel):
-    bl_idname = "PANEL_HST"
+class HST_PT_HST(bpy.types.Panel):
+    bl_idname = "HST_PT_HST"
     bl_label = "Hard Surface Prop Toolkit"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -174,6 +174,7 @@ class HSTPanel(bpy.types.Panel):
         td_row.prop(parameters, "texture_size", text="Tex", icon="TEXTURE_DATA")
 
         box_column.separator()
+        box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
         box_column.operator(
             "hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY"
         )
@@ -213,8 +214,8 @@ class HSTPanel(bpy.types.Panel):
 
         # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
 
-class ToolsPanel(bpy.types.Panel):
-    bl_idname = "PANEL_TOOLS"
+class HST_PT_TOOLS(bpy.types.Panel):
+    bl_idname = "HST_PT_TOOLS"
     bl_label = "Utilities"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
