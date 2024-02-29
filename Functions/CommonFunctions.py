@@ -205,21 +205,45 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     #     print(target_object + " is not mesh object")
     return color_attribute
 
-def vertexcolor_to_vertices(target_mesh,color):
+def vertexcolor_to_vertices(target_mesh,color_attribute,color):
     mesh = target_mesh.data
-    bpy.ops.object.mode_set(mode = 'VERTEX_PAINT')
-    selected_verts = []
-    for vert in mesh.vertices:
-        if vert.select == True:
-            selected_verts.append(vert)
+    bm = bmesh.from_edit_mesh(mesh)
+    
+    
+    if color_attribute.domain == "POINT":
+        point_color_attribute = color_attribute
+        point_color_layer = bm.verts.layers.color[point_color_attribute.name]
+        point_colors = []
+        for vert in bm.verts:
+            if vert.select == True:
+                vert[point_color_layer] = color
 
-    for polygon in mesh.polygons:
-        for selected_vert in selected_verts:
-            for i, index in enumerate(polygon.vertices):
-                if selected_vert.index == index:
-                    loop_index = polygon.loop_indices[i]
-                    mesh.vertex_colors.active.data[loop_index].color = color
-    bpy.ops.object.mode_set(mode = 'EDIT')
+    elif color_attribute.domain == "CORNER":
+        corner_color_attribute = color_attribute
+        corner_color_layer = bm.loops.layers.color[corner_color_attribute.name]
+
+        for face in bm.faces:
+            if face.select== True:
+                for loop in face.loops:
+                    loop[corner_color_layer] = color
+            
+    bmesh.update_edit_mesh(mesh)
+
+
+    #old api
+    # bpy.ops.object.mode_set(mode = 'VERTEX_PAINT')
+    # selected_verts = []
+    # for vert in mesh.vertices:
+    #     if vert.select == True:
+    #         selected_verts.append(vert)
+
+    # for polygon in mesh.polygons:
+    #     for selected_vert in selected_verts:
+    #         for i, index in enumerate(polygon.vertices):
+    #             if selected_vert.index == index:
+    #                 loop_index = polygon.loop_indices[i]
+    #                 mesh.vertex_colors.active.data[loop_index].color = color
+    # bpy.ops.object.mode_set(mode = 'EDIT')
 
 def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
     """设置顶点色"""
@@ -237,7 +261,7 @@ def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -
                 # else:
                 #     print("No vertex color attribute named " + vertexcolor_name)
             elif current_mode == "EDIT":
-                vertexcolor_to_vertices(target_object,color)
+                vertexcolor_to_vertices(target_object,color_attribute,color)
         else:
             print("No vertex color attribute named " + vertexcolor_name)
 
@@ -1218,7 +1242,7 @@ def rename_prop_meshes(objects):
 
 def check_vertex_color(mesh):
     """检查是否存在顶点色"""
-    vertex_color = None
+    vertex_color_layer = None
     if len(mesh.data.color_attributes) > 0:
-        vertex_color = mesh.data.color_attributes[0]
-    return vertex_color
+        vertex_color_layer=mesh.data.attributes.active_color
+    return vertex_color_layer

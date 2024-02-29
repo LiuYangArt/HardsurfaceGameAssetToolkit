@@ -19,7 +19,7 @@ def axis_check_toggle(self, context):
 class UIParams(PropertyGroup):
     """UI参数"""
 
-    bake_color: FloatVectorProperty(
+    vertexcolor: FloatVectorProperty(
         name="Bake Color Picker",
         subtype="COLOR",
         size=4,
@@ -109,7 +109,7 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
         box_column.operator(
             "hst.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
         )
-        box_column.prop(context.scene.hst_params, "bake_color", text="Color ID Picker")
+        box_column.prop(context.scene.hst_params, "vertexcolor", text="Color ID Picker")
 
 
 class HST_PT_HST(bpy.types.Panel):

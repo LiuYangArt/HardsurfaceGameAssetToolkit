@@ -92,10 +92,10 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
 
     def execute(self, context):
         parameters = context.scene.hst_params
-        vertex_color = parameters.bake_color
+        color = parameters.vertexcolor
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        color = get_color_data(vertex_color)
+        color = get_color_data(color)
 
         if len(selected_meshes) == 0:
             message_box("No mesh selected | 未选择Mesh")
@@ -103,11 +103,11 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
         # store_mode = prep_select_mode()
         
         for mesh in selected_meshes:
-            vertex_color=check_vertex_color(mesh)
-            if vertex_color:
-                print("has vc")
-                set_active_color_attribute(mesh, vertex_color.name)
-                set_object_vertexcolor(mesh, color, vertex_color.name)
+            vertex_color_layer=check_vertex_color(mesh)
+            if color:
+                # print("has vc")
+                set_active_color_attribute(mesh, vertex_color_layer.name)
+                set_object_vertexcolor(mesh, color, vertex_color_layer.name)
             else:
                 add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
                 set_active_color_attribute(mesh, BAKECOLOR_ATTR)
