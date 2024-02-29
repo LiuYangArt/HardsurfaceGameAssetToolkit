@@ -100,11 +100,11 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
         if len(selected_meshes) == 0:
             message_box("No mesh selected | 未选择Mesh")
             return {"CANCELLED"}
-        # store_mode = prep_select_mode()
+
         
         for mesh in selected_meshes:
             vertex_color_layer=check_vertex_color(mesh)
-            if color:
+            if vertex_color_layer:
                 # print("has vc")
                 set_active_color_attribute(mesh, vertex_color_layer.name)
                 set_object_vertexcolor(mesh, color, vertex_color_layer.name)
@@ -112,6 +112,6 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
                 add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
                 set_active_color_attribute(mesh, BAKECOLOR_ATTR)
                 set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
-        # restore_select_mode(store_mode)
+
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}

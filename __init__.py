@@ -3,7 +3,7 @@ bl_info = {
     "author": "Akari,LiuYang",
     "description": "用于tf项目自定义流程游戏资产制作的blender插件",
     "blender": (4, 0, 0),
-    "version": (2024, 2),
+    "version": (2024, 3),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",
