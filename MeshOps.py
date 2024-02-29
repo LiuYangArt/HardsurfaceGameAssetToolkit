@@ -15,9 +15,10 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -33,9 +34,10 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         if len(collections) > 0:
             for collection in collections:
                 if collection.name.endswith("_Decal"):
-                    message_box(
-                        "Selected collections has decal collection, operation stop | "
-                        + "选中的Collection包含Decal Collection，操作停止"
+                    self.report(
+                        {"ERROR"},
+                        "Selected collections has decal collection, operation stop\n"
+                        + "选中的Collection包含Decal Collection，操作停止",
                     )
                     return {"CANCELLED"}
                 new_collection_name = clean_collection_name(collection.name)
@@ -83,9 +85,10 @@ class HST_MakeSwatchUVOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -110,9 +113,10 @@ class CleanVertexOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -123,7 +127,8 @@ class CleanVertexOperator(bpy.types.Operator):
             if check_mesh is True:
                 self.report(
                     {"ERROR"},
-                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                    "Selected mesh has open boundary, please check\n"
+                    + "选中的模型有开放边界，请检查",
                 )
                 return {"CANCELLED"}
             clean_mid_verts(mesh)
@@ -148,9 +153,10 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
 
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -220,9 +226,10 @@ class AddSnapSocketOperator(bpy.types.Operator):
         parameters = context.scene.hst_params
 
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -274,9 +281,10 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -346,9 +354,10 @@ class BaseUVEditModeOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
 
@@ -464,9 +473,10 @@ class SetTexelDensityOperator(bpy.types.Operator):
         for mesh in selected_meshes:
             uv_layer = check_uv_layer(mesh, UV_BASE)
             if uv_layer is None:
-                message_box(
-                    "Selected mesh has no UV layer named 'UV0_Base', setup uv layer first"
-                    + " | 选中的模型没有名为'UV0_Base'的UV，请先正确设置UV"
+                self.report(
+                    {"ERROR"},
+                    "Selected mesh has no UV layer named 'UV0_Base', setup uv layer first\n"
+                    + "选中的模型没有名为'UV0_Base'的UV，请先正确设置UV",
                 )
                 return {"CANCELLED"}
 
@@ -594,19 +604,25 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
         decal_collections = filter_collections_selection(selected_objects)
         color = "COLOR_" + DECAL_COLLECTION_COLOR
         if len(decal_collections) == 0:
-            message_box(
-                "No selected collection, please select collections and retry | "
-                + "没有选中Collection，请选中Collection后重试"
+            self.report(
+                {"ERROR"},
+                "No selected collection, please select collections and retry\n"
+                + "没有选中Collection，请选中Collection后重试",
             )
+
             return {"CANCELLED"}
 
         for decal_collection in decal_collections:
             print("mark decal collection: " + decal_collection.name)
             # decal_objects = decal_collection.all_objects
-            static_meshes,ucx_meshes = filter_meshes(decal_collection)
+            static_meshes, ucx_meshes = filter_meshes(decal_collection)
             if len(ucx_meshes) > 0:
-                self.report({"ERROR"}, decal_collection.name + " has UCX mesh, please check | "
-                            + "collection内有UCX Mesh，请检查")
+                self.report(
+                    {"ERROR"},
+                    decal_collection.name
+                    + " has UCX mesh, please check | "
+                    + "collection内有UCX Mesh，请检查",
+                )
 
             decal_collection_name = clean_collection_name(decal_collection.name)
             new_name = decal_collection_name + DECAL_SUFFIX
@@ -628,9 +644,10 @@ class MarkPropCollectionOperator(bpy.types.Operator):
         prop_collections = filter_collections_selection(selected_objects)
         color = "COLOR_" + PROP_COLLECTION_COLOR
         if len(prop_collections) == 0:
-            message_box(
-                "No selected collection, please select collections and retry | "
-                + "没有选中Collection，请选中Collection后重试"
+            self.report(
+                {"ERROR"},
+                "No selected collection, please select collections and retry\n"
+                + "没有选中Collection，请选中Collection后重试",
             )
             return {"CANCELLED"}
 
@@ -641,16 +658,8 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             prop_collection.name = new_name
             prop_collection.color_tag = color
         rename_prop_meshes(selected_objects)
-            # collection_objs=prop_collection.all_objects
-            # prop_objs = []
-            # for prop_obj in collection_objs:
-            #     if not prop_obj.name.startswith(UCX_PREFIX):
-            #         prop_objs.append(prop_obj)
-            # rename_meshes(prop_objs, new_name=new_name)
 
-        self.report(
-            {"INFO"}, str(len(prop_collections)) + " Prop collection marked"
-        )
+        self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")
         return {"FINISHED"}
 
 
@@ -666,9 +675,10 @@ class StaticMeshExportOperator(bpy.types.Operator):
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         if export_path == "":
-            message_box(
+            self.report(
+                {"ERROR"},
                 "No export path set, please set export path and retry | "
-                + "没有设置导出路径，请设置导出路径后重试"
+                + "没有设置导出路径，请设置导出路径后重试",
             )
             return {"CANCELLED"}
         if export_path.endswith("/") is False:
@@ -686,11 +696,12 @@ class StaticMeshExportOperator(bpy.types.Operator):
         )
 
         if len(export_collections) == 0:
-            message_box(
+            self.report(
+                {"ERROR"},
                 "No available collection for export. Please check visibility "
                 + "and ensure objects are placed in collections，"
-                + "set collection in correct type | "
-                + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试"
+                + "set collection in correct type\n"
+                + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试",
             )
             return {"CANCELLED"}
 
@@ -831,9 +842,10 @@ class SetUECollisionOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
 
         if len(selected_meshes) == 0:
-            message_box(
-                "No selected mesh object, please select mesh objects and retry | "
-                + "没有选中Mesh物体，请选中Mesh物体后重试"
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
         store_mode = prep_select_mode()
@@ -841,7 +853,7 @@ class SetUECollisionOperator(bpy.types.Operator):
         selected_collections = filter_collections_selection(selected_objects)
 
         for collection in selected_collections:
-            collection_meshes,ucx_meshes = filter_meshes(collection)
+            collection_meshes, ucx_meshes = filter_meshes(collection)
             static_mesh = None
             for mesh in collection_meshes:
                 if mesh not in selected_meshes:
@@ -853,9 +865,12 @@ class SetUECollisionOperator(bpy.types.Operator):
                     if static_mesh is not None:
                         set_collision_object(mesh, static_mesh.name)
                     else:
-                        message_box(
-                            "no static mesh left in collection, UCX won't work | "
-                            + "Collection内没有剩余的StaticMesh，无法设置。UCX需要对应的StaticMesh以正确命名"
+                        self.report(
+                            {"ERROR"},
+                            "Collection: "
+                            + collection.name
+                            + " has no static mesh left in collection, UCX won't work | "
+                            + "Collection内没有剩余的StaticMesh，无法设置。UCX需要对应的StaticMesh以正确命名",
                         )
 
         restore_select_mode(store_mode)

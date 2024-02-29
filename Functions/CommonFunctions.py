@@ -1141,7 +1141,8 @@ def filter_collection_types(collections):
     return bake_collections, decal_collections, prop_collections, sm_collections
 
 
-def check_open_bondary(mesh):
+def check_open_bondary(mesh)->bool:
+    """检查是否存在开放边"""
     bm = bmesh.new()
     bm.from_mesh(mesh.data)
     check_result = False
@@ -1156,7 +1157,7 @@ def check_open_bondary(mesh):
     return check_result
 
 
-def prep_select_mode():
+def prep_select_mode()->tuple:
     """存储当前模式,并切换到OBJECT模式. EXAMPLE: store_mode = prep_select_mode()"""
 
     active_object = bpy.context.active_object
@@ -1172,7 +1173,7 @@ def prep_select_mode():
     return store_mode
 
 
-def restore_select_mode(store_mode):
+def restore_select_mode(store_mode)->None:
     """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode, selected_objects)"""
 
     current_mode, active_object , selected_objects= store_mode
@@ -1186,7 +1187,7 @@ def restore_select_mode(store_mode):
         bpy.ops.object.mode_set(mode=current_mode)
 
 
-def set_collision_object(target_object,new_name):
+def set_collision_object(target_object,new_name)->None:
     """设置碰撞物体"""
     target_object.show_name = True
     target_object.display_type = "WIRE"
@@ -1207,10 +1208,9 @@ def set_collision_object(target_object,new_name):
 
     # target_object.name = UCX_PREFIX + new_name
     rename_alt(target_object, UCX_PREFIX + new_name, mark="_", num=2)
-    print(target_object.name)
 
 
-def filter_meshes(collection):
+def filter_meshes(collection)->tuple:
     """筛选collection中的mesh,返回staticmeshes,ucx_meshes"""
     staticmeshes = []
     ucx_meshes = []
@@ -1219,14 +1219,15 @@ def filter_meshes(collection):
     ucx_meshes = [obj for obj in collection_objs if obj.name.startswith(UCX_PREFIX)]
     return staticmeshes, ucx_meshes
 
-def name_remove_digits(name,parts=3):
+def name_remove_digits(name,parts=3,mark="_")->str:
+    """去除名称后的数字"""
     parts = int(parts)
     name_split = name.split("_")
     if len(name_split) > parts:
-        new_name = name.rsplit("_", 1)[0]
+        new_name = name.rsplit(mark, 1)[0]
     return new_name
 
-def rename_prop_meshes(objects):
+def rename_prop_meshes(objects)->tuple:
     """重命名prop mesh"""
     selected_collections = filter_collections_selection(objects)
     for collection in selected_collections:
@@ -1241,7 +1242,7 @@ def rename_prop_meshes(objects):
     return static_meshes,ucx_meshes
 
 def check_vertex_color(mesh):
-    """检查是否存在顶点色"""
+    """检查是否存在顶点色，如有，返回顶点色层"""
     vertex_color_layer = None
     if len(mesh.data.color_attributes) > 0:
         vertex_color_layer=mesh.data.attributes.active_color
