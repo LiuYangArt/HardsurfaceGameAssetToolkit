@@ -35,14 +35,16 @@ class AddonPref(AddonPreferences):
     pref_ue_multicast_bind_address: StringProperty(
         name="UE Remote IP",
         description="UE Remote IP",
-        default="127.0.0.1",
-        maxlen=15,)
+        default="0.0.0.0",
+        maxlen=15,
+        update=write_prefs_to_file,)
     
     pref_ue_mesh_dir: StringProperty(
         name="UE Mesh Directory",
         description="UE Mesh Directory",
         default="/Meshes",
-        maxlen=24,)
+        maxlen=24,
+        update=write_prefs_to_file,)
 
 
     def draw(self, context):

@@ -29,8 +29,8 @@ _NODE_TIMEOUT_SECONDS = 5                               # Number of seconds to w
 
 DEFAULT_MULTICAST_TTL = 0                               # Multicast TTL (0 is limited to the local host, 1 is limited to the local subnet)
 DEFAULT_MULTICAST_GROUP_ENDPOINT = ('239.0.0.1', 6766)  # The multicast group endpoint tuple that the UDP multicast socket should join (must match the "Multicast Group Endpoint" setting in the Python plugin)
-DEFAULT_MULTICAST_BIND_ADDRESS = '127.0.0.1'            # The adapter address that the UDP multicast socket should bind to, or 127.0.0.1 to bind to all adapters (must match the "Multicast Bind Address" setting in the Python plugin)
-DEFAULT_COMMAND_ENDPOINT = ('127.0.0.1', 6776)          # The endpoint tuple for the TCP command connection hosted by this client (that the remote client will connect to)
+DEFAULT_MULTICAST_BIND_ADDRESS = '0.0.0.0'            # The adapter address that the UDP multicast socket should bind to, or 127.0.0.1 to bind to all adapters (must match the "Multicast Bind Address" setting in the Python plugin)
+DEFAULT_COMMAND_ENDPOINT = ('0.0.0.0', 6776)          # The endpoint tuple for the TCP command connection hosted by this client (that the remote client will connect to)
 DEFAULT_RECEIVE_BUFFER_SIZE = 8192                      # The default receive buffer size
 
 # Execution modes (these must match the names given to LexToString for EPythonCommandExecutionMode in IPythonScriptPlugin.h)
@@ -46,7 +46,6 @@ class RemoteExecutionConfig(object):
     def __init__(self):
 
         group_endpoint, bind_address, command_endpoint=read_ue_ip_settings_from_pref()
-        print(__package__)
         self.multicast_ttl = DEFAULT_MULTICAST_TTL
         # self.multicast_group_endpoint = DEFAULT_MULTICAST_GROUP_ENDPOINT
         # self.multicast_bind_address = DEFAULT_MULTICAST_BIND_ADDRESS
