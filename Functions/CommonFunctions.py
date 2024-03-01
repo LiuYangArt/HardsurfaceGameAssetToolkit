@@ -4,6 +4,7 @@ import math
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
 import os
+import json
 
 """ 通用functions """
 
@@ -1293,21 +1294,39 @@ def make_ue_python_script_command(file_name, command):
         f"reload({file_name})",
         'print("hey!")',
         f"{file_name}.{command}",
-        # 'HardsurfacePropImport.answer_to_bl("C:/Users/LiuYang/AppData/Local/Temp/BlenderHST/", "GAME/Developers/LiuYang/ImportTest", "/Meshes")',
         'print("command executed")',
     ]
     return command_lines
 
+def write_json(file_path, data):
+    with open(file_path, "w") as f:
+        json.dump(data, f, indent=4)
 
-def convert_ue_ip_settings():
-    context = bpy.context
-    preferences = context.preferences
-    addon_prefs = preferences.addons[__package__].preferences
+def read_prefs_from_file():
+    prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
+    
 
-    ue_multicast_group_endpoint = fix_ip_input(addon_prefs.ue_multicast_group_endpoint) # 239.0.0.1:6766
-    bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address) #'127.0.0.1' 
+    prefs_dict = {}
+    if prefs_file.exists():
+        with open(prefs_file, "r") as json_file:
+            prefs_dict = json.load(json_file)
+    return prefs_dict
+
+def read_ue_ip_settings_from_pref():
+    # print(__package__)
+    """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
+    prefs_dict = read_prefs_from_file()
+    print(f"set ue remote ip from pref file")
+    for key in prefs_dict:
+        if "ue_multicast_group_endpoint" in key:
+            ue_multicast_group_endpoint = fix_ip_input(prefs_dict[key])
+        if "ue_multicast_bind_address" in key:
+            bind_address = fix_ip_input(prefs_dict[key])
+
     endpoint_port = int(ue_multicast_group_endpoint.split(":")[1]) #6766
     group_endpoint = ue_multicast_group_endpoint.split(":")[0], endpoint_port #('239.0.0.1', 6766)
     command_endpoint = bind_address, endpoint_port # ('127.0.0.1', 6776)
 
     return group_endpoint, bind_address, command_endpoint
+
+

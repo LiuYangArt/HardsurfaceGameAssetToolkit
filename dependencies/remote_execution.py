@@ -1,5 +1,4 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
-
 import os
 import sys as _sys
 import json as _json
@@ -8,6 +7,12 @@ import time as _time
 import socket as _socket
 import logging as _logging
 import threading as _threading
+
+# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# _sys.path.append(os.path.dirname(SCRIPT_DIR))
+# from .Functions.CommonFunctions import read_ue_ip_settings_from_pref
+
+from HardsurfaceGameAssetToolkit.Functions.CommonFunctions import read_ue_ip_settings_from_pref
 
 # Protocol constants (see PythonScriptRemoteExecution.cpp for the full protocol definition)
 _PROTOCOL_VERSION = 1                                   # Protocol version number
@@ -31,17 +36,25 @@ DEFAULT_RECEIVE_BUFFER_SIZE = 8192                      # The default receive bu
 # Execution modes (these must match the names given to LexToString for EPythonCommandExecutionMode in IPythonScriptPlugin.h)
 MODE_EXEC_FILE = 'ExecuteFile'                          # Execute the Python command as a file. This allows you to execute either a literal Python script containing multiple statements, or a file with optional arguments
 MODE_EXEC_STATEMENT = 'ExecuteStatement'                # Execute the Python command as a single statement. This will execute a single statement and print the result. This mode cannot run files
-MODE_EVAL_STATEMENT = 'EvaluateStatement'               # Evaluate the Python command as a single statement. This will evaluate a single statement and return the result. This mode cannot run files
+MODE_EVAL_STATEMENT = 'EvaluateStatement'  
+
 
 class RemoteExecutionConfig(object):
     '''
     Configuration data for establishing a remote connection with a UE4 instance running Python.
     '''
     def __init__(self):
+
+        group_endpoint, bind_address, command_endpoint=read_ue_ip_settings_from_pref()
+        print(__package__)
         self.multicast_ttl = DEFAULT_MULTICAST_TTL
-        self.multicast_group_endpoint = DEFAULT_MULTICAST_GROUP_ENDPOINT
-        self.multicast_bind_address = DEFAULT_MULTICAST_BIND_ADDRESS
-        self.command_endpoint = DEFAULT_COMMAND_ENDPOINT
+        # self.multicast_group_endpoint = DEFAULT_MULTICAST_GROUP_ENDPOINT
+        # self.multicast_bind_address = DEFAULT_MULTICAST_BIND_ADDRESS
+        # self.command_endpoint = DEFAULT_COMMAND_ENDPOINT
+        self.multicast_group_endpoint = group_endpoint
+        self.multicast_bind_address = bind_address
+        self.command_endpoint = command_endpoint
+
 
 class RemoteExecution(object):
     '''

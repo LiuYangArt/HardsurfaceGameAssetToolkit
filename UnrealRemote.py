@@ -1,17 +1,33 @@
 import bpy
 
-# import sys as _sys
-# import logging as _logging
-# from .dependencies.remote_execution import *
+
 from .dependencies.unreal import *
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
-from pathlib import Path
-import os
+from .dependencies import remote_execution as re
+
+# from pathlib import Path
+# import os
 
 
+def read_ue_ip_settings_from_pref():
+    context = bpy.context
+    preferences = context.preferences
+    addon_prefs = preferences.addons[__package__].preferences
 
+    ue_multicast_group_endpoint = fix_ip_input(
+        addon_prefs.ue_multicast_group_endpoint
+    )  # 239.0.0.1:6766
+    bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address)  #'127.0.0.1'
+    endpoint_port = int(ue_multicast_group_endpoint.split(":")[1])  # 6766
+    group_endpoint = (
+        ue_multicast_group_endpoint.split(":")[0],
+        endpoint_port,
+    )  # ('239.0.0.1', 6766)
+    command_endpoint = bind_address, endpoint_port  # ('127.0.0.1', 6776)
+
+    return group_endpoint, bind_address, command_endpoint
 
 
 class SendPropsToUE(bpy.types.Operator):
@@ -24,10 +40,17 @@ class SendPropsToUE(bpy.types.Operator):
         后续会把这部分集成到插件中，扩展通用性"
 
     def execute(self, context):
+        # context = bpy.context
+        # preferences = context.preferences
+        # addon_prefs = preferences.addons["HardsurfaceGameAssetToolkit"].preferences
+        # aa=addon_prefs.ue_multicast_group_endpoint
+        # for i in dir(addon_prefs):
+        #     print(i)
 
         ue_group_endpoint, ue_bind_address, ue_command_enepoint = (
-            convert_ue_ip_settings()
+            read_ue_ip_settings_from_pref()
         )
+        print(f"ue_group_endpoint: {ue_group_endpoint}")
         preferences = context.preferences
         addon_prefs = preferences.addons[__package__].preferences
 
@@ -43,13 +66,13 @@ class SendPropsToUE(bpy.types.Operator):
             f'{UE_SCRIPT_CMD}("{ue_file_dir}","{ue_content_path}","{mesh_dir}")'
         )
 
-      
+
         # if is_connected() == False:
         #     self.report({"ERROR"}, "Failed to connect to UE")
         #     return {"CANCELLED"}
-        
+
         ue_commands = make_ue_python_script_command(ue_script, ue_script_command)
-        print(f"ue_commands: {ue_commands}")
+        # print(f"ue_commands: {ue_commands}")
 
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         store_mode = prep_select_mode()
@@ -82,10 +105,10 @@ class SendPropsToUE(bpy.types.Operator):
             exported_files.append(file_path)
             print(f"file_path: {file_path}")
             export_collection_staticmesh(collection, file_path)
-        
+
         try:
             run_commands(ue_commands)
-            
+
         except:
             self.report({"ERROR"}, "Failed to send props to UE")
 

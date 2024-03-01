@@ -74,3 +74,10 @@ TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
 UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
+
+class AddonPath:
+    SETTING_DIR = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
+    CONFIG_FILE= "prefs.json"
+
+class Addon:
+    NAME = "HardsurfaceGameAssetToolkit"
