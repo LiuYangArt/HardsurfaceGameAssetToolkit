@@ -1,5 +1,6 @@
 from bpy.utils import resource_path
 from pathlib import Path
+import os
 
 # bake groups
 LOW_SUFFIX = "_low"
@@ -66,3 +67,10 @@ AXIS_ARROW = AXIS_OBJECT_PREFIX + "Arrows"
 
 # asset check
 CHECK_OK = "OK"
+
+#ue connect
+USER_PROFILE_PATH=os.environ['USERPROFILE']
+TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
+UE_SCRIPT = "HardsurfacePropImport"
+UE_SCRIPT_CMD = "batch_import_hs_props"
+# UE_MESH_DIR = "/Meshes"

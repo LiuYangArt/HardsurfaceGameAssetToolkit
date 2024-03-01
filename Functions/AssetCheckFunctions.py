@@ -233,3 +233,68 @@ def check_snap_socket(object):
             print("is Snap Socket")
             result = CHECK_OK
     return result
+
+def check_collections(self,bake_collections,prop_collections,decal_collections):
+    for collection in bake_collections:
+        for object in collection.all_objects:
+            bake_check_result = check_bake_object(object)
+            if bake_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "Collection: "
+                    + collection.name
+                    + " has non-standard prop object, please check: | "
+                    + "有不符合Prop规范的物体，请检查确认",
+                )
+                break
+        for object in collection.all_objects:
+            set_active_color_attribute(object, BAKECOLOR_ATTR)
+            check_bake_object(object)
+            bake_check_result = check_bake_object(object)
+            if bake_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "  Object: " + object.name + " : " + bake_check_result,
+                )
+
+    # Check Prop
+    for collection in prop_collections:
+        for object in collection.all_objects:
+            prop_check_result = check_prop_object(object)
+            if prop_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "Collection: "
+                    + collection.name
+                    + " has non-standard prop object, please check: | "
+                    + "有不符合Prop规范的物体，请检查确认",
+                )
+                break
+        for object in collection.all_objects:
+            prop_check_result = check_prop_object(object)
+            if prop_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "  Object: " + object.name + " | " + prop_check_result,
+                )
+
+    # Check Decal
+    for collection in decal_collections:
+        for object in collection.all_objects:
+            decal_check_result = check_decal_object(object)
+            if decal_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "Collection: "
+                    + collection.name
+                    + " has non-standard decal object, please check: | "
+                    + "有不符合Decal规范的物体，请检查确认",
+                )
+                break
+        for object in collection.all_objects:
+            decal_check_result = check_decal_object(object)
+            if decal_check_result != CHECK_OK:
+                self.report(
+                    {"ERROR"},
+                    "  Object: " + object.name + " : " + decal_check_result,
+                )

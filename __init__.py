@@ -23,6 +23,8 @@ def register():
     bpy.types.Scene.hst_params = PointerProperty(type=UIParams)
 
 
+
 def unregister():
     auto_load.unregister()
     del bpy.types.Scene.hst_params
+

@@ -71,10 +71,18 @@ class UIParams(PropertyGroup):
 
     export_path: StringProperty(
         name="Export Path",
-        description="Export Path",
+        description="fbx导出的路径",
         default="",
         maxlen=1024,
         subtype="DIR_PATH",
+    )
+
+    unreal_path: StringProperty(
+        name="UE Path",
+        description="导入到UE 项目中的路径, 例如 /Game/Level/Props\n /Game=Content目录下的路径",
+        default="/Game/Blender",
+        maxlen=1024,
+        # subtype="DIR_PATH",
     )
 
 
@@ -157,13 +165,14 @@ class HST_PT_HST(bpy.types.Panel):
         box_column.separator()
         box_column.label(text="Workflow")
 
-        box_column.operator("hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK")
+        box_column.operator(
+            "hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK"
+        )
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
         box_column.operator(
             "hst.setbaseuvtexeldensity",
-            
             icon="TEXTURE_DATA",
         )
         td_row = box_column.row(align=True)
@@ -175,9 +184,7 @@ class HST_PT_HST(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
-        box_column.operator(
-            "hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY"
-        )
+        box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
 
@@ -210,9 +217,11 @@ class HST_PT_HST(bpy.types.Panel):
         )
         box_column.prop(parameters, "export_path", text="Path")
         # box_column.separator()
-
+        box_column.operator("hst.sendprops_ue", icon="EXPORT")
+        box_column.prop(parameters, "unreal_path")
 
         # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
+
 
 class HST_PT_TOOLS(bpy.types.Panel):
     bl_idname = "HST_PT_TOOLS"
@@ -231,10 +240,10 @@ class HST_PT_TOOLS(bpy.types.Panel):
             "hst.setsceneunits", text="Set Scene Units", icon="SCENE_DATA"
         )
         box_column.operator("hst.cleanvert", text="Clean Verts", icon="VERTEXSEL")
-        box_column.operator(
-            "hst.sepmultiuser", text="Clean Multi Users", icon="USER"
-        )
+        box_column.operator("hst.sepmultiuser", text="Clean Multi Users", icon="USER")
         box_column.operator(
             "hst.fixspaceclaimobj", text="Fix SpaceClaim Obj", icon="MESH_CUBE"
         )
-        box_column.operator("hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon= "MATERIAL" )
+        box_column.operator(
+            "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
+        )

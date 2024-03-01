@@ -3,6 +3,7 @@ import bmesh
 import math
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
+import os
 
 """ 通用functions """
 
@@ -1222,6 +1223,7 @@ def filter_meshes(collection)->tuple:
 def name_remove_digits(name,parts=3,mark="_")->str:
     """去除名称后的数字"""
     parts = int(parts)
+    new_name = name
     name_split = name.split("_")
     if len(name_split) > parts:
         new_name = name.rsplit(mark, 1)[0]
@@ -1247,3 +1249,65 @@ def check_vertex_color(mesh):
     if len(mesh.data.color_attributes) > 0:
         vertex_color_layer=mesh.data.attributes.active_color
     return vertex_color_layer
+
+def make_dir(path):
+    """创建文件夹"""
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+def normalize_path(path:str):
+    """规范化路径"""
+    path= str(path)
+    path= path.replace("\\", "/")
+    path = path.replace(" ", "")
+    if path.endswith("/"):
+        path = path[:-1]
+    # if path.startswith("/"):
+    #     path = path[1:]
+    return path
+
+def fix_ue_game_path(path:str):
+    """修复UE路径"""
+    path = str(path)
+    path = normalize_path(path)
+    if not path.startswith("/"):
+        path = "/" + path
+    return path
+
+def fix_ip_input(ip_address:str):
+    ip_address = str(ip_address)
+    ip_address = ip_address.replace(" ", "")
+    ip_address = ip_address.replace("http://", "")
+    ip_address = ip_address.replace("https://", "")
+    ip_address = ip_address.replace("/", "")
+    ip_address = ip_address.replace("：",":")
+    ip_address = ip_address.replace(",", ":")
+    ip_address = ip_address.replace("。",".")
+    ip_address = ip_address.replace("，",":")
+    return ip_address
+
+def make_ue_python_script_command(file_name, command):
+    command_lines = [
+        f"import {file_name}",
+        "from importlib import reload",
+        f"reload({file_name})",
+        'print("hey!")',
+        f"{file_name}.{command}",
+        # 'HardsurfacePropImport.answer_to_bl("C:/Users/LiuYang/AppData/Local/Temp/BlenderHST/", "GAME/Developers/LiuYang/ImportTest", "/Meshes")',
+        'print("command executed")',
+    ]
+    return command_lines
+
+
+def convert_ue_ip_settings():
+    context = bpy.context
+    preferences = context.preferences
+    addon_prefs = preferences.addons[__package__].preferences
+
+    ue_multicast_group_endpoint = fix_ip_input(addon_prefs.ue_multicast_group_endpoint) # 239.0.0.1:6766
+    bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address) #'127.0.0.1' 
+    endpoint_port = int(ue_multicast_group_endpoint.split(":")[1]) #6766
+    group_endpoint = ue_multicast_group_endpoint.split(":")[0], endpoint_port #('239.0.0.1', 6766)
+    command_endpoint = bind_address, endpoint_port # ('127.0.0.1', 6776)
+
+    return group_endpoint, bind_address, command_endpoint
