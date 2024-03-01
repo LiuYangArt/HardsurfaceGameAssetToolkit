@@ -1299,34 +1299,35 @@ def make_ue_python_script_command(file_name, command):
     return command_lines
 
 def write_json(file_path, data):
+    """写入json"""
     with open(file_path, "w") as f:
         json.dump(data, f, indent=4)
 
-def read_prefs_from_file():
-    prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
-    
+def read_json_from_file(file_path):
+    """ 从文件读取json """
+    json_dict = {}
+    if file_path.exists():
+        with open(file_path, "r") as json_file:
+            json_dict = json.load(json_file)
+    return json_dict
 
-    prefs_dict = {}
-    if prefs_file.exists():
-        with open(prefs_file, "r") as json_file:
-            prefs_dict = json.load(json_file)
-    return prefs_dict
+# def read_ue_ip_settings_from_pref():
+#     """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
+#     prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
+#     prefs_dict = read_json_from_file(prefs_file)
+#     print(f"set ue remote ip from pref file")
+#     ue_multicast_group_endpoint = ("239.0.0.1:6766")
+#     bind_address = "0.0.0.0"
+#     for key in prefs_dict:
+#         if "ue_multicast_group_endpoint" in key:
+#             ue_multicast_group_endpoint = fix_ip_input(prefs_dict[key])
+#         if "ue_multicast_bind_address" in key:
+#             bind_address = fix_ip_input(prefs_dict[key])
 
-def read_ue_ip_settings_from_pref():
-    # print(__package__)
-    """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
-    prefs_dict = read_prefs_from_file()
-    print(f"set ue remote ip from pref file")
-    for key in prefs_dict:
-        if "ue_multicast_group_endpoint" in key:
-            ue_multicast_group_endpoint = fix_ip_input(prefs_dict[key])
-        if "ue_multicast_bind_address" in key:
-            bind_address = fix_ip_input(prefs_dict[key])
+#     endpoint_port = int(ue_multicast_group_endpoint.split(":")[1]) #6766
+#     group_endpoint = ue_multicast_group_endpoint.split(":")[0], endpoint_port #('239.0.0.1', 6766)
+#     command_endpoint = bind_address, endpoint_port # ('0.0.0.0', 6776)
 
-    endpoint_port = int(ue_multicast_group_endpoint.split(":")[1]) #6766
-    group_endpoint = ue_multicast_group_endpoint.split(":")[0], endpoint_port #('239.0.0.1', 6766)
-    command_endpoint = bind_address, endpoint_port # ('127.0.0.1', 6776)
-
-    return group_endpoint, bind_address, command_endpoint
+#     return group_endpoint, bind_address, command_endpoint
 
 

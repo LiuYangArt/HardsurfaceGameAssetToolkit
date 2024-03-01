@@ -1,5 +1,5 @@
 {
     "pref_ue_mesh_dir": "/Meshes",
-    "pref_ue_multicast_bind_address": "0.0.0.0",
+    "pref_ue_multicast_bind_address": "127.0.0.1",
     "pref_ue_multicast_group_endpoint": "239.0.0.1:6766"
 }

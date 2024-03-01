@@ -8,11 +8,7 @@ import socket as _socket
 import logging as _logging
 import threading as _threading
 
-# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# _sys.path.append(os.path.dirname(SCRIPT_DIR))
-# from .Functions.CommonFunctions import read_ue_ip_settings_from_pref
-
-from HardsurfaceGameAssetToolkit.Functions.CommonFunctions import read_ue_ip_settings_from_pref
+from HardsurfaceGameAssetToolkit.Preferences import read_ue_ip_settings_from_pref
 
 # Protocol constants (see PythonScriptRemoteExecution.cpp for the full protocol definition)
 _PROTOCOL_VERSION = 1                                   # Protocol version number
@@ -29,8 +25,8 @@ _NODE_TIMEOUT_SECONDS = 5                               # Number of seconds to w
 
 DEFAULT_MULTICAST_TTL = 0                               # Multicast TTL (0 is limited to the local host, 1 is limited to the local subnet)
 DEFAULT_MULTICAST_GROUP_ENDPOINT = ('239.0.0.1', 6766)  # The multicast group endpoint tuple that the UDP multicast socket should join (must match the "Multicast Group Endpoint" setting in the Python plugin)
-DEFAULT_MULTICAST_BIND_ADDRESS = '0.0.0.0'            # The adapter address that the UDP multicast socket should bind to, or 127.0.0.1 to bind to all adapters (must match the "Multicast Bind Address" setting in the Python plugin)
-DEFAULT_COMMAND_ENDPOINT = ('0.0.0.0', 6776)          # The endpoint tuple for the TCP command connection hosted by this client (that the remote client will connect to)
+DEFAULT_MULTICAST_BIND_ADDRESS = '127.0.0.1'            # The adapter address that the UDP multicast socket should bind to, or 127.0.0.1 to bind to all adapters (must match the "Multicast Bind Address" setting in the Python plugin)
+DEFAULT_COMMAND_ENDPOINT = ('127.0.0.1', 6776)          # The endpoint tuple for the TCP command connection hosted by this client (that the remote client will connect to)
 DEFAULT_RECEIVE_BUFFER_SIZE = 8192                      # The default receive buffer size
 
 # Execution modes (these must match the names given to LexToString for EPythonCommandExecutionMode in IPythonScriptPlugin.h)
@@ -53,7 +49,7 @@ class RemoteExecutionConfig(object):
         self.multicast_group_endpoint = group_endpoint
         self.multicast_bind_address = bind_address
         self.command_endpoint = command_endpoint
-
+        print(f"multicast_group_endpoint: {self.multicast_group_endpoint} multicast_bind_address: {self.multicast_bind_address} command_endpoint: {self.command_endpoint}")
 
 class RemoteExecution(object):
     '''

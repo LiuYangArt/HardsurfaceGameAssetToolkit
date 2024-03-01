@@ -1,33 +1,34 @@
 import bpy
 
-
+import threading
 from .dependencies.unreal import *
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
-from .dependencies import remote_execution as re
+# from .dependencies import remote_execution as re
+from .dependencies.rpc import blender_server
 
 # from pathlib import Path
 # import os
 
 
-def read_ue_ip_settings_from_pref():
-    context = bpy.context
-    preferences = context.preferences
-    addon_prefs = preferences.addons[__package__].preferences
+# def read_ue_ip_settings_from_pref():
+#     context = bpy.context
+#     preferences = context.preferences
+#     addon_prefs = preferences.addons[__package__].preferences
 
-    ue_multicast_group_endpoint = fix_ip_input(
-        addon_prefs.ue_multicast_group_endpoint
-    )  # 239.0.0.1:6766
-    bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address)  #'127.0.0.1'
-    endpoint_port = int(ue_multicast_group_endpoint.split(":")[1])  # 6766
-    group_endpoint = (
-        ue_multicast_group_endpoint.split(":")[0],
-        endpoint_port,
-    )  # ('239.0.0.1', 6766)
-    command_endpoint = bind_address, endpoint_port  # ('127.0.0.1', 6776)
+#     ue_multicast_group_endpoint = fix_ip_input(
+#         addon_prefs.ue_multicast_group_endpoint
+#     )  # 239.0.0.1:6766
+#     bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address)  #'127.0.0.1'
+#     endpoint_port = int(ue_multicast_group_endpoint.split(":")[1])  # 6766
+#     group_endpoint = (
+#         ue_multicast_group_endpoint.split(":")[0],
+#         endpoint_port,
+#     )  # ('239.0.0.1', 6766)
+#     command_endpoint = bind_address, endpoint_port  # ('127.0.0.1', 6776)
 
-    return group_endpoint, bind_address, command_endpoint
+#     return group_endpoint, bind_address, command_endpoint
 
 
 class SendPropsToUE(bpy.types.Operator):
@@ -47,10 +48,10 @@ class SendPropsToUE(bpy.types.Operator):
         # for i in dir(addon_prefs):
         #     print(i)
 
-        ue_group_endpoint, ue_bind_address, ue_command_enepoint = (
-            read_ue_ip_settings_from_pref()
-        )
-        print(f"ue_group_endpoint: {ue_group_endpoint}")
+        # # ue_group_endpoint, ue_bind_address, ue_command_enepoint = (
+        # #     read_ue_ip_settings_from_pref()
+        # # )
+        # # print(f"ue_group_endpoint: {ue_group_endpoint}")
         preferences = context.preferences
         addon_prefs = preferences.addons[__package__].preferences
 
@@ -58,21 +59,18 @@ class SendPropsToUE(bpy.types.Operator):
         ue_content_path = normalize_path(properties.unreal_path)
         ue_content_path = fix_ue_game_path(ue_content_path)
         fbx_export_path = normalize_path(TEMP_PATH)
-        mesh_dir = normalize_path(addon_prefs.ue_mesh_dir)
+        mesh_dir = normalize_path(addon_prefs.pref_ue_mesh_dir)
+
         ue_script = UE_SCRIPT
-        ue_file_dir = normalize_path(fbx_export_path)
-
         ue_script_command = (
-            f'{UE_SCRIPT_CMD}("{ue_file_dir}","{ue_content_path}","{mesh_dir}")'
+            f'{UE_SCRIPT_CMD}("{fbx_export_path}","{ue_content_path}","{mesh_dir}")'
         )
-
-
-        # if is_connected() == False:
-        #     self.report({"ERROR"}, "Failed to connect to UE")
-        #     return {"CANCELLED"}
-
         ue_commands = make_ue_python_script_command(ue_script, ue_script_command)
-        # print(f"ue_commands: {ue_commands}")
+
+        if is_connected() == False:
+            self.report({"ERROR"}, "Failed to connect to UE")
+            return {"CANCELLED"}
+
 
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         store_mode = prep_select_mode()
@@ -121,3 +119,26 @@ class SendPropsToUE(bpy.types.Operator):
         self.report({"INFO"}, f"{(len(export_collections))} StaticMeshes sent to UE ")
 
         return {"FINISHED"}
+
+class StartRPCServers(bpy.types.Operator):
+    """Bootstraps unreal and blender with rpc server threads, so that they are ready for remote calls."""
+    bl_idname = 'hst.start_rpc_servers'
+    bl_label = 'Start UE RPC Servers'
+
+    def execute(self, context):
+
+        try:
+            # bootstrap the unreal rpc server if it is not already running
+            unreal.bootstrap_unreal_with_rpc_server()
+
+        except ConnectionError:
+            self.report({'ERROR'}, 'Failed to connect to UE')
+
+
+        # start the blender rpc server if its not already running
+        if 'BlenderRPCServer' not in [thread.name for thread in threading.enumerate()]:
+            rpc_server = blender_server.RPCServer()
+            rpc_server.start(threaded=True)
+            self.report({'INFO'}, 'RPC Servers started')
+
+        return {'FINISHED'}

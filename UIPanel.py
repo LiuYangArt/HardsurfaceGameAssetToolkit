@@ -217,11 +217,12 @@ class HST_PT_HST(bpy.types.Panel):
         )
         box_column.prop(parameters, "export_path", text="Path")
         # box_column.separator()
-        box_column.operator("hst.sendprops_ue", icon="EXPORT")
+        ue_io_row = box_column.row(align=True)  
+        ue_io_row.operator("hst.start_rpc_servers", text="Start Servers", icon="PLAY")
+        ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
         box_column.prop(parameters, "unreal_path")
 
         # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
-
 
 class HST_PT_TOOLS(bpy.types.Panel):
     bl_idname = "HST_PT_TOOLS"
