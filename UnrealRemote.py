@@ -34,10 +34,11 @@ from .dependencies.rpc import blender_server
 class SendPropsToUE(bpy.types.Operator):
     bl_idname = "hst.sendprops_ue"
     bl_label = "Send Props to UE"
-    bl_description = "Send Collections to UE\n直接发送Collection到UE中成为StaticMesh\n\
-        规则和fbx导出一致\nUE中需要在Project Settings中开启Python插件的Remote Execution\n\
-        Blender插件中设置端口对应UE设置\n\
-        UE中FBX导入部分目前使用了UE中的Python脚本，因此需要特定的Python脚本支持\n\
+    bl_description = "Send Collections to UE\
+        直接发送Collection到UE中成为StaticMesh，规则和fbx导出一致\
+        UE中需要在Project Settings中开启Python插件的Remote Execution\
+        第一次使用需要先用Start Server连通UE RPC服务器\
+        UE中FBX导入部分目前使用了UE中的Python脚本，因此需要特定的Python脚本支持\
         后续会把这部分集成到插件中，扩展通用性"
 
     def execute(self, context):
@@ -123,7 +124,9 @@ class SendPropsToUE(bpy.types.Operator):
 class StartRPCServers(bpy.types.Operator):
     """Bootstraps unreal and blender with rpc server threads, so that they are ready for remote calls."""
     bl_idname = 'hst.start_rpc_servers'
-    bl_label = 'Start UE RPC Servers'
+    bl_label = 'Start UE RPC Server'
+    bl_description = "Starts the RPC server for communication between Blender and UE\
+        启动UE和Blender之间的RPC服务器"
 
     def execute(self, context):
 
