@@ -2,6 +2,10 @@ from bpy.utils import resource_path
 from pathlib import Path
 import os
 
+
+class Addon:
+    NAME = "HardsurfaceGameAssetToolkit"
+
 # bake groups
 LOW_SUFFIX = "_low"
 HIGH_SUFFIX = "_high"
@@ -75,11 +79,18 @@ UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
 
-class AddonPath:
-    SETTING_DIR = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
-    CONFIG_FILE= "prefs.json"
-    USER_PROFILE_PATH=os.environ['USERPROFILE']
-    TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
+class Paths:
+    """ 文件和路径 """
+    ASSET_DIR = "PresetFiles"
+    BLENDER_DIR = Path(resource_path("USER"))
+    PRESETS_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME / ASSET_DIR
+    ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
+    NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
+    PRESET_FILE = PRESETS_DIR / "Presets.blend"
+    CONFIG_FILE= ADDON_DIR / "prefs.json"
+    OS_USER_DIR=os.environ['USERPROFILE']
+    TEMP_DIR=os.path.join(OS_USER_DIR,"AppData\Local\Temp\BlenderHST\\")
 
-class Addon:
-    NAME = "HardsurfaceGameAssetToolkit"
+class Names:
+    PREVIEW_CAM = "AssetPreviewCamera"
+    PREVIEW_IMAGE = "TempAssetPreview.png"

@@ -1,6 +1,6 @@
 import bpy
 from pathlib import Path
-from .Const import AddonPath
+from .Const import Paths
 from .Functions.CommonFunctions import write_json,fix_ip_input,read_json_from_file
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty,
                        FloatProperty, IntProperty, PointerProperty,
@@ -9,7 +9,7 @@ from bpy.types import AddonPreferences, PropertyGroup
 
 def write_prefs_to_file(prop, value):
     prefs = bpy.context.preferences.addons[__package__].preferences
-    prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
+    prefs_file = Path(Paths.PRESETS_DIR).joinpath(Paths.CONFIG_FILE)
     prefs_dict = {}
     for i in dir(prefs):
         if i.startswith("pref_"):
@@ -21,7 +21,7 @@ def write_prefs_to_file(prop, value):
 
 def read_ue_ip_settings_from_pref():
     """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
-    prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
+    prefs_file = Path(Paths.PRESETS_DIR).joinpath(Paths.CONFIG_FILE)
     prefs_dict = read_json_from_file(prefs_file)
     # print(f"set ue remote ip from pref file")
     ue_multicast_group_endpoint = ("239.0.0.1:6766")
