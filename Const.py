@@ -78,6 +78,8 @@ UE_SCRIPT_CMD = "batch_import_hs_props"
 class AddonPath:
     SETTING_DIR = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
     CONFIG_FILE= "prefs.json"
+    USER_PROFILE_PATH=os.environ['USERPROFILE']
+    TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
 
 class Addon:
     NAME = "HardsurfaceGameAssetToolkit"

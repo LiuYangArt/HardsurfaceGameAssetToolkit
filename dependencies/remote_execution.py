@@ -49,7 +49,7 @@ class RemoteExecutionConfig(object):
         self.multicast_group_endpoint = group_endpoint
         self.multicast_bind_address = bind_address
         self.command_endpoint = command_endpoint
-        print(f"multicast_group_endpoint: {self.multicast_group_endpoint} multicast_bind_address: {self.multicast_bind_address} command_endpoint: {self.command_endpoint}")
+        # print(f"multicast_group_endpoint: {self.multicast_group_endpoint} multicast_bind_address: {self.multicast_bind_address} command_endpoint: {self.command_endpoint}")
 
 class RemoteExecution(object):
     '''

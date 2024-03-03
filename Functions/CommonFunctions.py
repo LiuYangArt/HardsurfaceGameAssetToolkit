@@ -1311,6 +1311,14 @@ def read_json_from_file(file_path):
             json_dict = json.load(json_file)
     return json_dict
 
+
+
+    
+
+
+    # add a camera in scene, render current scene in eevee, export a 256x256 picture, save it to a temp folder, and return the path
+    # set selected_asset's preview to the picture
+
 # def read_ue_ip_settings_from_pref():
 #     """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
 #     prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)

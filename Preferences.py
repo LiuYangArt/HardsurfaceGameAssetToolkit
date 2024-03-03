@@ -23,7 +23,7 @@ def read_ue_ip_settings_from_pref():
     """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
     prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
     prefs_dict = read_json_from_file(prefs_file)
-    print(f"set ue remote ip from pref file")
+    # print(f"set ue remote ip from pref file")
     ue_multicast_group_endpoint = ("239.0.0.1:6766")
     bind_address = "0.0.0.0"
     for key in prefs_dict:

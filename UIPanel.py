@@ -248,3 +248,4 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box_column.operator(
             "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
         )
+        box_column.operator("hst.makeassetpreview", icon="RENDERLAYERS")
