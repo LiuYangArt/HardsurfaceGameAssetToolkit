@@ -5,30 +5,8 @@ from .dependencies.unreal import *
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
-# from .dependencies import remote_execution as re
+
 from .dependencies.rpc import blender_server
-
-# from pathlib import Path
-# import os
-
-
-# def read_ue_ip_settings_from_pref():
-#     context = bpy.context
-#     preferences = context.preferences
-#     addon_prefs = preferences.addons[__package__].preferences
-
-#     ue_multicast_group_endpoint = fix_ip_input(
-#         addon_prefs.ue_multicast_group_endpoint
-#     )  # 239.0.0.1:6766
-#     bind_address = fix_ip_input(addon_prefs.ue_multicast_bind_address)  #'127.0.0.1'
-#     endpoint_port = int(ue_multicast_group_endpoint.split(":")[1])  # 6766
-#     group_endpoint = (
-#         ue_multicast_group_endpoint.split(":")[0],
-#         endpoint_port,
-#     )  # ('239.0.0.1', 6766)
-#     command_endpoint = bind_address, endpoint_port  # ('127.0.0.1', 6776)
-
-#     return group_endpoint, bind_address, command_endpoint
 
 
 class SendPropsToUE(bpy.types.Operator):
@@ -42,17 +20,7 @@ class SendPropsToUE(bpy.types.Operator):
         后续会把这部分集成到插件中，扩展通用性"
 
     def execute(self, context):
-        # context = bpy.context
-        # preferences = context.preferences
-        # addon_prefs = preferences.addons["HardsurfaceGameAssetToolkit"].preferences
-        # aa=addon_prefs.ue_multicast_group_endpoint
-        # for i in dir(addon_prefs):
-        #     print(i)
 
-        # # ue_group_endpoint, ue_bind_address, ue_command_enepoint = (
-        # #     read_ue_ip_settings_from_pref()
-        # # )
-        # # print(f"ue_group_endpoint: {ue_group_endpoint}")
         preferences = context.preferences
         addon_prefs = preferences.addons[__package__].preferences
 
@@ -103,7 +71,7 @@ class SendPropsToUE(bpy.types.Operator):
             file_path = fbx_export_path + "/" + new_name + ".fbx"
             exported_files.append(file_path)
             print(f"file_path: {file_path}")
-            export_collection_staticmesh(collection, file_path)
+            FBXExport.staticmesh(collection, file_path)
 
         try:
             run_commands(ue_commands)
@@ -112,10 +80,6 @@ class SendPropsToUE(bpy.types.Operator):
             self.report({"ERROR"}, "Failed to send props to UE")
 
         restore_select_mode(store_mode)
-
-        # for file in exported_files:
-        #     print(f"deleting file: {file}")
-        #     os.remove(file)
 
         self.report({"INFO"}, f"{(len(export_collections))} StaticMeshes sent to UE ")
 

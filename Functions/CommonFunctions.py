@@ -5,6 +5,7 @@ from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
 import os
 import json
+import mathutils
 
 """ 通用functions """
 
@@ -56,7 +57,7 @@ def filter_name(
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
     """获取所选object所在的collection"""
     target_collection = None
-    collection=target_object.users_collection[0]
+    collection = target_object.users_collection[0]
     if collection.name != "Scene Collection":
         target_collection = collection
     # for collection in bpy.data.collections:
@@ -175,7 +176,6 @@ def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
     return success
 
 
-
 def add_vertexcolor_attribute(
     target_object: bpy.types.Object, vertexcolor_name: str
 ) -> bpy.types.Object:
@@ -207,11 +207,11 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     #     print(target_object + " is not mesh object")
     return color_attribute
 
-def vertexcolor_to_vertices(target_mesh,color_attribute,color):
+
+def vertexcolor_to_vertices(target_mesh, color_attribute, color):
     mesh = target_mesh.data
     bm = bmesh.from_edit_mesh(mesh)
-    
-    
+
     if color_attribute.domain == "POINT":
         point_color_attribute = color_attribute
         point_color_layer = bm.verts.layers.color[point_color_attribute.name]
@@ -225,14 +225,13 @@ def vertexcolor_to_vertices(target_mesh,color_attribute,color):
         corner_color_layer = bm.loops.layers.color[corner_color_attribute.name]
 
         for face in bm.faces:
-            if face.select== True:
+            if face.select == True:
                 for loop in face.loops:
                     loop[corner_color_layer] = color
-            
+
     bmesh.update_edit_mesh(mesh)
 
-
-    #old api
+    # old api
     # bpy.ops.object.mode_set(mode = 'VERTEX_PAINT')
     # selected_verts = []
     # for vert in mesh.vertices:
@@ -247,10 +246,11 @@ def vertexcolor_to_vertices(target_mesh,color_attribute,color):
     #                 mesh.vertex_colors.active.data[loop_index].color = color
     # bpy.ops.object.mode_set(mode = 'EDIT')
 
+
 def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
     """设置顶点色"""
     color = tuple(color)
-    current_mode=bpy.context.active_object.mode
+    current_mode = bpy.context.active_object.mode
     print(current_mode)
     if target_object.type == "MESH":
         mesh = target_object.data
@@ -259,11 +259,13 @@ def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -
             if current_mode == "OBJECT":
                 # if vertexcolor_name in mesh.color_attributes:
                 #     color_attribute = mesh.color_attributes.get(vertexcolor_name)
-                color_attribute.data.foreach_set("color_srgb", color * len(mesh.loops) * 4)
+                color_attribute.data.foreach_set(
+                    "color_srgb", color * len(mesh.loops) * 4
+                )
                 # else:
                 #     print("No vertex color attribute named " + vertexcolor_name)
             elif current_mode == "EDIT":
-                vertexcolor_to_vertices(target_object,color_attribute,color)
+                vertexcolor_to_vertices(target_object, color_attribute, color)
         else:
             print("No vertex color attribute named " + vertexcolor_name)
 
@@ -1037,50 +1039,147 @@ def reset_transform(target_object: bpy.types.Object) -> None:
     target_object.rotation_euler = (0, 0, 0)
     target_object.scale = (1, 1, 1)
 
+class FBXExport:
+    def staticmesh(target, file_path: str, reset_transform="False"):
+        """导出staticmesh fbx"""
+        bpy.ops.object.select_all(action="DESELECT")
+        export_objects = []
+        hidden_objects = []
+        if target.type == "COLLECTION":
 
-def export_collection_staticmesh(
-    target_collection: bpy.types.Collection, file_path: str
-):
-    """导出collection为staticmesh fbx"""
-    bpy.ops.object.select_all(action="DESELECT")
+            for object in target.all_objects:
+                export_objects.append(object)
+                if object.hide_get() is True:
+                    hidden_objects.append(object)
+                    object.hide_set(False)
+                # object.select_set(True)
+        elif target.type == "MESH":
+            export_objects.append(target)
+            if target.hide_get() is True:
+                hidden_objects.append(target)
+                target.hide_set(False)
+            # target.select_set(True)
 
-    hide_objects = []
-    for object in target_collection.all_objects:
-        if object.hide_get() is True:
-            hide_objects.append(object)
-            object.hide_set(False)
-        object.select_set(True)
+        obj_transform={}
+
+        for obj in export_objects:
+            obj.hide_set(False)
+            obj.select_set(True)
+            if reset_transform == "True":
+                obj_transform[obj] = obj.matrix_world.copy()
+
+                obj.location = (0, 0, 0)
+                obj.rotation_euler = (0, 0, 0)
+                obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+
+        bpy.ops.export_scene.fbx(
+            filepath=file_path,
+            use_selection=True,
+            use_active_collection=False,
+            use_visible=False,
+            axis_forward="-Z",
+            axis_up="Y",
+            global_scale=1.0,
+            apply_unit_scale=True,
+            apply_scale_options="FBX_SCALE_NONE",
+            colors_type="LINEAR",
+            object_types={"MESH", "EMPTY"},
+            use_mesh_modifiers=True,
+            mesh_smooth_type="FACE",
+            use_triangles=True,
+            use_tspace=True,
+            bake_space_transform=True,
+            path_mode="AUTO",
+            embed_textures=False,
+            batch_mode="OFF",
+            # use_batch_own_dir=True,
+            use_metadata=False,
+            use_custom_props=False,
+            add_leaf_bones=False,
+            use_armature_deform_only=False,
+            bake_anim=False,
+        )
+        for object in hidden_objects:
+            object.hide_set(True)
+        
+        if reset_transform == "True":
+            for obj in obj_transform:
+                obj.matrix_world = obj_transform[obj]
 
 
-    bpy.ops.export_scene.fbx(
-        filepath=file_path,
-        use_selection=True,
-        use_active_collection=False,
-        use_visible=False,
-        axis_forward="-Z",
-        axis_up="Y",
-        global_scale=1.0,
-        apply_unit_scale=True,
-        apply_scale_options="FBX_SCALE_NONE",
-        colors_type="LINEAR",
-        object_types={"MESH", "EMPTY"},
-        use_mesh_modifiers=True,
-        mesh_smooth_type="FACE",
-        use_triangles=True,
-        use_tspace=True,
-        bake_space_transform=True,
-        path_mode="AUTO",
-        embed_textures=False,
-        batch_mode="OFF",
-        # use_batch_own_dir=True,
-        use_metadata=False,
-        use_custom_props=False,
-        add_leaf_bones=False,
-        use_armature_deform_only=False,
-        bake_anim=False,
-    )
-    for object in hide_objects:
-        object.hide_set(True)
+    def skeletal(target, file_path: str):
+        """导出骨骼 fbx"""
+        bpy.ops.object.select_all(action="DESELECT")
+        hide_objects = []
+
+        # if target.type == "ARMATURE":
+        #     #select all child mesh, and armature, unhide them
+        export_objects = []
+        if target.type == "COLLECTION":
+            for object in target.all_objects:
+                if object.hide_get() is True:
+                    hide_objects.append(object)
+                    # object.hide_set(False)
+                if object.type == "MESH" or object.type == "ARMATURE":
+                    export_objects.append(object)
+                # object.select_set(True)
+        elif target.type == "MESH":
+            if target.hide_get() is True:
+                hide_objects.append(target)
+                # target.hide_set(False)
+            export_objects.append(target)
+            # target.select_set(True)
+            
+        obj_transform={}
+        for obj in export_objects:
+            obj.hide_set(False)
+            obj.select_set(True)
+            obj_transform[obj] = obj.matrix_world.copy()
+
+            obj.location = (0, 0, 0)
+            obj.rotation_euler = (0, 0, 0)
+            obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+
+        # print(f"obj_transform: {obj_transform}")
+        bpy.ops.export_scene.fbx(
+            filepath=file_path,
+            use_selection=True,
+            use_active_collection=False,
+            use_visible=False,
+            axis_forward="Y",
+            axis_up="Z",
+            global_scale=1.0,
+            apply_unit_scale=True,
+            apply_scale_options="FBX_SCALE_NONE",
+            colors_type="LINEAR",
+            object_types={"MESH", "ARMATURE"},
+            use_mesh_modifiers=True,
+            mesh_smooth_type="FACE",
+            use_triangles=True,
+            use_tspace=True,
+            bake_space_transform=True,
+            path_mode="AUTO",
+            embed_textures=False,
+            batch_mode="OFF",
+            # use_batch_own_dir=True,
+            primary_bone_axis="X",
+            secondary_bone_axis="Z",
+            use_metadata=False,
+            use_custom_props=False,
+            add_leaf_bones=True,
+            use_armature_deform_only=False,
+            armature_nodetype="NULL",
+            bake_anim=False,
+
+        )
+        print(f"obj_transform: {obj_transform}")
+        
+        for object in hide_objects:
+            object.hide_set(True)
+        for obj in obj_transform:
+            obj.matrix_world = obj_transform[obj]
+
+        
 
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
@@ -1113,6 +1212,8 @@ def filter_collection_types(collections):
     decal_collections = []
     prop_collections = []
     sm_collections = []
+    skm_collections = []
+    rig_collections = []
 
     for collection in collections:
         if len(collection.objects) > 0:
@@ -1137,13 +1238,32 @@ def filter_collection_types(collections):
             elif PROP_COLLECTION_COLOR in collection_color:
                 prop_collections.append(collection)
                 continue
+            elif (
+                Const.SKM_COLLECTION_COLOR in collection_color
+                and collection.name.endswith(Const.SKM_SUFFIX)
+            ):
+                skm_collections.append(collection)
+                continue
+            elif (
+                Const.SKM_COLLECTION_COLOR in collection_color
+                and collection.name.endswith(Const.RIG_SUFFIX)
+            ):
+                rig_collections.append(collection)
+                continue
             else:
                 sm_collections.append(collection)
 
-    return bake_collections, decal_collections, prop_collections, sm_collections
+    return (
+        bake_collections,
+        decal_collections,
+        prop_collections,
+        sm_collections,
+        skm_collections,
+        rig_collections,
+    )
 
 
-def check_open_bondary(mesh)->bool:
+def check_open_bondary(mesh) -> bool:
     """检查是否存在开放边"""
     bm = bmesh.new()
     bm.from_mesh(mesh.data)
@@ -1159,7 +1279,7 @@ def check_open_bondary(mesh)->bool:
     return check_result
 
 
-def prep_select_mode()->tuple:
+def prep_select_mode() -> tuple:
     """存储当前模式,并切换到OBJECT模式. EXAMPLE: store_mode = prep_select_mode()"""
 
     active_object = bpy.context.active_object
@@ -1175,10 +1295,10 @@ def prep_select_mode()->tuple:
     return store_mode
 
 
-def restore_select_mode(store_mode)->None:
+def restore_select_mode(store_mode) -> None:
     """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode, selected_objects)"""
 
-    current_mode, active_object , selected_objects= store_mode
+    current_mode, active_object, selected_objects = store_mode
     if selected_objects is not None:
         bpy.ops.object.select_all(action="DESELECT")
         for object in selected_objects:
@@ -1189,7 +1309,7 @@ def restore_select_mode(store_mode)->None:
         bpy.ops.object.mode_set(mode=current_mode)
 
 
-def set_collision_object(target_object,new_name)->None:
+def set_collision_object(target_object, new_name) -> None:
     """设置碰撞物体"""
     target_object.show_name = True
     target_object.display_type = "WIRE"
@@ -1212,16 +1332,19 @@ def set_collision_object(target_object,new_name)->None:
     rename_alt(target_object, UCX_PREFIX + new_name, mark="_", num=2)
 
 
-def filter_meshes(collection)->tuple:
+def filter_meshes(collection) -> tuple:
     """筛选collection中的mesh,返回staticmeshes,ucx_meshes"""
     staticmeshes = []
     ucx_meshes = []
     collection_objs = [obj for obj in collection.all_objects if obj.type == "MESH"]
-    staticmeshes = [obj for obj in collection_objs if not obj.name.startswith(UCX_PREFIX)]
+    staticmeshes = [
+        obj for obj in collection_objs if not obj.name.startswith(UCX_PREFIX)
+    ]
     ucx_meshes = [obj for obj in collection_objs if obj.name.startswith(UCX_PREFIX)]
     return staticmeshes, ucx_meshes
 
-def name_remove_digits(name,parts=3,mark="_")->str:
+
+def name_remove_digits(name, parts=3, mark="_") -> str:
     """去除名称后的数字"""
     parts = int(parts)
     new_name = name
@@ -1230,11 +1353,12 @@ def name_remove_digits(name,parts=3,mark="_")->str:
         new_name = name.rsplit(mark, 1)[0]
     return new_name
 
-def rename_prop_meshes(objects)->tuple:
+
+def rename_prop_meshes(objects) -> tuple:
     """重命名prop mesh"""
     selected_collections = filter_collections_selection(objects)
     for collection in selected_collections:
-        static_meshes,ucx_meshes = filter_meshes(collection)
+        static_meshes, ucx_meshes = filter_meshes(collection)
         rename_meshes(static_meshes, collection.name)
         if len(ucx_meshes) > 0:
             if len(static_meshes) > 0:
@@ -1242,24 +1366,27 @@ def rename_prop_meshes(objects)->tuple:
             else:
                 ucx_name = name_remove_digits(ucx_meshes[0].name)
             rename_meshes(ucx_meshes, ucx_name)
-    return static_meshes,ucx_meshes
+    return static_meshes, ucx_meshes
+
 
 def check_vertex_color(mesh):
     """检查是否存在顶点色，如有，返回顶点色层"""
     vertex_color_layer = None
     if len(mesh.data.color_attributes) > 0:
-        vertex_color_layer=mesh.data.attributes.active_color
+        vertex_color_layer = mesh.data.attributes.active_color
     return vertex_color_layer
+
 
 def make_dir(path):
     """创建文件夹"""
     if not os.path.exists(path):
         os.makedirs(path)
 
-def normalize_path(path:str):
+
+def normalize_path(path: str):
     """规范化路径"""
-    path= str(path)
-    path= path.replace("\\", "/")
+    path = str(path)
+    path = path.replace("\\", "/")
     path = path.replace(" ", "")
     if path.endswith("/"):
         path = path[:-1]
@@ -1267,7 +1394,8 @@ def normalize_path(path:str):
     #     path = path[1:]
     return path
 
-def fix_ue_game_path(path:str):
+
+def fix_ue_game_path(path: str):
     """修复UE路径"""
     path = str(path)
     path = normalize_path(path)
@@ -1275,17 +1403,19 @@ def fix_ue_game_path(path:str):
         path = "/" + path
     return path
 
-def fix_ip_input(ip_address:str):
+
+def fix_ip_input(ip_address: str):
     ip_address = str(ip_address)
     ip_address = ip_address.replace(" ", "")
     ip_address = ip_address.replace("http://", "")
     ip_address = ip_address.replace("https://", "")
     ip_address = ip_address.replace("/", "")
-    ip_address = ip_address.replace("：",":")
+    ip_address = ip_address.replace("：", ":")
     ip_address = ip_address.replace(",", ":")
-    ip_address = ip_address.replace("。",".")
-    ip_address = ip_address.replace("，",":")
+    ip_address = ip_address.replace("。", ".")
+    ip_address = ip_address.replace("，", ":")
     return ip_address
+
 
 def make_ue_python_script_command(file_name, command):
     command_lines = [
@@ -1298,13 +1428,15 @@ def make_ue_python_script_command(file_name, command):
     ]
     return command_lines
 
+
 def write_json(file_path, data):
     """写入json"""
     with open(file_path, "w") as f:
         json.dump(data, f, indent=4)
 
+
 def read_json_from_file(file_path):
-    """ 从文件读取json """
+    """从文件读取json"""
     json_dict = {}
     if file_path.exists():
         with open(file_path, "r") as json_file:
@@ -1312,30 +1444,61 @@ def read_json_from_file(file_path):
     return json_dict
 
 
+class BMesh:
+    def init(mesh, mode="CONTEXT"):
+        """初始化bmesh"""
+        current_mode = bpy.context.active_object.mode()
+        if mode == "CONTEXT":
+            if current_mode == "EDIT":
+                bm = bmesh.from_edit_mesh(mesh.data)
+        else:
+            bm = bmesh.new()
+            bm.from_mesh(mesh.data)
+        return bm
 
-    
+    def finished(bm, mesh, mode="CONTEXT"):
+        """结束bmesh"""
+        current_mode = bpy.context.active_object.mode()
+        if mode == "CONTEXT":
+            if current_mode == "EDIT":
+                bm.update_edit_mesh(mesh.data)
+        else:
+            bm.to_mesh(mesh.data)
+
+        mesh.data.update()
+        bm.clear()
+        bm.free()
 
 
-    # add a camera in scene, render current scene in eevee, export a 256x256 picture, save it to a temp folder, and return the path
-    # set selected_asset's preview to the picture
+class Material:
+    def assign_to_mesh(mesh, target_mat) -> bpy.types.Material:
+        """assign material to mesh, return assigned material"""
+        has_mat = False
+        for mat in mesh.data.materials:
+            if mat.name == target_mat.name:
+                has_mat = True
+                assign_mat = mat
+        if not has_mat:
+            assign_mat = mesh.data.materials.append(target_mat)
+        return assign_mat
 
-# def read_ue_ip_settings_from_pref():
-#     """ 从addon_prefs读取配置,转换为group_endpoint, bind_address, command_endpoint """
-#     prefs_file = Path(AddonPath.SETTING_DIR).joinpath(AddonPath.CONFIG_FILE)
-#     prefs_dict = read_json_from_file(prefs_file)
-#     print(f"set ue remote ip from pref file")
-#     ue_multicast_group_endpoint = ("239.0.0.1:6766")
-#     bind_address = "0.0.0.0"
-#     for key in prefs_dict:
-#         if "ue_multicast_group_endpoint" in key:
-#             ue_multicast_group_endpoint = fix_ip_input(prefs_dict[key])
-#         if "ue_multicast_bind_address" in key:
-#             bind_address = fix_ip_input(prefs_dict[key])
+    def create_mat(mat_name) -> bpy.types.Material:
+        """add material"""
+        has_mat = False
+        new_mat = None
+        for mat in bpy.data.materials:
+            if mat.name == mat_name:
+                has_mat = True
+                new_mat = mat
+                break
+        if not has_mat:
+            placeholder_mat_ = bpy.data.materials.new(name=mat_name)
+        return new_mat
 
-#     endpoint_port = int(ue_multicast_group_endpoint.split(":")[1]) #6766
-#     group_endpoint = ue_multicast_group_endpoint.split(":")[0], endpoint_port #('239.0.0.1', 6766)
-#     command_endpoint = bind_address, endpoint_port # ('0.0.0.0', 6776)
-
-#     return group_endpoint, bind_address, command_endpoint
-
+class Object:
+    def set_pivot_to_matrix(obj,matrix):
+        if obj.type not in ['EMPTY', 'FONT']:
+            deltamx = matrix.inverted_safe() @ obj.matrix_world
+            obj.matrix_world = matrix
+            obj.data.transform(deltamx)
 

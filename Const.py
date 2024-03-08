@@ -94,3 +94,7 @@ class Paths:
 class Names:
     PREVIEW_CAM = "AssetPreviewCamera"
     PREVIEW_IMAGE = "TempAssetPreview.png"
+class Const:
+    SKM_COLLECTION_COLOR= "07"
+    SKM_SUFFIX="_SKM"
+    RIG_SUFFIX = "_Rig"

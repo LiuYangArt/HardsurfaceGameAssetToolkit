@@ -41,7 +41,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                     )
                     return {"CANCELLED"}
                 new_collection_name = clean_collection_name(collection.name)
-                collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
+                # collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
                 if collection.name != "Scene Collection":
                     collection.name = new_collection_name
 
@@ -50,7 +50,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             if check_mesh is True:
                 self.report(
                     {"ERROR"},
-                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                    f"Selected mesh: {mesh.name} has open boundary, please check | 选中的模型有开放边界，请检查",
                 )
                 return {"CANCELLED"}
             apply_transfrom(mesh, location=True, rotation=True, scale=True)
@@ -183,6 +183,9 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         bpy.ops.mesh.select_mode(type="FACE")
         bpy.ops.mesh.select_all(action="SELECT")
         bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bpy.ops.object.mode_set(mode="OBJECT")
+
         restore_select_mode(store_mode)
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
@@ -220,7 +223,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
     def execute(self, context):
 
         cursor = bpy.context.scene.cursor
-        cursor_current_transform = cursor.matrix
+        cursor_current_transform = cursor.matrix.copy()
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
@@ -663,64 +666,6 @@ class MarkPropCollectionOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class StaticMeshExportOperator(bpy.types.Operator):
-    bl_idname = "hst.staticmeshexport"
-    bl_label = "HST StaticMesh Export UE"
-    bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
-        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体\
-        在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
-
-    def execute(self, context):
-
-        parameters = context.scene.hst_params
-        export_path = parameters.export_path.replace("\\", "/")
-        if export_path == "":
-            self.report(
-                {"ERROR"},
-                "No export path set, please set export path and retry | "
-                + "没有设置导出路径，请设置导出路径后重试",
-            )
-            return {"CANCELLED"}
-        if export_path.endswith("/") is False:
-            export_path = export_path + "/"
-        visible_collections = filter_collection_by_visibility(type="VISIBLE")
-        # selected_objects = bpy.context.selected_objects
-        store_mode = prep_select_mode()
-        bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
-
-        bake_collections, decal_collections, prop_collections, sm_collections = (
-            filter_collection_types(visible_collections)
-        )
-        export_collections = (
-            bake_collections + decal_collections + prop_collections + sm_collections
-        )
-
-        if len(export_collections) == 0:
-            self.report(
-                {"ERROR"},
-                "No available collection for export. Please check visibility "
-                + "and ensure objects are placed in collections，"
-                + "set collection in correct type\n"
-                + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试",
-            )
-            return {"CANCELLED"}
-
-        # Check Bake
-        check_collections(self,bake_collections,prop_collections,decal_collections)
-
-        for collection in export_collections:
-            new_name = collection.name.removeprefix("SM_")
-            new_name = "SM_" + new_name
-            file_path = export_path + new_name + ".fbx"
-            export_collection_staticmesh(collection, file_path)
-
-        restore_select_mode(store_mode)
-
-        self.report(
-            {"INFO"},
-            str(len(export_collections)) + " StaticMeshes exported to " + export_path,
-        )
-        return {"FINISHED"}
 
 
 class FixDuplicatedMaterialOperator(bpy.types.Operator):

@@ -187,7 +187,15 @@ class HST_PT_HST(bpy.types.Panel):
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
-
+        box_column.label(text="Mark Collection Type")
+        mark_type_row = box_column.row(align=True)
+        mark_type_row.operator(
+            "hst.markpropcollection", text="Set Prop", icon="OUTLINER_COLLECTION"
+        )
+        mark_type_row.operator(
+            "hst.markdecalcollection", text="Set Decal", icon="OUTLINER_COLLECTION"
+        )
+        box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)
         view_row.operator(
@@ -200,27 +208,9 @@ class HST_PT_HST(bpy.types.Panel):
             parameters, "axis_toggle", text="Check UE Front Axis", icon="EMPTY_ARROWS"
         )
 
-        box_column.separator()
+        
 
-        box_column.label(text="Export Tools")
-        mark_type_row = box_column.row(align=True)
-        mark_type_row.operator(
-            "hst.markpropcollection", text="Set Prop", icon="OUTLINER_COLLECTION"
-        )
-        mark_type_row.operator(
-            "hst.markdecalcollection", text="Set Decal", icon="OUTLINER_COLLECTION"
-        )
-        fbx_io_row = box_column.row(align=True)
-        # fbx_io_row.operator("hst.importcadfbx", text="Import FBX", icon="IMPORT")
-        fbx_io_row.operator(
-            "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
-        )
-        box_column.prop(parameters, "export_path", text="Path")
-        # box_column.separator()
-        ue_io_row = box_column.row(align=True)  
-        ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
-        ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
-        box_column.prop(parameters, "unreal_path")
+        
 
         # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
 
@@ -249,3 +239,50 @@ class HST_PT_TOOLS(bpy.types.Panel):
             "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
         )
         box_column.operator("hst.makeassetpreview", icon="RENDERLAYERS")
+
+class HST_PT_EXPORT(bpy.types.Panel):
+    bl_idname = "HST_PT_Export"
+    bl_label = "Export Tools"
+    bl_category = "HST"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+
+    def draw(self, context):
+        parameters = context.scene.hst_params
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+
+        # fbx_io_row = box_column.row(align=True)
+        # fbx_io_row.operator("hst.importcadfbx", text="Import FBX", icon="IMPORT")
+        box_column.operator(
+            "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
+        )
+        box_column.prop(parameters, "export_path", text="Path")
+        # box_column.separator()
+        ue_io_row = box_column.row(align=True)  
+        ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
+        ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
+        box_column.prop(parameters, "unreal_path")
+        box_column.operator("hst.testfunc")
+
+class HST_PT_Skeletel(bpy.types.Panel):
+    bl_idname = "HST_PT_Skeletel"
+    bl_label = "Skeletel Tools"
+    bl_category = "HST"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+
+    def draw(self, context):
+
+        layout = self.layout
+        box = layout.box()
+        box = box.column()
+
+        box.operator(
+            "hst.skeletel_separator", icon="ARMATURE_DATA"
+        )
+        box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
+        box.operator("transfer_collection")
+        box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
+        box.operator("hst.get_bone_pos")
