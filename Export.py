@@ -61,9 +61,9 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 new_name = "SM_" + new_name
                 file_path = export_path + new_name + ".fbx"
                 FBXExport.staticmesh(collection, file_path)
-
+        
+        skm_count=0
         if len(skm_collections) > 0:
-            skm_count=0
             for collection in skm_collections:
                 # new_name = collection.name.removeprefix("SKM_")
                 # new_name = "SKM_" + new_name

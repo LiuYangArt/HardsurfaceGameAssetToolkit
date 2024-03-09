@@ -5,12 +5,14 @@ from .Functions.CommonFunctions import (
     filter_name,
     filter_type,
     make_transfer_proxy_mesh,
-    apply_transfrom,
+    # apply_transfrom,
     merge_vertes_by_distance,
     set_visibility,
     Material,
     BMesh,
     Object,
+    Armature,
+    Transform,
 )
 import mathutils
 
@@ -355,15 +357,18 @@ def extract_child_mesh(armature) -> list:
         # Check if the child is a mesh
         if child.type == "MESH":
             # Keep the current transform
+            Transform.ops_apply(child)
             child.parent = None
             child.matrix_world = armature.matrix_world
             child.select_set(True)
-            with bpy.context.temp_override(active_object=child):
-                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+            
+
+            # with bpy.context.temp_override(active_object=child):
+            #     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             child_meshes.append(child)
-    armature.select_set(True)
-    with bpy.context.temp_override(active_object=armature):
-        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    # armature.select_set(True)
+    # with bpy.context.temp_override(active_object=armature):
+    #     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     return child_meshes
 
 
@@ -445,7 +450,8 @@ def make_sk_placeholder_mesh(armature):
 class SkeletelSeparatorOperator(bpy.types.Operator):
     bl_idname = "hst.skeletel_separator"
     bl_label = "Skeletel Separator"
-    bl_description = "Separate skeletel mesh for nanite"
+    bl_description = "Separate skeletel mesh for nanite\
+        导入骨骼模型FBX不要勾选Armature下的Automatic Bone Orientation，会破坏骨骼朝向"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -453,6 +459,22 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
         target_meshes = []
         bpy.ops.object.select_all(action="DESELECT")
         bpy.ops.object.mode_set(mode="OBJECT")
+        for obj in selected_objects:
+
+            if obj.type == "EMPTY":
+                print(f"obj: {obj.name} type: {obj.type}")
+                for child in obj.children:
+                    if child.type == "ARMATURE":
+                        if child not in selected_armatures:
+                            selected_armatures.append(child)
+                            break
+                    else:
+                        self.report(
+                            {"ERROR"},
+                            "No selected armature, please select armature and retry\n"
+                            + "没有选中的Armature，请选中Armature后重试",
+                        )
+
         for obj in selected_objects:
             if obj.type == "MESH":
                 if obj.parent is not None:
@@ -465,6 +487,14 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
         if len(selected_armatures) > 0:
 
             for armature in selected_armatures:
+                if armature.parent is not None:
+                    empty_obj=armature.parent
+                    Transform.apply(armature.parent)
+                    armature.parent = None
+                    bpy.data.objects.remove(empty_obj)
+
+                Transform.ops_apply(armature)
+                Armature.set_display(armature)
                 current_collection = armature.users_collection[0]
                 rig_collection = create_collection(
                     armature.name + Const.RIG_SUFFIX, Const.SKM_COLLECTION_COLOR
@@ -491,8 +521,12 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                     if bone.name in mesh.name:
                         pose_bone = armature.pose.bones[bone.name]
                         bone_matrix = pose_bone.matrix
+                        
+                        # m_matrix = Transform.rotate_matrix(bone_matrix, angle=90, axis="Z")
+                        # m_matrix = Transform.rotate_matrix(m_matrix, angle=270, axis="X")
+                        
+                        # Object.set_pivot_to_matrix(mesh, m_matrix)
                         Object.set_pivot_to_matrix(mesh, bone_matrix)
-
 
             mesh.select_set(True)
 
@@ -504,9 +538,9 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
 
         for mesh in target_meshes:
             bpy.data.meshes.remove(mesh.data)
-            # mesh.select_set(False)
-            # set_visibility(mesh, False)
+
         bpy.ops.object.select_all(action="DESELECT")
+
         self.report({"INFO"}, "Skeletel Separation Complete")
 
         return {"FINISHED"}
@@ -563,7 +597,7 @@ class FixSplitMesh(bpy.types.Operator):
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:
-            apply_transfrom(mesh)
+            Transform.apply(mesh)
 
             transfer_object_list.append(
                 make_transfer_proxy_mesh(
@@ -572,7 +606,7 @@ class FixSplitMesh(bpy.types.Operator):
             )
 
             add_datatransfer_modifier(mesh)
-            merge_vertes_by_distance(mesh, merge_distance=0.01)
+            merge_vertes_by_distance(mesh, merge_distance=0.001)
 
             for modifier in mesh.modifiers:
                 if modifier.type == "DATA_TRANSFER":
@@ -581,14 +615,16 @@ class FixSplitMesh(bpy.types.Operator):
 
             mesh.select_set(True)
 
+        
+
+        for obj in transfer_object_list:
+            bpy.data.meshes.remove(obj.data)
+        set_visibility(transfer_collection, False)
         collection_objects = transfer_collection.all_objects
         if len(collection_objects) == 0 or collection_objects is None:
             bpy.data.collections.remove(transfer_collection)
 
-        for obj in transfer_object_list:
-            bpy.data.meshes.remove(obj.data)
-
-        set_visibility(transfer_collection, False)
+        
         self.report(
             {"INFO"},
             "Added Bevel and Transfer Normal to "
@@ -638,18 +674,62 @@ class Get_Bone_PosOperator(bpy.types.Operator):
             # obj.data.transform=cursor.matrix
             # print(f"obj: {obj.name} type: {obj.data.pivot}")
             if obj.type == "ARMATURE":
-                pose_bone = obj.pose.bones["robotArmB_2"]  # Replace "Bone" with the name of your bone
+                Armature.ops_scale_bones(obj, (2,2,2))
+                # from mathutils import Matrix
+                # ratio = 3
+                # # pose_bones = bpy.date.objects['Armature'].pose.bones
+                # # b = pose_bones['Bone']
 
-                # Get the bone's transformation matrix
-                bone_matrix = pose_bone.matrix
-                cursor.matrix = bone_matrix
-
+                # # b.bone.bbone_x = 1 / b.length * ratio
+                # # b.bone.bbone_z = 1 / b.length * ratio
+                # print(f"obj:{obj.name} dir obj: {dir(obj.data)}")
+                # print(f"editbones: {obj.data.edit_bones}")
+                # print(f"dir edit bones: {dir(obj.data.edit_bones)}")
+                # for bone in obj.data.edit_bones:
+                #     bone.matrix=Transform.scale_matrix(bone.matrix, 3)
+                    # bone.transform(bone.matrix, scale=(1,9))
+                    # print(f"bone: {bone.name} dir bone: {dir(bone)}")
+                    # bone.tail = bone.head + (bone.tail - bone.head) * ratio
+                    # print(f"bone: {bone.name} length: {bone.length}")
+                    # print(f"bone head: {bone.head} tail {bone.tail}")
+                    # bone.matrix = Transform.scale_matrix(bone.matrix, ratio,size=3)
+                    
             if obj.type == "MESH":
                 print(f"obj: {obj.name} type: {obj.type}")
-                obj.location = (0, 0, 0)
-                obj.rotation_euler = (0, 0, 0)
-                obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+                print(obj.matrix_world)
+                Transform.apply(obj,location=True, rotation=True, scale=True)
+                # obj.location = (0, 0, 0)
+                # obj.rotation_euler = (0, 0, 0)
+                # obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+                # # obj.rotation_quaternion = Transform.rotate_quat(obj.rotation_quaternion,angle=90,axis='X')
+                # Object.reset_pivot(obj)
+                # obj.matrix_world=Transform.rotate_matrix(obj.matrix_world,angle=90,axis='Y')
+                
+                
                 # Object.set_pivot_to_matrix(obj,cursor.matrix)
 
         return {'FINISHED'}
+    
+
+class DisplayUEBoneDirectionOperator(bpy.types.Operator):
+    bl_idname = "object.displayuebonedirection"
+    bl_label = "DisplayUEBoneDirection"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        custom_shape_mesh=None
+        for obj in selected_objects:
+            if obj.type=="MESH":
+                custom_shape_mesh=obj
+                break
+        for obj in selected_objects:
+            if custom_shape_mesh is not None:
+                if obj.type == "ARMATURE":
+                    for bone in obj.data.bones:
+                        bone_name=bone.name
+                        pose_bone = obj.pose.bones[bone.name]
+                        pose_bone.custom_shape = custom_shape_mesh
+
+        return {'FINISHED'}
+
 

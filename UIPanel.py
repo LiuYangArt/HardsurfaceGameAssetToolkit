@@ -283,6 +283,6 @@ class HST_PT_Skeletel(bpy.types.Panel):
             "hst.skeletel_separator", icon="ARMATURE_DATA"
         )
         box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
-        box.operator("transfer_collection")
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
         box.operator("hst.get_bone_pos")
+        box.operator("object.displayuebonedirection")

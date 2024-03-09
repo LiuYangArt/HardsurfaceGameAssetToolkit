@@ -614,21 +614,6 @@ def get_selected_rotation_quat() -> Quaternion:
     return rotation
 
 
-def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
-    """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
-    match axis:
-        case "X":
-            axis = (1, 0, 0)
-        case "Y":
-            axis = (0, 1, 0)
-        case "Z":
-            axis = (0, 0, 1)
-
-    angle = angle / 180 * 3.1415926
-    rotation = Quaternion(axis, angle)
-    return quaternion @ rotation
-
-
 def get_materials(target_object: bpy.types.Object) -> bpy.types.Material:
     """获取所选物体的材质列表"""
 
@@ -738,37 +723,7 @@ def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> 
     return viewport_spaces
 
 
-def apply_transfrom(object, location=True, rotation=True, scale=True):
-    """应用变换"""
 
-    matrix_basis = object.matrix_basis
-    matrix = Matrix()
-    loc, rot, scale = matrix_basis.decompose()
-
-    translation = Matrix.Translation(loc)
-    rotation = matrix_basis.to_3x3().normalized().to_4x4()
-    scale = Matrix.Diagonal(scale).to_4x4()
-
-    transform = [matrix, matrix, matrix]
-    basis = [translation, rotation, scale]
-
-    def swap(i):
-        transform[i], basis[i] = basis[i], transform[i]
-
-    if location:
-        swap(0)
-    if rotation:
-        swap(1)
-    if scale:
-        swap(2)
-
-    new_matrix = transform[0] @ transform[1] @ transform[2]
-    if hasattr(object.data, "transform"):
-        object.data.transform(new_matrix)
-    for child in object.children:
-        child.matrix_local = new_matrix @ child.matrix_local
-
-    object.matrix_basis = basis[0] @ basis[1] @ basis[2]
 
 
 def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
@@ -1039,8 +994,9 @@ def reset_transform(target_object: bpy.types.Object) -> None:
     target_object.rotation_euler = (0, 0, 0)
     target_object.scale = (1, 1, 1)
 
+
 class FBXExport:
-    def staticmesh(target, file_path: str, reset_transform="False"):
+    def staticmesh(target, file_path: str, reset_transform=False):
         """导出staticmesh fbx"""
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
@@ -1060,12 +1016,13 @@ class FBXExport:
                 target.hide_set(False)
             # target.select_set(True)
 
-        obj_transform={}
+        obj_transform = {}
 
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
-            if reset_transform == "True":
+
+            if reset_transform is True:
                 obj_transform[obj] = obj.matrix_world.copy()
 
                 obj.location = (0, 0, 0)
@@ -1101,25 +1058,32 @@ class FBXExport:
         )
         for object in hidden_objects:
             object.hide_set(True)
-        
-        if reset_transform == "True":
+
+        if reset_transform is True:
             for obj in obj_transform:
                 obj.matrix_world = obj_transform[obj]
 
-
     def skeletal(target, file_path: str):
         """导出骨骼 fbx"""
+        bpy.context.scene.unit_settings.system = "METRIC"
+        bpy.context.scene.unit_settings.scale_length = 0.01
+        bpy.context.scene.unit_settings.length_unit = "METERS"
+
+
         bpy.ops.object.select_all(action="DESELECT")
         hide_objects = []
 
-        # if target.type == "ARMATURE":
-        #     #select all child mesh, and armature, unhide them
         export_objects = []
+        armature_names = {}
         if target.type == "COLLECTION":
             for object in target.all_objects:
                 if object.hide_get() is True:
                     hide_objects.append(object)
                     # object.hide_set(False)
+                if object.type == "ARMATURE": 
+                    armature_names[object] = object.name
+                    object.name = "Armature" #fix armature export as redundant root bone
+                    Armature.ops_scale_bones(object, (100,100,100))
                 if object.type == "MESH" or object.type == "ARMATURE":
                     export_objects.append(object)
                 # object.select_set(True)
@@ -1129,8 +1093,8 @@ class FBXExport:
                 # target.hide_set(False)
             export_objects.append(target)
             # target.select_set(True)
-            
-        obj_transform={}
+
+        obj_transform = {}
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
@@ -1138,6 +1102,7 @@ class FBXExport:
 
             obj.location = (0, 0, 0)
             obj.rotation_euler = (0, 0, 0)
+            # obj.scale = (100, 100, 100)
             obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
 
         # print(f"obj_transform: {obj_transform}")
@@ -1148,7 +1113,7 @@ class FBXExport:
             use_visible=False,
             axis_forward="Y",
             axis_up="Z",
-            global_scale=1.0,
+            global_scale=1,
             apply_unit_scale=True,
             apply_scale_options="FBX_SCALE_NONE",
             colors_type="LINEAR",
@@ -1162,24 +1127,28 @@ class FBXExport:
             embed_textures=False,
             batch_mode="OFF",
             # use_batch_own_dir=True,
-            primary_bone_axis="X",
-            secondary_bone_axis="Z",
+            primary_bone_axis="Y",
+            secondary_bone_axis="X",
             use_metadata=False,
             use_custom_props=False,
-            add_leaf_bones=True,
-            use_armature_deform_only=False,
+            add_leaf_bones=False,
+            use_armature_deform_only=True,
             armature_nodetype="NULL",
             bake_anim=False,
-
         )
         print(f"obj_transform: {obj_transform}")
-        
+
         for object in hide_objects:
             object.hide_set(True)
         for obj in obj_transform:
             obj.matrix_world = obj_transform[obj]
-
+        for obj in export_objects:
+            if obj.type == "ARMATURE":
+                obj.name = armature_names[obj]
+                Armature.ops_scale_bones(obj, (0.01,0.01,0.01))
         
+        set_default_scene_units()
+
 
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
@@ -1495,10 +1464,126 @@ class Material:
             placeholder_mat_ = bpy.data.materials.new(name=mat_name)
         return new_mat
 
+
+def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
+    """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
+    match axis:
+        case "X":
+            axis = (1, 0, 0)
+        case "Y":
+            axis = (0, 1, 0)
+        case "Z":
+            axis = (0, 0, 1)
+
+    angle = angle / 180 * 3.1415926
+    rotation = Quaternion(axis, angle)
+    return quaternion @ rotation
+
+
 class Object:
-    def set_pivot_to_matrix(obj,matrix):
-        if obj.type not in ['EMPTY', 'FONT']:
+    def set_pivot_to_matrix(obj, matrix):
+        if obj.type not in ["EMPTY", "FONT"]:
             deltamx = matrix.inverted_safe() @ obj.matrix_world
             obj.matrix_world = matrix
             obj.data.transform(deltamx)
 
+    def reset_pivot(obj):
+        world_origin_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+        obj.matrix_world = world_origin_matrix
+
+
+class Transform:
+    def rotate_quat(quaternion, angle, axis="Z") -> Quaternion:
+        """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
+        match axis:
+            case "X":
+                axis = (1, 0, 0)
+            case "Y":
+                axis = (0, 1, 0)
+            case "Z":
+                axis = (0, 0, 1)
+
+        angle = angle / 180 * 3.1415926
+        rotation = Quaternion(axis, angle)
+        return quaternion @ rotation
+    
+    def scale_matrix(matrix, scale_factor,size=4):
+        # Create a scale matrix
+        scale_matrix = Matrix.Scale(scale_factor, size)
+
+        # Multiply the original matrix by the scale matrix
+        scaled_matrix = matrix @ scale_matrix
+
+        return scaled_matrix
+
+    def rotate_matrix(matrix, angle, axis="Z"):
+        # Create a rotation matrix for a 90 degree rotation around the X-axis
+        rotation_matrix = Matrix.Rotation(math.radians(angle), 4, axis)
+
+        # Multiply the original matrix by the rotation matrix
+        rotated_matrix = matrix @ rotation_matrix
+
+        return rotated_matrix
+
+    def apply(object, location=True, rotation=True, scale=True):
+        """应用变换"""
+
+        matrix_basis = object.matrix_basis
+        matrix = Matrix()
+        loc, rot, scale = matrix_basis.decompose()
+
+        translation = Matrix.Translation(loc)
+        rotation = matrix_basis.to_3x3().normalized().to_4x4()
+        scale = Matrix.Diagonal(scale).to_4x4()
+
+        transform = [matrix, matrix, matrix]
+        basis = [translation, rotation, scale]
+
+        def swap(i):
+            transform[i], basis[i] = basis[i], transform[i]
+
+        if location:
+            swap(0)
+        if rotation:
+            swap(1)
+        if scale:
+            swap(2)
+
+        new_matrix = transform[0] @ transform[1] @ transform[2]
+        if hasattr(object.data, "transform"):
+            object.data.transform(new_matrix)
+        for child in object.children:
+            child.matrix_local = new_matrix @ child.matrix_local
+
+        object.matrix_basis = basis[0] @ basis[1] @ basis[2]
+
+    def ops_apply(object,location=True, rotation=True, scale=True):
+        object.select_set(True)
+        bpy.context.view_layer.objects.active = object
+        bpy.ops.object.transform_apply(location=location, rotation=rotation, scale=scale)
+        object.select_set(False)
+
+class Armature:
+    def set_bone_roll(armature, roll=0):
+        for bone in armature.data.bones:
+            bone.roll = roll
+
+    def set_display(obj):
+        obj.data.display_type = "WIRE"
+        obj.data.show_names = True
+        obj.data.show_axes = True
+        obj.show_in_front = True
+        # obj.relation_line_position = 'HEAD'
+    def scale_bones(armature, scale_factor):
+        for bone in armature.data.bones:
+            bone.head = bone.head * scale_factor
+            bone.tail = bone.tail * scale_factor
+
+    def ops_scale_bones(armature,scale=(1,1,1)):
+        bpy.ops.object.select_all(action="DESELECT")
+        bpy.context.view_layer.objects.active = armature
+        armature.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.armature.select_all(action='SELECT')
+        bpy.ops.transform.resize(value=scale, orient_type='GLOBAL', orient_matrix=((1, 0, 0), (0, 1, 0), (0, 0, 1)), orient_matrix_type='GLOBAL', mirror=False, snap=False, snap_elements={'INCREMENT'}, use_snap_project=False, snap_target='CLOSEST', use_snap_self=True, use_snap_edit=True, use_snap_nonedit=True, use_snap_selectable=False, alt_navigation=True)
+        bpy.ops.object.mode_set(mode="OBJECT")

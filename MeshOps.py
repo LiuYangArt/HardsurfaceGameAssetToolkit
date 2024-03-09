@@ -53,7 +53,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                     f"Selected mesh: {mesh.name} has open boundary, please check | 选中的模型有开放边界，请检查",
                 )
                 return {"CANCELLED"}
-            apply_transfrom(mesh, location=True, rotation=True, scale=True)
+            Transform.apply(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
 

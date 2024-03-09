@@ -1,7 +1,7 @@
 from bpy.utils import resource_path
 from pathlib import Path
 import os
-
+# from mathutils import Matrix
 
 class Addon:
     NAME = "HardsurfaceGameAssetToolkit"
@@ -98,3 +98,5 @@ class Const:
     SKM_COLLECTION_COLOR= "07"
     SKM_SUFFIX="_SKM"
     RIG_SUFFIX = "_Rig"
+    WORLD_ORIGIN_MATRIX=[[1, 0, 0, 0],[0, 1, 0, 0],[0, 0, 1, 0],[0, 0, 0, 1]]
+                                
