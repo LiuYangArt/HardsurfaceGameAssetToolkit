@@ -3,6 +3,8 @@ import bmesh
 import math
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
+
+# from ..Const import Const
 import os
 import json
 import mathutils
@@ -723,9 +725,6 @@ def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> 
     return viewport_spaces
 
 
-
-
-
 def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
     """应用所有修改器，删除原mesh并替换为新mesh"""
 
@@ -1069,7 +1068,6 @@ class FBXExport:
         bpy.context.scene.unit_settings.scale_length = 0.01
         bpy.context.scene.unit_settings.length_unit = "METERS"
 
-
         bpy.ops.object.select_all(action="DESELECT")
         hide_objects = []
 
@@ -1080,10 +1078,12 @@ class FBXExport:
                 if object.hide_get() is True:
                     hide_objects.append(object)
                     # object.hide_set(False)
-                if object.type == "ARMATURE": 
+                if object.type == "ARMATURE":
                     armature_names[object] = object.name
-                    object.name = "Armature" #fix armature export as redundant root bone
-                    Armature.ops_scale_bones(object, (100,100,100))
+                    object.name = (
+                        "Armature"  # fix armature export as redundant root bone
+                    )
+                    Armature.ops_scale_bones(object, (100, 100, 100))
                 if object.type == "MESH" or object.type == "ARMATURE":
                     export_objects.append(object)
                 # object.select_set(True)
@@ -1145,8 +1145,8 @@ class FBXExport:
         for obj in export_objects:
             if obj.type == "ARMATURE":
                 obj.name = armature_names[obj]
-                Armature.ops_scale_bones(obj, (0.01,0.01,0.01))
-        
+                Armature.ops_scale_bones(obj, (0.01, 0.01, 0.01))
+
         set_default_scene_units()
 
 
@@ -1487,9 +1487,99 @@ class Object:
             obj.matrix_world = matrix
             obj.data.transform(deltamx)
 
-    def reset_pivot(obj):
+    def move_to_world_origin(obj):
         world_origin_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
         obj.matrix_world = world_origin_matrix
+
+    def add_custom_property(obj, prop_name, prop_value):
+        obj[prop_name] = prop_value
+
+    def read_custom_property(obj, prop_name):
+        return obj.get(prop_name)
+
+    def mark_hst_type(object, type):
+        """Mark object type as custom property, type: STATICMESH, DECAL, BAKEHIGH, SKELETALMESH, SKELETAL, UCX, SOCKET, PLACEHOLDER"""
+        type = type.upper()
+        match type:
+            case "STATICMESH":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_STATIC_MESH
+                )
+            case "DECAL":
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_DECAL)
+            case "BAKEHIGH":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_BAKE_HIGH
+                )
+            case "SKELETALMESH":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_SKELETAL_MESH
+                )
+            case "SKELETAL":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_SKELETAL
+                )
+            case "UCX":
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_UCX)
+            case "SOCKET":
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_SOCKET)
+            case "PLACEHOLDER":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_PLACEHOLDER
+                )
+
+    def filter_hst_type(objects, type, mode="INCLUDE"):
+        """Filter objects by type"""
+        type = type.upper()
+        mode = mode.upper()
+        filtered_objects = []
+        include_objects = []
+        # exclude_objects = []
+        for object in objects:
+            object_type = Object.read_custom_property(object, Const.CUSTOM_TYPE)
+            match type:
+                case "STATICMESH":
+                    if object_type == Const.TYPE_STATIC_MESH:
+                        include_objects.append(object)
+                case "DECAL":
+                    if object_type == Const.TYPE_DECAL:
+                        include_objects.append(object)
+                case "BAKE_HIGH":
+                    if object_type == Const.TYPE_BAKE_HIGH:
+                        include_objects.append(object)
+                case "SKELETALMESH":
+                    if object_type == Const.TYPE_SKELETAL_MESH:
+                        include_objects.append(object)
+                case "RIG":
+                    if object_type == Const.TYPE_SKELETAL:
+                        include_objects.append(object)
+                case "UCX":
+                    if object_type == Const.TYPE_UCX:
+                        include_objects.append(object)
+                case "SOCKET":
+                    if object_type == Const.TYPE_SOCKET:
+                        include_objects.append(object)
+                case "PLACEHOLDER":
+                    if object_type == Const.TYPE_PLACEHOLDER:
+                        include_objects.append(object)
+
+        if mode == "INCLUDE":
+            filtered_objects = include_objects
+        elif mode == "EXCLUDE":
+            for object in objects:
+                if object not in include_objects:
+                    filtered_objects.append(object)
+
+        return filtered_objects
+
+    def sort_types(objects):
+        sorted_objects = {}
+        for object in objects:
+            object_type = object.get(Const.CUSTOM_TYPE)
+            if object_type not in sorted_objects:
+                sorted_objects[object_type] = []
+            sorted_objects[object_type].append(object)
+        return sorted_objects
 
 
 class Transform:
@@ -1506,8 +1596,9 @@ class Transform:
         angle = angle / 180 * 3.1415926
         rotation = Quaternion(axis, angle)
         return quaternion @ rotation
-    
-    def scale_matrix(matrix, scale_factor,size=4):
+
+    def scale_matrix(matrix, scale_factor, size=4):
+        """Scale a matrix by a specified factor"""
         # Create a scale matrix
         scale_matrix = Matrix.Scale(scale_factor, size)
 
@@ -1517,6 +1608,7 @@ class Transform:
         return scaled_matrix
 
     def rotate_matrix(matrix, angle, axis="Z"):
+        """Rotate a matrix by a specified angle around a specified axis"""
         # Create a rotation matrix for a 90 degree rotation around the X-axis
         rotation_matrix = Matrix.Rotation(math.radians(angle), 4, axis)
 
@@ -1527,7 +1619,7 @@ class Transform:
 
     def apply(object, location=True, rotation=True, scale=True):
         """应用变换"""
-
+        # matrix_basis = object.matrix_basis.copy()
         matrix_basis = object.matrix_basis
         matrix = Matrix()
         loc, rot, scale = matrix_basis.decompose()
@@ -1557,11 +1649,15 @@ class Transform:
 
         object.matrix_basis = basis[0] @ basis[1] @ basis[2]
 
-    def ops_apply(object,location=True, rotation=True, scale=True):
+    def ops_apply(object, location=True, rotation=True, scale=True):
+        """Apply transformation to object"""
         object.select_set(True)
         bpy.context.view_layer.objects.active = object
-        bpy.ops.object.transform_apply(location=location, rotation=rotation, scale=scale)
+        bpy.ops.object.transform_apply(
+            location=location, rotation=rotation, scale=scale
+        )
         object.select_set(False)
+
 
 class Armature:
     def set_bone_roll(armature, roll=0):
@@ -1569,21 +1665,142 @@ class Armature:
             bone.roll = roll
 
     def set_display(obj):
+        """Set display settings for an armature object"""
         obj.data.display_type = "WIRE"
         obj.data.show_names = True
         obj.data.show_axes = True
         obj.show_in_front = True
         # obj.relation_line_position = 'HEAD'
+
     def scale_bones(armature, scale_factor):
+        """Scale bones of an armature"""
         for bone in armature.data.bones:
             bone.head = bone.head * scale_factor
             bone.tail = bone.tail * scale_factor
 
-    def ops_scale_bones(armature,scale=(1,1,1)):
+    def ops_scale_bones(armature, scale=(1, 1, 1)):
+        """Scale bones of an armature"""
         bpy.ops.object.select_all(action="DESELECT")
         bpy.context.view_layer.objects.active = armature
         armature.select_set(True)
         bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.armature.select_all(action='SELECT')
-        bpy.ops.transform.resize(value=scale, orient_type='GLOBAL', orient_matrix=((1, 0, 0), (0, 1, 0), (0, 0, 1)), orient_matrix_type='GLOBAL', mirror=False, snap=False, snap_elements={'INCREMENT'}, use_snap_project=False, snap_target='CLOSEST', use_snap_self=True, use_snap_edit=True, use_snap_nonedit=True, use_snap_selectable=False, alt_navigation=True)
+        bpy.ops.armature.select_all(action="SELECT")
+        bpy.ops.transform.resize(
+            value=scale,
+            orient_type="GLOBAL",
+            orient_matrix=((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            orient_matrix_type="GLOBAL",
+            mirror=False,
+            snap=False,
+            snap_elements={"INCREMENT"},
+            use_snap_project=False,
+            snap_target="CLOSEST",
+            use_snap_self=True,
+            use_snap_edit=True,
+            use_snap_nonedit=True,
+            use_snap_selectable=False,
+            alt_navigation=True,
+        )
         bpy.ops.object.mode_set(mode="OBJECT")
+
+
+class Collection:
+    def mark_hst_type(collection, type="PROP"):
+        """Mark collection type"""
+        type = type.upper()
+        match type:
+            case "PROP":
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_PROP_COLLECTION
+                )
+                collection.color_tag = "COLOR_" + PROP_COLLECTION_COLOR
+            case "DECAL":
+                collection.color_tag = "COLOR_" + DECAL_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_DECAL_COLLECTION
+                )
+            case "BAKE_LOW":
+                collection.color_tag = "COLOR_" + LOW_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_BAKE_LOW_COLLECTION
+                )
+            case "BAKE_HIGH":
+                collection.color_tag = "COLOR_" + HIGH_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_BAKE_HIGH_COLLECTION
+                )
+            case "SKM":
+                collection.color_tag = "COLOR_" + Const.SKM_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_SKM_COLLECTION
+                )
+            case "RIG":
+                collection.color_tag = "COLOR_" + Const.RIG_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_RIG_COLLECTION
+                )
+            case "PROXY":
+                collection.color_tag = "COLOR_" + PROXY_COLLECTION_COLOR
+                Object.add_custom_property(
+                    collection, Const.CUSTOM_TYPE, Const.TYPE_PROXY_COLLECTION
+                )
+
+    def create(name: str, type="PROP") -> bpy.types.Collection:
+        """创建collection,type为PROP,DECAL,BAKE_LOW,BAKE_HIGH,SKM,RIG,PROXY"""
+        type = type.upper()
+        collection = None
+        collection_exist = False
+
+        for collection in bpy.data.collections:  # 有则返回，无则创建
+            if collection.name == name:
+                collection_exist = True
+                collection = bpy.data.collections[name]
+                break
+        if collection_exist == False:  # 创建collection,并添加到scene
+            collection = bpy.data.collections.new(name)
+            bpy.context.scene.collection.children.link(collection)
+
+        Collection.mark_hst_type(collection, type)
+
+        return collection
+
+    def sort_hst_types(collections):
+        """筛选collection类型，返回筛选后的collection列表，包括bake,decal,prop,sm,skm,rig"""
+        bake_collections = []
+        decal_collections = []
+        prop_collections = []
+        sm_collections = []
+        skm_collections = []
+        rig_collections = []
+
+        for collection in collections:
+            if len(collection.objects) > 0:
+                collection_type = Object.read_custom_property(
+                    collection, Const.CUSTOM_TYPE
+                )
+                match collection_type:
+
+                    case Const.TYPE_PROXY_COLLECTION:
+                        continue
+                    case Const.TYPE_BAKE_LOW_COLLECTION:
+                        bake_collections.append(collection)
+                    case Const.TYPE_BAKE_HIGH_COLLECTION:
+                        bake_collections.append(collection)
+                    case Const.TYPE_DECAL_COLLECTION:
+                        decal_collections.append(collection)
+                    case Const.TYPE_PROP_COLLECTION:
+                        prop_collections.append(collection)
+                    case Const.TYPE_SKM_COLLECTION:
+                        skm_collections.append(collection)
+                    case Const.TYPE_RIG_COLLECTION:
+                        rig_collections.append(collection)
+                    case _:
+                        sm_collections.append(collection)
+        return (
+            bake_collections,
+            decal_collections,
+            prop_collections,
+            sm_collections,
+            skm_collections,
+            rig_collections,
+        )

@@ -103,13 +103,21 @@ class TestFuncOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         for obj in selected_objects:
-            print(f"obj: {obj.name} location: {obj.location} rotation: {obj.rotation_euler} scale: {obj.scale} type: {obj.type}")
-            print(f"obj matrix: {obj.matrix_world}")
-            pos = obj.matrix_world
-            print(f"pos: {pos}")
-            obj.matrix_world = Matrix.Translation(Vector((0, 0, 1)))
-            print(f"pos: {pos}")
-            obj.matrix_world =  pos
+            print(f"obj: {obj.name} type: {obj.type}")
+            print(f"dir obj: {dir(obj)}")
+        for collection in bpy.data.collections:
+            print(f"collection: {collection.name} type: {collection.type}")
+
+            
+            c_type = Object.read_custom_property(collection, "HST_CollectionType")
+            if c_type:
+                print(f"Collection Type: {c_type}")
+            # collection["custom_prop"]="Hello!?"
+
+            # collection_type=collection.get['HST_CollectionType']
+            # if collection_type:
+            # print(f"Collection Type: {collection.get('HST_CollectionType')}")
+
 
         #     print(f"obj: {obj.name} type: {obj.type}")
         #     export_staticmesh_fbx(

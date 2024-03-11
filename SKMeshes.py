@@ -13,10 +13,12 @@ from .Functions.CommonFunctions import (
     Object,
     Armature,
     Transform,
+    Collection,
 )
 import mathutils
 
 from .Const import *
+
 
 def get_bone_matrix(armature):
     """get bone matrix from armature"""
@@ -24,21 +26,6 @@ def get_bone_matrix(armature):
     for bone in armature.pose.bones:
         bone_matrix[bone.name] = bone.matrix
     return bone_matrix
-
-def add_datatransfer_modifier(mesh):
-    """add datatransfer modifier to mesh"""
-    transfer_source_mesh = bpy.data.objects[TRANSFER_MESH_PREFIX + mesh.name]
-    if NORMALTRANSFER_MODIFIER in mesh.modifiers:
-        datatransfermod = mesh.modifiers[NORMALTRANSFER_MODIFIER]
-
-    else:
-        datatransfermod = mesh.modifiers.new(
-            name=NORMALTRANSFER_MODIFIER, type="DATA_TRANSFER"
-        )
-    datatransfermod.object = transfer_source_mesh
-    datatransfermod.use_loop_data = True
-    datatransfermod.data_types_loops = {"CUSTOM_NORMAL"}
-    datatransfermod.loop_mapping = "TOPOLOGY"
 
 
 def remove_active_vertexgroup_verts(mesh):
@@ -150,8 +137,8 @@ def clean_groups(mesh, group_index):
 
 def split_vertex_groups(mesh) -> list:
     """split mesh by vertex groups, return list of split meshes"""
-    c_name = f"{mesh.name}{Const.SKM_SUFFIX}"
-    collection = create_collection(c_name, Const.SKM_COLLECTION_COLOR)
+    skm_collection_name = f"{mesh.name}{Const.SKM_SUFFIX}"
+    collection = create_collection(skm_collection_name, Const.SKM_COLLECTION_COLOR)
     vertex_groups = mesh.vertex_groups
     split_meshes = []
     for group in vertex_groups:
@@ -191,162 +178,13 @@ def split_decal_mat(mesh) -> bpy.types.Object:
         split_mesh.data = mesh.data.copy()
         split_mesh.name = mesh.name + DECAL_SUFFIX
         collection.objects.link(split_mesh)
+        Object.mark_hst_type(split_mesh, "DECAL")
+
     if split_mesh:
         remove_mat_faces(split_mesh, non_decal_mats)
         print("remove non_decal_mats")
         remove_mat_faces(mesh, decal_mats)
     return split_mesh
-
-
-# def seperate_by_vertexgroup(mesh):
-#     obj = mesh
-#     transform = obj.matrix_world
-#     new_objs = []
-#     c_name = f"{mesh.name}_SKM"
-#     # collection = mesh.users_collection[0]
-#     # if collection.name != c_name:
-#     collection = create_collection(c_name, "02")
-#     # Create a BMesh object and fill it with the mesh data
-#     bm = bmesh.new()
-#     bm.from_mesh(obj.data)
-
-#     deform_layer = bm.verts.layers.deform.active
-#     color_layer = bm.loops.layers.color.active
-
-#     # Loop through the vertex groups
-#     for group in obj.vertex_groups:
-#         name = f"{mesh.name}_{group.name}"
-#         # Create a new mesh and object for this group
-#         new_mesh = bpy.data.meshes.new(name)
-#         new_obj = bpy.data.objects.new(name, object_data=new_mesh)
-#         collection.objects.link(new_obj)
-
-#         # Create a new BMesh for this group
-#         new_bm = bmesh.new()
-#         new_color_layer = new_bm.loops.layers.color.new(color_layer.name)
-#         vert_map = {}
-
-#         # Create a mapping from old material indices to new material indices
-#         mat_map = {}
-
-#         # Create a new vertex group in the new object for each vertex group in the original object
-#         group_map = new_obj.vertex_groups.new(name=group.name)
-#         # group_map = {g: new_obj.vertex_groups.new(name=g.name) for g in obj.vertex_groups}
-#         for vert in bm.verts:
-#             if group.index in vert[deform_layer]:
-#                 new_vert = new_bm.verts.new(vert.co)
-#                 vert_map[vert] = new_vert
-
-#         for face in bm.faces:
-#             if all(vert in vert_map for vert in face.verts):
-#                 new_face = new_bm.faces.new([vert_map[vert] for vert in face.verts])
-
-#                 # Add the face's material to the new object and update the material index mapping
-#                 if face.material_index not in mat_map:
-#                     mat = obj.data.materials[face.material_index]
-#                     new_obj.data.materials.append(mat)
-#                     mat_map[face.material_index] = len(new_obj.data.materials) - 1
-
-#                 # Assign the correct material index to the new face
-#                 new_face.material_index = mat_map[face.material_index]
-
-#                 for old_loop, new_loop in zip(face.loops, new_face.loops):
-#                     new_loop[new_color_layer] = old_loop[color_layer]
-
-#         new_obj.matrix_world = transform
-
-#         new_bm.to_mesh(new_mesh)
-#         new_bm.clear()
-#         new_bm.free()
-#         new_objs.append(new_obj)
-
-#         group = new_obj.vertex_groups[0]
-#         group.add(range(len(obj.data.vertices)), 1.0, "REPLACE")
-
-#     # Clean up the original BMesh
-#     bm.clear()
-#     bm.free()
-#     return new_objs
-
-
-# def separate_by_material(mesh):
-#     obj = mesh
-#     transform = obj.matrix_world
-#     new_objs = []
-#     c_name = f"{mesh.name}"
-
-#     collection = mesh.users_collection[0]
-
-#     bm = bmesh.new()
-#     bm.from_mesh(obj.data)
-
-#     color_layer = bm.loops.layers.color.active
-
-#     for mat_index, mat in enumerate(obj.data.materials):
-#         if "_Decal" in mat.name:
-#             name = f"{mesh.name}_{mat.name}"
-#             new_mesh = bpy.data.meshes.new(name)
-#             new_obj = bpy.data.objects.new(name, object_data=new_mesh)
-#             collection.objects.link(new_obj)
-#             new_bm = bmesh.new()
-#             new_color_layer = new_bm.loops.layers.color.new(color_layer.name)
-#             new_obj.data.materials.append(mat)
-
-#             group_map = {
-#                 g: new_obj.vertex_groups.new(name=g.name) for g in obj.vertex_groups
-#             }
-
-#             # Create a dictionary to map old vertices to new ones
-#             vert_map = {}
-
-#             # Loop through the faces in the original BMesh
-#             faces_to_remove = []
-#             for face in bm.faces:
-#                 if face.material_index == mat_index:
-#                     # If it does, create new vertices in the new BMesh for each vertex in the face
-#                     new_verts = []
-#                     for vert in face.verts:
-#                         if vert not in vert_map:
-#                             new_vert = new_bm.verts.new(vert.co)
-#                             vert_map[vert] = new_vert
-#                         new_verts.append(vert_map[vert])
-#                     # Then, create a new face in the new BMesh using these new vertices
-#                     new_face = new_bm.faces.new(new_verts)
-
-#                     # Copy the vertex colors
-#                     for old_loop, new_loop in zip(face.loops, new_face.loops):
-#                         new_loop[new_color_layer] = old_loop[color_layer]
-
-#                     # Add the face to the list of faces to remove
-#                     faces_to_remove.append(face)
-
-#             # Remove the faces from the original mesh
-
-#             for face in faces_to_remove:
-#                 edges_to_remove = []
-#                 for edge in face.edges:
-#                     if len(edge.link_faces) == 1:
-#                         edges_to_remove.append(edge)
-#                 bm.faces.remove(face)
-#                 for edge in edges_to_remove:
-#                     bm.edges.remove(edge)
-
-#             obj.data.materials.pop(index=mat_index)
-#             # Update the new mesh with the new BMesh data
-#             new_bm.to_mesh(new_mesh)
-#             new_bm.clear()
-#             new_bm.free()
-#             new_objs.append(new_obj)
-#             group = new_obj.vertex_groups[0]
-#             group.add(range(len(new_obj.data.vertices)), 1.0, "REPLACE")
-#             new_obj.matrix_world = transform
-#             # Update the original mesh with the modified BMesh data
-#             bm.to_mesh(obj.data)
-
-#             # Clean up the original BMesh
-#             bm.clear()
-#             bm.free()
-#     return new_objs
 
 
 def extract_child_mesh(armature) -> list:
@@ -361,52 +199,45 @@ def extract_child_mesh(armature) -> list:
             child.parent = None
             child.matrix_world = armature.matrix_world
             child.select_set(True)
-            
-
-            # with bpy.context.temp_override(active_object=child):
-            #     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
             child_meshes.append(child)
-    # armature.select_set(True)
-    # with bpy.context.temp_override(active_object=armature):
-    #     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     return child_meshes
 
 
-def make_triangle_mesh(mesh):
-    mesh = bpy.data.meshes.new(name="TriangleMesh")
+# def make_triangle_mesh(mesh):
+#     mesh = bpy.data.meshes.new(name="TriangleMesh")
 
-    # Create a bmesh object and add a triangle to it
-    bm = bmesh.new()
-    bmesh.ops.create_cone(
-        bm,
-        cap_ends=True,
-        cap_tris=True,
-        segments=3,
-        diameter1=0.1,
-        diameter2=0,
-        depth=0.1,
-    )
+#     # Create a bmesh object and add a triangle to it
+#     bm = bmesh.new()
+#     bmesh.ops.create_cone(
+#         bm,
+#         cap_ends=True,
+#         cap_tris=True,
+#         segments=3,
+#         diameter1=0.1,
+#         diameter2=0,
+#         depth=0.1,
+#     )
 
-    # Convert the bmesh to a mesh
-    bm.to_mesh(mesh)
-    bm.free()
+#     # Convert the bmesh to a mesh
+#     bm.to_mesh(mesh)
+#     bm.free()
 
-    # Create a new object using the mesh
-    obj = bpy.data.objects.new("TriangleObject", mesh)
+#     # Create a new object using the mesh
+#     obj = bpy.data.objects.new("TriangleObject", mesh)
 
-    # Link the object to the current collection
-    bpy.context.collection.objects.link(obj)
+#     # Link the object to the current collection
+#     bpy.context.collection.objects.link(obj)
 
 
 def make_sk_placeholder_mesh(armature):
     """make sk placeholder mesh from armature"""
-    SUFFIX="_SK"
-    collection=armature.users_collection[0]
+    SUFFIX = "_SK"
+    collection = armature.users_collection[0]
     sk_mesh = bpy.data.meshes.new(armature.name + SUFFIX)
     vertices = [
-        (0, 0, 0), 
-        (0.001, 0, 0), 
-        (0, 0.001, 0), 
+        (0, 0, 0),
+        (0.001, 0, 0),
+        (0, 0.001, 0),
     ]
     faces = [(0, 1, 2)]
     sk_mesh.from_pydata(vertices, [], faces)
@@ -415,6 +246,8 @@ def make_sk_placeholder_mesh(armature):
     collection.objects.link(sk_obj)
     sk_obj.parent = armature
     sk_obj.matrix_world = armature.matrix_world
+    Object.mark_hst_type(sk_obj, "PLACEHOLDER")
+
     # loop the first bone of the armature, and create a vertex group , fill weight 1.0
     bone = armature.data.bones[0]
     active_group = sk_obj.vertex_groups.new(name=bone.name)
@@ -452,6 +285,9 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
     bl_label = "Skeletel Separator"
     bl_description = "Separate skeletel mesh for nanite\
         导入骨骼模型FBX不要勾选Armature下的Automatic Bone Orientation，会破坏骨骼朝向"
+    # def testfunc(self):
+    #     print("testfunc")
+    #     return {"FINISHED"}
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -468,12 +304,6 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                         if child not in selected_armatures:
                             selected_armatures.append(child)
                             break
-                    else:
-                        self.report(
-                            {"ERROR"},
-                            "No selected armature, please select armature and retry\n"
-                            + "没有选中的Armature，请选中Armature后重试",
-                        )
 
         for obj in selected_objects:
             if obj.type == "MESH":
@@ -484,20 +314,28 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                 else:
                     target_meshes = filter_type(selected_objects, "MESH")
             # obj.select_set(False)
-        if len(selected_armatures) > 0:
+        if len(selected_armatures) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected armature, please select armature and retry\n"
+                + "没有选中的Armature，请选中Armature后重试",
+            )
+            return {"CANCELLED"}
 
+        elif len(selected_armatures) > 0:
             for armature in selected_armatures:
                 if armature.parent is not None:
-                    empty_obj=armature.parent
+                    empty_obj = armature.parent
                     Transform.apply(armature.parent)
                     armature.parent = None
                     bpy.data.objects.remove(empty_obj)
 
                 Transform.ops_apply(armature)
                 Armature.set_display(armature)
+                Object.mark_hst_type(armature, "SKELETAL")
                 current_collection = armature.users_collection[0]
-                rig_collection = create_collection(
-                    armature.name + Const.RIG_SUFFIX, Const.SKM_COLLECTION_COLOR
+                rig_collection = Collection.create(
+                    name=armature.name + Const.RIG_SUFFIX, type="RIG"
                 )
                 rig_collection.objects.link(armature)
                 current_collection.objects.unlink(armature)
@@ -509,28 +347,31 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                 make_sk_placeholder_mesh(armature)
         else:
             target_meshes = filter_type(selected_objects, "MESH")
-        target_meshes = filter_name(target_meshes, UCX_PREFIX, "EXCLUDE")
+        target_meshes = Object.filter_hst_type(target_meshes, "UCX", "EXCLUDE")
 
         for mesh in target_meshes:
             split_meshes = split_vertex_groups(mesh)
 
         bpy.ops.object.select_all(action="DESELECT")
+        if len(split_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No vertex group found in mesh, please check vertex group and retry\n"
+                + "Mesh没有Vertex Group，请检查Vertex Group后重试",
+            )
+
         for mesh in split_meshes:
+            Object.mark_hst_type(mesh, "STATICMESH")
             for armature in selected_armatures:
                 for bone in armature.data.bones:
                     if bone.name in mesh.name:
                         pose_bone = armature.pose.bones[bone.name]
                         bone_matrix = pose_bone.matrix
-                        
-                        # m_matrix = Transform.rotate_matrix(bone_matrix, angle=90, axis="Z")
-                        # m_matrix = Transform.rotate_matrix(m_matrix, angle=270, axis="X")
-                        
-                        # Object.set_pivot_to_matrix(mesh, m_matrix)
                         Object.set_pivot_to_matrix(mesh, bone_matrix)
 
             mesh.select_set(True)
 
-        bpy.context.view_layer.objects.active=split_meshes[0]
+        bpy.context.view_layer.objects.active = split_meshes[0]
         bpy.ops.object.material_slot_remove_unused()
 
         for mesh in split_meshes:
@@ -570,6 +411,21 @@ class FixSplitMesh(bpy.types.Operator):
     bl_label = "Fix Split Faces Mesh"
     bl_description = "Merge split faces mesh without breaking the custom normal"
 
+    def add_datatransfer_modifier(self, mesh):
+        """add datatransfer modifier to mesh"""
+        transfer_source_mesh = bpy.data.objects[TRANSFER_MESH_PREFIX + mesh.name]
+        if NORMALTRANSFER_MODIFIER in mesh.modifiers:
+            datatransfermod = mesh.modifiers[NORMALTRANSFER_MODIFIER]
+
+        else:
+            datatransfermod = mesh.modifiers.new(
+                name=NORMALTRANSFER_MODIFIER, type="DATA_TRANSFER"
+            )
+        datatransfermod.object = transfer_source_mesh
+        datatransfermod.use_loop_data = True
+        datatransfermod.data_types_loops = {"CUSTOM_NORMAL"}
+        datatransfermod.loop_mapping = "TOPOLOGY"
+
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         if len(selected_objects) == 0:
@@ -596,26 +452,23 @@ class FixSplitMesh(bpy.types.Operator):
         )
         set_visibility(transfer_collection, True)
         transfer_object_list = []
-        for mesh in selected_meshes:
-            Transform.apply(mesh)
 
+        for mesh in selected_meshes:
+            current_matrix = mesh.matrix_world.copy()
+            Transform.apply(mesh)
             transfer_object_list.append(
                 make_transfer_proxy_mesh(
                     mesh, TRANSFER_MESH_PREFIX, transfer_collection
                 )
             )
-
-            add_datatransfer_modifier(mesh)
+            self.add_datatransfer_modifier(mesh)
             merge_vertes_by_distance(mesh, merge_distance=0.001)
-
             for modifier in mesh.modifiers:
                 if modifier.type == "DATA_TRANSFER":
-                    with bpy.context.temp_override(active_object=mesh):
-                        bpy.ops.object.modifier_apply(modifier=modifier.name)
-
+                    bpy.context.view_layer.objects.active = mesh
+                    bpy.ops.object.modifier_apply(modifier=modifier.name)
             mesh.select_set(True)
-
-        
+            Object.set_pivot_to_matrix(mesh, current_matrix)
 
         for obj in transfer_object_list:
             bpy.data.meshes.remove(obj.data)
@@ -624,7 +477,6 @@ class FixSplitMesh(bpy.types.Operator):
         if len(collection_objects) == 0 or collection_objects is None:
             bpy.data.collections.remove(transfer_collection)
 
-        
         self.report(
             {"INFO"},
             "Added Bevel and Transfer Normal to "
@@ -633,32 +485,6 @@ class FixSplitMesh(bpy.types.Operator):
         )
         return {"FINISHED"}
 
-# def set_obj_transform_to_cursor(obj):
-#     context=bpy.context
-#     cmx = context.scene.cursor.matrix
-#     loc, rot, sca = obj.matrix_world.decompose()
-#     omx = obj.matrix_world
-#     mx = cmx
-#     omx = obj.matrix_world.copy()
-#     deltamx = mx.inverted_safe() @ obj.matrix_world
-#     obj.matrix_world = mx
-#     obj.data.transform(deltamx)
-#     if obj.type == 'MESH':
-#         obj.data.update()
-
-# def set_obj_transform_to_matrix(obj,matrix):
-#     # context=bpy.context
-#     # cmx = context.scene.cursor.matrix
-#     # loc, rot, sca = obj.matrix_world.decompose()
-#     # omx = obj.matrix_world
-#     # mx = cmx
-#     # omx = obj.matrix_world.copy()
-#     deltamx = matrix.inverted_safe() @ obj.matrix_world
-#     obj.matrix_world = matrix
-#     obj.data.transform(deltamx)
-#     # if obj.type == 'MESH':
-#     #     obj.data.update()
-    
 
 class Get_Bone_PosOperator(bpy.types.Operator):
     bl_idname = "hst.get_bone_pos"
@@ -667,49 +493,24 @@ class Get_Bone_PosOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         cursor = bpy.context.scene.cursor
-        
-        
+
         for obj in selected_objects:
-            # bpy.ops.object.origin_set(type='ORIGIN_CURSOR')
-            # obj.data.transform=cursor.matrix
-            # print(f"obj: {obj.name} type: {obj.data.pivot}")
+
             if obj.type == "ARMATURE":
-                Armature.ops_scale_bones(obj, (2,2,2))
-                # from mathutils import Matrix
-                # ratio = 3
-                # # pose_bones = bpy.date.objects['Armature'].pose.bones
-                # # b = pose_bones['Bone']
 
-                # # b.bone.bbone_x = 1 / b.length * ratio
-                # # b.bone.bbone_z = 1 / b.length * ratio
-                # print(f"obj:{obj.name} dir obj: {dir(obj.data)}")
-                # print(f"editbones: {obj.data.edit_bones}")
-                # print(f"dir edit bones: {dir(obj.data.edit_bones)}")
-                # for bone in obj.data.edit_bones:
-                #     bone.matrix=Transform.scale_matrix(bone.matrix, 3)
-                    # bone.transform(bone.matrix, scale=(1,9))
-                    # print(f"bone: {bone.name} dir bone: {dir(bone)}")
-                    # bone.tail = bone.head + (bone.tail - bone.head) * ratio
-                    # print(f"bone: {bone.name} length: {bone.length}")
-                    # print(f"bone head: {bone.head} tail {bone.tail}")
-                    # bone.matrix = Transform.scale_matrix(bone.matrix, ratio,size=3)
-                    
-            if obj.type == "MESH":
                 print(f"obj: {obj.name} type: {obj.type}")
-                print(obj.matrix_world)
-                Transform.apply(obj,location=True, rotation=True, scale=True)
-                # obj.location = (0, 0, 0)
-                # obj.rotation_euler = (0, 0, 0)
-                # obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
-                # # obj.rotation_quaternion = Transform.rotate_quat(obj.rotation_quaternion,angle=90,axis='X')
-                # Object.reset_pivot(obj)
-                # obj.matrix_world=Transform.rotate_matrix(obj.matrix_world,angle=90,axis='Y')
-                
-                
-                # Object.set_pivot_to_matrix(obj,cursor.matrix)
+                type=Object.read_custom_property(obj, Const.CUSTOM_TYPE)
+                self.report({"INFO"}, f"obj: {obj.name} type: {type}")
 
-        return {'FINISHED'}
-    
+            if obj.type == "MESH":
+                type=Object.read_custom_property(obj, Const.CUSTOM_TYPE)
+                self.report({"INFO"}, f"obj: {obj.name} type: {type}")
+                # print(f"obj: {obj.name} type: {obj.type}")
+                # print(obj.matrix_world)
+                # Transform.apply(obj, location=True, rotation=True, scale=True)
+
+        return {"FINISHED"}
+
 
 class DisplayUEBoneDirectionOperator(bpy.types.Operator):
     bl_idname = "object.displayuebonedirection"
@@ -717,19 +518,17 @@ class DisplayUEBoneDirectionOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        custom_shape_mesh=None
+        custom_shape_mesh = None
         for obj in selected_objects:
-            if obj.type=="MESH":
-                custom_shape_mesh=obj
+            if obj.type == "MESH":
+                custom_shape_mesh = obj
                 break
         for obj in selected_objects:
             if custom_shape_mesh is not None:
                 if obj.type == "ARMATURE":
                     for bone in obj.data.bones:
-                        bone_name=bone.name
+                        bone_name = bone.name
                         pose_bone = obj.pose.bones[bone.name]
                         pose_bone.custom_shape = custom_shape_mesh
 
-        return {'FINISHED'}
-
-
+        return {"FINISHED"}

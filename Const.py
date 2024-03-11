@@ -96,7 +96,27 @@ class Names:
     PREVIEW_IMAGE = "TempAssetPreview.png"
 class Const:
     SKM_COLLECTION_COLOR= "07"
+    RIG_COLLECTION_COLOR= "07"
     SKM_SUFFIX="_SKM"
     RIG_SUFFIX = "_Rig"
     WORLD_ORIGIN_MATRIX=[[1, 0, 0, 0],[0, 1, 0, 0],[0, 0, 1, 0],[0, 0, 0, 1]]
-                                
+
+    # CUSTOM_TYPE = "HST_CollectionType"
+    TYPE_SKM_COLLECTION = "SKM_Collection"
+    TYPE_RIG_COLLECTION = "Rig_Collection"
+    TYPE_PROP_COLLECTION="Prop_Collection"
+    TYPE_DECAL_COLLECTION="Decal_Collection"
+    TYPE_BAKE_LOW_COLLECTION="BakeLow_Collection"
+    TYPE_BAKE_HIGH_COLLECTION="BakeHigh_Collection"
+    TYPE_PROXY_COLLECTION="Proxy_Collection"
+    
+    CUSTOM_TYPE = "HST_ObjectType"
+    TYPE_STATIC_MESH = "StaticMesh"
+    TYPE_SKELETAL_MESH = "SkeletalMesh"
+    TYPE_SKELETAL = "Skeletal"
+    TYPE_PROXY = "Proxy"
+    TYPE_DECAL = "Decal"
+    TYPE_SOCKET = "Socket"
+    TYPE_UCX = "UCX"
+    TYPE_BAKE_HIGH = "BakeHigh"
+    TYPE_PLACEHOLDER = "Placeholder"
