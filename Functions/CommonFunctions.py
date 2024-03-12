@@ -1680,6 +1680,12 @@ class Transform:
         )
         object.select_set(False)
 
+# class Files:
+#     def make_dir(path: str):
+#         """检查路径是否存在，不存在则创建"""
+#         if not os.path.exists(path):
+#             os.makedirs(path)
+#         return path
 
 class Armature:
     def set_bone_roll(armature, roll=0):

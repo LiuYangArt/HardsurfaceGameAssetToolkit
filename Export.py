@@ -24,6 +24,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             return {"CANCELLED"}
         if export_path.endswith("/") is False:
             export_path = export_path + "/"
+        make_dir(export_path)
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
