@@ -239,6 +239,8 @@ class HST_PT_TOOLS(bpy.types.Panel):
             "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
         )
         box_column.operator("hst.makeassetpreview", icon="RENDERLAYERS")
+        box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
+        box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
 
 class HST_PT_EXPORT(bpy.types.Panel):
     bl_idname = "HST_PT_Export"
@@ -264,7 +266,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
         ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
         ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
         box_column.prop(parameters, "unreal_path")
-        box_column.operator("hst.testfunc")
+        # box_column.operator("hst.testfunc")
 
 class HST_PT_Skeletel(bpy.types.Panel):
     bl_idname = "HST_PT_Skeletel"
@@ -282,9 +284,7 @@ class HST_PT_Skeletel(bpy.types.Panel):
         box.operator(
             "hst.skeletel_separator", icon="ARMATURE_DATA"
         )
-        box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
-        box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
-        box.operator("hst.get_bone_pos")
-        box.operator("object.displayuebonedirection")
+        # box.operator("hst.get_bone_pos")
+        # box.operator("object.displayuebonedirection")
 
 

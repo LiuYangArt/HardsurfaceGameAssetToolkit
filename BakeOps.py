@@ -15,9 +15,13 @@ def set_bake_collection(collection, type="LOW"):
         case "LOW":
             new_name = collection_name + LOW_SUFFIX
             color = "COLOR_" + LOW_COLLECTION_COLOR
+            Collection.mark_hst_type(collection, "LOW")
+            Object.mark_hst_type(objects, "LOW")
         case "HIGH":
             new_name = collection_name + HIGH_SUFFIX
             color = "COLOR_" + HIGH_COLLECTION_COLOR
+            Collection.mark_hst_type(collection, "HIGH")
+            Object.mark_hst_type(objects, "HIGH")
 
     collection.name = new_name
     collection.color_tag = color

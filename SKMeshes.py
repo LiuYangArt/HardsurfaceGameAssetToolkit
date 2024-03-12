@@ -1,21 +1,7 @@
 import bpy
 import bmesh
-from .Functions.CommonFunctions import (
-    create_collection,
-    filter_name,
-    filter_type,
-    make_transfer_proxy_mesh,
-    # apply_transfrom,
-    merge_vertes_by_distance,
-    set_visibility,
-    Material,
-    BMesh,
-    Object,
-    Armature,
-    Transform,
-    Collection,
-)
-import mathutils
+from .Functions.CommonFunctions import *
+
 
 from .Const import *
 
@@ -137,16 +123,18 @@ def clean_groups(mesh, group_index):
 
 def split_vertex_groups(mesh) -> list:
     """split mesh by vertex groups, return list of split meshes"""
-    skm_collection_name = f"{mesh.name}{Const.SKM_SUFFIX}"
-    collection = create_collection(skm_collection_name, Const.SKM_COLLECTION_COLOR)
+    name=mesh.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
+    name=name.split("_")[0]
+    skm_collection_name = f"{name}{Const.SKM_SUFFIX}"
+    collection = Collection.create(name=skm_collection_name, type="SKM")
     vertex_groups = mesh.vertex_groups
     split_meshes = []
     for group in vertex_groups:
         # duplicate mesh and rename to group.name
-        print(f"group: {group.name}")
+        # print(f"group: {group.name}")
         split_mesh = mesh.copy()
         split_mesh.data = mesh.data.copy()
-        split_mesh.name = f"{mesh.name}_{group.name}"
+        split_mesh.name = f"{Const.STATICMESH_PREFIX}{name}_{group.name}"
         collection.objects.link(split_mesh)
         split_meshes.append(split_mesh)
     for group in vertex_groups:
@@ -200,6 +188,7 @@ def extract_child_mesh(armature) -> list:
             child.matrix_world = armature.matrix_world
             child.select_set(True)
             child_meshes.append(child)
+        rename_meshes(child_meshes, Const.SKELETAL_MESH_PREFIX + armature.name)
     return child_meshes
 
 
@@ -307,6 +296,14 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
 
         for obj in selected_objects:
             if obj.type == "MESH":
+                custom_type=Object.read_custom_property(obj, Const.CUSTOM_TYPE)
+                if custom_type == Const.TYPE_SKM:
+                    self.report(
+                        {"ERROR"},
+                        "Mesh has been separated, please don't re-split\n"
+                        + "Mesh已经分离，请不要重复操作",
+                    )
+                    return {"CANCELLED"}
                 if obj.parent is not None:
                     if obj.parent.type == "ARMATURE":
                         if obj.parent not in selected_armatures:
@@ -324,6 +321,14 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
 
         elif len(selected_armatures) > 0:
             for armature in selected_armatures:
+                custom_type=Object.read_custom_property(armature, Const.CUSTOM_TYPE)
+                if custom_type == Const.TYPE_SPLITSKEL:
+                    self.report(
+                        {"ERROR"},
+                        "Armature has been separated, please don't re-split\n"
+                        + "Armature已经分离，请不要重复操作",
+                    )
+                    return {"CANCELLED"}
                 if armature.parent is not None:
                     empty_obj = armature.parent
                     Transform.apply(armature.parent)
@@ -332,10 +337,11 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
 
                 Transform.ops_apply(armature)
                 Armature.set_display(armature)
-                Object.mark_hst_type(armature, "SKELETAL")
+                Object.mark_hst_type(armature, "SPLITSKEL")
+                sk_name=armature.name
                 current_collection = armature.users_collection[0]
                 rig_collection = Collection.create(
-                    name=armature.name + Const.RIG_SUFFIX, type="RIG"
+                    name=sk_name, type="RIG"
                 )
                 rig_collection.objects.link(armature)
                 current_collection.objects.unlink(armature)
@@ -345,8 +351,7 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                         target_meshes.append(mesh)
 
                 make_sk_placeholder_mesh(armature)
-        else:
-            target_meshes = filter_type(selected_objects, "MESH")
+
         target_meshes = Object.filter_hst_type(target_meshes, "UCX", "EXCLUDE")
 
         for mesh in target_meshes:
@@ -361,7 +366,7 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
             )
 
         for mesh in split_meshes:
-            Object.mark_hst_type(mesh, "STATICMESH")
+            Object.mark_hst_type(mesh, "SKM")
             for armature in selected_armatures:
                 for bone in armature.data.bones:
                     if bone.name in mesh.name:
@@ -446,10 +451,8 @@ class FixSplitMesh(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-
-        transfer_collection = create_collection(
-            TRANSFER_COLLECTION, PROXY_COLLECTION_COLOR
-        )
+        
+        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
         set_visibility(transfer_collection, True)
         transfer_object_list = []
 

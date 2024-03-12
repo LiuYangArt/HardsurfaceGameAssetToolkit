@@ -27,13 +27,14 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         store_mode = prep_select_mode()
 
         collections = []
-
+        
         for mesh in selected_meshes:
             if mesh.users_collection[0] not in collections:
                 collections.append(mesh.users_collection[0])
         if len(collections) > 0:
             for collection in collections:
-                if collection.name.endswith("_Decal"):
+                collection_type=Collection.get_hst_type(collection)
+                if collection_type==Const.TYPE_DECAL_COLLECTION:
                     self.report(
                         {"ERROR"},
                         "Selected collections has decal collection, operation stop\n"
@@ -56,6 +57,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             Transform.apply(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
+            Object.mark_hst_type(mesh, "STATICMESH")
 
             has_uv = has_uv_attribute(mesh)  # 处理uv layers
             if has_uv is True:
@@ -265,6 +267,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.empty_display_size = SOCKET_SIZE
         socket_object.show_name = True
         collection.objects.link(socket_object)
+        Object.mark_hst_type(socket_object, "SOCKET")
 
         bpy.context.scene.cursor.matrix = cursor_current_transform
 
@@ -631,6 +634,14 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             new_name = decal_collection_name + DECAL_SUFFIX
             decal_collection.name = new_name
             decal_collection.color_tag = color
+            Collection.mark_hst_type(decal_collection, "DECAL")
+            for mesh in static_meshes:
+                mats=get_materials(mesh)
+                for mat in mats:
+                    if mat.name.endswith(DECAL_SUFFIX):
+                        Object.mark_hst_type(mesh, "DECAL")
+                        break
+
             self.report(
                 {"INFO"}, str(len(decal_collections)) + " Decal collection marked"
             )
@@ -734,7 +745,13 @@ class SetUECollisionOperator(bpy.types.Operator):
         store_mode = prep_select_mode()
 
         selected_collections = filter_collections_selection(selected_objects)
-
+        if len(selected_collections) == 0:
+            self.report(
+                {"ERROR"},
+                "Selected object not in collection, please set collection and retry\n"
+                + "选中的物体不在Collection中，请设置Collection后重试",
+            )
+            return {"CANCELLED"}
         for collection in selected_collections:
             collection_meshes, ucx_meshes = filter_meshes(collection)
             static_mesh = None

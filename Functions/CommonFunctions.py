@@ -81,24 +81,24 @@ def check_collection_exist(collection_name: str) -> bool:
     return collection_exist
 
 
-def create_collection(
-    collection_name: str, color_num: str = "01"
-) -> bpy.types.Collection:
-    """创建collection"""
-    collection = None
-    collection_exist = False
+# def create_collection(
+#     collection_name: str, color_num: str = "01"
+# ) -> bpy.types.Collection:
+#     """创建collection"""
+#     collection = None
+#     collection_exist = False
 
-    for collection in bpy.data.collections:  # 有则返回，无则创建
-        if collection.name == collection_name:
-            collection_exist = True
-            collection = bpy.data.collections[collection_name]
-            break
-    if collection_exist == False:  # 创建collection,并添加到scene
-        collection = bpy.data.collections.new(collection_name)
-        collection.color_tag = "COLOR_" + color_num
-        bpy.context.scene.collection.children.link(collection)
+#     for collection in bpy.data.collections:  # 有则返回，无则创建
+#         if collection.name == collection_name:
+#             collection_exist = True
+#             collection = bpy.data.collections[collection_name]
+#             break
+#     if collection_exist == False:  # 创建collection,并添加到scene
+#         collection = bpy.data.collections.new(collection_name)
+#         collection.color_tag = "COLOR_" + color_num
+#         bpy.context.scene.collection.children.link(collection)
 
-    return collection
+#     return collection
 
 
 def clean_user(target_object: bpy.types.Object) -> None:
@@ -298,6 +298,7 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.
         proxy_mesh.parent = mesh
         proxy_collection.objects.link(proxy_mesh)
         proxy_mesh.hide_render = True
+        Object.mark_hst_type(proxy_mesh, "PROXY")
 
         proxy_mesh = apply_modifiers(proxy_mesh)
 
@@ -1296,7 +1297,7 @@ def set_collision_object(target_object, new_name) -> None:
     # set naming
     if new_name is None:
         new_name = target_object.name
-
+    Object.mark_hst_type(target_object, "UCX")
     # target_object.name = UCX_PREFIX + new_name
     rename_alt(target_object, UCX_PREFIX + new_name, mark="_", num=2)
 
@@ -1329,6 +1330,11 @@ def rename_prop_meshes(objects) -> tuple:
     for collection in selected_collections:
         static_meshes, ucx_meshes = filter_meshes(collection)
         rename_meshes(static_meshes, collection.name)
+        for ucx_mesh in ucx_meshes:
+            Object.mark_hst_type(ucx_mesh, "UCX")
+        for static_mesh in static_meshes:
+            Object.mark_hst_type(static_mesh, "STATICMESH")
+        Collection.mark_hst_type(collection, "PROP")
         if len(ucx_meshes) > 0:
             if len(static_meshes) > 0:
                 ucx_name = UCX_PREFIX + static_meshes[0].name
@@ -1491,14 +1497,16 @@ class Object:
         world_origin_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
         obj.matrix_world = world_origin_matrix
 
-    def add_custom_property(obj, prop_name, prop_value):
+    def add_custom_property(obj:bpy.types.Object, prop_name:str, prop_value:str):
         obj[prop_name] = prop_value
 
     def read_custom_property(obj, prop_name):
         return obj.get(prop_name)
 
-    def mark_hst_type(object, type):
-        """Mark object type as custom property, type: STATICMESH, DECAL, BAKEHIGH, SKELETALMESH, SKELETAL, UCX, SOCKET, PLACEHOLDER"""
+    def mark_hst_type(object:bpy.types.Object, type:str):
+        r"""Mark object type as custom property, types: 
+            STATICMESH, DECAL, HIGH, SKELETALMESH, SKELETAL, UCX, SOCKET, 
+            PLACEHOLDER, PROXY"""
         type = type.upper()
         match type:
             case "STATICMESH":
@@ -1507,7 +1515,11 @@ class Object:
                 )
             case "DECAL":
                 Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_DECAL)
-            case "BAKEHIGH":
+            case "LOW":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_BAKE_LOW
+                )
+            case "HIGH":
                 Object.add_custom_property(
                     object, Const.CUSTOM_TYPE, Const.TYPE_BAKE_HIGH
                 )
@@ -1519,6 +1531,14 @@ class Object:
                 Object.add_custom_property(
                     object, Const.CUSTOM_TYPE, Const.TYPE_SKELETAL
                 )
+            case "SPLITSKEL":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_SPLITSKEL
+                )
+            case "SKM":
+                Object.add_custom_property(
+                    object, Const.CUSTOM_TYPE, Const.TYPE_SKM
+                )
             case "UCX":
                 Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_UCX)
             case "SOCKET":
@@ -1527,6 +1547,8 @@ class Object:
                 Object.add_custom_property(
                     object, Const.CUSTOM_TYPE, Const.TYPE_PLACEHOLDER
                 )
+            case "PROXY":
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_PROXY)
 
     def filter_hst_type(objects, type, mode="INCLUDE"):
         """Filter objects by type"""
@@ -1705,8 +1727,9 @@ class Armature:
 
 
 class Collection:
-    def mark_hst_type(collection, type="PROP"):
-        """Mark collection type"""
+    def mark_hst_type(collection:bpy.types.Collection, type:str="PROP"):
+        r"""Mark collection type,types:
+            PROP, DECAL, BAKE_LOW, BAKE_HIGH, SKM, RIG, PROXY"""
         type = type.upper()
         match type:
             case "PROP":
@@ -1719,12 +1742,12 @@ class Collection:
                 Object.add_custom_property(
                     collection, Const.CUSTOM_TYPE, Const.TYPE_DECAL_COLLECTION
                 )
-            case "BAKE_LOW":
+            case "LOW":
                 collection.color_tag = "COLOR_" + LOW_COLLECTION_COLOR
                 Object.add_custom_property(
                     collection, Const.CUSTOM_TYPE, Const.TYPE_BAKE_LOW_COLLECTION
                 )
-            case "BAKE_HIGH":
+            case "HIGH":
                 collection.color_tag = "COLOR_" + HIGH_COLLECTION_COLOR
                 Object.add_custom_property(
                     collection, Const.CUSTOM_TYPE, Const.TYPE_BAKE_HIGH_COLLECTION
@@ -1745,7 +1768,7 @@ class Collection:
                     collection, Const.CUSTOM_TYPE, Const.TYPE_PROXY_COLLECTION
                 )
 
-    def create(name: str, type="PROP") -> bpy.types.Collection:
+    def create(name: str, type:str="PROP") -> bpy.types.Collection:
         """创建collection,type为PROP,DECAL,BAKE_LOW,BAKE_HIGH,SKM,RIG,PROXY"""
         type = type.upper()
         collection = None
@@ -1764,7 +1787,12 @@ class Collection:
 
         return collection
 
-    def sort_hst_types(collections):
+    def get_hst_type(collection:bpy.types.Collection) -> str:
+        """获取collection类型"""
+        collection_type = Object.read_custom_property(collection, Const.CUSTOM_TYPE)
+        return collection_type
+
+    def sort_hst_types(collections:list):
         """筛选collection类型，返回筛选后的collection列表，包括bake,decal,prop,sm,skm,rig"""
         bake_collections = []
         decal_collections = []

@@ -39,15 +39,14 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        
+        ###=====================================================###
+
         rename_prop_meshes(selected_objects)
-        transfer_collection = create_collection(
-            TRANSFER_COLLECTION, PROXY_COLLECTION_COLOR
-        )
+        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:
-            apply_transfrom(mesh)
+            Transform.apply(mesh)
             remove_modifier(mesh, WEIGHTEDNORMAL_MODIFIER)
             transfer_object_list.append(
                 make_transfer_proxy_mesh(
@@ -64,6 +63,9 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             mesh.select_set(True)
 
         set_visibility(transfer_collection, False)
+        
+        ###=====================================================###
+
         self.report(
             {"INFO"},
             "Added Bevel and Transfer Normal to "
@@ -210,12 +212,10 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
-        proxy_collection = create_collection(
-            TRANSFER_PROXY_COLLECTION, PROXY_COLLECTION_COLOR
-        )
+        proxy_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
-            apply_transfrom(mesh, location=True, rotation=True, scale=True)
+            Transform.apply(mesh, location=True, rotation=True, scale=True)
             add_vertexcolor_attribute(mesh, WEARMASK_ATTR)  # 添加顶点色
             remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
             remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
@@ -292,12 +292,10 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         # prepare wearmask
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
-        proxy_collection = create_collection(
-            TRANSFER_PROXY_COLLECTION, PROXY_COLLECTION_COLOR
-        )
+        proxy_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
-            apply_transfrom(mesh, location=True, rotation=True, scale=True)
+            Transform.apply(mesh, location=True, rotation=True, scale=True)
             add_vertexcolor_attribute(mesh, WEARMASK_ATTR)  # 添加顶点色
             remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
             remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)

@@ -37,7 +37,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             sm_collections,
             skm_collections,
             rig_collections,
-        ) = filter_collection_types(visible_collections)
+        ) = Collection.sort_hst_types(visible_collections)
         export_collections = (
             bake_collections + decal_collections + prop_collections + sm_collections
         )
