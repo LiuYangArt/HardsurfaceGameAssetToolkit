@@ -83,7 +83,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 new_name = collection.name.removeprefix("SK_")
                 new_name = "SK_" + new_name
                 file_path = export_path + new_name + ".fbx"
-                FBXExport.skeletal(collection, file_path)
+                use_armature_as_root = parameters.use_armature_as_root
+                FBXExport.skeletal(collection, file_path, use_armature_as_root)
 
         restore_select_mode(store_mode)
 

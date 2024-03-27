@@ -168,6 +168,8 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         for object in selected_objects:
             object.select_set(False)
         for mesh in selected_meshes:
+            apply_modifiers(mesh)
+            Transform.apply(mesh, location=True, rotation=True, scale=True)
             merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
 
             check_mesh = check_open_bondary(mesh)
@@ -281,7 +283,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
 class HST_SwatchMatSetupOperator(bpy.types.Operator):
     bl_idname = "hst.swatchmatsetup"
     bl_label = "HST Swatch Edit Mode"
-    bl_description = "设置Swatch材质的编辑环境，如果没有Swatchc材质会自动导入"
+    bl_description = "设置Swatch材质的编辑环境，如果没有Swatch材质会自动导入"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -338,6 +340,78 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
         # setup uv editor
         uv_space.image = swatch_texture
         uv_space.display_channels = "COLOR"
+        uv_editor_fit_view(uv_editor)
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+
+        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+        viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
+
+        restore_select_mode(store_mode)
+
+        self.report({"INFO"}, "Swatch material initialized")
+
+        return {"FINISHED"}
+    
+class HST_PatternMatSetup(bpy.types.Operator):
+    bl_idname = "hst.patternmatsetup"
+    bl_label = "PatternUV"
+    bl_description = "设置Pattern材质的编辑环境，如果没有Pattern材质会自动导入"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+
+        store_mode = prep_select_mode()
+        for object in selected_objects:
+            object.select_set(False)
+
+        uv_editor = check_screen_area("IMAGE_EDITOR")
+        if uv_editor is None:
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
+            uv_editor.ui_type = "UV"
+        for space in uv_editor.spaces:
+            if space.type == "IMAGE_EDITOR":
+                uv_space = space
+
+        # scene_swatch_mat = get_scene_material(SWATCH_MATERIAL)
+        # if scene_swatch_mat is None:  # import material if not exist
+        #     scene_swatch_mat = import_material(PRESET_FILE_PATH, SWATCH_MATERIAL)
+
+        for mesh in selected_meshes:
+            mesh.select_set(True)
+            pattern_uv = check_uv_layer(mesh, Const.UV_PATTERN)
+            if pattern_uv is None:  # add uv layer if not exist
+                pattern_uv = add_uv_layers(mesh, uv_name=Const.UV_PATTERN)
+                # scale_uv(
+                #     mesh, uv_layer=pattern_uv, scale=(0.001, 0.001), pivot=(0.5, 0.5)
+                # )
+            pattern_uv.active = True
+
+            # pattern_mat = get_object_material(mesh, SWATCH_MATERIAL)
+            # mat_slot = get_object_material_slots(mesh)
+            # if pattern_mat is None:
+            #     if len(mat_slot) == 0:  # add material if not exist
+            #         mesh.data.materials.append(scene_swatch_mat)
+            #     elif len(mat_slot) > 0:
+            #         mat_slot[0].material = scene_swatch_mat
+
+        # for subnode in scene_swatch_mat.node_tree.nodes:  # find swatch texture
+        #     if subnode.type == "GROUP":
+        #         for nodegroup in subnode.node_tree.nodes:
+        #             if nodegroup.type == "TEX_IMAGE":
+        #                 swatch_texture = nodegroup.image
+        #                 break
+
+        # setup uv editor
+        # uv_space.image = swatch_texture
+        # uv_space.display_channels = "COLOR"
         uv_editor_fit_view(uv_editor)
         bpy.context.scene.tool_settings.use_uv_select_sync = True
 
@@ -656,7 +730,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         prop_collections = filter_collections_selection(selected_objects)
-        color = "COLOR_" + PROP_COLLECTION_COLOR
+        # color = "COLOR_" + PROP_COLLECTION_COLOR
         if len(prop_collections) == 0:
             self.report(
                 {"ERROR"},
@@ -670,7 +744,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             new_name = prop_collection_name
 
             prop_collection.name = new_name
-            prop_collection.color_tag = color
+            Collection.mark_hst_type(prop_collection, "PROP")
         rename_prop_meshes(selected_objects)
 
         self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")
@@ -778,13 +852,4 @@ class SetUECollisionOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# class ImportFBXOperator(bpy.types.Operator):
-#     bl_idname = "hst.importcadfbx"
-#     bl_label = "ImportFBX"
-#     bl_description = "导入CAD模型转换而成的fbx文件"
 
-#     def execute(self, context):
-#         bpy.ops.import_scene.fbx()
-#         # import_fbx()
-#         # self.report({"INFO"}, "FBX imported")
-#         return {"FINISHED"}

@@ -179,6 +179,8 @@ def extract_child_mesh(armature) -> list:
     """extract child mesh from armature, apply transform and return list of child meshes"""
     child_meshes = []
     armature.select_set(False)
+    arm_collection=get_collection(armature)
+    name=arm_collection.name
     for child in armature.children:
         # Check if the child is a mesh
         if child.type == "MESH":
@@ -188,7 +190,7 @@ def extract_child_mesh(armature) -> list:
             child.matrix_world = armature.matrix_world
             child.select_set(True)
             child_meshes.append(child)
-        rename_meshes(child_meshes, Const.SKELETAL_MESH_PREFIX + armature.name)
+        rename_meshes(child_meshes, Const.SKELETAL_MESH_PREFIX + name)
     return child_meshes
 
 
@@ -279,11 +281,12 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
     #     return {"FINISHED"}
 
     def execute(self, context):
+        bpy.ops.object.mode_set(mode="OBJECT")
         selected_objects = bpy.context.selected_objects
         selected_armatures = [obj for obj in selected_objects if obj.type == "ARMATURE"]
         target_meshes = []
         bpy.ops.object.select_all(action="DESELECT")
-        bpy.ops.object.mode_set(mode="OBJECT")
+        
         for obj in selected_objects:
 
             if obj.type == "EMPTY":
@@ -329,6 +332,15 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                         + "Armature已经分离，请不要重复操作",
                     )
                     return {"CANCELLED"}
+                current_collection = get_collection(armature)
+                
+                if current_collection is None:
+                    self.report(
+                        {"ERROR"},
+                        "Armature not in collection, please put armature in collection and retry\n"
+                        + "Armature不在Collection中，请把Armature放在Collection中后重试",
+                    )
+                    return {"CANCELLED"}
                 if armature.parent is not None:
                     empty_obj = armature.parent
                     Transform.apply(armature.parent)
@@ -338,13 +350,14 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
                 Transform.ops_apply(armature)
                 Armature.set_display(armature)
                 Object.mark_hst_type(armature, "SPLITSKEL")
-                sk_name=armature.name
-                current_collection = armature.users_collection[0]
+                # sk_name=armature.name
+                sk_name=current_collection.name
                 rig_collection = Collection.create(
                     name=sk_name, type="RIG"
                 )
-                rig_collection.objects.link(armature)
-                current_collection.objects.unlink(armature)
+                # rig_collection.objects.link(armature)
+                # current_collection.objects.unlink(armature)
+                
                 meshes = extract_child_mesh(armature)
                 for mesh in meshes:
                     if mesh not in target_meshes:
@@ -383,7 +396,8 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
             split_decal_mat(mesh)
 
         for mesh in target_meshes:
-            bpy.data.meshes.remove(mesh.data)
+            set_visibility(mesh, False)
+            # bpy.data.meshes.remove(mesh.data)
 
         bpy.ops.object.select_all(action="DESELECT")
 
@@ -404,7 +418,6 @@ class FillWeightOperator(bpy.types.Operator):
 
         for mesh in selected_meshes:
             active_group = mesh.vertex_groups.active
-
             active_group.add(range(len(mesh.data.vertices)), 1.0, "REPLACE")
             print(f"active_group: {active_group.name} filled")
         self.report({"INFO"}, "Fill Weight Complete")

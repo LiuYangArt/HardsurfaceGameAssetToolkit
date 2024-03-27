@@ -126,3 +126,5 @@ class Const:
     TYPE_BAKE_HIGH = "BakeHigh"
     TYPE_PLACEHOLDER = "Placeholder"
     TYPE_SKM = "SKM"
+
+    UV_PATTERN = "UV1_Pattern"

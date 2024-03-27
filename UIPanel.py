@@ -85,6 +85,12 @@ class UIParams(PropertyGroup):
         # subtype="DIR_PATH",
     )
 
+    use_armature_as_root: BoolProperty(
+        name="Use Armature as RootBone",
+        description="导出骨骼作为root bone\n使用blender的fbx导入时勾选\n使用betterfbx导入的不勾选",
+        default=True,
+    )
+
 
 class HST_PT_BAKETOOL(bpy.types.Panel):
     bl_idname = "HST_PT_BAKETOOL"
@@ -171,6 +177,7 @@ class HST_PT_HST(bpy.types.Panel):
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
+        box_column.operator("hst.patternmatsetup", icon="LIGHTPROBE_GRID")
         box_column.operator(
             "hst.setbaseuvtexeldensity",
             icon="TEXTURE_DATA",
@@ -261,6 +268,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
             "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
         )
         box_column.prop(parameters, "export_path", text="Path")
+        box_column.prop(parameters, "use_armature_as_root")
         # box_column.separator()
         ue_io_row = box_column.row(align=True)  
         ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")

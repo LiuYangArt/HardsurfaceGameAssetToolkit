@@ -212,7 +212,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
 
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
-        proxy_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
+        proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
             Transform.apply(mesh, location=True, rotation=True, scale=True)
@@ -292,7 +292,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         # prepare wearmask
         import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
         proxy_object_list = []
-        proxy_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
+        proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
         set_visibility(proxy_collection, True)
         for mesh in selected_meshes:
             Transform.apply(mesh, location=True, rotation=True, scale=True)
@@ -314,7 +314,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
 
         bpy.context.scene.render.engine = "CYCLES"
-        transfer_proxy_collection = bpy.data.collections[TRANSFER_PROXY_COLLECTION]
+        transfer_proxy_collection = proxy_collection
         set_visibility(transfer_proxy_collection, True)
 
         for object in selected_objects:

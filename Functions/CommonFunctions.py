@@ -1063,7 +1063,7 @@ class FBXExport:
             for obj in obj_transform:
                 obj.matrix_world = obj_transform[obj]
 
-    def skeletal(target, file_path: str):
+    def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 fbx"""
         bpy.context.scene.unit_settings.system = "METRIC"
         bpy.context.scene.unit_settings.scale_length = 0.01
@@ -1081,9 +1081,13 @@ class FBXExport:
                     # object.hide_set(False)
                 if object.type == "ARMATURE":
                     armature_names[object] = object.name
-                    object.name = (
-                        "Armature"  # fix armature export as redundant root bone
-                    )
+                    if armature_as_root is False:
+                        print("Remove Armature as root")
+                        object.name = (
+                            "Armature"  # fix armature export as redundant root bone
+                        )
+                    else:
+                        print("Export Armature as root")
                     Armature.ops_scale_bones(object, (100, 100, 100))
                 if object.type == "MESH" or object.type == "ARMATURE":
                     export_objects.append(object)
@@ -1137,7 +1141,7 @@ class FBXExport:
             armature_nodetype="NULL",
             bake_anim=False,
         )
-        print(f"obj_transform: {obj_transform}")
+        # print(f"obj_transform: {obj_transform}")
 
         for object in hide_objects:
             object.hide_set(True)
@@ -1334,7 +1338,7 @@ def rename_prop_meshes(objects) -> tuple:
             Object.mark_hst_type(ucx_mesh, "UCX")
         for static_mesh in static_meshes:
             Object.mark_hst_type(static_mesh, "STATICMESH")
-        Collection.mark_hst_type(collection, "PROP")
+
         if len(ucx_meshes) > 0:
             if len(static_meshes) > 0:
                 ucx_name = UCX_PREFIX + static_meshes[0].name
