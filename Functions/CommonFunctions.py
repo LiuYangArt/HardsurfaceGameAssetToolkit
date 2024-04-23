@@ -1842,3 +1842,38 @@ class Collection:
             skm_collections,
             rig_collections,
         )
+
+class VertexColor:
+
+    # def set_active(mesh,color_attribute):
+    #     if color_attribute in mesh.data.color_attributes:
+            
+
+    def add_curvature(mesh):
+        """为选中的mesh添加curvature vertex color层"""
+        visibility=mesh.visible_get()
+        if visibility is False:
+            mesh.hide_viewport = False
+        bpy.context.view_layer.objects.active = mesh
+        current_mode = bpy.context.object.mode
+        CUVRATURE="Curvature"
+
+        if CUVRATURE in mesh.data.color_attributes:
+            color_attribute = mesh.data.color_attributes.get(CUVRATURE)
+            mesh.data.color_attributes.remove(color_attribute)
+
+        vertex_color_layer = mesh.data.color_attributes.new(
+            name=CUVRATURE,
+            type="BYTE_COLOR",
+            domain="CORNER",
+            )
+
+        mesh.data.attributes.active_color = vertex_color_layer
+
+        if current_mode != "VERTEX_PAINT":
+            bpy.ops.object.mode_set(mode="VERTEX_PAINT")
+
+        bpy.ops.paint.vertex_color_dirt()
+        bpy.ops.object.mode_set(mode=current_mode)
+        if visibility is False:
+            mesh.hide_viewport = True

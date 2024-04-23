@@ -3,7 +3,6 @@ import bpy
 from .Const import *
 from .Functions.CommonFunctions import *
 
-
 def set_bake_collection(collection, type="LOW"):
     """Set bake collection name and color tag,rename meshes in collection,types:LOW,HIGH"""
     result = False

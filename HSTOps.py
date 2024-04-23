@@ -170,6 +170,40 @@ class HST_BatchBevel(bpy.types.Operator):
 #         )
 #         return {"FINISHED"}
 
+def prep_wearmask_objects(selected_objects):
+    """ process meshes for wearmask baking """
+
+    selected_meshes = filter_type(selected_objects, "MESH")
+    rename_prop_meshes(selected_objects)
+
+    import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
+    proxy_object_list = []
+    proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
+    set_visibility(proxy_collection, True)
+    for mesh in selected_meshes:
+        Transform.apply(mesh, location=True, rotation=True, scale=True)
+        add_vertexcolor_attribute(mesh, WEARMASK_ATTR)
+        # add_vertexcolor_attribute(mesh, CURVATURE_ATTR)
+        set_active_color_attribute(mesh, WEARMASK_ATTR)
+        remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
+        remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
+
+        proxy_mesh = make_transfer_proxy_mesh(
+            mesh, TRANSFERPROXY_PREFIX, proxy_collection
+        )
+        proxy_object_list.append(proxy_mesh)
+        add_face_weight_attribute(mesh, value=1)
+        add_color_transfer_modifier(mesh)
+        add_gn_wearmask_modifier(mesh)
+        mesh.hide_render = True
+
+    for proxy_object in proxy_object_list:  # 处理proxy模型
+        cleanup_color_attributes(proxy_object)
+        add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
+        # VertexColor.add_curvature(proxy_object)
+        set_active_color_attribute(proxy_object, WEARMASK_ATTR)
+    return proxy_collection
+
 
 class HST_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "hst.hst_addtransvertcolorproxy"
@@ -208,30 +242,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        rename_prop_meshes(selected_objects)
-
-        import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
-        proxy_object_list = []
-        proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
-        set_visibility(proxy_collection, True)
-        for mesh in selected_meshes:
-            Transform.apply(mesh, location=True, rotation=True, scale=True)
-            add_vertexcolor_attribute(mesh, WEARMASK_ATTR)  # 添加顶点色
-            remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
-            remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
-
-            proxy_mesh = make_transfer_proxy_mesh(
-                mesh, TRANSFERPROXY_PREFIX, proxy_collection
-            )
-            proxy_object_list.append(proxy_mesh)
-            add_face_weight_attribute(mesh, value=1)
-            add_color_transfer_modifier(mesh)
-            add_gn_wearmask_modifier(mesh)
-            mesh.hide_render = True
-
-        for proxy_object in proxy_object_list:  # 处理proxy模型
-            cleanup_color_attributes(proxy_object)
-            add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
+        proxy_collection=prep_wearmask_objects(selected_objects)
 
         set_visibility(proxy_collection, False)
         for mesh in selected_meshes:
@@ -286,32 +297,9 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
+        
+        proxy_collection=prep_wearmask_objects(selected_objects)
 
-        rename_prop_meshes(selected_objects)
-
-        # prepare wearmask
-        import_node_group(NODE_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
-        proxy_object_list = []
-        proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
-        set_visibility(proxy_collection, True)
-        for mesh in selected_meshes:
-            Transform.apply(mesh, location=True, rotation=True, scale=True)
-            add_vertexcolor_attribute(mesh, WEARMASK_ATTR)  # 添加顶点色
-            remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
-            remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
-
-            proxy_mesh = make_transfer_proxy_mesh(
-                mesh, TRANSFERPROXY_PREFIX, proxy_collection
-            )
-            proxy_object_list.append(proxy_mesh)
-            add_face_weight_attribute(mesh, value=1)
-            add_color_transfer_modifier(mesh)
-            add_gn_wearmask_modifier(mesh)
-            mesh.hide_render = True
-
-        for proxy_object in proxy_object_list:  # 处理proxy模型
-            cleanup_color_attributes(proxy_object)
-            add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
 
         bpy.context.scene.render.engine = "CYCLES"
         transfer_proxy_collection = proxy_collection
@@ -403,3 +391,15 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         )
 
         return {"FINISHED"}
+    
+class CurvatureVertexcolorOperator(bpy.types.Operator):
+    bl_idname = "hst.curvature_vertexcolor"
+    bl_label = "Add Curvature VertexColor"
+    bl_description = "Add Curvature VertexColor"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        for mesh in selected_meshes:
+            VertexColor.add_curvature(mesh)
+        return {'FINISHED'}

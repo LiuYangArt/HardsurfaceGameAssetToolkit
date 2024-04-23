@@ -18,6 +18,7 @@ UCX_PREFIX = "UCX_"
 UV_BASE = "UV0_Base"
 UV_SWATCH = "UV1_Swatch"
 WEARMASK_ATTR = "WearMask"
+CURVATURE_ATTR="Curvature"
 TRANSFER_COLLECTION = "_TransferNormal"
 TRANSFER_MESH_PREFIX = "Raw_"
 TRANSFER_PROXY_COLLECTION = "_TransferProxy"
@@ -46,7 +47,7 @@ ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
 USER = Path(resource_path("USER"))
 ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
-NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
+# NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
 PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"

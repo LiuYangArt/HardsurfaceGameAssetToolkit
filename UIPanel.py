@@ -164,6 +164,10 @@ class HST_PT_HST(bpy.types.Panel):
             text="Bake Vertex Color AO",
             icon="RESTRICT_RENDER_OFF",
         )
+        # box_column.operator(
+        #     "hst.curvature_vertexcolor",
+        #     icon="RESTRICT_RENDER_OFF",
+        # )
 
         box_column.separator()
         box_column.operator("hst.cleanhstobject", text="Clean HST Object", icon="TRASH")
@@ -177,7 +181,7 @@ class HST_PT_HST(bpy.types.Panel):
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
-        box_column.operator("hst.patternmatsetup", icon="LIGHTPROBE_GRID")
+        box_column.operator("hst.patternmatsetup", icon="LIGHTPROBE_VOLUME")
         box_column.operator(
             "hst.setbaseuvtexeldensity",
             icon="TEXTURE_DATA",

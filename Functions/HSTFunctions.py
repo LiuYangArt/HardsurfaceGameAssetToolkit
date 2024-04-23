@@ -1,5 +1,6 @@
 import bpy
 from ..Const import *
+from .CommonFunctions import *
 
 
 def add_bevel_modifier(mesh, width=0.05, segments=1):
@@ -148,3 +149,6 @@ def add_face_weight_attribute(mesh, value=1):
             "value", [value] * len(mesh.data.polygons)
         )
         mesh.data.update()
+
+
+
