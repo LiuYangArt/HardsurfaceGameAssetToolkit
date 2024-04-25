@@ -708,6 +708,7 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             new_name = decal_collection_name + DECAL_SUFFIX
             decal_collection.name = new_name
             decal_collection.color_tag = color
+            decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
             for mesh in static_meshes:
                 mats=get_materials(mesh)
@@ -745,6 +746,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
 
             prop_collection.name = new_name
             Collection.mark_hst_type(prop_collection, "PROP")
+            prop_collection.hide_render = True
         rename_prop_meshes(selected_objects)
 
         self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")

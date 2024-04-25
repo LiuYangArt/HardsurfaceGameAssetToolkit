@@ -7,7 +7,7 @@ def add_bevel_modifier(mesh, width=0.05, segments=1):
     """添加Bevel Modifier"""
 
     check_sharp = False
-    bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
+    # bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
 
     if BEVEL_MODIFIER not in mesh.modifiers:  # 如果没有bevel修改器
 
