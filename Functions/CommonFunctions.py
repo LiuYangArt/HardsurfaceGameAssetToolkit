@@ -1606,6 +1606,13 @@ class Object:
                 sorted_objects[object_type] = []
             sorted_objects[object_type].append(object)
         return sorted_objects
+    
+    def check_empty_mesh(object):
+        if object.type == "MESH":
+            if len(object.data.vertices) == 0:
+                return True
+            else:
+                return False
 
 
 class Transform:

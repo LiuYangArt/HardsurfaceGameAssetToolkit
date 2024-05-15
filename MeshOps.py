@@ -14,6 +14,7 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
+        active_object = bpy.context.active_object
         if len(selected_meshes) == 0:
             self.report(
                 {"ERROR"},
@@ -24,13 +25,18 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
 
         set_default_scene_units()
 
-        store_mode = prep_select_mode()
-
         collections = []
         
         for mesh in selected_meshes:
             if mesh.users_collection[0] not in collections:
                 collections.append(mesh.users_collection[0])
+            if Object.check_empty_mesh(mesh) is True:
+                bpy.data.objects.remove(mesh)
+                selected_meshes.remove(mesh)
+        if active_object not in selected_meshes:
+            bpy.context.view_layer.objects.active = selected_meshes[0]
+
+        store_mode = prep_select_mode()
         if len(collections) > 0:
             for collection in collections:
                 collection_type=Collection.get_hst_type(collection)
@@ -314,6 +320,11 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
 
         for mesh in selected_meshes:
             mesh.select_set(True)
+            pattern_uv = check_uv_layer(mesh, Const.UV_PATTERN)
+            
+            if pattern_uv is not None:
+                pattern_uv.name = UV_SWATCH
+
             swatch_uv = check_uv_layer(mesh, UV_SWATCH)
             if swatch_uv is None:  # add uv layer if not exist
                 swatch_uv = add_uv_layers(mesh, uv_name=UV_SWATCH)
@@ -331,7 +342,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
                     mat_slot[0].material = scene_swatch_mat
 
         for subnode in scene_swatch_mat.node_tree.nodes:  # find swatch texture
-            if subnode.type == "GROUP":
+            if subnode.type == "GROUP" and subnode.label == "BaseMat_Swatch":
                 for nodegroup in subnode.node_tree.nodes:
                     if nodegroup.type == "TEX_IMAGE":
                         swatch_texture = nodegroup.image
@@ -380,13 +391,20 @@ class HST_PatternMatSetup(bpy.types.Operator):
             if space.type == "IMAGE_EDITOR":
                 uv_space = space
 
-        # scene_swatch_mat = get_scene_material(SWATCH_MATERIAL)
-        # if scene_swatch_mat is None:  # import material if not exist
-        #     scene_swatch_mat = import_material(PRESET_FILE_PATH, SWATCH_MATERIAL)
+        scene_pattern_mat = get_scene_material(PATTERN_MATERIAL)
+        if scene_pattern_mat is None:  # import material if not exist
+            scene_pattern_mat = import_material(PRESET_FILE_PATH, PATTERN_MATERIAL)
 
         for mesh in selected_meshes:
             mesh.select_set(True)
+            swatch_uv = check_uv_layer(mesh, UV_SWATCH)
+            
+            if swatch_uv is not None:
+                swatch_uv.name = Const.UV_PATTERN
+
             pattern_uv = check_uv_layer(mesh, Const.UV_PATTERN)
+
+            
             if pattern_uv is None:  # add uv layer if not exist
                 pattern_uv = add_uv_layers(mesh, uv_name=Const.UV_PATTERN)
                 # scale_uv(
@@ -394,24 +412,24 @@ class HST_PatternMatSetup(bpy.types.Operator):
                 # )
             pattern_uv.active = True
 
-            # pattern_mat = get_object_material(mesh, SWATCH_MATERIAL)
-            # mat_slot = get_object_material_slots(mesh)
-            # if pattern_mat is None:
-            #     if len(mat_slot) == 0:  # add material if not exist
-            #         mesh.data.materials.append(scene_swatch_mat)
-            #     elif len(mat_slot) > 0:
-            #         mat_slot[0].material = scene_swatch_mat
+            pattern_mat = get_object_material(mesh, PATTERN_MATERIAL)
+            mat_slot = get_object_material_slots(mesh)
+            if pattern_mat is None:
+                if len(mat_slot) == 0:  # add material if not exist
+                    mesh.data.materials.append(scene_pattern_mat)
+                elif len(mat_slot) > 0:
+                    mat_slot[0].material = scene_pattern_mat
 
-        # for subnode in scene_swatch_mat.node_tree.nodes:  # find swatch texture
-        #     if subnode.type == "GROUP":
-        #         for nodegroup in subnode.node_tree.nodes:
-        #             if nodegroup.type == "TEX_IMAGE":
-        #                 swatch_texture = nodegroup.image
-        #                 break
+        # for subnode in scene_pattern_mat.node_tree.nodes:  # find swatch texture
+        #     if subnode.type == "TEX_IMAGE":
+        #         pattern_texture = subnode.image
+
+        #         break
 
         # setup uv editor
-        # uv_space.image = swatch_texture
+        uv_space.image = None
         # uv_space.display_channels = "COLOR"
+
         uv_editor_fit_view(uv_editor)
         bpy.context.scene.tool_settings.use_uv_select_sync = True
 

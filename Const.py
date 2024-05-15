@@ -41,6 +41,7 @@ COLOR_GEOMETRYNODE_MODIFIER = MODIFIER_PREFIX + "GNWearMask"
 # material
 MATERIAL_PREFIX = "MI_"
 SWATCH_MATERIAL = MATERIAL_PREFIX + "HSPropSwatch"
+PATTERN_MATERIAL= MATERIAL_PREFIX + "TilePattern"
 
 # import asset
 ADDON_DIR = "HardsurfaceGameAssetToolkit"

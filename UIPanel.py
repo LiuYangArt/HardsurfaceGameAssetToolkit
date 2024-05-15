@@ -252,6 +252,9 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box_column.operator("hst.makeassetpreview", icon="RENDERLAYERS")
         box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
+        box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
+        box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
+        
 
 class HST_PT_EXPORT(bpy.types.Panel):
     bl_idname = "HST_PT_Export"
