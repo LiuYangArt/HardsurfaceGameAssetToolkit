@@ -206,6 +206,7 @@ class HST_PT_HST(bpy.types.Panel):
         mark_type_row.operator(
             "hst.markdecalcollection", text="Set Decal", icon="OUTLINER_COLLECTION"
         )
+        box_column.operator("hst.make_decal_collection", icon="COLLECTION_NEW")
         box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)
@@ -254,6 +255,10 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
         box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
+        box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
+        box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
+        
+        
         
 
 class HST_PT_EXPORT(bpy.types.Panel):

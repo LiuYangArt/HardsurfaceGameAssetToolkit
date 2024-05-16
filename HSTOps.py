@@ -456,3 +456,113 @@ class HSTRemoveEmptyMesh(bpy.types.Operator):
                 bpy.data.objects.remove(mesh)
         self.report({"INFO"}, f"Removed {empty_mesh_count} empty mesh objects")
         return {'FINISHED'}
+    
+class HSTDecalColName(bpy.types.Operator):
+    bl_idname = "hst.make_decal_collection_name"
+    bl_label = "Decal Collection Name"
+    bl_description = ""
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        if len(selected_objects)==0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry | \n"
+                + "没有选中物体，请选中物体后重试",
+            )
+        collection = get_collection(selected_objects[0])
+        if collection is None:
+            self.report(
+                {"ERROR"},
+                "Not in Collection | \n"
+                + "所选物体不在Collection中",
+            )
+            return {"CANCELLED"}
+        if collection is not None:
+            if "_Decal" not in collection.name:
+                decal_collection_name = collection.name + "_Decal"
+                copy_to_clip(decal_collection_name)
+                self.report({"INFO"}, f"copy {decal_collection_name} to clipboard")
+            else:
+                self.report({"INFO"}, f"{collection.name} is already a decal collection")
+
+
+        return {'FINISHED'}
+    
+class HSTActiveCollection(bpy.types.Operator):
+    bl_idname = "hst.active_current_collection"
+    bl_label = "Active Collection"
+    bl_description = ""
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        if len(selected_objects)==0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry | \n"
+                + "没有选中物体，请选中物体后重试",
+            )
+        collection = get_collection(selected_objects[0])
+        if collection is None:
+            self.report(
+                {"ERROR"},
+                "Not in Collection | \n"
+                + "所选物体不在Collection中",
+            )
+            return {"CANCELLED"}
+        if collection is not None:
+            Collection.active(collection)
+
+        return {'FINISHED'}
+
+class MakeDecalCollection(bpy.types.Operator):
+    bl_idname = "hst.make_decal_collection"
+    bl_label = "Make Decal Collection"
+    bl_description = ""
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes)==0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+        collection = get_collection(selected_meshes[0])
+        if collection is None:
+            self.report(
+                {"ERROR"},
+                "Not in Collection | \n"
+                + "所选物体不在Collection中",
+            )
+            return {"CANCELLED"}
+        if collection is not None:
+
+            decal_meshes=Object.filter_hst_type(objects=selected_meshes, type="DECAL", mode="INCLUDE")
+            decal_collection_name=collection.name+"_Decal"
+            decal_collection = None
+            for collection in bpy.data.collections:
+                if collection.name == decal_collection_name:
+                    decal_collection= collection
+                    Collection.mark_hst_type(decal_collection, "DECAL")
+                    self.report({"INFO"}, f"{decal_collection_name} is already exist")
+                    break
+            if decal_collection is None:
+                decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
+                self.report({"INFO"}, f"{decal_collection_name} is created")
+            for object in selected_objects:
+                object.select_set(False)
+            if decal_meshes is not None:
+                for mesh in decal_meshes:
+                    decal_collection.objects.link(mesh)
+                    collection.objects.unlink(mesh)
+                    mesh.select_set(True)
+            Collection.active(decal_collection)
+
+
+        return {'FINISHED'}

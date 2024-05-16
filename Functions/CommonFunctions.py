@@ -1,6 +1,7 @@
 import bpy
 import bmesh
 import math
+import subprocess
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
 
@@ -1595,7 +1596,8 @@ class Object:
             for object in objects:
                 if object not in include_objects:
                     filtered_objects.append(object)
-
+        if len(filtered_objects)==0:
+            return None
         return filtered_objects
 
     def sort_types(objects):
@@ -1849,6 +1851,11 @@ class Collection:
             skm_collections,
             rig_collections,
         )
+    
+    def active(collection):
+        """ 激活collection """
+        layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
+        bpy.context.view_layer.active_layer_collection = layer_collection
 
 class VertexColor:
 
@@ -1884,3 +1891,8 @@ class VertexColor:
         bpy.ops.object.mode_set(mode=current_mode)
         if visibility is False:
             mesh.hide_viewport = True
+
+def copy_to_clip(txt:str):
+    """ copy text string to clipboard """
+    cmd='echo '+txt.strip()+'|clip'
+    return subprocess.check_call(cmd, shell=True)

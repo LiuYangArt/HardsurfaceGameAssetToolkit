@@ -308,7 +308,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -385,7 +385,7 @@ class HST_PatternMatSetup(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -464,7 +464,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
 
         uv_editor = check_screen_area("IMAGE_EDITOR")
         if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.4)
+            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
             uv_editor.ui_type = "UV"
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
@@ -731,7 +731,7 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             for mesh in static_meshes:
                 mats=get_materials(mesh)
                 for mat in mats:
-                    if mat.name.endswith(DECAL_SUFFIX):
+                    if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX):
                         Object.mark_hst_type(mesh, "DECAL")
                         break
 
