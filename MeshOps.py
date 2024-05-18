@@ -266,7 +266,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
 
         # add empty, set name to SOCKET_XXX and location to cursor location
         socket_name = SOCKET_PREFIX + text_capitalize(parameters.socket_name)
-        socket_object = bpy.data.objects.new(name="socket_", object_data=None)
+        socket_object = bpy.data.objects.new(name=SOCKET_PREFIX, object_data=None)
         rename_alt(socket_object, socket_name, num=2)
         socket_object.location = cursor.location
         socket_object.rotation_mode = "QUATERNION"
@@ -285,6 +285,77 @@ class AddSnapSocketOperator(bpy.types.Operator):
 
         return {"FINISHED"}
 
+class AddAssetOriginOperator(bpy.types.Operator):
+    bl_idname = "hst.add_asset_origin"
+    bl_label = "Add Asset Origin"
+    # bl_description = "添加用于UE Modular Snap System的Socket，\
+    #     在编辑模式下使用时，先选中用于Snap的面，会自动创建朝向正确的Socket\
+    #     有多个同名Socket时，编号需使用下划线分割，如SOCKET_SNAP_01，SOCKET_SNAP_02"
+
+    def execute(self, context):
+
+        cursor = bpy.context.scene.cursor
+        cursor_current_transform = cursor.matrix.copy()
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        active_object=bpy.context.active_object
+        # parameters = context.scene.hst_params
+
+        if active_object is None:
+
+            self.report(
+                {"ERROR"},
+                "No active object, please select mesh objects and retry\n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+
+        collection = active_object.users_collection[0]
+
+
+        existing_origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+        if existing_origin_objects is not None:
+            existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
+            self.report({"INFO"}, "Asset Origin already exists")
+            return {"CANCELLED"}
+
+        if bpy.context.mode == "EDIT_MESH":
+            self.report({"INFO"}, "In edit mode, create socket from selected faces")
+            rotation = get_selected_rotation_quat()
+            bpy.ops.view3d.snap_cursor_to_selected()
+            bpy.context.scene.cursor.rotation_mode = "QUATERNION"
+            bpy.context.scene.cursor.rotation_quaternion = rotation
+            bpy.ops.object.mode_set(mode="OBJECT")
+        else:
+
+            bpy.context.scene.cursor.matrix=Const.WORLD_ORIGIN_MATRIX
+            self.report({"INFO"}, "In object mode, create socket from selected objects")
+
+        # add empty, set name to SOCKET_XXX and location to cursor location
+        origin_name = ORIGIN_PREFIX + collection.name
+        origin_object = bpy.data.objects.new(name=ORIGIN_PREFIX, object_data=None)
+        # rename_alt(origin_object, origin_name, num=2)
+        origin_object.location = cursor.location
+        origin_object.rotation_mode = "QUATERNION"
+        origin_object.rotation_quaternion = cursor.rotation_quaternion
+        origin_object.empty_display_type = "PLAIN_AXES"
+        origin_object.empty_display_size = 0.4
+        origin_object.show_name = True
+        collection.objects.link(origin_object)
+        Object.mark_hst_type(origin_object, "ORIGIN")
+
+        bpy.context.scene.cursor.matrix = cursor_current_transform
+
+        for object in collection.all_objects:
+            if object.type == "MESH":
+                object.parent = origin_object
+                object.matrix_parent_inverse = origin_object.matrix_world.inverted()
+
+        for object in selected_objects:
+            object.select_set(False)
+        origin_object.select_set(True)
+
+        return {"FINISHED"}
 
 class HST_SwatchMatSetupOperator(bpy.types.Operator):
     bl_idname = "hst.swatchmatsetup"

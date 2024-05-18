@@ -195,6 +195,7 @@ class HST_PT_HST(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
+        box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
@@ -258,6 +259,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
         box.operator("hst.sort_collections", icon="SORTALPHA")
+        box.operator("hst.testfunc", icon="SORTALPHA")
         
         
         

@@ -104,32 +104,10 @@ class TestFuncOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        for obj in selected_objects:
-            print(f"obj: {obj.name} type: {obj.type}")
-            print(f"dir obj: {dir(obj)}")
-        for collection in bpy.data.collections:
-            print(f"collection: {collection.name} type: {collection.type}")
-
-            
-            c_type = Object.read_custom_property(collection, "HST_CollectionType")
-            if c_type:
-                print(f"Collection Type: {c_type}")
-            # collection["custom_prop"]="Hello!?"
-
-            # collection_type=collection.get['HST_CollectionType']
-            # if collection_type:
-            # print(f"Collection Type: {collection.get('HST_CollectionType')}")
-
-
-        #     print(f"obj: {obj.name} type: {obj.type}")
-        #     export_staticmesh_fbx(
-        #         obj, f"D:\OneDrive\Desktop\Export_Test\{obj.name}.fbx"
-        #     )
-        # for collection in bpy.data.collections:
-        #     print(f"collection: {collection.name} type: {collection.type}")
-        #     export_staticmesh_fbx(
-        #         collection, f"D:\OneDrive\Desktop\Export_Test\{collection.name}.fbx"
-        #     )
-        #     # print(f"dir collection: {dir(collection)}")
-
+        collection = get_collection(selected_objects[0])
+        print(f"collection: {collection.name}")
+        print(f"collection_children: {collection.children}")
+        print(f"collection_objects: {collection.objects}")
+        for obj in collection.objects:
+            print(f"c_obj: {obj.name}")
         return {"FINISHED"}

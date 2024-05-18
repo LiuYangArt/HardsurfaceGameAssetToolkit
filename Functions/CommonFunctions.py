@@ -1004,7 +1004,7 @@ class FBXExport:
         hidden_objects = []
         if target.type == "COLLECTION":
 
-            for object in target.all_objects:
+            for object in target.objects:
                 export_objects.append(object)
                 if object.hide_get() is True:
                     hidden_objects.append(object)
@@ -1019,13 +1019,18 @@ class FBXExport:
 
         obj_transform = {}
 
+        origin_object=Object.filter_hst_type(objects=target.all_objects,type="ORIGIN",mode="INCLUDE")
+
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
+            if origin_object:
+                if obj in origin_object:
+                    obj_transform[obj] = obj.matrix_world.copy()
+                    obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
 
             if reset_transform is True:
                 obj_transform[obj] = obj.matrix_world.copy()
-
                 obj.location = (0, 0, 0)
                 obj.rotation_euler = (0, 0, 0)
                 obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
@@ -1060,9 +1065,10 @@ class FBXExport:
         for object in hidden_objects:
             object.hide_set(True)
 
-        if reset_transform is True:
-            for obj in obj_transform:
-                obj.matrix_world = obj_transform[obj]
+
+        if reset_transform is True or origin_object is not None:
+           for obj in obj_transform:
+            obj.matrix_world = obj_transform[obj]
 
     def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 fbx"""
@@ -1554,6 +1560,8 @@ class Object:
                 )
             case "PROXY":
                 Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_PROXY)
+            case "ORIGIN":
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_ORIGIN)
 
     def filter_hst_type(objects, type, mode="INCLUDE"):
         """Filter objects by type"""
@@ -1588,6 +1596,9 @@ class Object:
                         include_objects.append(object)
                 case "PLACEHOLDER":
                     if object_type == Const.TYPE_PLACEHOLDER:
+                        include_objects.append(object)
+                case "ORIGIN":
+                    if object_type == Const.TYPE_ORIGIN:
                         include_objects.append(object)
 
         if mode == "INCLUDE":

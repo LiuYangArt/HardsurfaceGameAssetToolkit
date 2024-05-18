@@ -57,6 +57,7 @@ LOOKDEV_HDR = "HDR_LookDev_Mid"
 # socket
 SOCKET_PREFIX = "SOCKET_"
 SOCKET_SIZE = 0.2
+ORIGIN_PREFIX = "ORIGIN_"
 
 # texel density
 DEFAULT_TEX_DENSITY = 1024
@@ -128,5 +129,6 @@ class Const:
     TYPE_BAKE_HIGH = "BakeHigh"
     TYPE_PLACEHOLDER = "Placeholder"
     TYPE_SKM = "SKM"
+    TYPE_ORIGIN = "Asset_Origin"
 
     UV_PATTERN = "UV1_Pattern"
