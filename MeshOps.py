@@ -792,19 +792,42 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         bad_meshes = []
         store_mode = prep_select_mode()
         for mesh in selected_meshes:
-            for material_slot in mesh.material_slots:
-                mat = material_slot.material
-                if mat not in bad_materials:
+            bad_mat_index=[]
+            mesh_has_good_mat=False
+            for i in range(len(mesh.material_slots)):
+                mat = mesh.material_slots[i].material
+                if mat in bad_materials:
+                    bad_mat_index.append(i)
+                elif mat not in bad_materials:
+                    #check if mat is bad mat
                     mat_name_split = mat.name.split(".00")
                     if len(mat_name_split) > 1:
                         mat_name = mat_name_split[0]
                         mat_good = get_scene_material(mat_name)
                         if mat_good is not None:
-                            material_slot.material = mat_good
+                            bad_mat_index.append(i)
                         else:
                             mat.name = mat_name
-                        bad_materials.append(material_slot.material)
-                        bad_meshes.append(mesh)
+                        bad_materials.append(mat)
+
+
+
+            if len(bad_mat_index)>0:
+                bad_meshes.append(mesh)
+                for mat_slots in mesh.material_slots:
+                    mat=mat_slots.material
+                    if mat_good == mat:
+                        mesh_has_good_mat=True
+                        break
+            if mesh_has_good_mat:
+                for index in bad_mat_index:
+                    mesh.data.materials.pop(index = index)
+            else:
+                for index in bad_mat_index:
+                    mesh.material_slots[i].material = mat_good
+
+
+            
         restore_select_mode(store_mode)
         self.report(
             {"INFO"},
@@ -871,5 +894,14 @@ class SetUECollisionOperator(bpy.types.Operator):
 
         return {"FINISHED"}
 
+class HSTSortCollectionsOperator(bpy.types.Operator):
+    bl_idname = "hst.sort_collections"
+    bl_label = "Sort Collections"
+    bl_description = "按首字母对所有Collection进行排序"
+
+    def execute(self, context):
+        for scene in bpy.data.scenes:
+            Collection.sort_order(scene.collection, case_sensitive=False)
+        return {'FINISHED'}
 
 

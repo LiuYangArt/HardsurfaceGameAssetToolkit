@@ -1746,6 +1746,26 @@ class Armature:
 
 
 class Collection:
+    def sort_order(collection, case_sensitive = False):
+
+
+        if collection.children is None: return
+
+        children = sorted (
+            collection.children, 
+            key = lambda c: c.name if case_sensitive else c.name.lower()
+        )
+
+        for child in children:  
+            collection.children.unlink(child)
+            collection.children.link(child)
+            Collection.sort_order(child)
+
+
+
+        # for scene in bpy.data.scenes:
+        #     sort_order(scene.collection, case_sensitive=True)
+
     def mark_hst_type(collection:bpy.types.Collection, type:str="PROP"):
         r"""Mark collection type,types:
             PROP, DECAL, BAKE_LOW, BAKE_HIGH, SKM, RIG, PROXY"""

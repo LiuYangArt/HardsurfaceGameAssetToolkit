@@ -257,6 +257,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
         box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
+        box.operator("hst.sort_collections", icon="SORTALPHA")
         
         
         
