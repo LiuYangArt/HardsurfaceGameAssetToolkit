@@ -1668,6 +1668,13 @@ class Transform:
 
         return rotated_matrix
 
+    def apply_scale(object):
+        obj_matrix = object.matrix_local
+        location, rotation, scale = obj_matrix.decompose()
+        mat_scale = Matrix.LocRotScale(None, None, scale)
+        object.data.transform(mat_scale)
+        object.scale = 1, 1, 1
+
     def apply(object, location=True, rotation=True, scale=True):
         """应用变换"""
         # matrix_basis = object.matrix_basis.copy()

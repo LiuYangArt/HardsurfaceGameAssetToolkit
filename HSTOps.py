@@ -532,44 +532,54 @@ class MakeDecalCollection(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        collection = get_collection(selected_meshes[0])
-        if collection is None:
-            self.report(
-                {"ERROR"},
-                "Not in Collection | \n"
-                + "所选物体不在Collection中",
-            )
-            return {"CANCELLED"}
-        if collection is not None:
-            collection_type=Collection.get_hst_type(collection)
-            if collection_type == "DECAL":
-                self.report({"INFO"}, f"{collection.name} is already a decal collection")
-                return {'CANCELLED'}
-            decal_meshes=Object.filter_hst_type(objects=selected_meshes, type="DECAL", mode="INCLUDE")
-            decal_collection_name=collection.name+"_Decal"
-            decal_collection = None
+        target_collections=filter_collections_selection(selected_objects)
+        for collection in target_collections:
+            collection = get_collection(selected_meshes[0])
+            if collection is None:
+                self.report(
+                    {"ERROR"},
+                    "Not in Collection | \n"
+                    + "所选物体不在Collection中",
+                )
+                return {"CANCELLED"}
+            if collection is not None:
+                collection_type=Collection.get_hst_type(collection)
+                if collection_type == "DECAL":
+                    self.report({"INFO"}, f"{collection.name} is already a decal collection")
+                    return {'CANCELLED'}
+                decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
+                decal_collection_name=collection.name+"_Decal"
+                decal_collection = None
+                print(f"decal_collection_name: {decal_collection_name}")
 
-            for file_collection in bpy.data.collections:
-                if collection.name == decal_collection_name:
-                    decal_collection= file_collection
-                    Collection.mark_hst_type(decal_collection, "DECAL")
-                    self.report({"INFO"}, f"{decal_collection_name} is already exist")
-                    break
+                for decal_mesh in decal_meshes:
+                    # Transform.apply(object=decal_mesh,location=False,rotation=False,scale=True)
+                    Transform.apply_scale(decal_mesh)
 
-            if decal_collection is None:
-                decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
-                collection.children.link(decal_collection)
-                bpy.context.scene.collection.children.unlink(decal_collection)
-                self.report({"INFO"}, f"{decal_collection_name} is created")
-            decal_collection.hide_render = True
-            for object in selected_objects:
-                object.select_set(False)
-            if decal_meshes is not None:
-                for mesh in decal_meshes:
-                    collection.objects.unlink(mesh)
-                    decal_collection.objects.link(mesh)
-                    mesh.select_set(True)
-            Collection.active(decal_collection)
+                for file_collection in bpy.data.collections:
+                    print(f"file_collection.name: {file_collection.name}")
+                    if file_collection.name == decal_collection_name:
+                        decal_collection= file_collection
+                        Collection.mark_hst_type(decal_collection, "DECAL")
+                        self.report({"INFO"}, f"{decal_collection_name} is already exist")
+                        break
+
+
+                if decal_collection is None:
+                    decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
+                    collection.children.link(decal_collection)
+                    bpy.context.scene.collection.children.unlink(decal_collection)
+                    self.report({"INFO"}, f"{decal_collection_name} is created")
+                decal_collection.hide_render = True
+                for object in selected_objects:
+                    object.select_set(False)
+                if decal_meshes is not None:
+                    for decal_mesh in decal_meshes:
+                        if decal_mesh.users_collection[0]==collection:
+                            collection.objects.unlink(decal_mesh)
+                            decal_collection.objects.link(decal_mesh)
+                        decal_mesh.select_set(True)
+                Collection.active(decal_collection)
 
         return {'FINISHED'}
     

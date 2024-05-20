@@ -362,36 +362,36 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
 
     def execute(self, context):
 
-        cursor = bpy.context.scene.cursor
-        # cursor_current_transform = cursor.matrix.copy()
+
 
         prop_collections = Collection.filter_hst_type(collections=bpy.data.collections,type="PROP",mode="INCLUDE")
-        # bpy.context.scene.cursor.matrix=Const.WORLD_ORIGIN_MATRIX
+
 
         for collection in prop_collections:
 
             existing_origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
             if existing_origin_objects is not None:
                 existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
+                print(f"{collection.name} has exsiting origin")
             else:
                 origin_name = ORIGIN_PREFIX + collection.name
                 origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-                # rename_alt(origin_object, origin_name, num=2)
+                print(f"{collection.name} new origin object {origin_object.name}")
+
                 origin_object.matrix_world=Const.WORLD_ORIGIN_MATRIX
-                # origin_object.rotation_mode = "QUATERNION"
-                # origin_object.rotation_quaternion = cursor.rotation_quaternion
+
                 origin_object.empty_display_type = "PLAIN_AXES"
                 origin_object.empty_display_size = 0.4
                 origin_object.show_name = True
                 collection.objects.link(origin_object)
                 Object.mark_hst_type(origin_object, "ORIGIN")
 
-                # bpy.context.scene.cursor.matrix = cursor_current_transform
 
-            for object in collection.all_objects:
-                if object.type == "MESH":
-                    object.parent = origin_object
-                    object.matrix_parent_inverse = origin_object.matrix_world.inverted()
+
+                for object in collection.all_objects:
+                    if object.type == "MESH":
+                        object.parent = origin_object
+                        object.matrix_parent_inverse = origin_object.matrix_world.inverted()
 
 
 
