@@ -288,9 +288,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
 class AddAssetOriginOperator(bpy.types.Operator):
     bl_idname = "hst.add_asset_origin"
     bl_label = "Add Asset Origin"
-    # bl_description = "添加用于UE Modular Snap System的Socket，\
-    #     在编辑模式下使用时，先选中用于Snap的面，会自动创建朝向正确的Socket\
-    #     有多个同名Socket时，编号需使用下划线分割，如SOCKET_SNAP_01，SOCKET_SNAP_02"
+    bl_description = "选中Collection中任意模型，为此Collection添加Asset Origin"\
 
     def execute(self, context):
 
@@ -333,7 +331,7 @@ class AddAssetOriginOperator(bpy.types.Operator):
 
         # add empty, set name to SOCKET_XXX and location to cursor location
         origin_name = ORIGIN_PREFIX + collection.name
-        origin_object = bpy.data.objects.new(name=ORIGIN_PREFIX, object_data=None)
+        origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
         # rename_alt(origin_object, origin_name, num=2)
         origin_object.location = cursor.location
         origin_object.rotation_mode = "QUATERNION"
@@ -356,6 +354,49 @@ class AddAssetOriginOperator(bpy.types.Operator):
         origin_object.select_set(True)
 
         return {"FINISHED"}
+    
+class BatchAddAssetOriginOperator(bpy.types.Operator):
+    bl_idname = "hst.batch_add_asset_origin"
+    bl_label = "Add All Prop Asset Origin"
+    bl_description = "为所有Prop Collection添加Asset Origin"\
+
+    def execute(self, context):
+
+        cursor = bpy.context.scene.cursor
+        # cursor_current_transform = cursor.matrix.copy()
+
+        prop_collections = Collection.filter_hst_type(collections=bpy.data.collections,type="PROP",mode="INCLUDE")
+        # bpy.context.scene.cursor.matrix=Const.WORLD_ORIGIN_MATRIX
+
+        for collection in prop_collections:
+
+            existing_origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+            if existing_origin_objects is not None:
+                existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
+            else:
+                origin_name = ORIGIN_PREFIX + collection.name
+                origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
+                # rename_alt(origin_object, origin_name, num=2)
+                origin_object.matrix_world=Const.WORLD_ORIGIN_MATRIX
+                # origin_object.rotation_mode = "QUATERNION"
+                # origin_object.rotation_quaternion = cursor.rotation_quaternion
+                origin_object.empty_display_type = "PLAIN_AXES"
+                origin_object.empty_display_size = 0.4
+                origin_object.show_name = True
+                collection.objects.link(origin_object)
+                Object.mark_hst_type(origin_object, "ORIGIN")
+
+                # bpy.context.scene.cursor.matrix = cursor_current_transform
+
+            for object in collection.all_objects:
+                if object.type == "MESH":
+                    object.parent = origin_object
+                    object.matrix_parent_inverse = origin_object.matrix_world.inverted()
+
+
+
+        return {"FINISHED"}
+
 
 class HST_SwatchMatSetupOperator(bpy.types.Operator):
     bl_idname = "hst.swatchmatsetup"
@@ -784,7 +825,7 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
         for decal_collection in decal_collections:
             print("mark decal collection: " + decal_collection.name)
             # decal_objects = decal_collection.all_objects
-            static_meshes, ucx_meshes = filter_meshes(decal_collection)
+            static_meshes, ucx_meshes = filter_static_meshes(decal_collection)
             if len(ucx_meshes) > 0:
                 self.report(
                     {"ERROR"},
@@ -941,7 +982,7 @@ class SetUECollisionOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
         for collection in selected_collections:
-            collection_meshes, ucx_meshes = filter_meshes(collection)
+            collection_meshes, ucx_meshes = filter_static_meshes(collection)
             static_mesh = None
             for mesh in collection_meshes:
                 if mesh not in selected_meshes:

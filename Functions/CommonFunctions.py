@@ -1313,15 +1313,20 @@ def set_collision_object(target_object, new_name) -> None:
     rename_alt(target_object, UCX_PREFIX + new_name, mark="_", num=2)
 
 
-def filter_meshes(collection) -> tuple:
+def filter_static_meshes(collection) -> tuple:
     """筛选collection中的mesh,返回staticmeshes,ucx_meshes"""
     staticmeshes = []
     ucx_meshes = []
-    collection_objs = [obj for obj in collection.all_objects if obj.type == "MESH"]
-    staticmeshes = [
-        obj for obj in collection_objs if not obj.name.startswith(UCX_PREFIX)
-    ]
-    ucx_meshes = [obj for obj in collection_objs if obj.name.startswith(UCX_PREFIX)]
+
+    collection_meshes = [obj for obj in collection.all_objects if obj.type == "MESH"]
+    decal_meshes = Object.filter_hst_type(objects=collection_meshes,type="DECAL")
+    if decal_meshes is None:
+        decal_meshes = []
+    ucx_meshes = [obj for obj in collection_meshes if obj.name.startswith(UCX_PREFIX)]
+    for obj in collection_meshes:
+        if obj not in ucx_meshes and obj not in decal_meshes:
+            staticmeshes.append(obj)
+    
     return staticmeshes, ucx_meshes
 
 
@@ -1339,7 +1344,7 @@ def rename_prop_meshes(objects) -> tuple:
     """重命名prop mesh"""
     selected_collections = filter_collections_selection(objects)
     for collection in selected_collections:
-        static_meshes, ucx_meshes = filter_meshes(collection)
+        static_meshes, ucx_meshes = filter_static_meshes(collection)
         rename_meshes(static_meshes, collection.name)
         for ucx_mesh in ucx_meshes:
             Object.mark_hst_type(ucx_mesh, "UCX")
@@ -1841,6 +1846,54 @@ class Collection:
         """获取collection类型"""
         collection_type = Object.read_custom_property(collection, Const.CUSTOM_TYPE)
         return collection_type
+    
+    def filter_hst_type(collections, type, mode="INCLUDE"):
+        """Filter collections by type"""
+        type = type.upper()
+        mode = mode.upper()
+        filtered_collections = []
+        include_collections = []
+        # exclude_objects = []
+        for collection in collections:
+            collection_type = Collection.get_hst_type(collection)
+            match type:
+                case "PROXY":
+                    if collection_type == Const.TYPE_PROXY_COLLECTION:
+                        include_collections.append(collection)
+                case "BAKE_LOW":
+                    if collection_type == Const.TYPE_BAKE_LOW_COLLECTION:
+                        include_collections.append(collection)
+                case "BAKE_HIGH":
+                    if collection_type == Const.TYPE_BAKE_HIGH_COLLECTION:
+                        include_collections.append(collection)
+                case "DECAL":
+                    if collection_type == Const.TYPE_DECAL_COLLECTION:
+                        include_collections.append(collection)
+                case "PROP":
+                    if collection_type == Const.TYPE_PROP_COLLECTION:
+                        include_collections.append(collection)
+                case "SKM":
+                    if collection_type == Const.TYPE_SKM_COLLECTION:
+                        include_collections.append(collection)
+                case "RIG":
+                    if collection_type == Const.TYPE_RIG_COLLECTION:
+                        include_collections.append(collection)
+                case _:
+                    if collection_type == None:
+                        include_collections.append(collection)
+
+
+        if mode == "INCLUDE":
+            filtered_collections = include_collections
+        elif mode == "EXCLUDE":
+            for collection in collections:
+                if collection not in include_collections:
+                    filtered_collections.append(collection)
+        if len(filtered_collections)==0:
+            return None
+        return filtered_collections
+
+    
 
     def sort_hst_types(collections:list):
         """筛选collection类型，返回筛选后的collection列表，包括bake,decal,prop,sm,skm,rig"""
@@ -1885,8 +1938,26 @@ class Collection:
     
     def active(collection):
         """ 激活collection """
-        layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
+        # layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
+        layer_collection=Collection.find_layer_collection(collection.name)
         bpy.context.view_layer.active_layer_collection = layer_collection
+
+    def find_layer_collection(collection_name):
+        """ 递归查找collection对应的layer_collection """
+        obj = bpy.context.object
+        for i in obj.users_collection:
+            layer_collection = bpy.context.view_layer.layer_collection
+            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+        return layer_collection
+    
+    def recur_layer_collection(layer_collection, collection_name):
+        found = None
+        if (layer_collection.name == collection_name):
+            return layer_collection
+        for layer in layer_collection.children:
+            found = Collection.recur_layer_collection(layer, collection_name)
+            if found:
+                return found
 
 class VertexColor:
 

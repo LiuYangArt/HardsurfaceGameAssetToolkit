@@ -108,7 +108,7 @@ class HST_BatchBevel(bpy.types.Operator):
         if collection is not None:
             selected_collections = filter_collections_selection(selected_objects)
             for collection in selected_collections:
-                collection_meshes,ucx_meshes = filter_meshes(collection)
+                collection_meshes,ucx_meshes = filter_static_meshes(collection)
                 rename_meshes(collection_meshes, collection.name)
 
         for mesh in selected_meshes:
@@ -558,6 +558,8 @@ class MakeDecalCollection(bpy.types.Operator):
 
             if decal_collection is None:
                 decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
+                collection.children.link(decal_collection)
+                bpy.context.scene.collection.children.unlink(decal_collection)
                 self.report({"INFO"}, f"{decal_collection_name} is created")
             decal_collection.hide_render = True
             for object in selected_objects:
@@ -568,7 +570,6 @@ class MakeDecalCollection(bpy.types.Operator):
                     decal_collection.objects.link(mesh)
                     mesh.select_set(True)
             Collection.active(decal_collection)
-
 
         return {'FINISHED'}
     

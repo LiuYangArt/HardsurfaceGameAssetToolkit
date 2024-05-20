@@ -196,6 +196,7 @@ class HST_PT_HST(bpy.types.Panel):
         box_column.separator()
         box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
         box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
+        box_column.operator("hst.batch_add_asset_origin", icon="OUTLINER_OB_EMPTY")
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
