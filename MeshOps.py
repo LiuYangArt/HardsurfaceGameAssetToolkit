@@ -366,17 +366,42 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
 
         prop_collections = Collection.filter_hst_type(collections=bpy.data.collections,type="PROP",mode="INCLUDE")
 
-
+        if prop_collections is None:
+            self.report({"ERROR"},"No Prop Collections, mark prop collections with 'Mark Prop' first")
+            return {"CANCELLED"}
+        
+        new_origins_count=0
         for collection in prop_collections:
-
-            existing_origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+            collection_objs=[]
+            for obj in collection.all_objects:
+                collection_objs.append(obj)
+            existing_origin_objects=Object.filter_hst_type(objects=collection_objs,type="ORIGIN",mode="INCLUDE")
+            
+            asset_objs=[]
             if existing_origin_objects is not None:
+                for obj in collection_objs:
+                        if obj not in existing_origin_objects:
+                            asset_objs.append(obj)
+            else:
+                asset_objs=collection_objs
+
+
+
+            if existing_origin_objects is not None:
+                new_asset_objs=[]
+                for obj in asset_objs:
+                    if obj.parent is None:
+                        new_asset_objs.append(obj)
+                asset_objs=new_asset_objs 
                 existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
-                print(f"{collection.name} has exsiting origin")
+                origin_object=existing_origin_objects[0]
+                self.report({"INFO"}, f"{collection.name} has Asset Origin already")
+
+
             else:
                 origin_name = ORIGIN_PREFIX + collection.name
                 origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-                print(f"{collection.name} new origin object {origin_object.name}")
+
 
                 origin_object.matrix_world=Const.WORLD_ORIGIN_MATRIX
 
@@ -385,15 +410,15 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                 origin_object.show_name = True
                 collection.objects.link(origin_object)
                 Object.mark_hst_type(origin_object, "ORIGIN")
+                new_origins_count +=1
 
 
 
-                for object in collection.all_objects:
-                    if object.type == "MESH":
-                        object.parent = origin_object
-                        object.matrix_parent_inverse = origin_object.matrix_world.inverted()
+            for object in asset_objs:
+                object.parent = origin_object
+                object.matrix_parent_inverse = origin_object.matrix_world.inverted()
 
-
+        self.report({"INFO"}, f"{new_origins_count} new origins created")
 
         return {"FINISHED"}
 

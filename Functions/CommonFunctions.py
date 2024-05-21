@@ -980,13 +980,26 @@ def clean_collection_name(collection_name: str) -> str:
 
 def filter_collection_by_visibility(type="VISIBLE"):
     """筛选可见或不可见的collection"""
-    collections = []
+    all_collections= []
     for collection in bpy.data.collections:
-        if collection.hide_viewport == False and type == "VISIBLE":
-            collections.append(collection)
-        elif collection.hide_viewport == True and type == "HIDDEN":
-            collections.append(collection)
-    return collections
+        all_collections.append(collection)
+    visible_collections = []
+    hidden_collections = []
+    for collection in all_collections:
+        if collection.hide_viewport == True:
+            hidden_collections.append(collection)
+            if collection.children is not None:
+                for child in collection.children:
+                    hidden_collections.append(child)
+    for collection in all_collections:
+        if collection not in hidden_collections:
+            visible_collections.append(collection)
+    match type:
+        case "VISIBLE":
+            return visible_collections
+        case "HIDDEN":
+            return hidden_collections
+
 
 
 def reset_transform(target_object: bpy.types.Object) -> None:
@@ -1003,31 +1016,26 @@ class FBXExport:
         export_objects = []
         hidden_objects = []
         if target.type == "COLLECTION":
-
             for object in target.objects:
                 export_objects.append(object)
                 if object.hide_get() is True:
                     hidden_objects.append(object)
                     object.hide_set(False)
-                # object.select_set(True)
+
         elif target.type == "MESH":
             export_objects.append(target)
             if target.hide_get() is True:
                 hidden_objects.append(target)
                 target.hide_set(False)
-            # target.select_set(True)
+
 
         obj_transform = {}
 
-        origin_object=Object.filter_hst_type(objects=target.all_objects,type="ORIGIN",mode="INCLUDE")
 
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
-            if origin_object:
-                if obj in origin_object:
-                    obj_transform[obj] = obj.matrix_world.copy()
-                    obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
+
 
             if reset_transform is True:
                 obj_transform[obj] = obj.matrix_world.copy()
@@ -1066,7 +1074,7 @@ class FBXExport:
             object.hide_set(True)
 
 
-        if reset_transform is True or origin_object is not None:
+        if reset_transform is True:
            for obj in obj_transform:
             obj.matrix_world = obj_transform[obj]
 
@@ -1518,6 +1526,9 @@ class Object:
 
     def read_custom_property(obj, prop_name):
         return obj.get(prop_name)
+    
+    def get_hst_type(object:bpy.types.Object):
+        return Object.read_custom_property(object, Const.CUSTOM_TYPE)
 
     def mark_hst_type(object:bpy.types.Object, type:str):
         r"""Mark object type as custom property, types: 
@@ -1946,13 +1957,40 @@ class Collection:
     def active(collection):
         """ 激活collection """
         # layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
-        layer_collection=Collection.find_layer_collection(collection.name)
+        object=collection.objects[0]
+        layer_collection=Collection.find_layer_collection_by_name(collection.name)
         bpy.context.view_layer.active_layer_collection = layer_collection
 
-    def find_layer_collection(collection_name):
+    def find_layer_collection_all(collection_name):
         """ 递归查找collection对应的layer_collection """
-        obj = bpy.context.object
-        for i in obj.users_collection:
+
+        for i in bpy.data.collections:
+            layer_collection = bpy.context.view_layer.layer_collection
+            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+        return layer_collection
+    
+    def find_layer_collection_coll(collection):
+        """ 递归查找collection对应的layer_collection """
+        collection_name=collection.name
+        object=collection.objects[0]
+        # for collection in bpy.data.collections:
+        #     if collection.name == collection_name:
+        #         object=collection.objects[0]
+        #         break
+        # obj = bpy.context.object
+        for i in object.users_collection:
+            layer_collection = bpy.context.view_layer.layer_collection
+            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+        return layer_collection
+
+    def find_layer_collection_by_name(collection_name):
+        """ 递归查找collection对应的layer_collection """
+        for collection in bpy.data.collections:
+            if collection.name == collection_name:
+                object=collection.objects[0]
+                break
+        # obj = bpy.context.object
+        for i in object.users_collection:
             layer_collection = bpy.context.view_layer.layer_collection
             layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
         return layer_collection
@@ -1968,9 +2006,32 @@ class Collection:
 
 class VertexColor:
 
-    # def set_active(mesh,color_attribute):
-    #     if color_attribute in mesh.data.color_attributes:
+
+    def remove_all(mesh: bpy.types.Object) -> bool:
+        """为选中的物体删除所有顶点色属性"""
+        success = False
+
+        if mesh.data.color_attributes is not None:
+            color_attributes = mesh.data.color_attributes
+            for r in range(len(color_attributes) - 1, -1, -1):
+                color_attributes.remove(color_attributes[r])
+            success = True
+        return success
+    
+    def remove_attr_by_name(mesh:bpy.types.Object, name:str, mode:str="INCLUDE"):
+
+        for attr in mesh.data.color_attributes:
             
+            match mode:
+                case "INCLUDE":
+                    if attr.name == name:
+                        mesh.data.color_attributes.remove(attr)
+                        break
+                case "EXCLUDE":
+                    if attr.name is not None:
+                        if attr.name != name:
+                            mesh.data.color_attributes.remove(attr)
+
 
     def add_curvature(mesh):
         """为选中的mesh添加curvature vertex color层"""

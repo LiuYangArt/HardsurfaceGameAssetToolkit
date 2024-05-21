@@ -1,6 +1,6 @@
 import bpy
 from ..Const import *
-from .CommonFunctions import set_active_color_attribute, name_remove_digits
+from .CommonFunctions import set_active_color_attribute, name_remove_digits, Object, Collection
 
 
 def scene_unit_check():
@@ -124,9 +124,9 @@ def check_prop_object(object):
     result = "BAD TYPE"
     prop_collection = object.users_collection[0]
     print("checking " + object.name + " in " + prop_collection.name + " for export")
-
+    object_type=Object.get_hst_type(object)
     if object.type == "MESH":
-        if not object.name.startswith(UCX_PREFIX):
+        if not object_type==Const.TYPE_UCX:
             result = check_prop_staticmesh(object)
         else:
             result = check_UCX(object)
@@ -141,7 +141,8 @@ def check_prop_object(object):
 
 def check_prop_staticmesh(object):
     if object.type == "MESH":
-        if not object.name.startswith(UCX_PREFIX):
+        object_type=Object.get_hst_type(object)
+        if object_type==Const.TYPE_STATIC_MESH:
             vertex_color_check = False
             material_check = False
             uv0_check = False
@@ -228,10 +229,20 @@ def check_UCX(object):
 
 def check_snap_socket(object):
     result = "BAD TYPE"
+    object_type=Object.get_hst_type(object)
     if object.type == "EMPTY":
-        if object.name.startswith(SOCKET_PREFIX):
-            print("is Snap Socket")
-            result = CHECK_OK
+        match object_type:
+            case Const.TYPE_SOCKET:
+                result = CHECK_OK
+            case Const.TYPE_ORIGIN:
+                result = CHECK_OK
+    # if object.type == "EMPTY":
+    #     if object.name.startswith(SOCKET_PREFIX):
+    #         print("is Snap Socket")
+    #         result = CHECK_OK
+    #     if object.name.startswith(ORIGIN_PREFIX):
+    #         print("is Asset Origin")
+    #         result = CHECK_OK
     return result
 
 def check_collections(self,bake_collections,prop_collections,decal_collections):
@@ -259,7 +270,7 @@ def check_collections(self,bake_collections,prop_collections,decal_collections):
 
     # Check Prop
     for collection in prop_collections:
-        for object in collection.all_objects:
+        for object in collection.objects:
             prop_check_result = check_prop_object(object)
             if prop_check_result != CHECK_OK:
                 self.report(
@@ -270,7 +281,7 @@ def check_collections(self,bake_collections,prop_collections,decal_collections):
                     + "有不符合Prop规范的物体，请检查确认",
                 )
                 break
-        for object in collection.all_objects:
+        for object in collection.objects:
             prop_check_result = check_prop_object(object)
             if prop_check_result != CHECK_OK:
                 self.report(
@@ -280,7 +291,7 @@ def check_collections(self,bake_collections,prop_collections,decal_collections):
 
     # Check Decal
     for collection in decal_collections:
-        for object in collection.all_objects:
+        for object in collection.objects:
             decal_check_result = check_decal_object(object)
             if decal_check_result != CHECK_OK:
                 self.report(
@@ -291,7 +302,7 @@ def check_collections(self,bake_collections,prop_collections,decal_collections):
                     + "有不符合Decal规范的物体，请检查确认",
                 )
                 break
-        for object in collection.all_objects:
+        for object in collection.objects:
             decal_check_result = check_decal_object(object)
             if decal_check_result != CHECK_OK:
                 self.report(

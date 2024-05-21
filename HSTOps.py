@@ -182,6 +182,7 @@ def prep_wearmask_objects(selected_objects):
     set_visibility(proxy_collection, True)
     for mesh in selected_meshes:
         Transform.apply(mesh, location=True, rotation=True, scale=True)
+        cleanup_color_attributes(mesh)
         add_vertexcolor_attribute(mesh, WEARMASK_ATTR)
         # add_vertexcolor_attribute(mesh, CURVATURE_ATTR)
         set_active_color_attribute(mesh, WEARMASK_ATTR)

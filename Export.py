@@ -39,12 +39,12 @@ class StaticMeshExportOperator(bpy.types.Operator):
             skm_collections,
             rig_collections,
         ) = Collection.sort_hst_types(visible_collections)
-        export_collections = (
+        target_collections = (
             bake_collections + decal_collections + prop_collections + sm_collections
         )
 
         if len(skm_collections) == 0:
-            if len(export_collections) == 0:
+            if len(target_collections) == 0:
                 self.report(
                     {"ERROR"},
                     "No available collection for export. Please check visibility "
@@ -54,15 +54,33 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 )
                 return {"CANCELLED"}
 
-        # Check Bake
-        check_collections(self, bake_collections, prop_collections, decal_collections)
-        if len(export_collections) > 0:
-            for collection in export_collections:
+        # check_collections(self, bake_collections, prop_collections, decal_collections)
+        sm_count = 0
+        if len(target_collections) > 0:
+            # save origin objects transform and move to world origin
+            origin_transform = {}
+            for collection in target_collections:
+                origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+                if origin_objects:
+
+                    for obj in collection.objects:
+                        if obj in origin_objects:
+                            origin_transform[obj] = obj.matrix_world.copy()
+                            obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
+
+            for collection in target_collections:
+
                 new_name = collection.name.removeprefix("SM_")
                 new_name = "SM_" + new_name
                 file_path = export_path + new_name + ".fbx"
                 FBXExport.staticmesh(collection, file_path)
-        
+                sm_count += 1
+
+
+            if len(origin_transform)>0: #reset origin transform
+                for obj in origin_transform:
+                    obj.matrix_world=origin_transform[obj]
+
         skm_count=0
         if len(skm_collections) > 0:
             for collection in skm_collections:
@@ -76,9 +94,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                     FBXExport.staticmesh(mesh, file_path,reset_transform=True)
                     # mesh.select_set(True)
         if len(rig_collections) > 0:
-            print(f"rig_collections: {rig_collections}")
             for collection in rig_collections:
-                print(f"collection: {collection.name} type: {collection.type}")
                 # for armature in collection.objects:
                 new_name = collection.name.removeprefix("SK_")
                 new_name = "SK_" + new_name
@@ -89,7 +105,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
         restore_select_mode(store_mode)
 
         export_count = (
-            len(export_collections) + skm_count + len(rig_collections)
+            sm_count + skm_count + len(rig_collections)
         )
         self.report(
             {"INFO"},
