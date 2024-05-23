@@ -132,3 +132,5 @@ class Const:
     TYPE_ORIGIN = "Asset_Origin"
 
     UV_PATTERN = "UV1_Pattern"
+
+    TINT_ATTRIBUTE = "Tint_Mask"

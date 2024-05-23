@@ -2062,40 +2062,6 @@ class VertexColor:
         if visibility is False:
             mesh.hide_viewport = True
 
-
-    def set_vertexcolor_alpha(target_object,color_mode:str, vertexcolor_name: str) -> None:
-        """设置顶点色"""
-        # color = tuple(color)
-        match color_mode:
-            case "WHITE":
-                color=(1,1,1,1)
-            case "BLACK":
-                color=(0,0,0,1)
-
-        current_mode = bpy.context.active_object.mode
-        print(current_mode)
-        if target_object.type == "MESH":
-            mesh = target_object.data
-            if vertexcolor_name in mesh.color_attributes:
-                color_attribute = mesh.color_attributes.get(vertexcolor_name)
-                if current_mode == "OBJECT":
-                    current_color=color_attribute.data.foreach_get(
-                        "color_srgb", color * len(mesh.loops) * 4
-                    )
-                    print(current_color)
-                    # color_attribute.data.foreach_set(
-                    #     "color_srgb", color * len(mesh.loops) * 4
-                    # )
-                    # else:
-                    #     print("No vertex color attribute named " + vertexcolor_name)
-                elif current_mode == "EDIT":
-                    vertexcolor_to_vertices(target_object, color_attribute, color)
-            else:
-                print("No vertex color attribute named " + vertexcolor_name)
-
-        else:
-            print(target_object + " is not mesh object")
-
     def set_alpha(mesh,alpha_value,vertexcolor_name: str):
 
         visibility=mesh.visible_get()
@@ -2126,6 +2092,31 @@ class VertexColor:
         bpy.ops.object.mode_set(mode=current_mode)
         if visibility is False:
             mesh.hide_viewport = True
+
+class MeshAttributes:
+    def add(mesh,attribute_name:str,data_type:str,domain:str):
+
+        if attribute_name not in mesh.data.attributes:
+            target_attribute = mesh.data.attributes.new(
+                attribute_name, data_type, domain
+            )
+            # for index, edge in enumerate(mesh.data.edges):
+            #     target_attribute.data[index].value = (
+            #         1.0 if edge.use_edge_sharp else 0.0
+            # )
+        else:
+            target_attribute = mesh.data.attributes[attribute_name]
+
+        return target_attribute
+
+    
+    def fill_points(mesh,attribute,value:float):
+        value=float(value)
+        attribute_values = [value for i in range(len(mesh.data.vertices))]
+        attribute.data.foreach_set("value", attribute_values)
+
+
+
 
 def copy_to_clip(txt:str):
     """ copy text string to clipboard """

@@ -533,16 +533,18 @@ class MakeDecalCollection(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
+        
+        collection = get_collection(selected_meshes[0])
+        if collection is None:
+            self.report(
+                {"ERROR"},
+                "Not in Collection | \n"
+                + "所选物体不在Collection中",
+            )
+            return {"CANCELLED"}
         target_collections=filter_collections_selection(selected_objects)
         for collection in target_collections:
-            collection = get_collection(selected_meshes[0])
-            if collection is None:
-                self.report(
-                    {"ERROR"},
-                    "Not in Collection | \n"
-                    + "所选物体不在Collection中",
-                )
-                return {"CANCELLED"}
+
             if collection is not None:
                 collection_type=Collection.get_hst_type(collection)
                 if collection_type == "DECAL":
@@ -583,6 +585,46 @@ class MakeDecalCollection(bpy.types.Operator):
                 Collection.active(decal_collection)
 
         return {'FINISHED'}
+    
+
+class MarkTintObjectOperator(bpy.types.Operator):
+    bl_idname = "hst.mark_tint_object"
+    bl_label = "Mark Tint Object"
+    bl_description = "为选中的物体添加TintMask，储存于WearMask的Alpha通道"
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if len(selected_meshes)==0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+        
+
+        target_collections=filter_collections_selection(selected_objects)
+        for collection in target_collections:
+            if collection is not None:
+                collection_objects=collection.objects
+
+                for object in collection_objects:
+                    if object.type=="MESH":
+
+                        tint_attr=MeshAttributes.add(object,attribute_name=Const.TINT_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+                        
+                        if object not in selected_meshes:
+                            MeshAttributes.fill_points(object,tint_attr,value=0.0)
+                        if object in selected_meshes:
+
+                            MeshAttributes.fill_points(object,tint_attr,value=1.0)
+
+
+
+        return {'FINISHED'}
+
     
 
 

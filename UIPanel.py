@@ -213,6 +213,7 @@ class HST_PT_HST(bpy.types.Panel):
             "hst.markdecalcollection", text="Set Decal", icon="OUTLINER_COLLECTION"
         )
         box_column.operator("hst.make_decal_collection", icon="COLLECTION_NEW")
+        box_column.operator("hst.mark_tint_object", icon="COLOR")
         box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)
