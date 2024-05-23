@@ -118,3 +118,38 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
 
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}
+
+# class SetVertexColorAlphaOperator(bpy.types.Operator):
+#     bl_idname = "hst.set_vertexcolor_alpha"
+#     bl_label = "Batch Set Object VertexColor Alpha Channel"
+#     bl_description = "设置选中模型的顶点色,顶点色名字为BakeColor\
+#         用于烘焙贴图时的ColorID"
+
+#     def execute(self, context):
+#         parameters = context.scene.hst_params
+#         color = parameters.vertexcolor
+#         selected_objects = bpy.context.selected_objects
+#         selected_meshes = filter_type(selected_objects, "MESH")
+#         color = get_color_data(color)
+
+#         if len(selected_meshes) == 0:
+#             message_box("No mesh selected | 未选择Mesh")
+#             return {"CANCELLED"}
+
+        
+#         for mesh in selected_meshes:
+#             vertex_color_layer=check_vertex_color(mesh)
+#             if vertex_color_layer:
+#                 # print("has vc")
+#                 set_active_color_attribute(mesh, vertex_color_layer.name)
+#                 # set_object_vertexcolor(mesh, color, vertex_color_layer.name)
+#                 VertexColor.set_alpha(mesh=mesh,alpha_value=0.1,vertexcolor_name=vertex_color_layer.name)
+#                 # VertexColor.set_vertexcolor_alpha(mesh, color_mode="BLACK", vertexcolor_name=vertex_color_layer.name)
+#             else:
+#                 add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
+#                 set_active_color_attribute(mesh, BAKECOLOR_ATTR)
+#                 VertexColor.set_vertexcolor_alpha(mesh, color_mode="BLACK", vertexcolor_name=BAKECOLOR_ATTR)
+#                 # set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
+
+#         self.report({"INFO"}, "Set vertex color")
+#         return {"FINISHED"}

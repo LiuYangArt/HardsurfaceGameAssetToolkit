@@ -124,6 +124,10 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
             "hst.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
         )
         box_column.prop(context.scene.hst_params, "vertexcolor", text="Color ID Picker")
+        # box_column.operator(
+        #     "hst.set_vertexcolor_alpha", text="Set Alpha", icon="COLOR"
+        # )
+        
 
 
 class HST_PT_HST(bpy.types.Panel):

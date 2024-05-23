@@ -2057,7 +2057,72 @@ class VertexColor:
         if current_mode != "VERTEX_PAINT":
             bpy.ops.object.mode_set(mode="VERTEX_PAINT")
 
-        bpy.ops.paint.vertex_color_dirt()
+        bpy.ops.paint.vertex_color_dirt(blur_strength=1,blur_iterations=1,clean_angle=3.14159,dirt_angle=0,dirt_only=False,normalize=True)
+        bpy.ops.object.mode_set(mode=current_mode)
+        if visibility is False:
+            mesh.hide_viewport = True
+
+
+    def set_vertexcolor_alpha(target_object,color_mode:str, vertexcolor_name: str) -> None:
+        """设置顶点色"""
+        # color = tuple(color)
+        match color_mode:
+            case "WHITE":
+                color=(1,1,1,1)
+            case "BLACK":
+                color=(0,0,0,1)
+
+        current_mode = bpy.context.active_object.mode
+        print(current_mode)
+        if target_object.type == "MESH":
+            mesh = target_object.data
+            if vertexcolor_name in mesh.color_attributes:
+                color_attribute = mesh.color_attributes.get(vertexcolor_name)
+                if current_mode == "OBJECT":
+                    current_color=color_attribute.data.foreach_get(
+                        "color_srgb", color * len(mesh.loops) * 4
+                    )
+                    print(current_color)
+                    # color_attribute.data.foreach_set(
+                    #     "color_srgb", color * len(mesh.loops) * 4
+                    # )
+                    # else:
+                    #     print("No vertex color attribute named " + vertexcolor_name)
+                elif current_mode == "EDIT":
+                    vertexcolor_to_vertices(target_object, color_attribute, color)
+            else:
+                print("No vertex color attribute named " + vertexcolor_name)
+
+        else:
+            print(target_object + " is not mesh object")
+
+    def set_alpha(mesh,alpha_value,vertexcolor_name: str):
+
+        visibility=mesh.visible_get()
+        if visibility is False:
+            mesh.hide_viewport = False
+        bpy.context.view_layer.objects.active = mesh
+        current_mode = bpy.context.object.mode
+        if current_mode != "VERTEX_PAINT":
+            bpy.ops.object.mode_set(mode="VERTEX_PAINT")
+
+        if vertexcolor_name in mesh.data.color_attributes:
+            color_attribute = mesh.data.color_attributes.get(vertexcolor_name)
+        mesh.data.attributes.active_color = color_attribute
+        # assert bpy.context.mode == 'PAINT_VERTEX'
+
+        # mesh = bpy.context.object.data
+        mesh=mesh.data
+        ca = mesh.attributes.active_color
+        if ca.domain == 'POINT':
+            for vi, v in enumerate(mesh.vertices):
+                if v.select:
+                    ca.data[vi].color[3] = alpha_value
+        elif ca.domain == 'CORNER':
+            for li, l in enumerate(mesh.loops):
+                if mesh.vertices[l.vertex_index].select:
+                    ca.data[li].color[3] = alpha_value
+
         bpy.ops.object.mode_set(mode=current_mode)
         if visibility is False:
             mesh.hide_viewport = True
