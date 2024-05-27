@@ -986,8 +986,14 @@ def filter_collection_by_visibility(type="VISIBLE"):
     visible_collections = []
     hidden_collections = []
     for collection in all_collections:
+        layer_coll=Collection.find_layer_collection_coll(collection)
+        if layer_coll:
+            if layer_coll.exclude==True:
+                hidden_collections.append(collection)
+
         if collection.hide_viewport == True:
-            hidden_collections.append(collection)
+            if collection not in hidden_collections:
+                hidden_collections.append(collection)
             if collection.children is not None:
                 for child in collection.children:
                     hidden_collections.append(child)
@@ -1174,25 +1180,28 @@ def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
     filtered_collections = []
     SCENE = "Scene Collection"
-
     if target_objects:
-        processed_collections = set()
-        for obj in target_objects:
-            for collection in obj.users_collection:
-                if (
-                    collection is not None
-                    and SCENE not in collection.name
-                    and collection not in processed_collections
-                    and not collection.name.startswith("_")
-                ):
-                    filtered_collections.append(collection)
-                    processed_collections.add(collection)
-    else:
-        a = bpy.context.view_layer.active_layer_collection.collection
-        col = bpy.data.collections.get(a.name)
-        filtered_collections.append(col)
+        if len(target_objects) != 0:
+            processed_collections = set()
+            for obj in target_objects:
+                for collection in obj.users_collection:
+                    if (
+                        collection is not None
+                        and SCENE not in collection.name
+                        and collection not in processed_collections
+                        and not collection.name.startswith("_")
+                    ):
+                        filtered_collections.append(collection)
+                        processed_collections.add(collection)
+    # else:
+    #     a = bpy.context.view_layer.active_layer_collection.collection
+    #     col = bpy.data.collections.get(a.name)
+    #     filtered_collections.append(col)
 
-    return filtered_collections
+    if len(filtered_collections)==0:
+        return None
+    else:
+        return filtered_collections
 
 
 def filter_collection_types(collections):
@@ -1285,7 +1294,7 @@ def prep_select_mode() -> tuple:
 
 
 def restore_select_mode(store_mode) -> None:
-    """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode, selected_objects)"""
+    """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode)"""
 
     current_mode, active_object, selected_objects = store_mode
     if selected_objects is not None:
@@ -1954,11 +1963,28 @@ class Collection:
             rig_collections,
         )
     
+
+    def find_parent(collection):
+        parent = dict()
+        
+
+        all_collections=bpy.data.collections
+        for c in all_collections:
+            parent[c] = None
+        for c in all_collections:
+            for ch in c.children:
+                parent[ch] = c
+                
+        parent_collection = parent[collection]
+
+        return parent_collection
+    
+
+    
     def active(collection):
         """ 激活collection """
-        # layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
-        object=collection.objects[0]
-        layer_collection=Collection.find_layer_collection_by_name(collection.name)
+        layer_collection=Collection.find_layer_collection(collection)
+        # layer_collection=Collection.find_layer_collection_coll(collection)
         bpy.context.view_layer.active_layer_collection = layer_collection
 
     def find_layer_collection_all(collection_name):
@@ -1966,22 +1992,30 @@ class Collection:
 
         for i in bpy.data.collections:
             layer_collection = bpy.context.view_layer.layer_collection
-            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+            layer_collection = Collection.recur_find_parent(layer_collection, i.name)
         return layer_collection
     
     def find_layer_collection_coll(collection):
         """ 递归查找collection对应的layer_collection """
         collection_name=collection.name
-        object=collection.objects[0]
-        # for collection in bpy.data.collections:
-        #     if collection.name == collection_name:
-        #         object=collection.objects[0]
-        #         break
-        # obj = bpy.context.object
-        for i in object.users_collection:
-            layer_collection = bpy.context.view_layer.layer_collection
-            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+        if collection.objects:
+            object=collection.objects[0]
+
+            for i in object.users_collection:
+                layer_collection = bpy.context.view_layer.layer_collection
+                layer_collection = Collection.recur_find_parent(layer_collection, i.name)
+            return layer_collection
+        else:
+            return None
+        
+    def find_layer_collection(collection):
+        """ 递归查找collection对应的layer_collection """
+
+        layer_collection = bpy.context.view_layer.layer_collection
+        layer_collection=Collection.recur_find_parent(layer_collection, collection.name)
+
         return layer_collection
+
 
     def find_layer_collection_by_name(collection_name):
         """ 递归查找collection对应的layer_collection """
@@ -1992,15 +2026,15 @@ class Collection:
         # obj = bpy.context.object
         for i in object.users_collection:
             layer_collection = bpy.context.view_layer.layer_collection
-            layer_collection = Collection.recur_layer_collection(layer_collection, i.name)
+            layer_collection = Collection.recur_find_parent(layer_collection, i.name)
         return layer_collection
     
-    def recur_layer_collection(layer_collection, collection_name):
+    def recur_find_parent(layer_collection, collection_name):
         found = None
         if (layer_collection.name == collection_name):
             return layer_collection
         for layer in layer_collection.children:
-            found = Collection.recur_layer_collection(layer, collection_name)
+            found = Collection.recur_find_parent(layer, collection_name)
             if found:
                 return found
 
@@ -2115,6 +2149,28 @@ class MeshAttributes:
         attribute_values = [value for i in range(len(mesh.data.vertices))]
         attribute.data.foreach_set("value", attribute_values)
 
+class Viewport:
+    # def is_object_in_local_view(object):
+    #     if object.layers_local_view[0]:
+    #         return True
+    #     else:
+    #         return False
+        
+    def is_local_view():
+        is_local_view=False
+        if bpy.context.space_data.local_view:
+            is_local_view=True
+        return is_local_view
+    
+    def get_3dview_space():
+        target_space=None
+        area=check_screen_area("VIEW_3D")
+        if area:
+            for space in area.spaces:
+                if "View3D" in str(space):
+                    target_space=space
+                    break
+        return target_space
 
 
 
@@ -2122,3 +2178,94 @@ def copy_to_clip(txt:str):
     """ copy text string to clipboard """
     cmd='echo '+txt.strip()+'|clip'
     return subprocess.check_call(cmd, shell=True)
+
+
+
+class Outliner:
+    def get_selected_object_ids():
+        area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+
+        with bpy.context.temp_override(
+            window=bpy.context.window,
+            area=area,
+            region=next(region for region in area.regions if region.type == 'WINDOW'),
+            screen=bpy.context.window.screen
+        ):
+            ids = bpy.context.selected_ids
+            objects_in_selection = []
+            for item in ids:
+                if item.bl_rna.identifier == "Object":
+                    objects_in_selection.append(item.name)
+                        
+        if len(objects_in_selection)==0:
+            return None
+        else:              # Print the dict to the console
+            return objects_in_selection
+        
+    def get_selected_collection_ids():
+        area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+
+        with bpy.context.temp_override(
+            window=bpy.context.window,
+            area=area,
+            region=next(region for region in area.regions if region.type == 'WINDOW'),
+            screen=bpy.context.window.screen
+        ):
+            ids = bpy.context.selected_ids
+            objects_in_selection = []
+            for item in ids:
+                if item.bl_rna.identifier == "Collection":
+                    objects_in_selection.append(item.name)
+                        
+        if len(objects_in_selection)==0:
+            return None
+        else:              # Print the dict to the console
+            return objects_in_selection
+        
+    def get_selected_objects():
+        selection_ids=Outliner.get_selected_object_ids()
+        objects=[]
+        if selection_ids is not None:
+            for id in selection_ids:
+                if bpy.context.scene.objects[id]:
+                    objects.append(bpy.context.scene.objects[id])
+        if len(objects) ==0:
+            return None
+        else:
+            return objects
+        
+    def get_selected_collections():
+        selection_ids=Outliner.get_selected_collection_ids()
+        objects=[]
+        print(selection_ids)
+        if selection_ids is not None:
+            for id in selection_ids:
+                if bpy.data.collections[id]:
+                    objects.append(bpy.data.collections[id])
+        if len(objects) ==0:
+            return None
+        else:
+            return objects
+
+# def print_selected_collections():
+#     area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+
+#     with bpy.context.temp_override(
+#         window=bpy.context.window,
+#         area=area,
+#         region=next(region for region in area.regions if region.type == 'WINDOW'),
+#         screen=bpy.context.window.screen
+#     ):
+#         ids = bpy.context.selected_ids
+#         names = [o.name for o in ids]
+#         print(f"selected in out liner {names}" )
+
+#     # area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+
+#     # with bpy.context.temp_override(
+#     #     window=bpy.context.window,
+#     #     area=area,
+#     #     region=next(region for region in area.regions if region.type == 'WINDOW'),
+#     #     screen=bpy.context.window.screen
+#     # ):
+#     #     print_selected_collections()

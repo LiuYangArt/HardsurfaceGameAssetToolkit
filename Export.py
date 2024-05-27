@@ -56,17 +56,32 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         # check_collections(self, bake_collections, prop_collections, decal_collections)
         sm_count = 0
+
+
         if len(target_collections) > 0:
             # save origin objects transform and move to world origin
             origin_transform = {}
             for collection in target_collections:
+                # print(f"collection name {collection.name}")
                 origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
-                if origin_objects:
 
+
+
+                if origin_objects:
+                    origin_visibility=True
                     for obj in collection.objects:
                         if obj in origin_objects:
+                            
+                            origin_visibility=obj.visible_get()
                             origin_transform[obj] = obj.matrix_world.copy()
                             obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
+
+                    if origin_visibility is False:
+                        if collection.children:
+                            for child_coll in collection.children:
+                                target_collections.remove(child_coll)
+                        target_collections.remove(collection)
+
 
             for collection in target_collections:
 
@@ -124,6 +139,7 @@ class TestFuncOperator(bpy.types.Operator):
         print(f"collection: {collection.name}")
         print(f"collection_children: {collection.children}")
         print(f"collection_objects: {collection.objects}")
-        for obj in collection.objects:
-            print(f"c_obj: {obj.name}")
+        is_local_view = Viewport.is_local_view()
+        print(is_local_view)
+
         return {"FINISHED"}

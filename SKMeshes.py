@@ -276,9 +276,6 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
     bl_label = "Skeletel Separator"
     bl_description = "Separate skeletel mesh for nanite\
         导入骨骼模型FBX不要勾选Armature下的Automatic Bone Orientation，会破坏骨骼朝向"
-    # def testfunc(self):
-    #     print("testfunc")
-    #     return {"FINISHED"}
 
     def execute(self, context):
         bpy.ops.object.mode_set(mode="OBJECT")

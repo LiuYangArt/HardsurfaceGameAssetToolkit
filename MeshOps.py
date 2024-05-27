@@ -1042,3 +1042,154 @@ class HSTSortCollectionsOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 
+
+class IsolateCollectionsOperator(bpy.types.Operator):
+    bl_idname = "hst.isolate_collections"
+    bl_label = "Isolate Collections ViewLayer"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_collections = filter_collections_selection(selected_objects)
+        scene = bpy.context.scene
+
+        default_view_layer=scene.view_layers["View Layer"]
+
+        if Const.WORK_VIEWLAYER in scene.view_layers.keys():
+            work_layer = scene.view_layers[Const.WORK_VIEWLAYER]
+        else:
+            work_layer = scene.view_layers.new(Const.WORK_VIEWLAYER)
+
+        proxy_collections=[]
+        for collection in bpy.data.collections:
+            collection_hst_type=Collection.get_hst_type(collection)
+            if collection_hst_type == Const.TYPE_PROXY_COLLECTION:
+                proxy_collections.append(collection)
+        if len(proxy_collections)==0:
+            proxy_collections=None
+        # if proxy_collections:
+        #     print(f"has  proxy_collection {proxy_collections}")
+
+
+        if selected_collections is not None:
+            selected_coll_names =[]
+            for collection in selected_collections:
+
+                parent_collection=Collection.find_parent(collection)
+                if parent_collection is not None:
+                    parent_coll_name=parent_collection.name
+                    if parent_coll_name not in selected_coll_names:
+                        selected_coll_names.append(parent_coll_name)
+
+                coll_name= collection.name
+                if coll_name not in selected_coll_names:
+                    selected_coll_names.append(coll_name)
+            if proxy_collections:
+                for proxy_collection in proxy_collections:
+                    if proxy_collection.name not in selected_coll_names:
+                        selected_coll_names.append(proxy_collection.name)
+
+            for layer_coll in work_layer.layer_collection.children:
+                if layer_coll.name not in selected_coll_names:
+                    layer_coll.exclude = True
+
+            bpy.context.window.view_layer = work_layer
+            Collection.active(selected_collections[0])
+        
+        elif selected_collections is None:
+            for layer_coll in work_layer.layer_collection.children:
+                layer_coll.exclude = False
+            
+            bpy.context.window.view_layer = default_view_layer
+
+
+        return {'FINISHED'}
+
+class IsolateCollectionsAltOperator(bpy.types.Operator):
+    bl_idname = "hst.isolate_collections_alt"
+    bl_label = "Isolate Collections"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        is_local_view=Viewport.is_local_view()
+
+
+        outliner_objs=Outliner.get_selected_objects()
+        outliner_colls=Outliner.get_selected_collections()
+
+        if outliner_objs:
+            for obj in outliner_objs:
+                if obj not in selected_objects:
+                    selected_objects.append(obj)
+
+        if outliner_colls is None:
+            if selected_objects is None or len(selected_objects)==0:
+
+                if is_local_view:
+                    self.report(
+                        {"INFO"},
+                        "Exit local view",
+                    )
+                    bpy.ops.view3d.localview(frame_selected=False)
+                else:
+                    # self.report("")
+                    self.report(
+                        {"INFO"},
+                        "nothing selected, please select object and retry",
+                    )
+                    return {"CANCELLED"}
+            
+        if selected_objects is not None or len(selected_objects)>0:
+
+            selected_collections = filter_collections_selection(selected_objects)
+            if outliner_colls:
+                if selected_collections:
+                    for collection in outliner_colls:
+                        if selected_collections:
+                            if collection not in selected_collections:
+                                selected_collections.append(collection)
+                else:
+                    selected_collections=outliner_colls
+
+            store_mode = prep_select_mode()
+
+
+            if selected_collections:
+                for collection in selected_collections:
+                    parent_coll=Collection.find_parent(collection)
+                    if parent_coll:
+                        if parent_coll not in selected_collections:
+                            selected_collections.append(parent_coll)
+
+                coll_objs=[]
+                if selected_collections is not None:
+                    for coll in selected_collections:
+                        for object in coll.all_objects:
+                            if object not in coll_objs:
+                                coll_objs.append(object)
+                
+                Collection.active(selected_collections[0])
+
+
+                if is_local_view is True:
+                    
+                    bpy.ops.view3d.localview()
+
+                for object in bpy.data.objects:
+                    object.select_set(False)
+                
+                for obj in coll_objs:
+
+                    obj.select_set(True)
+                
+
+                bpy.ops.view3d.localview(frame_selected=True)
+                
+
+                restore_select_mode(store_mode)
+                
+            self.report({"INFO"}, "Isolate Collections")
+
+
+        return {'FINISHED'}
+
+        

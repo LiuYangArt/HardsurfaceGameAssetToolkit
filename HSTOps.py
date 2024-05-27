@@ -175,7 +175,9 @@ def prep_wearmask_objects(selected_objects):
 
     selected_meshes = filter_type(selected_objects, "MESH")
     rename_prop_meshes(selected_objects)
-
+    target_collections=filter_collections_selection(selected_objects)
+    for collection in target_collections:
+        collection.hide_render=True
     import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
     proxy_object_list = []
     proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
@@ -499,22 +501,26 @@ class HSTActiveCollection(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        if len(selected_objects)==0:
-            self.report(
-                {"ERROR"},
-                "No selected object, please select objects and retry | \n"
-                + "没有选中物体，请选中物体后重试",
-            )
-        collection = get_collection(selected_objects[0])
-        if collection is None:
-            self.report(
-                {"ERROR"},
-                "Not in Collection | \n"
-                + "所选物体不在Collection中",
-            )
-            return {"CANCELLED"}
-        if collection is not None:
-            Collection.active(collection)
+        outliner_coll=Outliner.get_selected_collections()
+        if outliner_coll is None:
+            if len(selected_objects)==0:
+                self.report(
+                    {"ERROR"},
+                    "No selected object, please select objects and retry | \n"
+                    + "没有选中物体，请选中物体后重试",
+                )
+            collection = get_collection(selected_objects[0])
+            if collection is None:
+                self.report(
+                    {"ERROR"},
+                    "Not in Collection | \n"
+                    + "所选物体不在Collection中",
+                )
+                return {"CANCELLED"}
+            if collection is not None:
+                Collection.active(collection)
+        else:
+            Collection.active(outliner_coll[0])
 
         return {'FINISHED'}
 

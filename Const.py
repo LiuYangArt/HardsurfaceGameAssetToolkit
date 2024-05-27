@@ -134,3 +134,5 @@ class Const:
     UV_PATTERN = "UV1_Pattern"
 
     TINT_ATTRIBUTE = "Tint_Mask"
+
+    WORK_VIEWLAYER="HST_WorkViewLayer"
