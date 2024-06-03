@@ -836,9 +836,10 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        decal_collections = filter_collections_selection(selected_objects)
-        color = "COLOR_" + DECAL_COLLECTION_COLOR
-        if len(decal_collections) == 0:
+        selected_collections=Collection.get_selected()
+
+
+        if selected_collections is None:
             self.report(
                 {"ERROR"},
                 "No selected collection, please select collections and retry\n"
@@ -847,9 +848,8 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
 
             return {"CANCELLED"}
 
-        for decal_collection in decal_collections:
-            print("mark decal collection: " + decal_collection.name)
-            # decal_objects = decal_collection.all_objects
+        for decal_collection in selected_collections:
+
             static_meshes, ucx_meshes = filter_static_meshes(decal_collection)
             if len(ucx_meshes) > 0:
                 self.report(
@@ -862,7 +862,7 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             decal_collection_name = clean_collection_name(decal_collection.name)
             new_name = decal_collection_name + DECAL_SUFFIX
             decal_collection.name = new_name
-            decal_collection.color_tag = color
+
             decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
             for mesh in static_meshes:
@@ -870,10 +870,10 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
                 for mat in mats:
                     if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX):
                         Object.mark_hst_type(mesh, "DECAL")
-                        break
+                        
 
             self.report(
-                {"INFO"}, str(len(decal_collections)) + " Decal collection marked"
+                {"INFO"}, str(len(selected_collections)) + " Decal collection marked"
             )
         return {"FINISHED"}
 
@@ -885,9 +885,10 @@ class MarkPropCollectionOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        prop_collections = filter_collections_selection(selected_objects)
-        # color = "COLOR_" + PROP_COLLECTION_COLOR
-        if len(prop_collections) == 0:
+
+        selected_collections=Collection.get_selected()
+
+        if selected_collections is None:
             self.report(
                 {"ERROR"},
                 "No selected collection, please select collections and retry\n"
@@ -895,7 +896,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        for prop_collection in prop_collections:
+        for prop_collection in selected_collections:
             prop_collection_name = clean_collection_name(prop_collection.name)
             new_name = prop_collection_name
 
@@ -904,7 +905,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
             prop_collection.hide_render = True
         rename_prop_meshes(selected_objects)
 
-        self.report({"INFO"}, str(len(prop_collections)) + " Prop collection marked")
+        self.report({"INFO"}, str(len(selected_collections)) + " Prop collection marked")
         return {"FINISHED"}
 
 
@@ -916,7 +917,7 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
     bl_description = "修复选中模型中的重复材质，例如 MI_Mat.001替换为MI_Mat"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
+        selected_objects = Object.get_selected()
         selected_meshes = filter_type(selected_objects, "MESH")
         if len(selected_meshes) == 0:
             self.report(
@@ -986,7 +987,6 @@ class SetUECollisionOperator(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        collections = filter_collections_selection(selected_objects)
         selected_meshes = filter_type(selected_objects, "MESH")
 
         if len(selected_meshes) == 0:
@@ -1109,21 +1109,11 @@ class IsolateCollectionsAltOperator(bpy.types.Operator):
     bl_label = "Isolate Collections"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
         is_local_view=Viewport.is_local_view()
-
-
-        outliner_objs=Outliner.get_selected_objects()
-        outliner_colls=Outliner.get_selected_collections()
-
-        if outliner_objs:
-            for obj in outliner_objs:
-                if obj not in selected_objects:
-                    selected_objects.append(obj)
-
-        if outliner_colls is None:
-            if selected_objects is None or len(selected_objects)==0:
-
+        selected_collections=Collection.get_selected()
+        selected_objects=Object.get_selected()
+        if selected_collections is None:
+            if selected_objects is None:
                 if is_local_view:
                     self.report(
                         {"INFO"},
@@ -1138,21 +1128,8 @@ class IsolateCollectionsAltOperator(bpy.types.Operator):
                     )
                     return {"CANCELLED"}
             
-        if selected_objects is not None or len(selected_objects)>0:
-
-            selected_collections = filter_collections_selection(selected_objects)
-            if outliner_colls:
-                if selected_collections:
-                    for collection in outliner_colls:
-                        if selected_collections:
-                            if collection not in selected_collections:
-                                selected_collections.append(collection)
-                else:
-                    selected_collections=outliner_colls
-
+        else:
             store_mode = prep_select_mode()
-
-
             if selected_collections:
                 for collection in selected_collections:
                     parent_coll=Collection.find_parent(collection)

@@ -265,7 +265,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
         box.operator("hst.sort_collections", icon="SORTALPHA")
-        box.operator("hst.isolate_collections", icon="HIDE_OFF")
+        # box.operator("hst.isolate_collections", icon="HIDE_OFF")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         
         

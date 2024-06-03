@@ -980,15 +980,15 @@ def clean_collection_name(collection_name: str) -> str:
 
 def filter_collection_by_visibility(type="VISIBLE"):
     """筛选可见或不可见的collection"""
-    all_collections= []
+    all_collections = []
     for collection in bpy.data.collections:
         all_collections.append(collection)
     visible_collections = []
     hidden_collections = []
     for collection in all_collections:
-        layer_coll=Collection.find_layer_collection_coll(collection)
+        layer_coll = Collection.find_layer_collection_coll(collection)
         if layer_coll:
-            if layer_coll.exclude==True:
+            if layer_coll.exclude == True:
                 hidden_collections.append(collection)
 
         if collection.hide_viewport == True:
@@ -1005,7 +1005,6 @@ def filter_collection_by_visibility(type="VISIBLE"):
             return visible_collections
         case "HIDDEN":
             return hidden_collections
-
 
 
 def reset_transform(target_object: bpy.types.Object) -> None:
@@ -1034,14 +1033,11 @@ class FBXExport:
                 hidden_objects.append(target)
                 target.hide_set(False)
 
-
         obj_transform = {}
-
 
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
-
 
             if reset_transform is True:
                 obj_transform[obj] = obj.matrix_world.copy()
@@ -1079,10 +1075,9 @@ class FBXExport:
         for object in hidden_objects:
             object.hide_set(True)
 
-
         if reset_transform is True:
-           for obj in obj_transform:
-            obj.matrix_world = obj_transform[obj]
+            for obj in obj_transform:
+                obj.matrix_world = obj_transform[obj]
 
     def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 fbx"""
@@ -1187,21 +1182,23 @@ def filter_collections_selection(target_objects):
                 for collection in obj.users_collection:
                     if (
                         collection is not None
-                        and SCENE not in collection.name
+                        and collection.name != "Scene Collection"
                         and collection not in processed_collections
                         and not collection.name.startswith("_")
                     ):
                         filtered_collections.append(collection)
                         processed_collections.add(collection)
-    # else:
-    #     a = bpy.context.view_layer.active_layer_collection.collection
-    #     col = bpy.data.collections.get(a.name)
-    #     filtered_collections.append(col)
+    else:
+        a = bpy.context.view_layer.active_layer_collection.collection
+        col = bpy.data.collections.get(a.name)
+        filtered_collections.append(col)
+
 
     if len(filtered_collections)==0:
         return None
     else:
         return filtered_collections
+
 
 
 def filter_collection_types(collections):
@@ -1336,14 +1333,14 @@ def filter_static_meshes(collection) -> tuple:
     ucx_meshes = []
 
     collection_meshes = [obj for obj in collection.all_objects if obj.type == "MESH"]
-    decal_meshes = Object.filter_hst_type(objects=collection_meshes,type="DECAL")
+    decal_meshes = Object.filter_hst_type(objects=collection_meshes, type="DECAL")
     if decal_meshes is None:
         decal_meshes = []
     ucx_meshes = [obj for obj in collection_meshes if obj.name.startswith(UCX_PREFIX)]
     for obj in collection_meshes:
         if obj not in ucx_meshes and obj not in decal_meshes:
             staticmeshes.append(obj)
-    
+
     return staticmeshes, ucx_meshes
 
 
@@ -1520,6 +1517,19 @@ def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
 
 
 class Object:
+    def get_selected():
+        selected_objects = bpy.context.selected_objects
+        outliner_objs=Outliner.get_selected_objects()
+        if outliner_objs:
+            for obj in outliner_objs:
+                if obj not in selected_objects:
+                    selected_objects.append(obj)
+        if len(selected_objects)==0:
+            return None
+        else:
+            return selected_objects
+
+        
     def set_pivot_to_matrix(obj, matrix):
         if obj.type not in ["EMPTY", "FONT"]:
             deltamx = matrix.inverted_safe() @ obj.matrix_world
@@ -1530,19 +1540,19 @@ class Object:
         world_origin_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
         obj.matrix_world = world_origin_matrix
 
-    def add_custom_property(obj:bpy.types.Object, prop_name:str, prop_value:str):
+    def add_custom_property(obj: bpy.types.Object, prop_name: str, prop_value: str):
         obj[prop_name] = prop_value
 
     def read_custom_property(obj, prop_name):
         return obj.get(prop_name)
-    
-    def get_hst_type(object:bpy.types.Object):
+
+    def get_hst_type(object: bpy.types.Object):
         return Object.read_custom_property(object, Const.CUSTOM_TYPE)
 
-    def mark_hst_type(object:bpy.types.Object, type:str):
-        r"""Mark object type as custom property, types: 
-            STATICMESH, DECAL, HIGH, SKELETALMESH, SKELETAL, UCX, SOCKET, 
-            PLACEHOLDER, PROXY"""
+    def mark_hst_type(object: bpy.types.Object, type: str):
+        r"""Mark object type as custom property, types:
+        STATICMESH, DECAL, HIGH, SKELETALMESH, SKELETAL, UCX, SOCKET,
+        PLACEHOLDER, PROXY"""
         type = type.upper()
         match type:
             case "STATICMESH":
@@ -1572,9 +1582,7 @@ class Object:
                     object, Const.CUSTOM_TYPE, Const.TYPE_SPLITSKEL
                 )
             case "SKM":
-                Object.add_custom_property(
-                    object, Const.CUSTOM_TYPE, Const.TYPE_SKM
-                )
+                Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_SKM)
             case "UCX":
                 Object.add_custom_property(object, Const.CUSTOM_TYPE, Const.TYPE_UCX)
             case "SOCKET":
@@ -1632,7 +1640,7 @@ class Object:
             for object in objects:
                 if object not in include_objects:
                     filtered_objects.append(object)
-        if len(filtered_objects)==0:
+        if len(filtered_objects) == 0:
             return None
         return filtered_objects
 
@@ -1644,7 +1652,7 @@ class Object:
                 sorted_objects[object_type] = []
             sorted_objects[object_type].append(object)
         return sorted_objects
-    
+
     def check_empty_mesh(object):
         if object.type == "MESH":
             if len(object.data.vertices) == 0:
@@ -1736,12 +1744,14 @@ class Transform:
         )
         object.select_set(False)
 
+
 # class Files:
 #     def make_dir(path: str):
 #         """检查路径是否存在，不存在则创建"""
 #         if not os.path.exists(path):
 #             os.makedirs(path)
 #         return path
+
 
 class Armature:
     def set_bone_roll(armature, roll=0):
@@ -1789,29 +1799,58 @@ class Armature:
 
 
 class Collection:
-    def sort_order(collection, case_sensitive = False):
+    def sort_order(collection, case_sensitive=False):
 
+        if collection.children is None:
+            return
 
-        if collection.children is None: return
-
-        children = sorted (
-            collection.children, 
-            key = lambda c: c.name if case_sensitive else c.name.lower()
+        children = sorted(
+            collection.children,
+            key=lambda c: c.name if case_sensitive else c.name.lower(),
         )
 
-        for child in children:  
+        for child in children:
             collection.children.unlink(child)
             collection.children.link(child)
             Collection.sort_order(child)
 
-
-
         # for scene in bpy.data.scenes:
         #     sort_order(scene.collection, case_sensitive=True)
 
-    def mark_hst_type(collection:bpy.types.Collection, type:str="PROP"):
+    def get_selected():
+        selected_objects = Object.get_selected()
+        selected_collections=[]
+        if selected_objects:
+            for obj in selected_objects:
+                for collection in obj.users_collection:
+
+                    if (
+                        collection is not None
+                        and collection.name != "Scene Collection"
+                        and collection not in selected_collections
+                        and not collection.name.startswith("_")
+                    ):
+                        selected_collections.append(collection)
+
+
+        
+
+        if len(selected_collections)==0:
+            outliner_collections = Outliner.get_selected_collections()
+            if outliner_collections is not None:
+                for collection in outliner_collections:
+                    if collection not in selected_collections:
+                        selected_collections.append(collection)
+        
+        if len(selected_collections)==0:
+            return None
+        else:
+            return selected_collections
+
+
+    def mark_hst_type(collection: bpy.types.Collection, type: str = "PROP"):
         r"""Mark collection type,types:
-            PROP, DECAL, BAKE_LOW, BAKE_HIGH, SKM, RIG, PROXY"""
+        PROP, DECAL, BAKE_LOW, BAKE_HIGH, SKM, RIG, PROXY"""
         type = type.upper()
         match type:
             case "PROP":
@@ -1850,7 +1889,7 @@ class Collection:
                     collection, Const.CUSTOM_TYPE, Const.TYPE_PROXY_COLLECTION
                 )
 
-    def create(name: str, type:str="PROP") -> bpy.types.Collection:
+    def create(name: str, type: str = "PROP") -> bpy.types.Collection:
         """创建collection,type为PROP,DECAL,BAKE_LOW,BAKE_HIGH,SKM,RIG,PROXY"""
         type = type.upper()
         collection = None
@@ -1869,11 +1908,11 @@ class Collection:
 
         return collection
 
-    def get_hst_type(collection:bpy.types.Collection) -> str:
+    def get_hst_type(collection: bpy.types.Collection) -> str:
         """获取collection类型"""
         collection_type = Object.read_custom_property(collection, Const.CUSTOM_TYPE)
         return collection_type
-    
+
     def filter_hst_type(collections, type, mode="INCLUDE"):
         """Filter collections by type"""
         type = type.upper()
@@ -1909,20 +1948,17 @@ class Collection:
                     if collection_type == None:
                         include_collections.append(collection)
 
-
         if mode == "INCLUDE":
             filtered_collections = include_collections
         elif mode == "EXCLUDE":
             for collection in collections:
                 if collection not in include_collections:
                     filtered_collections.append(collection)
-        if len(filtered_collections)==0:
+        if len(filtered_collections) == 0:
             return None
         return filtered_collections
 
-    
-
-    def sort_hst_types(collections:list):
+    def sort_hst_types(collections: list):
         """筛选collection类型，返回筛选后的collection列表，包括bake,decal,prop,sm,skm,rig"""
         bake_collections = []
         decal_collections = []
@@ -1962,84 +1998,83 @@ class Collection:
             skm_collections,
             rig_collections,
         )
-    
 
     def find_parent(collection):
         parent = dict()
-        
 
-        all_collections=bpy.data.collections
+        all_collections = bpy.data.collections
         for c in all_collections:
             parent[c] = None
         for c in all_collections:
             for ch in c.children:
                 parent[ch] = c
-                
+
         parent_collection = parent[collection]
 
         return parent_collection
-    
 
-    
     def active(collection):
-        """ 激活collection """
-        layer_collection=Collection.find_layer_collection(collection)
+        """激活collection"""
+        layer_collection = Collection.find_layer_collection(collection)
         # layer_collection=Collection.find_layer_collection_coll(collection)
         bpy.context.view_layer.active_layer_collection = layer_collection
 
     def find_layer_collection_all(collection_name):
-        """ 递归查找collection对应的layer_collection """
+        """递归查找collection对应的layer_collection"""
 
         for i in bpy.data.collections:
             layer_collection = bpy.context.view_layer.layer_collection
             layer_collection = Collection.recur_find_parent(layer_collection, i.name)
         return layer_collection
-    
+
     def find_layer_collection_coll(collection):
-        """ 递归查找collection对应的layer_collection """
-        collection_name=collection.name
+        """递归查找collection对应的layer_collection"""
+        collection_name = collection.name
         if collection.objects:
-            object=collection.objects[0]
+            object = collection.objects[0]
 
             for i in object.users_collection:
                 layer_collection = bpy.context.view_layer.layer_collection
-                layer_collection = Collection.recur_find_parent(layer_collection, i.name)
+                layer_collection = Collection.recur_find_parent(
+                    layer_collection, i.name
+                )
             return layer_collection
         else:
             return None
-        
+
     def find_layer_collection(collection):
-        """ 递归查找collection对应的layer_collection """
+        """递归查找collection对应的layer_collection"""
 
         layer_collection = bpy.context.view_layer.layer_collection
-        layer_collection=Collection.recur_find_parent(layer_collection, collection.name)
+        layer_collection = Collection.recur_find_parent(
+            layer_collection, collection.name
+        )
 
         return layer_collection
 
-
     def find_layer_collection_by_name(collection_name):
-        """ 递归查找collection对应的layer_collection """
+        """递归查找collection对应的layer_collection"""
         for collection in bpy.data.collections:
             if collection.name == collection_name:
-                object=collection.objects[0]
+                object = collection.objects[0]
                 break
         # obj = bpy.context.object
         for i in object.users_collection:
             layer_collection = bpy.context.view_layer.layer_collection
             layer_collection = Collection.recur_find_parent(layer_collection, i.name)
         return layer_collection
-    
+
     def recur_find_parent(layer_collection, collection_name):
         found = None
-        if (layer_collection.name == collection_name):
+        if layer_collection.name == collection_name:
             return layer_collection
         for layer in layer_collection.children:
             found = Collection.recur_find_parent(layer, collection_name)
             if found:
                 return found
 
-class VertexColor:
 
+class VertexColor:
 
     def remove_all(mesh: bpy.types.Object) -> bool:
         """为选中的物体删除所有顶点色属性"""
@@ -2051,11 +2086,11 @@ class VertexColor:
                 color_attributes.remove(color_attributes[r])
             success = True
         return success
-    
-    def remove_attr_by_name(mesh:bpy.types.Object, name:str, mode:str="INCLUDE"):
+
+    def remove_attr_by_name(mesh: bpy.types.Object, name: str, mode: str = "INCLUDE"):
 
         for attr in mesh.data.color_attributes:
-            
+
             match mode:
                 case "INCLUDE":
                     if attr.name == name:
@@ -2066,15 +2101,14 @@ class VertexColor:
                         if attr.name != name:
                             mesh.data.color_attributes.remove(attr)
 
-
     def add_curvature(mesh):
         """为选中的mesh添加curvature vertex color层"""
-        visibility=mesh.visible_get()
+        visibility = mesh.visible_get()
         if visibility is False:
             mesh.hide_viewport = False
         bpy.context.view_layer.objects.active = mesh
         current_mode = bpy.context.object.mode
-        CUVRATURE="Curvature"
+        CUVRATURE = "Curvature"
 
         if CUVRATURE in mesh.data.color_attributes:
             color_attribute = mesh.data.color_attributes.get(CUVRATURE)
@@ -2084,21 +2118,28 @@ class VertexColor:
             name=CUVRATURE,
             type="BYTE_COLOR",
             domain="CORNER",
-            )
+        )
 
         mesh.data.attributes.active_color = vertex_color_layer
 
         if current_mode != "VERTEX_PAINT":
             bpy.ops.object.mode_set(mode="VERTEX_PAINT")
 
-        bpy.ops.paint.vertex_color_dirt(blur_strength=1,blur_iterations=1,clean_angle=3.14159,dirt_angle=0,dirt_only=False,normalize=True)
+        bpy.ops.paint.vertex_color_dirt(
+            blur_strength=1,
+            blur_iterations=1,
+            clean_angle=3.14159,
+            dirt_angle=0,
+            dirt_only=False,
+            normalize=True,
+        )
         bpy.ops.object.mode_set(mode=current_mode)
         if visibility is False:
             mesh.hide_viewport = True
 
-    def set_alpha(mesh,alpha_value,vertexcolor_name: str):
+    def set_alpha(mesh, alpha_value, vertexcolor_name: str):
 
-        visibility=mesh.visible_get()
+        visibility = mesh.visible_get()
         if visibility is False:
             mesh.hide_viewport = False
         bpy.context.view_layer.objects.active = mesh
@@ -2112,13 +2153,13 @@ class VertexColor:
         # assert bpy.context.mode == 'PAINT_VERTEX'
 
         # mesh = bpy.context.object.data
-        mesh=mesh.data
+        mesh = mesh.data
         ca = mesh.attributes.active_color
-        if ca.domain == 'POINT':
+        if ca.domain == "POINT":
             for vi, v in enumerate(mesh.vertices):
                 if v.select:
                     ca.data[vi].color[3] = alpha_value
-        elif ca.domain == 'CORNER':
+        elif ca.domain == "CORNER":
             for li, l in enumerate(mesh.loops):
                 if mesh.vertices[l.vertex_index].select:
                     ca.data[li].color[3] = alpha_value
@@ -2127,8 +2168,9 @@ class VertexColor:
         if visibility is False:
             mesh.hide_viewport = True
 
+
 class MeshAttributes:
-    def add(mesh,attribute_name:str,data_type:str,domain:str):
+    def add(mesh, attribute_name: str, data_type: str, domain: str):
 
         if attribute_name not in mesh.data.attributes:
             target_attribute = mesh.data.attributes.new(
@@ -2143,11 +2185,11 @@ class MeshAttributes:
 
         return target_attribute
 
-    
-    def fill_points(mesh,attribute,value:float):
-        value=float(value)
+    def fill_points(mesh, attribute, value: float):
+        value = float(value)
         attribute_values = [value for i in range(len(mesh.data.vertices))]
         attribute.data.foreach_set("value", attribute_values)
+
 
 class Viewport:
     # def is_object_in_local_view(object):
@@ -2155,97 +2197,104 @@ class Viewport:
     #         return True
     #     else:
     #         return False
-        
+
     def is_local_view():
-        is_local_view=False
+        is_local_view = False
         if bpy.context.space_data.local_view:
-            is_local_view=True
+            is_local_view = True
         return is_local_view
-    
+
     def get_3dview_space():
-        target_space=None
-        area=check_screen_area("VIEW_3D")
+        target_space = None
+        area = check_screen_area("VIEW_3D")
         if area:
             for space in area.spaces:
                 if "View3D" in str(space):
-                    target_space=space
+                    target_space = space
                     break
         return target_space
 
 
-
-def copy_to_clip(txt:str):
-    """ copy text string to clipboard """
-    cmd='echo '+txt.strip()+'|clip'
+def copy_to_clip(txt: str):
+    """copy text string to clipboard"""
+    cmd = "echo " + txt.strip() + "|clip"
     return subprocess.check_call(cmd, shell=True)
-
 
 
 class Outliner:
     def get_selected_object_ids():
-        area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+        area = next(
+            area for area in bpy.context.window.screen.areas if area.type == "OUTLINER"
+        )
 
         with bpy.context.temp_override(
             window=bpy.context.window,
             area=area,
-            region=next(region for region in area.regions if region.type == 'WINDOW'),
-            screen=bpy.context.window.screen
+            region=next(region for region in area.regions if region.type == "WINDOW"),
+            screen=bpy.context.window.screen,
         ):
             ids = bpy.context.selected_ids
             objects_in_selection = []
             for item in ids:
                 if item.bl_rna.identifier == "Object":
                     objects_in_selection.append(item.name)
-                        
-        if len(objects_in_selection)==0:
+
+        if len(objects_in_selection) == 0:
             return None
-        else:              # Print the dict to the console
+        else:  # Print the dict to the console
             return objects_in_selection
-        
+
     def get_selected_collection_ids():
-        area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
+        area = next(
+            area for area in bpy.context.window.screen.areas if area.type == "OUTLINER"
+        )
 
         with bpy.context.temp_override(
             window=bpy.context.window,
             area=area,
-            region=next(region for region in area.regions if region.type == 'WINDOW'),
-            screen=bpy.context.window.screen
+            region=next(region for region in area.regions if region.type == "WINDOW"),
+            screen=bpy.context.window.screen,
         ):
             ids = bpy.context.selected_ids
             objects_in_selection = []
             for item in ids:
                 if item.bl_rna.identifier == "Collection":
                     objects_in_selection.append(item.name)
-                        
-        if len(objects_in_selection)==0:
+
+        if len(objects_in_selection) == 0:
             return None
-        else:              # Print the dict to the console
+        else:  # Print the dict to the console
             return objects_in_selection
-        
+
     def get_selected_objects():
-        selection_ids=Outliner.get_selected_object_ids()
-        objects=[]
+        """return selected outliner objects"""
+        selection_ids = Outliner.get_selected_object_ids()
+        objects = []
         if selection_ids is not None:
             for id in selection_ids:
                 if bpy.context.scene.objects[id]:
                     objects.append(bpy.context.scene.objects[id])
-        if len(objects) ==0:
+        if len(objects) == 0:
             return None
         else:
             return objects
-        
+
     def get_selected_collections():
-        selection_ids=Outliner.get_selected_collection_ids()
-        objects=[]
-        print(selection_ids)
+        """
+        return selected outliner collections
+        """
+        # print_selected_collections()
+        selection_ids = Outliner.get_selected_collection_ids()
+        objects = []
         if selection_ids is not None:
             for id in selection_ids:
                 if bpy.data.collections[id]:
                     objects.append(bpy.data.collections[id])
-        if len(objects) ==0:
+        if len(objects) == 0:
             return None
         else:
             return objects
+
 
 # def print_selected_collections():
 #     area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
