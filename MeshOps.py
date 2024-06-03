@@ -385,7 +385,7 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                 for obj in collection_objs:
                         if obj not in existing_origin_objects:
                             asset_objs.append(obj)
-            else:
+            else: #没有origin时asset objs为collection下所有objects
                 asset_objs=collection_objs
 
 
@@ -395,6 +395,9 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                 for obj in asset_objs:
                     if obj.parent is None:
                         new_asset_objs.append(obj)
+                    else:
+                        if obj.parent!=existing_origin_objects[0]: #父对象不是origin
+                            new_asset_objs.append(obj)
                 asset_objs=new_asset_objs 
                 existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
                 origin_object=existing_origin_objects[0]
@@ -421,87 +424,16 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                 object.select_set(True)
                 origin_object.select_set(True)
                 bpy.context.view_layer.objects.active = origin_object
-                # with bpy.context.temp_override(
-                #     active_object=origin_object
-                # ):
                 bpy.ops.object.parent_no_inverse_set(keep_transform=True)
                 object.select_set(False)
                 origin_object.select_set(False)
+                
         restore_select_mode(store_mode)
 
         self.report({"INFO"}, f"{new_origins_count} new origins created")
 
         return {"FINISHED"}
     
-
-class BatchAddAssetOriginAltOperator(bpy.types.Operator):
-    bl_idname = "hst.batch_add_asset_origin_alt"
-    bl_label = "Add All Prop Asset Origin Alt"
-    bl_description = "为所有Prop Collection添加Asset Origin"\
-
-    def execute(self, context):
-        prop_collections = Collection.filter_hst_type(collections=bpy.data.collections,type="PROP",mode="INCLUDE")
-
-        if prop_collections is None:
-            self.report({"ERROR"},"No Prop Collections, mark prop collections with 'Mark Prop' first")
-            return {"CANCELLED"}
-        
-        #if has origin 1. parent children to old origin 2. store origin matrix 3. move origin to world center 
-        #3. disamble origin collections . 4. reset child transforms. 5. create new origin 6. move back
-
-
-
-        # new_origins_count=0
-        # for collection in prop_collections:
-        #     collection_objs=[]
-        #     for obj in collection.all_objects:
-        #         collection_objs.append(obj)
-        #     existing_origin_objects=Object.filter_hst_type(objects=collection_objs,type="ORIGIN",mode="INCLUDE")
-            
-        #     asset_objs=[]
-        #     if existing_origin_objects is not None:
-        #         for obj in collection_objs:
-        #                 if obj not in existing_origin_objects:
-        #                     asset_objs.append(obj)
-        #     else:
-        #         asset_objs=collection_objs
-
-
-
-        #     if existing_origin_objects is not None:
-        #         new_asset_objs=[]
-        #         for obj in asset_objs:
-        #             if obj.parent is None:
-        #                 new_asset_objs.append(obj)
-        #         asset_objs=new_asset_objs 
-        #         existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
-        #         origin_object=existing_origin_objects[0]
-        #         self.report({"INFO"}, f"{collection.name} has Asset Origin already")
-
-
-        #     else:
-        #         origin_name = ORIGIN_PREFIX + collection.name
-        #         origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-
-
-        #         origin_object.matrix_world=Const.WORLD_ORIGIN_MATRIX
-
-        #         origin_object.empty_display_type = "PLAIN_AXES"
-        #         origin_object.empty_display_size = 0.4
-        #         origin_object.show_name = True
-        #         collection.objects.link(origin_object)
-        #         Object.mark_hst_type(origin_object, "ORIGIN")
-        #         new_origins_count +=1
-
-
-
-        #     for object in asset_objs:
-        #         object.parent = origin_object
-        #         object.matrix_parent_inverse = origin_object.matrix_world.inverted()
-
-        # self.report({"INFO"}, f"{new_origins_count} new origins created")
-
-        return {"FINISHED"}
 
 
 class HST_SwatchMatSetupOperator(bpy.types.Operator):
