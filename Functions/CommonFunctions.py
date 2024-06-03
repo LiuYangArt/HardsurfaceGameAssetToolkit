@@ -82,25 +82,6 @@ def check_collection_exist(collection_name: str) -> bool:
     return collection_exist
 
 
-# def create_collection(
-#     collection_name: str, color_num: str = "01"
-# ) -> bpy.types.Collection:
-#     """创建collection"""
-#     collection = None
-#     collection_exist = False
-
-#     for collection in bpy.data.collections:  # 有则返回，无则创建
-#         if collection.name == collection_name:
-#             collection_exist = True
-#             collection = bpy.data.collections[collection_name]
-#             break
-#     if collection_exist == False:  # 创建collection,并添加到scene
-#         collection = bpy.data.collections.new(collection_name)
-#         collection.color_tag = "COLOR_" + color_num
-#         bpy.context.scene.collection.children.link(collection)
-
-#     return collection
-
 
 def clean_user(target_object: bpy.types.Object) -> None:
     """如果所选object有多个user，转为single user"""
@@ -2076,6 +2057,27 @@ class Collection:
 
 class VertexColor:
 
+
+    def add(
+    target_object: bpy.types.Object, vertexcolor_name: str
+    ) -> bpy.types.Object:
+        """为选中的物体添加顶点色属性，返回顶点色属性"""
+        if target_object.type == "MESH":
+            if vertexcolor_name in target_object.data.color_attributes:
+                color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
+            else:
+                color_attribute = target_object.data.color_attributes.new(
+                    name=vertexcolor_name,
+                    type="BYTE_COLOR",
+                    domain="CORNER",
+                )
+            print(f"{target_object} has vertexcolor {color_attribute.name}")
+            return color_attribute
+        else:
+            print(target_object + " is not mesh object")
+            return None
+        
+
     def remove_all(mesh: bpy.types.Object) -> bool:
         """为选中的物体删除所有顶点色属性"""
         success = False
@@ -2108,14 +2110,13 @@ class VertexColor:
             mesh.hide_viewport = False
         bpy.context.view_layer.objects.active = mesh
         current_mode = bpy.context.object.mode
-        CUVRATURE = "Curvature"
 
-        if CUVRATURE in mesh.data.color_attributes:
-            color_attribute = mesh.data.color_attributes.get(CUVRATURE)
+        if CURVATURE_ATTR in mesh.data.color_attributes:
+            color_attribute = mesh.data.color_attributes.get(CURVATURE_ATTR)
             mesh.data.color_attributes.remove(color_attribute)
 
         vertex_color_layer = mesh.data.color_attributes.new(
-            name=CUVRATURE,
+            name=CURVATURE_ATTR,
             type="BYTE_COLOR",
             domain="CORNER",
         )
@@ -2150,9 +2151,7 @@ class VertexColor:
         if vertexcolor_name in mesh.data.color_attributes:
             color_attribute = mesh.data.color_attributes.get(vertexcolor_name)
         mesh.data.attributes.active_color = color_attribute
-        # assert bpy.context.mode == 'PAINT_VERTEX'
 
-        # mesh = bpy.context.object.data
         mesh = mesh.data
         ca = mesh.attributes.active_color
         if ca.domain == "POINT":
@@ -2176,10 +2175,6 @@ class MeshAttributes:
             target_attribute = mesh.data.attributes.new(
                 attribute_name, data_type, domain
             )
-            # for index, edge in enumerate(mesh.data.edges):
-            #     target_attribute.data[index].value = (
-            #         1.0 if edge.use_edge_sharp else 0.0
-            # )
         else:
             target_attribute = mesh.data.attributes[attribute_name]
 
@@ -2192,12 +2187,6 @@ class MeshAttributes:
 
 
 class Viewport:
-    # def is_object_in_local_view(object):
-    #     if object.layers_local_view[0]:
-    #         return True
-    #     else:
-    #         return False
-
     def is_local_view():
         is_local_view = False
         if bpy.context.space_data.local_view:
@@ -2296,25 +2285,3 @@ class Outliner:
             return objects
 
 
-# def print_selected_collections():
-#     area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
-
-#     with bpy.context.temp_override(
-#         window=bpy.context.window,
-#         area=area,
-#         region=next(region for region in area.regions if region.type == 'WINDOW'),
-#         screen=bpy.context.window.screen
-#     ):
-#         ids = bpy.context.selected_ids
-#         names = [o.name for o in ids]
-#         print(f"selected in out liner {names}" )
-
-#     # area  = next(area for area in bpy.context.window.screen.areas if area.type == 'OUTLINER')
-
-#     # with bpy.context.temp_override(
-#     #     window=bpy.context.window,
-#     #     area=area,
-#     #     region=next(region for region in area.regions if region.type == 'WINDOW'),
-#     #     screen=bpy.context.window.screen
-#     # ):
-#     #     print_selected_collections()

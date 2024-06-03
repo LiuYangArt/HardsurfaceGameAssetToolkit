@@ -132,43 +132,6 @@ class HST_BatchBevel(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# class HST_SetBevelParameters_Operator(bpy.types.Operator):
-#     bl_idname = "hst.hstbevelsetparam"
-#     bl_label = "Set HSTBevel Parameters"
-#     bl_description = "修改HST Bevel修改器参数"
-
-#     def execute(self, context):
-#         parameters = context.scene.hst_params
-#         selected_objects = bpy.context.selected_objects
-#         if len(selected_objects) == 0:
-#             self.report(
-#                 {"ERROR"},
-#                 "No selected object, please select objects and retry\n"
-#                 + "没有选中的Object，请选中物体后重试",
-#             )
-#             return {"CANCELLED"}
-        
-#         bevel_width = convert_length_by_scene_unit(parameters.set_bevel_width)
-
-#         success_count = 0
-#         for object in selected_objects:
-#             for modifier in object.modifiers:
-#                 if modifier.name == BEVEL_MODIFIER:
-#                     modifier.segments = parameters.set_bevel_segments
-#                     modifier.width = bevel_width
-#                     success_count += 1
-#                     continue
-#         self.report(
-#             {"INFO"},
-#             "Set Bevel Modifier Parameters to "
-#             + str(parameters.set_bevel_segments)
-#             + " segments and "
-#             + str(bevel_width)
-#             + " width for "
-#             + str(success_count)
-#             + " objects",
-#         )
-#         return {"FINISHED"}
 
 def prep_wearmask_objects(selected_objects):
     """ process meshes for wearmask baking """
@@ -186,7 +149,7 @@ def prep_wearmask_objects(selected_objects):
         Transform.apply(mesh, location=True, rotation=True, scale=True)
         cleanup_color_attributes(mesh)
         add_vertexcolor_attribute(mesh, WEARMASK_ATTR)
-        # add_vertexcolor_attribute(mesh, CURVATURE_ATTR)
+        # VertexColor.add(mesh, CURVATURE_ATTR)
         set_active_color_attribute(mesh, WEARMASK_ATTR)
         remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
         remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
@@ -201,6 +164,7 @@ def prep_wearmask_objects(selected_objects):
         mesh.hide_render = True
 
     for proxy_object in proxy_object_list:  # 处理proxy模型
+        print(f"name:{proxy_object.name}")
         cleanup_color_attributes(proxy_object)
         add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
         # VertexColor.add_curvature(proxy_object)
