@@ -494,65 +494,105 @@ class MakeDecalCollection(bpy.types.Operator):
     bl_description = "添加对应的Decal Collection"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes)==0:
+        target_collections=Collection.get_selected()
+        if target_collections is None:
             self.report(
                 {"ERROR"},
-                "No selected mesh object, please select mesh objects and retry | \n"
-                + "没有选中Mesh物体，请选中Mesh物体后重试",
+                "No collection selected | \n"
+                + "没有选中的Collection",
             )
             return {"CANCELLED"}
         
-        collection = get_collection(selected_meshes[0])
-        if collection is None:
-            self.report(
-                {"ERROR"},
-                "Not in Collection | \n"
-                + "所选物体不在Collection中",
-            )
-            return {"CANCELLED"}
-        target_collections=filter_collections_selection(selected_objects)
-        for collection in target_collections:
 
-            if collection is not None:
-                collection_type=Collection.get_hst_type(collection)
-                if collection_type == "DECAL":
+        for collection in target_collections:
+            decal_collection=None
+            has_parent=False
+            has_decal_coll=False
+            remove_file_collection=False
+
+            collection_type=Collection.get_hst_type(collection)
+            if collection_type == "Decal_Collection":
+                parent_collection=Collection.find_parent(collection)
+                if parent_collection.name != "Scene Collection":
+                    has_parent=True
                     self.report({"INFO"}, f"{collection.name} is already a decal collection")
-                    return {'CANCELLED'}
+                else:
+                    self.report(
+                        {"ERROR"},
+                        "Decal Collection must be a child of a Collection | \n"
+                        + "Decal Collection必须为Collection的子Collection",
+                    )
+                    continue
+                decal_collection=collection
+
+
+
+            if collection.children is not None:
+                for child_collection in collection.children:
+                    child_type=Collection.get_hst_type(child_collection)
+                    if child_type == "Decal_Collection":
+                        decal_collection=child_collection
+                        has_decal_coll=True
+
+            if has_parent: #当前为Decal Collection且有父Collection时
+                decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
+                decal_collection_name=parent_collection.name+"_Decal"
+                # decal_collection.name=decal_collection_name
+
+            elif has_decal_coll: #当前Collection下已有Decal Collection时
+                decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
+                decal_collection_name=collection.name+"_Decal"
+                # decal_collection.name=decal_collection_name
+            
+            else: #当前Collection下没有Decal Collection时
                 decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
                 decal_collection_name=collection.name+"_Decal"
                 decal_collection = None
-                print(f"decal_collection_name: {decal_collection_name}")
 
+
+            for decal_mesh in decal_meshes:
+                Transform.apply_scale(decal_mesh)
+
+
+
+            for file_collection in bpy.data.collections: #collection 命名冲突时
+
+                if file_collection.name == decal_collection_name and file_collection is not decal_collection:
+                    file_c_parent=Collection.find_parent(file_collection)
+                    if file_c_parent: #有parent 时根据parent命名
+                        file_collection.name=file_c_parent.name+"_Decal"
+                    else: #无parent时删除并把包含的decal移入当前collection
+                        fc_decal_meshes=Object.filter_hst_type(objects=file_collection.all_objects, type="DECAL", mode="INCLUDE")
+                        if fc_decal_meshes:
+                            if decal_meshes:
+                                decal_meshes.extend(fc_decal_meshes)
+                            else:
+                                decal_meshes=fc_decal_meshes
+                        file_collection.name="bak_"+file_collection.name
+                        remove_file_collection=True
+                    break
+                        
+
+
+            if decal_collection is not None:
+                decal_collection.name=decal_collection_name
+            elif decal_collection is None: #新建Decal Collection
+                decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
+                collection.children.link(decal_collection)
+                bpy.context.scene.collection.children.unlink(decal_collection)
+                self.report({"INFO"}, f"{decal_collection_name} is created")
+                
+            decal_collection.hide_render = True
+            Collection.active(decal_collection)
+
+            if decal_meshes:
                 for decal_mesh in decal_meshes:
-                    # Transform.apply(object=decal_mesh,location=False,rotation=False,scale=True)
-                    Transform.apply_scale(decal_mesh)
 
-                for file_collection in bpy.data.collections:
-                    print(f"file_collection.name: {file_collection.name}")
-                    if file_collection.name == decal_collection_name:
-                        decal_collection= file_collection
-                        Collection.mark_hst_type(decal_collection, "DECAL")
-                        self.report({"INFO"}, f"{decal_collection_name} is already exist")
-                        break
+                    decal_mesh.users_collection[0].objects.unlink(decal_mesh)
+                    decal_collection.objects.link(decal_mesh)
 
-
-                if decal_collection is None:
-                    decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
-                    collection.children.link(decal_collection)
-                    bpy.context.scene.collection.children.unlink(decal_collection)
-                    self.report({"INFO"}, f"{decal_collection_name} is created")
-                decal_collection.hide_render = True
-                for object in selected_objects:
-                    object.select_set(False)
-                if decal_meshes is not None:
-                    for decal_mesh in decal_meshes:
-                        if decal_mesh.users_collection[0]==collection:
-                            collection.objects.unlink(decal_mesh)
-                            decal_collection.objects.link(decal_mesh)
-                        decal_mesh.select_set(True)
-                Collection.active(decal_collection)
+            if remove_file_collection:
+                bpy.data.collections.remove(file_collection)
 
         return {'FINISHED'}
     

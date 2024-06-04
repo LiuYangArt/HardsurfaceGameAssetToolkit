@@ -418,9 +418,10 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
             
             
             for object in asset_objs:
+                
                 # object.parent = origin_object
                 # object.matrix_parent_inverse = origin_object.matrix_world.inverted()
-
+                #TBD: REPLACE WITH MATRIX MATH
                 object.select_set(True)
                 origin_object.select_set(True)
                 bpy.context.view_layer.objects.active = origin_object
@@ -1196,6 +1197,43 @@ class PivotToParentOriginOperator(bpy.types.Operator):
                 parent_matrix=object.parent.matrix_world.copy()
                 Object.set_pivot_to_matrix(obj=object,matrix=parent_matrix)
 
-        
-
         return {'FINISHED'}
+
+
+class BreakLinkFromLibraryOperator(bpy.types.Operator):
+    bl_idname = "hst.break_link_from_library"
+    bl_label = "Break Link From Library"
+    bl_description = "Break Link From Library"
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes=filter_type(selected_objects,"MESH")
+        count=0
+        unlinked_meshes=[]
+        if selected_meshes is None:
+            self.report({"INFO"}, "No meshes selected, please select mesh and retry")
+            return {'CANCELLED'}
+        else:
+            for mesh in selected_meshes:
+                obj_collection = mesh.users_collection[0]
+                unlinked_mesh =mesh.copy()
+                unlinked_mesh.data = mesh.data.copy()
+                
+                obj_collection.objects.link(unlinked_mesh)
+                unlinked_meshes.append(unlinked_mesh)
+                mesh_data=mesh.data
+                mesh_name=mesh.name
+                bpy.data.objects.remove(mesh)
+                bpy.data.meshes.remove(mesh_data)
+                unlinked_mesh.name = mesh_name
+                count+=1
+            for mesh in unlinked_meshes:
+                mesh.select_set(True)
+            self.report({"INFO"}, f"{count} meshes break link from library")
+                
+            
+
+
+        
+        return {'FINISHED'}
+

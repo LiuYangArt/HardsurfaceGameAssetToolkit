@@ -61,26 +61,27 @@ class StaticMeshExportOperator(bpy.types.Operator):
         if len(target_collections) > 0:
             # save origin objects transform and move to world origin
             origin_transform = {}
+            invisible_origin_colls=[]
             for collection in target_collections:
-                # print(f"collection name {collection.name}")
                 origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
 
-
-
                 if origin_objects:
-                    origin_visibility=True
-                    for obj in collection.objects:
-                        if obj in origin_objects:
-                            
-                            origin_visibility=obj.visible_get()
-                            origin_transform[obj] = obj.matrix_world.copy()
-                            obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
-
+                    origin_obj=origin_objects[0]
+                    origin_visibility=origin_obj.visible_get()
+                    print(f"{collection.name} origin {origin_obj} vis: {origin_visibility}")
+                    origin_transform[origin_obj] = origin_obj.matrix_world.copy()
+                    origin_obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
+                    
                     if origin_visibility is False:
                         if collection.children:
                             for child_coll in collection.children:
-                                target_collections.remove(child_coll)
-                        target_collections.remove(collection)
+                                invisible_origin_colls.append(child_coll)
+                        invisible_origin_colls.append(collection)
+
+            for collection in invisible_origin_colls:
+                if collection in target_collections:
+                    target_collections.remove(collection)
+    
 
 
             for collection in target_collections:
@@ -93,8 +94,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
 
             if len(origin_transform)>0: #reset origin transform
-                for obj in origin_transform:
-                    obj.matrix_world=origin_transform[obj]
+                for origin_obj in origin_transform:
+                    origin_obj.matrix_world=origin_transform[origin_obj]
 
         skm_count=0
         if len(skm_collections) > 0:

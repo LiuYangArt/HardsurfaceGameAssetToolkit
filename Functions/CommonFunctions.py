@@ -31,13 +31,17 @@ def rename_meshes(target_objects, new_name) -> None:
 
 def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object:
     """筛选某种类型的object"""
-    filtered_objets = []
+    filtered_objects = []
     type = str.upper(type)
 
     for object in target_objects:
         if object.type == type:
-            filtered_objets.append(object)
-    return filtered_objets
+            filtered_objects.append(object)
+
+    if len(filtered_objects) == 0: 
+        return None
+    else:
+        return filtered_objects
 
 
 def filter_name(

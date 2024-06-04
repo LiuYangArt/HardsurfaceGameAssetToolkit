@@ -268,6 +268,8 @@ class HST_PT_TOOLS(bpy.types.Panel):
         # box.operator("hst.isolate_collections", icon="HIDE_OFF")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         box.operator("hst.pivot_to_parent_origin", icon="PIVOT_BOUNDBOX")
+        box.operator("hst.break_link_from_library", icon="UNLINKED")
+        
         
         
         
