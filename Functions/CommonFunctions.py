@@ -2289,3 +2289,13 @@ class Outliner:
             return objects
 
 
+class FilePath:
+    
+    def open_os_path(path:str):
+        
+        os.startfile(path) 
+        # if platform.system() == "Windows":
+        #     os.startfile(path)
+        # else:
+        #     opener = "open" if platform.system() == "Darwin" else "xdg-open"
+        #     subprocess.call([opener, path])

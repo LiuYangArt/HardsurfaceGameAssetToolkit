@@ -1185,19 +1185,19 @@ class IsolateCollectionsAltOperator(bpy.types.Operator):
 
         
 
-class PivotToParentOriginOperator(bpy.types.Operator):
-    bl_idname = "hst.pivot_to_parent_origin"
-    bl_label = "Pivot To Parent Origin"
+# class PivotToParentOriginOperator(bpy.types.Operator):
+#     bl_idname = "hst.pivot_to_parent_origin"
+#     bl_label = "Pivot To Parent Origin"
 
-    def execute(self, context):
-        selected_objects = Object.get_selected()
+#     def execute(self, context):
+#         selected_objects = Object.get_selected()
 
-        for object in selected_objects:
-            if object.parent is not None:
-                parent_matrix=object.parent.matrix_world.copy()
-                Object.set_pivot_to_matrix(obj=object,matrix=parent_matrix)
+#         for object in selected_objects:
+#             if object.parent is not None:
+#                 parent_matrix=object.parent.matrix_world.copy()
+#                 Object.set_pivot_to_matrix(obj=object,matrix=parent_matrix)
 
-        return {'FINISHED'}
+#         return {'FINISHED'}
 
 
 class BreakLinkFromLibraryOperator(bpy.types.Operator):

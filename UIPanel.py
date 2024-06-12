@@ -98,6 +98,7 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_order = 0
 
     # @classmethod
     # def poll(cls, context):
@@ -136,6 +137,7 @@ class HST_PT_HST(bpy.types.Panel):
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_order = 1
 
     def draw(self, context):
         parameters = context.scene.hst_params
@@ -239,6 +241,8 @@ class HST_PT_TOOLS(bpy.types.Panel):
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_order = 9
 
     def draw(self, context):
         parameters = context.scene.hst_params
@@ -262,12 +266,12 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
         box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
-        box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
+        # box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
         box.operator("hst.sort_collections", icon="SORTALPHA")
         # box.operator("hst.isolate_collections", icon="HIDE_OFF")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
-        box.operator("hst.pivot_to_parent_origin", icon="PIVOT_BOUNDBOX")
+        # box.operator("hst.pivot_to_parent_origin", icon="PIVOT_BOUNDBOX")
         box.operator("hst.break_link_from_library", icon="UNLINKED")
         
         
@@ -284,6 +288,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_order = 2
 
     def draw(self, context):
         parameters = context.scene.hst_params
@@ -298,11 +303,15 @@ class HST_PT_EXPORT(bpy.types.Panel):
         )
         box_column.prop(parameters, "export_path", text="Path")
         box_column.prop(parameters, "use_armature_as_root")
+        box_column.operator(
+            "hst.open_file_explorer", icon="FILEBROWSER"
+        )
+        
         # box_column.separator()
-        ue_io_row = box_column.row(align=True)  
-        ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
-        ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
-        box_column.prop(parameters, "unreal_path")
+        # ue_io_row = box_column.row(align=True)  
+        # ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
+        # ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
+        # box_column.prop(parameters, "unreal_path")
         # box_column.operator("hst.testfunc")
 
 class HST_PT_Skeletel(bpy.types.Panel):
@@ -311,6 +320,7 @@ class HST_PT_Skeletel(bpy.types.Panel):
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
+    bl_order = 3
 
     def draw(self, context):
 

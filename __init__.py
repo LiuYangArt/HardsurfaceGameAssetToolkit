@@ -1,7 +1,7 @@
 bl_info = {
     "name": "HardsurfaceGameAssetToolkit",
-    "author": "Akari,LiuYang",
-    "description": "用于tf项目自定义流程游戏资产制作的blender插件",
+    "author": "LiuYang",
+    "description": "用于自定义流程游戏资产制作的blender插件",
     "blender": (4, 1, 0),
     "version": (2024, 6),
     "location": "",

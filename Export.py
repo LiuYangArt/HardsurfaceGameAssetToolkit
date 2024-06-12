@@ -129,7 +129,28 @@ class StaticMeshExportOperator(bpy.types.Operator):
         )
         return {"FINISHED"}
 
-from mathutils import Matrix, Vector
+class OpenFileExplorer(bpy.types.Operator):
+    bl_idname = "hst.open_file_explorer"
+    bl_label = "Open Explorer"
+
+    def execute(self, context):
+        parameters = context.scene.hst_params
+        export_path = parameters.export_path.replace("\\", "/")
+        if export_path == "":
+            self.report(
+                {"ERROR"},
+                "No export path set, please set export path and retry | "
+                + "没有设置导出路径，请设置导出路径后重试",
+            )
+            return {"CANCELLED"}
+        if export_path.endswith("/") is False:
+            export_path = export_path + "/"
+        FilePath.open_os_path(export_path)
+
+
+        return {"FINISHED"}
+
+
 class TestFuncOperator(bpy.types.Operator):
     bl_idname = "hst.testfunc"
     bl_label = "TestFunc"
