@@ -1243,20 +1243,20 @@ def filter_collection_types(collections):
     )
 
 
-def check_open_bondary(mesh) -> bool:
-    """检查是否存在开放边"""
-    bm = bmesh.new()
-    bm.from_mesh(mesh.data)
-    check_result = False
-    for edge in bm.edges:
-        if edge.is_boundary:
-            print("open edge")
-            check_result = True
-            break
-    bm.clear()
-    bm.free()
+# def check_open_bondary(mesh) -> bool:
+#     """检查是否存在开放边"""
+#     bm = bmesh.new()
+#     bm.from_mesh(mesh.data)
+#     check_result = False
+#     for edge in bm.edges:
+#         if edge.is_boundary:
+#             print("open edge")
+#             check_result = True
+#             break
+#     bm.clear()
+#     bm.free()
 
-    return check_result
+#     return check_result
 
 
 def prep_select_mode() -> tuple:
@@ -2299,3 +2299,19 @@ class FilePath:
         # else:
         #     opener = "open" if platform.system() == "Darwin" else "xdg-open"
         #     subprocess.call([opener, path])
+
+class Mesh:
+
+    def check_open_bondary(mesh) -> bool:
+        """检查是否存在开放边"""
+        bm = bmesh.new()
+        bm.from_mesh(mesh.data)
+        check_result = False
+        for edge in bm.edges:
+            if edge.is_boundary:
+                check_result = True
+                break
+        bm.clear()
+        bm.free()
+
+        return check_result

@@ -52,14 +52,29 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 if collection.name != "Scene Collection":
                     collection.name = new_collection_name
 
+        all_meshes_ok=False
+        bad_mesh_count=0
+        bad_mesh_names=[]
+
         for mesh in selected_meshes:
-            check_mesh = check_open_bondary(mesh)
+            check_mesh=Mesh.check_open_bondary(mesh)
             if check_mesh is True:
-                self.report(
+                bad_mesh_count+=1
+                bad_mesh_names.append(mesh.name)
+            
+
+        if all_meshes_ok is False:
+            print(f"Bad Meshes: {bad_mesh_names}")
+            self.report(
                     {"ERROR"},
-                    f"Selected mesh: {mesh.name} has open boundary, please check | 选中的模型有开放边界，请检查",
+                    f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界 {bad_mesh_names}",
                 )
-                return {"CANCELLED"}
+
+            return {"CANCELLED"}
+        
+        #if meshes are not all ok, continue
+
+        for mesh in selected_meshes:
             Transform.apply(mesh, location=True, rotation=True, scale=True)
             clean_mid_verts(mesh)
             clean_loose_verts(mesh)
@@ -131,7 +146,7 @@ class CleanVertexOperator(bpy.types.Operator):
         store_object_mode = bpy.context.active_object.mode
         bpy.ops.object.mode_set(mode="OBJECT")
         for mesh in selected_meshes:
-            check_mesh = check_open_bondary(mesh)
+            check_mesh = Mesh.check_open_bondary(mesh)
             if check_mesh is True:
                 self.report(
                     {"ERROR"},
@@ -178,7 +193,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             Transform.apply(mesh, location=True, rotation=True, scale=True)
             merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
 
-            check_mesh = check_open_bondary(mesh)
+            check_mesh = Mesh.check_open_bondary(mesh)
             if check_mesh is True:
                 self.report(
                     {"ERROR"},
