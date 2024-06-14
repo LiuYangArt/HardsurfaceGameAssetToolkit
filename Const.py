@@ -82,6 +82,9 @@ UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
 
+BAD_MESHES_COLLECTION="_BadMeshes"
+
+
 class Paths:
     """ 文件和路径 """
     ASSET_DIR = "PresetFiles"

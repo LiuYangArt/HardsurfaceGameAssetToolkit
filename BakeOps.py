@@ -115,6 +115,24 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
 
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}
+    
+class BlurVertexColorOperator(bpy.types.Operator):
+    bl_idname = "hst.blur_vertexcolor"
+    bl_label = "HST Blur Vertex Color"
+    bl_description = "模糊选中模型的顶点色"
+
+    def execute(self, context):
+        selected_objects=Object.get_selected()
+        selected_meshes=filter_type(selected_objects, "MESH")
+        for mesh in selected_meshes:
+            bpy.ops.paint.vertex_paint_toggle()
+            bpy.ops.paint.vertex_color_smooth()
+            bpy.ops.paint.vertex_paint_toggle()
+        # bpy.ops.object.mode_set(mode="OBJECT")
+        return {"FINISHED"}
+
+
+
 
 # class SetVertexColorAlphaOperator(bpy.types.Operator):
 #     bl_idname = "hst.set_vertexcolor_alpha"

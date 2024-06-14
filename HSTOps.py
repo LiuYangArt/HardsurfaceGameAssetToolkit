@@ -629,9 +629,7 @@ class MarkTintObjectOperator(bpy.types.Operator):
                         if object in selected_meshes:
 
                             MeshAttributes.fill_points(object,tint_attr,value=1.0)
-
-
-
+        self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
         return {'FINISHED'}
 
     

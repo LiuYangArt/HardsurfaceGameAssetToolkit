@@ -2,14 +2,14 @@ import bpy
 import bmesh
 import math
 import subprocess
+
+import os
+import platform
+import json
+# import mathutils
+
 from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
 from ..Const import *
-
-# from ..Const import Const
-import os
-import json
-import mathutils
-
 """ 通用functions """
 
 
@@ -479,80 +479,7 @@ def scale_uv(mesh, uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
             uv_layer.data[uv_index].uv = x, y
 
 
-def clean_lonely_verts(mesh) -> None:
-    """清理孤立顶点"""
-    lonely_verts_list = []
-    if mesh.mode == "EDIT":
-        bpy.ops.object.mode_set(mode="OBJECT")
 
-    bm = bmesh.new()
-    mesh = mesh.data
-    bm.from_mesh(mesh)
-
-    for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
-        if vertex.hide is False and len(vertex.link_edges) == 2:
-            lonely_verts_list.append(vertex)
-
-    bmesh.ops.dissolve_verts(
-        bm, verts=lonely_verts_list, use_face_split=False, use_boundary_tear=False
-    )
-
-    bm.to_mesh(mesh)
-    mesh.update()
-    bm.clear()
-    bm.free()
-
-
-def clean_mid_verts(mesh) -> None:
-    """清理直线中的孤立顶点"""
-    mid_verts_list = []
-
-    bm = bmesh.new()
-    mesh = mesh.data
-    bm.from_mesh(mesh)
-
-    # bm.verts.ensure_lookup_table()
-    for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
-        if vertex.hide is False and len(vertex.link_edges) == 2:
-            mid_verts_list.append(vertex)
-    bmesh.ops.dissolve_verts(
-        bm, verts=mid_verts_list, use_face_split=False, use_boundary_tear=False
-    )
-
-    bm.to_mesh(mesh)
-    mesh.update()
-    bm.clear()
-    bm.free()
-
-
-def clean_loose_verts(mesh) -> None:
-    """清理松散顶点"""
-    bm = bmesh.new()
-    mesh = mesh.data
-    bm.from_mesh(mesh)
-    # verts with no linked faces
-    verts = [v for v in bm.verts if not v.link_faces]
-    for vert in verts:
-        bm.verts.remove(vert)
-
-    bm.to_mesh(mesh)
-    mesh.update()
-    bm.clear()
-    bm.free()
-
-
-def merge_vertes_by_distance(mesh, merge_distance=0.01) -> None:
-    """清理重复顶点"""
-    bm = bmesh.new()
-    mesh = mesh.data
-    bm.from_mesh(mesh)
-
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
-
-    bm.to_mesh(mesh)
-    mesh.update()
-    bm.clear()
-    bm.free()
 
 
 def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
@@ -1028,7 +955,7 @@ class FBXExport:
                 obj_transform[obj] = obj.matrix_world.copy()
                 obj.location = (0, 0, 0)
                 obj.rotation_euler = (0, 0, 0)
-                obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+                obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
         bpy.ops.export_scene.fbx(
             filepath=file_path,
@@ -1109,7 +1036,7 @@ class FBXExport:
             obj.location = (0, 0, 0)
             obj.rotation_euler = (0, 0, 0)
             # obj.scale = (100, 100, 100)
-            obj.rotation_quaternion = mathutils.Quaternion((1, 0, 0, 0))
+            obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
         # print(f"obj_transform: {obj_transform}")
         bpy.ops.export_scene.fbx(
@@ -1873,6 +1800,8 @@ class Collection:
                 Object.add_custom_property(
                     collection, Const.CUSTOM_TYPE, Const.TYPE_PROXY_COLLECTION
                 )
+            case "MISC":
+                collection.color_tag = "COLOR_" + PROXY_COLLECTION_COLOR
 
     def create(name: str, type: str = "PROP") -> bpy.types.Collection:
         """创建collection,type为PROP,DECAL,BAKE_LOW,BAKE_HIGH,SKM,RIG,PROXY"""
@@ -2057,6 +1986,16 @@ class Collection:
             found = Collection.recur_find_parent(layer, collection_name)
             if found:
                 return found
+            
+    def get_by_name(collection_name: str) -> bool:
+        """检查collection是否存在"""
+        target_collection=None
+
+        for collection in bpy.data.collections:
+            if collection.name == collection_name:
+                target_collection=collection
+                break
+        return target_collection
 
 
 class VertexColor:
@@ -2291,14 +2230,15 @@ class Outliner:
 
 class FilePath:
     
+    
     def open_os_path(path:str):
         
-        os.startfile(path) 
-        # if platform.system() == "Windows":
-        #     os.startfile(path)
-        # else:
-        #     opener = "open" if platform.system() == "Darwin" else "xdg-open"
-        #     subprocess.call([opener, path])
+        # os.startfile(path) 
+        if platform.system() == "Windows":
+            os.startfile(path)
+        else:
+            opener = "open" if platform.system() == "Darwin" else "xdg-open"
+            subprocess.call([opener, path])
 
 class Mesh:
 
@@ -2315,3 +2255,78 @@ class Mesh:
         bm.free()
 
         return check_result
+    
+    def clean_lonely_verts(mesh) -> None:
+        """清理孤立顶点"""
+        lonely_verts_list = []
+        if mesh.mode == "EDIT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        bm = bmesh.new()
+        mesh = mesh.data
+        bm.from_mesh(mesh)
+
+        for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
+            if vertex.hide is False and len(vertex.link_edges) == 2:
+                lonely_verts_list.append(vertex)
+
+        bmesh.ops.dissolve_verts(
+            bm, verts=lonely_verts_list, use_face_split=False, use_boundary_tear=False
+        )
+
+        bm.to_mesh(mesh)
+        mesh.update()
+        bm.clear()
+        bm.free()
+
+
+    def clean_mid_verts(mesh) -> None:
+        """清理直线中的孤立顶点"""
+        mid_verts_list = []
+
+        bm = bmesh.new()
+        mesh = mesh.data
+        bm.from_mesh(mesh)
+
+        # bm.verts.ensure_lookup_table()
+        for vertex in bm.verts:  # 遍历顶点，如果顶点不隐藏且连接边数为2，添加到删除列表
+            if vertex.hide is False and len(vertex.link_edges) == 2:
+                mid_verts_list.append(vertex)
+        bmesh.ops.dissolve_verts(
+            bm, verts=mid_verts_list, use_face_split=False, use_boundary_tear=False
+        )
+
+        bm.to_mesh(mesh)
+        mesh.update()
+        bm.clear()
+        bm.free()
+
+
+    def clean_loose_verts(mesh) -> None:
+        """清理松散顶点"""
+        bm = bmesh.new()
+        mesh = mesh.data
+        bm.from_mesh(mesh)
+        # verts with no linked faces
+        verts = [v for v in bm.verts if not v.link_faces]
+        for vert in verts:
+            bm.verts.remove(vert)
+
+        bm.to_mesh(mesh)
+        mesh.update()
+        bm.clear()
+        bm.free()
+
+
+    def merge_vertes_by_distance(mesh, merge_distance=0.01) -> None:
+        """清理重复顶点"""
+        bm = bmesh.new()
+        mesh = mesh.data
+        bm.from_mesh(mesh)
+
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_distance)
+
+        bm.to_mesh(mesh)
+        mesh.update()
+        bm.clear()
+        bm.free()

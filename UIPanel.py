@@ -125,6 +125,10 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
             "hst.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
         )
         box_column.prop(context.scene.hst_params, "vertexcolor", text="Color ID Picker")
+        box_column.operator(
+            "hst.blur_vertexcolor", icon="PROP_OFF"
+        )
+        
         # box_column.operator(
         #     "hst.set_vertexcolor_alpha", text="Set Alpha", icon="COLOR"
         # )
@@ -266,12 +270,9 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
         box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
-        # box.operator("hst.make_decal_collection_name", icon="COPYDOWN")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
         box.operator("hst.sort_collections", icon="SORTALPHA")
-        # box.operator("hst.isolate_collections", icon="HIDE_OFF")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
-        # box.operator("hst.pivot_to_parent_origin", icon="PIVOT_BOUNDBOX")
         box.operator("hst.break_link_from_library", icon="UNLINKED")
         
         

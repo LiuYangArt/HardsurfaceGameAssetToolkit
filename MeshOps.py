@@ -15,7 +15,13 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         active_object = bpy.context.active_object
-        if len(selected_meshes) == 0:
+
+        #clean up
+        bad_collection=Collection.get_by_name(BAD_MESHES_COLLECTION)
+        if bad_collection is not None and len(bad_collection.all_objects) == 0:
+                bpy.data.collections.remove(bad_collection)
+
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -52,32 +58,36 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                 if collection.name != "Scene Collection":
                     collection.name = new_collection_name
 
-        all_meshes_ok=False
+        # all_meshes_ok=True
         bad_mesh_count=0
-        bad_mesh_names=[]
+        bad_meshes=[]
 
         for mesh in selected_meshes:
             check_mesh=Mesh.check_open_bondary(mesh)
             if check_mesh is True:
                 bad_mesh_count+=1
-                bad_mesh_names.append(mesh.name)
+                bad_meshes.append(mesh)
             
 
-        if all_meshes_ok is False:
-            print(f"Bad Meshes: {bad_mesh_names}")
+        if bad_mesh_count!=0:
+            bad_collection=Collection.create(name=BAD_MESHES_COLLECTION,type="MISC")
+            for mesh in bad_meshes:
+                mesh.users_collection[0].objects.unlink(mesh)
+                bad_collection.objects.link(mesh)
+
             self.report(
                     {"ERROR"},
-                    f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界 {bad_mesh_names}",
+                    f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界",
                 )
 
             return {"CANCELLED"}
         
         #if meshes are not all ok, continue
-
         for mesh in selected_meshes:
             Transform.apply(mesh, location=True, rotation=True, scale=True)
-            clean_mid_verts(mesh)
-            clean_loose_verts(mesh)
+            Mesh.merge_vertes_by_distance(mesh)
+            Mesh.clean_mid_verts(mesh)
+            Mesh.clean_loose_verts(mesh)
             Object.mark_hst_type(mesh, "STATICMESH")
 
             has_uv = has_uv_attribute(mesh)  # 处理uv layers
@@ -135,7 +145,7 @@ class CleanVertexOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -154,8 +164,8 @@ class CleanVertexOperator(bpy.types.Operator):
                     + "选中的模型有开放边界，请检查",
                 )
                 return {"CANCELLED"}
-            clean_mid_verts(mesh)
-            clean_loose_verts(mesh)
+            Mesh.clean_mid_verts(mesh)
+            Mesh.clean_loose_verts(mesh)
         bpy.ops.object.mode_set(mode=store_object_mode)
         self.report({"INFO"}, "Selected meshes cleaned")
         return {"FINISHED"}
@@ -175,7 +185,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -191,7 +201,7 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         for mesh in selected_meshes:
             apply_modifiers(mesh)
             Transform.apply(mesh, location=True, rotation=True, scale=True)
-            merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
+            Mesh.merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
 
             check_mesh = Mesh.check_open_bondary(mesh)
             if check_mesh is True:
@@ -219,8 +229,8 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
 class SeparateMultiUserOperator(bpy.types.Operator):
     bl_idname = "hst.sepmultiuser"
     bl_label = "Clean Multi User"
-    bl_description = "清理多用户，可用于AssetLibrary导入资产去除引用，\
-        可能会造成冗余资源，请及时清除"
+    bl_description = "清理multi user，可能会造成冗余资源，请及时清除"
+        
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -253,7 +263,7 @@ class AddSnapSocketOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
 
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -460,7 +470,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -537,7 +547,7 @@ class HST_PatternMatSetup(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -617,7 +627,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -691,9 +701,6 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        # if len(selected_meshes) == 0:
-        #     print("No selected mesh object, please select mesh objects and retry | 没有选中Mesh物体，请选中Mesh物体后重试")
-
         for mesh in selected_meshes:
             set_active_color_attribute(mesh, WEARMASK_ATTR)
 
@@ -722,7 +729,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
         texel_density = parameters.texture_density * 0.01  # fix unit to cm
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -766,7 +773,7 @@ class AxisCheckOperator(bpy.types.Operator):
     bl_description = "显示UE模型坐标轴参考"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
+
         store_mode = prep_select_mode()
         properties = context.scene.hst_params
         axis_toggle = properties.axis_toggle
@@ -864,7 +871,6 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
     bl_description = "设置所选为Decal Collection"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
         selected_collections=Collection.get_selected()
 
 
@@ -948,7 +954,7 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = Object.get_selected()
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -1018,7 +1024,7 @@ class SetUECollisionOperator(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if len(selected_meshes) == 0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -1072,66 +1078,64 @@ class HSTSortCollectionsOperator(bpy.types.Operator):
 
 
 
-class IsolateCollectionsOperator(bpy.types.Operator):
-    bl_idname = "hst.isolate_collections"
-    bl_label = "Isolate Collections ViewLayer"
+# class IsolateCollectionsOperator(bpy.types.Operator):
+#     bl_idname = "hst.isolate_collections"
+#     bl_label = "Isolate Collections ViewLayer"
 
-    def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        selected_collections = filter_collections_selection(selected_objects)
-        scene = bpy.context.scene
+#     def execute(self, context):
+#         selected_objects = bpy.context.selected_objects
+#         selected_collections = filter_collections_selection(selected_objects)
+#         scene = bpy.context.scene
 
-        default_view_layer=scene.view_layers["View Layer"]
+#         default_view_layer=scene.view_layers["View Layer"]
 
-        if Const.WORK_VIEWLAYER in scene.view_layers.keys():
-            work_layer = scene.view_layers[Const.WORK_VIEWLAYER]
-        else:
-            work_layer = scene.view_layers.new(Const.WORK_VIEWLAYER)
+#         if Const.WORK_VIEWLAYER in scene.view_layers.keys():
+#             work_layer = scene.view_layers[Const.WORK_VIEWLAYER]
+#         else:
+#             work_layer = scene.view_layers.new(Const.WORK_VIEWLAYER)
 
-        proxy_collections=[]
-        for collection in bpy.data.collections:
-            collection_hst_type=Collection.get_hst_type(collection)
-            if collection_hst_type == Const.TYPE_PROXY_COLLECTION:
-                proxy_collections.append(collection)
-        if len(proxy_collections)==0:
-            proxy_collections=None
-        # if proxy_collections:
-        #     print(f"has  proxy_collection {proxy_collections}")
+#         proxy_collections=[]
+#         for collection in bpy.data.collections:
+#             collection_hst_type=Collection.get_hst_type(collection)
+#             if collection_hst_type == Const.TYPE_PROXY_COLLECTION:
+#                 proxy_collections.append(collection)
+#         if len(proxy_collections)==0:
+#             proxy_collections=None
 
 
-        if selected_collections is not None:
-            selected_coll_names =[]
-            for collection in selected_collections:
+#         if selected_collections is not None:
+#             selected_coll_names =[]
+#             for collection in selected_collections:
 
-                parent_collection=Collection.find_parent(collection)
-                if parent_collection is not None:
-                    parent_coll_name=parent_collection.name
-                    if parent_coll_name not in selected_coll_names:
-                        selected_coll_names.append(parent_coll_name)
+#                 parent_collection=Collection.find_parent(collection)
+#                 if parent_collection is not None:
+#                     parent_coll_name=parent_collection.name
+#                     if parent_coll_name not in selected_coll_names:
+#                         selected_coll_names.append(parent_coll_name)
 
-                coll_name= collection.name
-                if coll_name not in selected_coll_names:
-                    selected_coll_names.append(coll_name)
-            if proxy_collections:
-                for proxy_collection in proxy_collections:
-                    if proxy_collection.name not in selected_coll_names:
-                        selected_coll_names.append(proxy_collection.name)
+#                 coll_name= collection.name
+#                 if coll_name not in selected_coll_names:
+#                     selected_coll_names.append(coll_name)
+#             if proxy_collections:
+#                 for proxy_collection in proxy_collections:
+#                     if proxy_collection.name not in selected_coll_names:
+#                         selected_coll_names.append(proxy_collection.name)
 
-            for layer_coll in work_layer.layer_collection.children:
-                if layer_coll.name not in selected_coll_names:
-                    layer_coll.exclude = True
+#             for layer_coll in work_layer.layer_collection.children:
+#                 if layer_coll.name not in selected_coll_names:
+#                     layer_coll.exclude = True
 
-            bpy.context.window.view_layer = work_layer
-            Collection.active(selected_collections[0])
+#             bpy.context.window.view_layer = work_layer
+#             Collection.active(selected_collections[0])
         
-        elif selected_collections is None:
-            for layer_coll in work_layer.layer_collection.children:
-                layer_coll.exclude = False
+#         elif selected_collections is None:
+#             for layer_coll in work_layer.layer_collection.children:
+#                 layer_coll.exclude = False
             
-            bpy.context.window.view_layer = default_view_layer
+#             bpy.context.window.view_layer = default_view_layer
 
 
-        return {'FINISHED'}
+#         return {'FINISHED'}
 
 class IsolateCollectionsAltOperator(bpy.types.Operator):
     bl_idname = "hst.isolate_collections_alt"
@@ -1200,19 +1204,7 @@ class IsolateCollectionsAltOperator(bpy.types.Operator):
 
         
 
-# class PivotToParentOriginOperator(bpy.types.Operator):
-#     bl_idname = "hst.pivot_to_parent_origin"
-#     bl_label = "Pivot To Parent Origin"
 
-#     def execute(self, context):
-#         selected_objects = Object.get_selected()
-
-#         for object in selected_objects:
-#             if object.parent is not None:
-#                 parent_matrix=object.parent.matrix_world.copy()
-#                 Object.set_pivot_to_matrix(obj=object,matrix=parent_matrix)
-
-#         return {'FINISHED'}
 
 
 class BreakLinkFromLibraryOperator(bpy.types.Operator):
