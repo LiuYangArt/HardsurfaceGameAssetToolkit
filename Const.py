@@ -84,6 +84,9 @@ UE_SCRIPT_CMD = "batch_import_hs_props"
 
 BAD_MESHES_COLLECTION="_BadMeshes"
 
+NORMAL_TYPE_ATTRIBUTE="NormalType"
+NORMAL_TYPE_NUM=5
+
 
 class Paths:
     """ 文件和路径 """

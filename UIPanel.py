@@ -52,6 +52,13 @@ class UIParams(PropertyGroup):
         max=8192,
     )
 
+    normal_type: IntProperty(
+        description="Normal Type",
+        default=0,
+        min=0,
+        max=NORMAL_TYPE_NUM,
+    )
+
     texture_size: EnumProperty(
         items=[
             ("512", "512", "Texture Size 512x512"),
@@ -197,7 +204,6 @@ class HST_PT_HST(bpy.types.Panel):
             icon="TEXTURE_DATA",
         )
         td_row = box_column.row(align=True)
-
         td_row.prop(parameters, "texture_density", text="TD")
         td_row.separator()
         td_row.label(text="px/m")
@@ -210,7 +216,7 @@ class HST_PT_HST(bpy.types.Panel):
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
-        box_column.label(text="Mark Collection Type")
+        box_column.label(text="Mark Assets")
         mark_type_row = box_column.row(align=True)
         mark_type_row.operator(
             "hst.markpropcollection", text="Set Prop", icon="OUTLINER_COLLECTION"
@@ -220,6 +226,10 @@ class HST_PT_HST(bpy.types.Panel):
         )
         box_column.operator("hst.make_decal_collection", icon="COLLECTION_NEW")
         box_column.operator("hst.mark_tint_object", icon="COLOR")
+
+        box_column.operator("hst.mark_normal_type", icon="NODE_TEXTURE")
+        box_column.prop(parameters, "normal_type", text="Normal Type")
+
         box_column.separator()
         box_column.label(text="View Modes")
         view_row = box_column.row(align=True)

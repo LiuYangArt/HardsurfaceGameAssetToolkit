@@ -605,7 +605,7 @@ class MarkTintObjectOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes)==0:
+        if selected_meshes is None:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
@@ -632,6 +632,37 @@ class MarkTintObjectOperator(bpy.types.Operator):
         self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
         return {'FINISHED'}
 
+class MarkNormalType(bpy.types.Operator):
+    bl_idname = "hst.mark_normal_type"
+    bl_label = "Mark Normal Type"
+    bl_description = "为选中的物体标记Normal Type，储存于WearMask的B通道"
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        parameters = context.scene.hst_params
+        normal_type=parameters.normal_type/NORMAL_TYPE_NUM
+        print(normal_type)
+
+        if selected_meshes is None:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+        
+        for mesh in selected_meshes:
+            normal_attr=MeshAttributes.add(mesh,attribute_name=NORMAL_TYPE_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+
+            MeshAttributes.fill_points(mesh,normal_attr,value=normal_type)
+
+        
+        self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
+        return {'FINISHED'}
+        
+        
     
 
 

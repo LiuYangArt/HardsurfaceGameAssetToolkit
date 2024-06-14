@@ -700,9 +700,9 @@ class PreviewWearMaskOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-
-        for mesh in selected_meshes:
-            set_active_color_attribute(mesh, WEARMASK_ATTR)
+        if selected_meshes is not None:
+            for mesh in selected_meshes:
+                set_active_color_attribute(mesh, WEARMASK_ATTR)
 
         viewports = viewport_shading_mode("VIEW_3D", "SOLID", mode="CONTEXT")
 

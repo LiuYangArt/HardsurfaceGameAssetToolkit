@@ -2112,7 +2112,7 @@ class VertexColor:
 
 
 class MeshAttributes:
-    def add(mesh, attribute_name: str, data_type: str, domain: str):
+    def add(mesh:bpy.types.Object, attribute_name: str, data_type: str, domain: str):
 
         if attribute_name not in mesh.data.attributes:
             target_attribute = mesh.data.attributes.new(
@@ -2123,10 +2123,11 @@ class MeshAttributes:
 
         return target_attribute
 
-    def fill_points(mesh, attribute, value: float):
+    def fill_points(mesh:bpy.types.Object, attribute, value: float):
         value = float(value)
         attribute_values = [value for i in range(len(mesh.data.vertices))]
         attribute.data.foreach_set("value", attribute_values)
+        mesh.data.update()
 
 
 class Viewport:
