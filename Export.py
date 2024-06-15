@@ -15,6 +15,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
+        file_prefix = parameters.file_prefix
         if export_path == "":
             self.report(
                 {"ERROR"},
@@ -87,7 +88,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
             for collection in target_collections:
 
                 new_name = collection.name.removeprefix("SM_")
-                new_name = "SM_" + new_name
+                new_name = "SM_" + file_prefix + new_name
                 file_path = export_path + new_name + ".fbx"
                 FBXExport.staticmesh(collection, file_path)
                 sm_count += 1
@@ -104,7 +105,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 # new_name = "SKM_" + new_name
                 for mesh in collection.objects:
                     new_name = mesh.name.removeprefix("SM_")
-                    new_name = "SM_" + new_name
+                    new_name = "SM_" + file_prefix + new_name
                     file_path = export_path + new_name + ".fbx"
                     skm_count += 1
                     FBXExport.staticmesh(mesh, file_path,reset_transform=True)

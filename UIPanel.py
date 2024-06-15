@@ -84,6 +84,13 @@ class UIParams(PropertyGroup):
         subtype="DIR_PATH",
     )
 
+    file_prefix: StringProperty(
+        name="File Prefix",
+        description="文件名前缀，例如AAA，则导出的文件名是SM_AAACollectionName.fbx",
+        default="",
+        maxlen=24,
+    )
+
     unreal_path: StringProperty(
         name="UE Path",
         description="导入到UE 项目中的路径, 例如 /Game/Level/Props\n /Game=Content目录下的路径",
@@ -313,6 +320,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
             "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
         )
         box_column.prop(parameters, "export_path", text="Path")
+        box_column.prop(parameters, "file_prefix", text="Prefix")
         box_column.prop(parameters, "use_armature_as_root")
         box_column.operator(
             "hst.open_file_explorer", icon="FILEBROWSER"
