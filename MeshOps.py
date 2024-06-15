@@ -3,6 +3,25 @@ from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
 
+def check_non_solid_meshes(meshes):
+    bad_mesh_count=0
+    bad_meshes=[]
+
+    for mesh in meshes:
+        check_mesh=Mesh.check_open_bondary(mesh)
+        if check_mesh is True:
+            bad_mesh_count+=1
+            bad_meshes.append(mesh)
+        
+
+    if bad_mesh_count!=0:
+        bad_collection=Collection.create(name=BAD_MESHES_COLLECTION,type="MISC")
+        for mesh in bad_meshes:
+            mesh.users_collection[0].objects.unlink(mesh)
+            bad_collection.objects.link(mesh)
+        return bad_meshes
+    elif bad_meshes ==0:
+        return None
 
 class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
     bl_idname = "hst.prepspaceclaimcadmesh"
@@ -59,22 +78,9 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
                     collection.name = new_collection_name
 
         # all_meshes_ok=True
-        bad_mesh_count=0
-        bad_meshes=[]
-
-        for mesh in selected_meshes:
-            check_mesh=Mesh.check_open_bondary(mesh)
-            if check_mesh is True:
-                bad_mesh_count+=1
-                bad_meshes.append(mesh)
-            
-
-        if bad_mesh_count!=0:
-            bad_collection=Collection.create(name=BAD_MESHES_COLLECTION,type="MISC")
-            for mesh in bad_meshes:
-                mesh.users_collection[0].objects.unlink(mesh)
-                bad_collection.objects.link(mesh)
-
+        bad_meshes=check_non_solid_meshes(selected_meshes)
+        if bad_meshes:
+            bad_mesh_count=len(bad_meshes)
             self.report(
                     {"ERROR"},
                     f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界",
@@ -83,12 +89,14 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
             return {"CANCELLED"}
         
         #if meshes are not all ok, continue
+        
+
         for mesh in selected_meshes:
-            Transform.apply(mesh, location=True, rotation=True, scale=True)
-            Mesh.merge_vertes_by_distance(mesh)
+            Transform.apply(mesh, location=False, rotation=True, scale=True)
             Mesh.clean_mid_verts(mesh)
             Mesh.clean_loose_verts(mesh)
             Object.mark_hst_type(mesh, "STATICMESH")
+            # mark_convex_edges(mesh)
 
             has_uv = has_uv_attribute(mesh)  # 处理uv layers
             if has_uv is True:
@@ -99,6 +107,8 @@ class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
 
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
+
+        Mesh.merge_verts_ops(selected_meshes)
 
         uv_unwrap(
             selected_meshes, method="ANGLE_BASED", margin=0.005, correct_aspect=True
@@ -198,18 +208,34 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
         # 清理multi user
         for object in selected_objects:
             object.select_set(False)
+
         for mesh in selected_meshes:
             apply_modifiers(mesh)
-            Transform.apply(mesh, location=True, rotation=True, scale=True)
-            Mesh.merge_vertes_by_distance(mesh, merge_distance=MERGE_DISTANCE)
+            Transform.apply(mesh, location=False, rotation=True, scale=True)
+        Mesh.merge_verts_ops(selected_meshes)
 
-            check_mesh = Mesh.check_open_bondary(mesh)
-            if check_mesh is True:
-                self.report(
+        bad_meshes=check_non_solid_meshes(selected_meshes)
+        if bad_meshes:
+            bad_mesh_count=len(bad_meshes)
+            self.report(
                     {"ERROR"},
-                    "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+                    f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界",
                 )
-                return {"CANCELLED"}
+
+            return {"CANCELLED"}
+
+        for mesh in selected_meshes:
+            # apply_modifiers(mesh)
+            # Transform.apply(mesh, location=True, rotation=True, scale=True)
+            # Mesh.merge_verts_by_distance(mesh, merge_distance=MERGE_DISTANCE)
+
+            # check_mesh = Mesh.check_open_bondary(mesh)
+            # if check_mesh is True:
+            #     self.report(
+            #         {"ERROR"},
+            #         "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
+            #     )
+            #     return {"CANCELLED"}
 
             mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)

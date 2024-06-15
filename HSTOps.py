@@ -149,11 +149,12 @@ def prep_wearmask_objects(selected_objects):
         Transform.apply(mesh, location=True, rotation=True, scale=True)
         cleanup_color_attributes(mesh)
         add_vertexcolor_attribute(mesh, WEARMASK_ATTR)
-        # VertexColor.add(mesh, CURVATURE_ATTR)
-        set_active_color_attribute(mesh, WEARMASK_ATTR)
-        remove_modifier(mesh, COLOR_GEOMETRYNODE_MODIFIER)
-        remove_modifier(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
+        mark_convex_edges(mesh)
 
+        set_active_color_attribute(mesh, WEARMASK_ATTR)
+        Modifier.remove(mesh, COLOR_GNODE_MODIFIER)
+        Modifier.remove(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
+        Modifier.remove(mesh, TRIANGULAR_MODIFIER)
         proxy_mesh = make_transfer_proxy_mesh(
             mesh, TRANSFERPROXY_PREFIX, proxy_collection
         )
@@ -161,6 +162,7 @@ def prep_wearmask_objects(selected_objects):
         add_face_weight_attribute(mesh, value=1)
         add_color_transfer_modifier(mesh)
         add_gn_wearmask_modifier(mesh)
+        add_triangulate_modifier(mesh)
         mesh.hide_render = True
 
     for proxy_object in proxy_object_list:  # 处理proxy模型
@@ -508,6 +510,12 @@ class MakeDecalCollection(bpy.types.Operator):
             return {"CANCELLED"}
         
 
+        selected_objects=Object.get_selected()
+        if selected_objects:
+            for obj in selected_objects:
+                obj.select_set(False)
+        
+
         for collection in target_collections:
             decal_collection=None
             has_parent=False
@@ -536,17 +544,17 @@ class MakeDecalCollection(bpy.types.Operator):
             if has_parent: #当前为Decal Collection且有父Collection时
                 decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
                 decal_collection_name=parent_collection.name+"_Decal"
-                # decal_collection.name=decal_collection_name
+
 
             elif has_decal_coll: #当前Collection下已有Decal Collection时
                 decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
                 decal_collection_name=collection.name+"_Decal"
-                # decal_collection.name=decal_collection_name
+
             
             else: #当前Collection下没有Decal Collection时
                 decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
                 decal_collection_name=collection.name+"_Decal"
-                # decal_collection = None
+
 
 
 
@@ -583,10 +591,29 @@ class MakeDecalCollection(bpy.types.Operator):
             Collection.active(decal_collection)
 
             if decal_meshes: #将Decal添加到Decal Collection
+                parent_coll=Collection.find_parent(decal_collection)
+                origin_object=None
+                if parent_coll:
+                    origin_objects=Object.filter_hst_type(objects=parent_coll.objects, type="ORIGIN", mode="INCLUDE")
+
+                    if origin_objects:
+                        origin_object=origin_objects[0]
+
+
                 for decal_mesh in decal_meshes:
                     decal_mesh.users_collection[0].objects.unlink(decal_mesh)
                     decal_collection.objects.link(decal_mesh)
                     Transform.apply_scale(decal_mesh)
+
+                    if origin_object:
+                        decal_mesh.select_set(True)
+                        origin_object.select_set(True)
+                        bpy.context.view_layer.objects.active = origin_object
+                        bpy.ops.object.parent_no_inverse_set(keep_transform=True)
+                        decal_mesh.select_set(False)
+                        origin_object.select_set(False)
+
+
 
             if remove_exist_collection: #删除重复Collection
                 bpy.data.collections.remove(exist_collection)

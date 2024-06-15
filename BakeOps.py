@@ -122,13 +122,11 @@ class BlurVertexColorOperator(bpy.types.Operator):
     bl_description = "模糊选中模型的顶点色"
 
     def execute(self, context):
+        blur_node=import_node_group(PRESET_FILE_PATH, VERTEXCOLORBLUR_NODE) 
         selected_objects=Object.get_selected()
         selected_meshes=filter_type(selected_objects, "MESH")
         for mesh in selected_meshes:
-            bpy.ops.paint.vertex_paint_toggle()
-            bpy.ops.paint.vertex_color_smooth()
-            bpy.ops.paint.vertex_paint_toggle()
-        # bpy.ops.object.mode_set(mode="OBJECT")
+            Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
         return {"FINISHED"}
 
 

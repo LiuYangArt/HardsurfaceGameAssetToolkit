@@ -239,7 +239,7 @@ def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -
     """设置顶点色"""
     color = tuple(color)
     current_mode = bpy.context.active_object.mode
-    print(current_mode)
+    # print(current_mode)
     if target_object.type == "MESH":
         mesh = target_object.data
         if vertexcolor_name in mesh.color_attributes:
@@ -254,11 +254,11 @@ def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -
                 #     print("No vertex color attribute named " + vertexcolor_name)
             elif current_mode == "EDIT":
                 vertexcolor_to_vertices(target_object, color_attribute, color)
-        else:
-            print("No vertex color attribute named " + vertexcolor_name)
+    #     else:
+    #         print("No vertex color attribute named " + vertexcolor_name)
 
-    else:
-        print(target_object + " is not mesh object")
+    # else:
+    #     print(target_object + " is not mesh object")
 
 
 def get_color_data(color):
@@ -499,11 +499,11 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
         if "sharp_edge" in attributes.name:
             has_sharp_edge = True
             break
-    print("has_sharp_edge: " + str(has_sharp_edge))
+    # print("has_sharp_edge: " + str(has_sharp_edge))
 
     if has_sharp_edge is False:  # if no sharp edge attribute, add it
         mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
-        print("add sharp edge attribute")
+        # print("add sharp edge attribute")
     for edge in mesh.edges:  # mark sharp edge
         if edge.index in to_mark_sharp:
             edge.use_edge_sharp = True
@@ -513,6 +513,18 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
     bm.clear()
     bm.free()
 
+def mark_convex_edges(mesh)->None:
+    convex_attribute_name="convex_edge"
+    convex_attr=MeshAttributes.add(mesh,attribute_name=convex_attribute_name,data_type="FLOAT",domain="EDGE")
+    bm=BMesh.init(mesh)
+
+    convex_layer=bm.edges.layers.float[convex_attr.name]
+    for edge in bm.edges:  # get sharp edge index by angle
+        if edge.is_convex is True:
+            edge[convex_layer]=1
+        else:
+            edge[convex_layer]=0
+    BMesh.finished(bm,mesh)
 
 def get_selected_rotation_quat() -> Quaternion:
     """在编辑模式中获取选中元素的位置与旋转"""
@@ -950,6 +962,8 @@ class FBXExport:
         for obj in export_objects:
             obj.hide_set(False)
             obj.select_set(True)
+            if obj.type=="MESH":
+                Modifier.add_triangulate(obj)
 
             if reset_transform is True:
                 obj_transform[obj] = obj.matrix_world.copy()
@@ -1364,22 +1378,27 @@ def read_json_from_file(file_path):
 class BMesh:
     def init(mesh, mode="CONTEXT"):
         """初始化bmesh"""
-        current_mode = bpy.context.active_object.mode()
+        current_mode = bpy.context.active_object.mode
         if mode == "CONTEXT":
             if current_mode == "EDIT":
                 bm = bmesh.from_edit_mesh(mesh.data)
-        else:
+            else:
+                bm = bmesh.new()
+                bm.from_mesh(mesh.data)
+        elif mode == "OBJECT":
             bm = bmesh.new()
             bm.from_mesh(mesh.data)
         return bm
 
     def finished(bm, mesh, mode="CONTEXT"):
         """结束bmesh"""
-        current_mode = bpy.context.active_object.mode()
+        current_mode = bpy.context.active_object.mode
         if mode == "CONTEXT":
             if current_mode == "EDIT":
                 bm.update_edit_mesh(mesh.data)
-        else:
+            else:
+                bm.to_mesh(mesh.data)
+        elif mode == "OBJECT":
             bm.to_mesh(mesh.data)
 
         mesh.data.update()
@@ -2120,7 +2139,7 @@ class MeshAttributes:
             )
         else:
             target_attribute = mesh.data.attributes[attribute_name]
-
+    
         return target_attribute
 
     def fill_points(mesh:bpy.types.Object, attribute, value: float):
@@ -2243,7 +2262,7 @@ class FilePath:
 
 class Mesh:
 
-    def check_open_bondary(mesh) -> bool:
+    def check_open_bondary(mesh:bpy.types.Object) -> bool:
         """检查是否存在开放边"""
         bm = bmesh.new()
         bm.from_mesh(mesh.data)
@@ -2257,7 +2276,7 @@ class Mesh:
 
         return check_result
     
-    def clean_lonely_verts(mesh) -> None:
+    def clean_lonely_verts(mesh:bpy.types.Object) -> None:
         """清理孤立顶点"""
         lonely_verts_list = []
         if mesh.mode == "EDIT":
@@ -2281,7 +2300,7 @@ class Mesh:
         bm.free()
 
 
-    def clean_mid_verts(mesh) -> None:
+    def clean_mid_verts(mesh:bpy.types.Object) -> None:
         """清理直线中的孤立顶点"""
         mid_verts_list = []
 
@@ -2303,7 +2322,7 @@ class Mesh:
         bm.free()
 
 
-    def clean_loose_verts(mesh) -> None:
+    def clean_loose_verts(mesh:bpy.types.Object) -> None:
         """清理松散顶点"""
         bm = bmesh.new()
         mesh = mesh.data
@@ -2319,7 +2338,7 @@ class Mesh:
         bm.free()
 
 
-    def merge_vertes_by_distance(mesh, merge_distance=0.01) -> None:
+    def merge_verts_by_distance(mesh:bpy.types.Object, merge_distance:float=0.01) -> None:
         """清理重复顶点"""
         bm = bmesh.new()
         mesh = mesh.data
@@ -2331,3 +2350,86 @@ class Mesh:
         mesh.update()
         bm.clear()
         bm.free()
+
+    def merge_verts_ops(meshes:list) -> None:
+        for obj in bpy.data.objects:
+            obj.select_set(False)
+        
+        for mesh in meshes:
+            mesh.select_set(True)
+
+        bpy.context.view_layer.objects.active = meshes[0]
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(use_extend=False, use_expand=False, type='VERT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.remove_doubles(threshold=0.001,use_unselected=True,use_sharp_edge_from_normals=True)
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+class Modifier:
+    def add_triangulate(mesh):
+        """添加Triangulate Modifier"""
+        if TRIANGULAR_MODIFIER in mesh.modifiers:
+            triangulate_modifier = mesh.modifiers[TRIANGULAR_MODIFIER]
+
+        else:
+            triangulate_modifier = mesh.modifiers.new(
+                name=TRIANGULAR_MODIFIER, type="TRIANGULATE"
+            )
+
+        triangulate_modifier.keep_custom_normals = True
+        triangulate_modifier.min_vertices = 4
+        triangulate_modifier.quad_method = "SHORTEST_DIAGONAL"
+
+    def add_geometrynode(mesh,modifier_name,node):
+        """添加Geometry Nodes WearMask Modifier"""
+
+        check_modifier = False
+
+        for modifier in mesh.modifiers:
+            if modifier.name == modifier_name:
+                check_modifier = True
+                break
+
+        if check_modifier is False:
+            geo_node_modifier = mesh.modifiers.new(
+                name=modifier_name, type="NODES"
+            )
+            # geo_node_modifier.node_group = bpy.data.node_groups[node.name]
+            geo_node_modifier.node_group = node
+        else:
+            geo_node_modifier = mesh.modifiers[modifier_name]
+            geo_node_modifier.node_group = node
+
+    def remove(object, modifier_name: str, has_subobject: bool = False):
+        """删除某个modifier,返回modifier对应的子object"""
+
+        modifier_objects = []
+        for modifier in object.modifiers:
+            if modifier is not None:
+                if modifier.name == modifier_name:
+                    # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
+                    if has_subobject is True and modifier.object is not None:
+                        modifier_objects.append(modifier.object)
+                    object.modifiers.remove(modifier)
+
+        if len(modifier_objects) > 0:
+            for modifier_object in modifier_objects:
+                if modifier_object.parent.name == object.name:
+                    old_mesh = modifier_object.data
+                    old_mesh.name = "OldTP_" + old_mesh.name
+                    bpy.data.objects.remove(modifier_object)
+                    bpy.data.meshes.remove(old_mesh)
+
+    def move_to_bottom(object,modifier_name):
+        target_modifier = object.modifiers[modifier_name]
+        modifier_count=len(object.modifiers)-1
+
+        while object.modifiers[modifier_count] != target_modifier:
+            bpy.ops.object.modifier_move_down(modifier=target_modifier.name)
+
+    def move_to_top(object,modifier_name):
+        target_modifier = object.modifiers[modifier_name]
+        modifier_count=len(object.modifiers)
+
+        while object.modifiers[0] != target_modifier:
+            bpy.ops.object.modifier_move_up(modifier=target_modifier.name)
