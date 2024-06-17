@@ -1590,6 +1590,17 @@ class Object:
                 return True
             else:
                 return False
+    def break_link_from_assetlib(object):
+        obj_collection = object.users_collection[0]
+        unlinked_mesh =object.copy()
+        unlinked_mesh.data = object.data.copy()
+        obj_collection.objects.link(unlinked_mesh)
+        mesh_data=object.data
+        mesh_name=object.name
+        bpy.data.objects.remove(object)
+        bpy.data.meshes.remove(mesh_data)
+        unlinked_mesh.name = mesh_name
+        return unlinked_mesh
 
 
 class Transform:
@@ -1945,6 +1956,22 @@ class Collection:
         parent_collection = parent[collection]
 
         return parent_collection
+    
+    def find_parent_recur(collection:bpy.types.Collection,type:str):
+        parent_c=Collection.find_parent(collection)
+        if parent_c == None:
+            return None
+        else:
+            # if type == "NONE":
+            #     return parent_c
+            # else:
+            parent_c_type=Collection.get_hst_type(parent_c)
+            if parent_c_type != type:
+                parent_c=Collection.find_parent_recur(parent_c,type)
+                if parent_c:
+                    return parent_c
+            else:
+                return parent_c
 
     def active(collection):
         """激活collection"""
@@ -1957,7 +1984,7 @@ class Collection:
 
         for i in bpy.data.collections:
             layer_collection = bpy.context.view_layer.layer_collection
-            layer_collection = Collection.recur_find_parent(layer_collection, i.name)
+            layer_collection = Collection.layer_recur_find_parent(layer_collection, i.name)
         return layer_collection
 
     def find_layer_collection_coll(collection):
@@ -1968,7 +1995,7 @@ class Collection:
 
             for i in object.users_collection:
                 layer_collection = bpy.context.view_layer.layer_collection
-                layer_collection = Collection.recur_find_parent(
+                layer_collection = Collection.layer_recur_find_parent(
                     layer_collection, i.name
                 )
             return layer_collection
@@ -1979,7 +2006,7 @@ class Collection:
         """递归查找collection对应的layer_collection"""
 
         layer_collection = bpy.context.view_layer.layer_collection
-        layer_collection = Collection.recur_find_parent(
+        layer_collection = Collection.layer_recur_find_parent(
             layer_collection, collection.name
         )
 
@@ -1994,15 +2021,15 @@ class Collection:
         # obj = bpy.context.object
         for i in object.users_collection:
             layer_collection = bpy.context.view_layer.layer_collection
-            layer_collection = Collection.recur_find_parent(layer_collection, i.name)
+            layer_collection = Collection.layer_recur_find_parent(layer_collection, i.name)
         return layer_collection
 
-    def recur_find_parent(layer_collection, collection_name):
+    def layer_recur_find_parent(layer_collection, collection_name):
         found = None
         if layer_collection.name == collection_name:
             return layer_collection
         for layer in layer_collection.children:
-            found = Collection.recur_find_parent(layer, collection_name)
+            found = Collection.layer_recur_find_parent(layer, collection_name)
             if found:
                 return found
             

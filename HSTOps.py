@@ -169,7 +169,6 @@ def prep_wearmask_objects(selected_objects):
         print(f"name:{proxy_object.name}")
         cleanup_color_attributes(proxy_object)
         add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
-        # VertexColor.add_curvature(proxy_object)
         set_active_color_attribute(proxy_object, WEARMASK_ATTR)
     return proxy_collection
 
@@ -518,49 +517,108 @@ class MakeDecalCollection(bpy.types.Operator):
 
         for collection in target_collections:
             decal_collection=None
-            has_parent=False
-            has_decal_coll=False
+            current_state=None
             remove_exist_collection=False
             count_exist=0
             count_create=0
-
-            collection_type=Collection.get_hst_type(collection)
-            if collection_type == "Decal_Collection":
-                parent_collection=Collection.find_parent(collection)
-                if parent_collection.name != "Scene Collection":
-                    has_parent=True
-                    decal_collection=collection
-                else:
-                    continue
-
-            elif collection.children is not None:
-                for child_collection in collection.children:
-                    child_type=Collection.get_hst_type(child_collection)
-                    if child_type == "Decal_Collection":
-                        has_decal_coll=True
-                        decal_collection=child_collection
-                        
-
-            if has_parent: #当前为Decal Collection且有父Collection时
-                decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
-                decal_collection_name=parent_collection.name+"_Decal"
-
-
-            elif has_decal_coll: #当前Collection下已有Decal Collection时
-                decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                decal_collection_name=collection.name+"_Decal"
-
+            origin_object=None
             
-            else: #当前Collection下没有Decal Collection时
-                decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                decal_collection_name=collection.name+"_Decal"
+            #check selected collection's state:
+            collection_type=Collection.get_hst_type(collection)
+            parent_collection=Collection.find_parent_recur(collection,type="Prop_Collection")
+            # print(f"parent_collection:{parent_collection}")
+            if parent_collection:
+                origin_objects=Object.filter_hst_type(objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE")
+                origin_object_name=f"SM_{parent_collection.name}"
+            else:
+                origin_objects=Object.filter_hst_type(objects=collection.objects, type="ORIGIN", mode="INCLUDE")
+                origin_object_name=f"SM_{collection.name}"
+            if origin_objects:
+                origin_object=origin_objects[0]
+                origin_object.name=origin_object_name
+            
 
+            match collection_type:
+                case None:
+                    if parent_collection:
+                        current_state = "subobject_collection"
+
+                    else:
+                        
+                        current_state = "root_decal_collection"
+                        self.report(
+                        {"ERROR"},
+                        f"{collection.name} is not prop collection, please check")
+                        return {"CANCELLED"}
+
+                case "Decal_Collection":
+                    if parent_collection:
+                        current_state="decal_collection"
+
+                    else:
+                        current_state = "root_decal_collection" 
+                        continue
+                case "Prop_Collection":
+                    if parent_collection:
+                        self.report(
+                        {"ERROR"},
+                        f"{collection.name} is prop collection in prop collection, please check")
+                        return {"CANCELLED"}
+                    else:
+                        if collection.children:
+                            for child_collection in collection.children:
+                                child_type=Collection.get_hst_type(child_collection)
+                                if child_type == "Decal_Collection":
+                                    current_state="prop_collection"
+                        else:
+                            current_state="prop_collection_raw"
+                case _:
+                    self.report(
+                    {"ERROR"},
+                    f"{collection.name} has bad collection type, please check")
+                    return {"CANCELLED"}
+
+
+
+            match current_state:
+                case "subobject_collection":
+                    if parent_collection.children:
+                        for child_collection in parent_collection.children:
+                            child_type=Collection.get_hst_type(child_collection)
+                            if child_type == "Decal_Collection":
+                                decal_collection=child_collection
+                                break
+                    decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
+                    decal_collection_name=parent_collection.name+"_Decal"
+
+                # case "root_decal_collection":
+                #     decal_collection=collection
+                #     decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
+                #     decal_collection_name=collection.name+"_Decal"
+
+                case "prop_collection":
+                    decal_collection=child_collection
+                    decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
+                    decal_collection_name=collection.name+"_Decal"
+                case "prop_collection_raw":
+                    decal_collection=None
+                    decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
+                    decal_collection_name=collection.name+"_Decal"
+                case "decal_collection":
+                    decal_collection=collection
+                    decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
+                    decal_collection_name=parent_collection.name+"_Decal"
+                case None:
+                    self.report(
+                    {"ERROR"},
+                    f"{collection.name} has bad collection type, please check")
+                    return {"CANCELLED"}
 
 
 
             for exist_collection in bpy.data.collections: #collection 命名冲突时
                 if exist_collection.name == decal_collection_name and exist_collection is not decal_collection:
-                    file_c_parent=Collection.find_parent(exist_collection)
+                    file_c_parent=Collection.find_parent_recur(exist_collection,type="Prop_Collection")
                     if file_c_parent: #有parent 时根据parent命名
                         exist_collection.name=file_c_parent.name+"_Decal"
                     else: #无parent时删除并把包含的decal移入当前collection
@@ -576,34 +634,26 @@ class MakeDecalCollection(bpy.types.Operator):
                         
 
 
-            if decal_collection is not None: #修改命名
+            if decal_collection: #修改命名
                 decal_collection.name=decal_collection_name
                 count_exist+=1
-                # self.report({"INFO"}, f"{decal_collection_name} exsit and updated")
+
             elif decal_collection is None: #新建Decal Collection
                 decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
                 collection.children.link(decal_collection)
                 bpy.context.scene.collection.children.unlink(decal_collection)
                 count_create+=1
-                # self.report({"INFO"}, f"{decal_collection_name} is created")
+
                 
             decal_collection.hide_render = True
             Collection.active(decal_collection)
 
             if decal_meshes: #将Decal添加到Decal Collection
-                parent_coll=Collection.find_parent(decal_collection)
-                origin_object=None
-                if parent_coll:
-                    origin_objects=Object.filter_hst_type(objects=parent_coll.objects, type="ORIGIN", mode="INCLUDE")
-
-                    if origin_objects:
-                        origin_object=origin_objects[0]
-
-
                 for decal_mesh in decal_meshes:
                     decal_mesh.users_collection[0].objects.unlink(decal_mesh)
                     decal_collection.objects.link(decal_mesh)
                     Transform.apply_scale(decal_mesh)
+                    decal_mesh=Object.break_link_from_assetlib(decal_mesh)
 
                     if origin_object:
                         decal_mesh.select_set(True)

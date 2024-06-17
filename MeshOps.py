@@ -1248,17 +1248,19 @@ class BreakLinkFromLibraryOperator(bpy.types.Operator):
             return {'CANCELLED'}
         else:
             for mesh in selected_meshes:
-                obj_collection = mesh.users_collection[0]
-                unlinked_mesh =mesh.copy()
-                unlinked_mesh.data = mesh.data.copy()
-                
-                obj_collection.objects.link(unlinked_mesh)
+                unlinked_mesh=Object.break_link_from_assetlib(mesh)
                 unlinked_meshes.append(unlinked_mesh)
-                mesh_data=mesh.data
-                mesh_name=mesh.name
-                bpy.data.objects.remove(mesh)
-                bpy.data.meshes.remove(mesh_data)
-                unlinked_mesh.name = mesh_name
+                # obj_collection = mesh.users_collection[0]
+                # unlinked_mesh =mesh.copy()
+                # unlinked_mesh.data = mesh.data.copy()
+                
+                # obj_collection.objects.link(unlinked_mesh)
+                # unlinked_meshes.append(unlinked_mesh)
+                # mesh_data=mesh.data
+                # mesh_name=mesh.name
+                # bpy.data.objects.remove(mesh)
+                # bpy.data.meshes.remove(mesh_data)
+                # unlinked_mesh.name = mesh_name
                 count+=1
             for mesh in unlinked_meshes:
                 mesh.select_set(True)
