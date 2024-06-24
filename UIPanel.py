@@ -218,8 +218,9 @@ class HST_PT_HST(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
-        box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
+        # box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
         box_column.operator("hst.batch_add_asset_origin", icon="OUTLINER_OB_EMPTY")
+        box_column.operator("hst.reset_prop_transform_to_origin", icon="FILE_REFRESH")
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
         box_column.prop(parameters, "socket_name", text="Name")
         box_column.separator()
@@ -291,7 +292,6 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.sort_collections", icon="SORTALPHA")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         box.operator("hst.break_link_from_library", icon="UNLINKED")
-        
         
         
         

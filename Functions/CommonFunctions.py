@@ -33,10 +33,10 @@ def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object
     """筛选某种类型的object"""
     filtered_objects = []
     type = str.upper(type)
-
-    for object in target_objects:
-        if object.type == type:
-            filtered_objects.append(object)
+    if target_objects:
+        for object in target_objects:
+            if object.type == type:
+                filtered_objects.append(object)
 
     if len(filtered_objects) == 0: 
         return None
@@ -713,7 +713,7 @@ def uv_unwrap(target_objects, method="ANGLE_BASED", margin=0.005, correct_aspect
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
     bpy.ops.uv.unwrap(
-        method=method, fill_holes=True, correct_aspect=correct_aspect, margin=margin
+        method=method, fill_holes=False, correct_aspect=correct_aspect, margin=margin
     )
     bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -2179,7 +2179,9 @@ class MeshAttributes:
 class Viewport:
     def is_local_view():
         is_local_view = False
-        if bpy.context.space_data.local_view:
+        view3d_space=Viewport.get_3dview_space()
+        # if bpy.context.space_data.local_view:
+        if view3d_space.local_view:
             is_local_view = True
         return is_local_view
 
@@ -2406,6 +2408,7 @@ class Modifier:
         triangulate_modifier.keep_custom_normals = True
         triangulate_modifier.min_vertices = 4
         triangulate_modifier.quad_method = "SHORTEST_DIAGONAL"
+        return triangulate_modifier
 
     def add_geometrynode(mesh,modifier_name,node):
         """添加Geometry Nodes WearMask Modifier"""
@@ -2426,6 +2429,7 @@ class Modifier:
         else:
             geo_node_modifier = mesh.modifiers[modifier_name]
             geo_node_modifier.node_group = node
+        return geo_node_modifier
 
     def remove(object, modifier_name: str, has_subobject: bool = False):
         """删除某个modifier,返回modifier对应的子object"""

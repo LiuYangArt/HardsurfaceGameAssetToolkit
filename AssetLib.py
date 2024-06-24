@@ -11,6 +11,9 @@ class AssetPreview:
     PREVIEW_IMAGE_NAME = "TempAssetPreview.png"
 
     @staticmethod
+        
+
+
     def list_current_areas():
         """list current areas and spaces"""
         print("list current areas")
@@ -153,6 +156,38 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
         为选中的Asset Library中的Asset生成预览图，可用于Shader Nodes等非模型类Asset。预览图为当前3D视图的渲染结果。"
 
     def execute(self, context):
+        selected_objects=Object.get_selected()
+        # is_local_view=Viewport.is_local_view()
+        visible_objects=[]
+        all_objects=bpy.context.scene.objects
+        view3d_space=Viewport.get_3dview_space()
+        is_local_view=view3d_space.local_view
+        view_area=check_screen_area("VIEW_3D")
+        visible_lights=[]
+
+        if is_local_view:
+            with bpy.context.temp_override(
+                window=bpy.context.window,
+                area=view_area,
+                region=next(region for region in view_area.regions if region.type == "WINDOW"),
+                screen=bpy.context.window.screen,
+                space=view3d_space
+        ):
+                bpy.ops.view3d.localview(frame_selected=False)
+        
+        print(f"is local view: {is_local_view}")
+        for obj in all_objects:
+            visiblity= obj.hide_render
+            if visiblity is False:
+                visible_objects.append(obj)
+        if selected_objects:
+            for obj in visible_objects:
+                if obj.type == "LIGHT":
+                    visible_lights.append(obj)
+                if obj not in selected_objects and obj.type != "LIGHT":
+                    obj.hide_render=True
+
+
         asset_lib_area = AssetPreview.check_screen_area(
             "FILE_BROWSER", "ASSETS"
         )  # 检查是否有Asset Library面板
@@ -167,11 +202,31 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
         if camera_object is None:
             self.report({"ERROR"}, "No 3D View at Current Screen")
             return {"CANCELLED"}
+        
+
+        if selected_objects:
+            
+            with bpy.context.temp_override(
+            window=bpy.context.window,
+            area=view_area,
+            region=next(region for region in view_area.regions if region.type == "WINDOW"),
+            screen=bpy.context.window.screen,
+            space=view3d_space):
+                bpy.ops.view3d.view_selected()
+                # bpy.ops.view3d.localview(frame_selected=False)
+            # for obj in visible_lights:
+            #     obj.select_set(True)
+
         preview_image = AssetPreview.render_from_camera()  # 渲染预览图
         for asset in assets:
             AssetPreview.set_preview_to_asset(preview_image, asset)  # 设置预览图
             AssetPreview.remove_camera(camera_object)
             os.remove(preview_image)
+
+        for obj in visible_objects:
+            obj.hide_render=False
+        
+
 
         self.report({"INFO"}, "Asset Preview Created")
         return {"FINISHED"}

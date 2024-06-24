@@ -14,6 +14,7 @@ HIGH_COLLECTION_COLOR = "06"
 BAKECOLOR_ATTR = "VertexColor"
 UCX_PREFIX = "UCX_"
 
+
 # hard surface asset
 UV_BASE = "UV0_Base"
 UV_SWATCH = "UV1_Swatch"

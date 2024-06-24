@@ -87,8 +87,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
             for collection in target_collections:
 
-                new_name = collection.name.removeprefix("SM_")
-                new_name = "SM_" + file_prefix + new_name
+                new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
+                new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                 file_path = export_path + new_name + ".fbx"
                 FBXExport.staticmesh(collection, file_path)
                 sm_count += 1
@@ -104,8 +104,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 # new_name = collection.name.removeprefix("SKM_")
                 # new_name = "SKM_" + new_name
                 for mesh in collection.objects:
-                    new_name = mesh.name.removeprefix("SM_")
-                    new_name = "SM_" + file_prefix + new_name
+                    new_name = mesh.name.removeprefix(Const.STATICMESH_PREFIX)
+                    new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                     file_path = export_path + new_name + ".fbx"
                     skm_count += 1
                     FBXExport.staticmesh(mesh, file_path,reset_transform=True)
@@ -113,8 +113,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
         if len(rig_collections) > 0:
             for collection in rig_collections:
                 # for armature in collection.objects:
-                new_name = collection.name.removeprefix("SK_")
-                new_name = "SK_" + new_name
+                new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
+                new_name = Const.SKELETAL_MESH_PREFIX + new_name
                 file_path = export_path + new_name + ".fbx"
                 use_armature_as_root = parameters.use_armature_as_root
                 FBXExport.skeletal(collection, file_path, use_armature_as_root)

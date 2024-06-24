@@ -1250,25 +1250,60 @@ class BreakLinkFromLibraryOperator(bpy.types.Operator):
             for mesh in selected_meshes:
                 unlinked_mesh=Object.break_link_from_assetlib(mesh)
                 unlinked_meshes.append(unlinked_mesh)
-                # obj_collection = mesh.users_collection[0]
-                # unlinked_mesh =mesh.copy()
-                # unlinked_mesh.data = mesh.data.copy()
-                
-                # obj_collection.objects.link(unlinked_mesh)
-                # unlinked_meshes.append(unlinked_mesh)
-                # mesh_data=mesh.data
-                # mesh_name=mesh.name
-                # bpy.data.objects.remove(mesh)
-                # bpy.data.meshes.remove(mesh_data)
-                # unlinked_mesh.name = mesh_name
                 count+=1
             for mesh in unlinked_meshes:
                 mesh.select_set(True)
             self.report({"INFO"}, f"{count} meshes break link from library")
-                
-            
-
-
-        
         return {'FINISHED'}
 
+class ResetPropTransformToOriginOperator(bpy.types.Operator):
+    bl_idname = "hst.reset_prop_transform_to_origin"
+    bl_label = "Reset Prop Transform To Origin"
+    bl_description = "Reset Prop Transform To Origin"
+
+    def execute(self, context):
+        # selected_objects = bpy.context.selected_objects
+        # selected_meshes=filter_type(selected_objects,"MESH")
+        selected_objects=Object.get_selected()
+        selected_collection=Collection.get_selected()
+        prop_collections=[]
+        store_mode = prep_select_mode()
+        origin_count=0
+        for collection in selected_collection:
+            collection_type=Collection.get_hst_type(collection)
+            if collection_type==Const.TYPE_PROP_COLLECTION:
+                prop_collections.append(collection)
+        if len(prop_collections)==0:
+            self.report({"ERROR"}, "No prop collections selected, please select prop collections and retry")
+            return {'CANCELLED'}
+        elif len(prop_collections)>0:
+            for object in selected_objects:
+                object.select_set(False)
+            for collection in prop_collections:
+                print(collection.name)
+                origin_objects=Object.filter_hst_type(objects=collection.objects, type="ORIGIN", mode="INCLUDE")
+                print(origin_objects)
+                if origin_objects:
+                    origin_count+=1
+                    origin_object=origin_objects[0]
+
+                    for object in collection.all_objects:
+                        if object==origin_object:
+                            continue
+                        else:
+                            object.select_set(True)
+                            origin_object.select_set(True)
+                            bpy.context.view_layer.objects.active = origin_object
+                            bpy.ops.object.parent_no_inverse_set(keep_transform=True)
+                            Transform.apply(object)
+                            object.select_set(False)
+                            origin_object.select_set(False)
+
+                else:
+                    continue
+
+        restore_select_mode(store_mode)
+        self.report({"INFO"}, f"{origin_count} prop collections' objects reset transform to origin")
+                    
+
+        return {'FINISHED'}

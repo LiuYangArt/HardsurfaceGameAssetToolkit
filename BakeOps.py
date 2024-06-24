@@ -125,8 +125,20 @@ class BlurVertexColorOperator(bpy.types.Operator):
         blur_node=import_node_group(PRESET_FILE_PATH, VERTEXCOLORBLUR_NODE) 
         selected_objects=Object.get_selected()
         selected_meshes=filter_type(selected_objects, "MESH")
+        bad_meshes=[]
         for mesh in selected_meshes:
-            Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
+            active_color=mesh.data.attributes.active_color
+            if active_color:
+                geonode_mod=Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
+                geonode_mod["Socket_2"]=active_color.name
+            else: #skip when no vertex color
+                bad_meshes.append(mesh.name)
+                continue
+
+        if len(bad_meshes)>0:
+            self.report({"ERROR"}, f"{len(bad_meshes)} Meshes has no vertex color attribute. {str(bad_meshes)}")
+        else: self.report({"INFO"}, f"{len(selected_meshes)} Meshes got blur vertex color")
+
         return {"FINISHED"}
 
 

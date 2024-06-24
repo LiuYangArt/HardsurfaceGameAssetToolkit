@@ -452,8 +452,8 @@ class HSTDecalColName(bpy.types.Operator):
             )
             return {"CANCELLED"}
         if collection is not None:
-            if "_Decal" not in collection.name:
-                decal_collection_name = collection.name + "_Decal"
+            if DECAL_SUFFIX not in collection.name:
+                decal_collection_name = collection.name + DECAL_SUFFIX
                 copy_to_clip(decal_collection_name)
                 self.report({"INFO"}, f"copy {decal_collection_name} to clipboard")
             else:
@@ -525,14 +525,14 @@ class MakeDecalCollection(bpy.types.Operator):
             
             #check selected collection's state:
             collection_type=Collection.get_hst_type(collection)
-            parent_collection=Collection.find_parent_recur(collection,type="Prop_Collection")
+            parent_collection=Collection.find_parent_recur(collection,type=Const.TYPE_PROP_COLLECTION)
             # print(f"parent_collection:{parent_collection}")
             if parent_collection:
                 origin_objects=Object.filter_hst_type(objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE")
-                origin_object_name=f"SM_{parent_collection.name}"
+                origin_object_name=Const.STATICMESH_PREFIX+parent_collection.name
             else:
                 origin_objects=Object.filter_hst_type(objects=collection.objects, type="ORIGIN", mode="INCLUDE")
-                origin_object_name=f"SM_{collection.name}"
+                origin_object_name=Const.STATICMESH_PREFIX+collection.name
             if origin_objects:
                 origin_object=origin_objects[0]
                 origin_object.name=origin_object_name
@@ -551,14 +551,14 @@ class MakeDecalCollection(bpy.types.Operator):
                         f"{collection.name} is not prop collection, please check")
                         return {"CANCELLED"}
 
-                case "Decal_Collection":
+                case Const.TYPE_DECAL_COLLECTION:
                     if parent_collection:
                         current_state="decal_collection"
 
                     else:
                         current_state = "root_decal_collection" 
                         continue
-                case "Prop_Collection":
+                case Const.TYPE_PROP_COLLECTION:
                     if parent_collection:
                         self.report(
                         {"ERROR"},
@@ -568,7 +568,7 @@ class MakeDecalCollection(bpy.types.Operator):
                         if collection.children:
                             for child_collection in collection.children:
                                 child_type=Collection.get_hst_type(child_collection)
-                                if child_type == "Decal_Collection":
+                                if child_type == Const.TYPE_DECAL_COLLECTION:
                                     current_state="prop_collection"
                         else:
                             current_state="prop_collection_raw"
@@ -585,11 +585,11 @@ class MakeDecalCollection(bpy.types.Operator):
                     if parent_collection.children:
                         for child_collection in parent_collection.children:
                             child_type=Collection.get_hst_type(child_collection)
-                            if child_type == "Decal_Collection":
+                            if child_type == Const.TYPE_DECAL_COLLECTION:
                                 decal_collection=child_collection
                                 break
                     decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=parent_collection.name+"_Decal"
+                    decal_collection_name=parent_collection.name+DECAL_SUFFIX
 
                 # case "root_decal_collection":
                 #     decal_collection=collection
@@ -599,15 +599,15 @@ class MakeDecalCollection(bpy.types.Operator):
                 case "prop_collection":
                     decal_collection=child_collection
                     decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=collection.name+"_Decal"
+                    decal_collection_name=collection.name+DECAL_SUFFIX
                 case "prop_collection_raw":
                     decal_collection=None
                     decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=collection.name+"_Decal"
+                    decal_collection_name=collection.name+DECAL_SUFFIX
                 case "decal_collection":
                     decal_collection=collection
                     decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=parent_collection.name+"_Decal"
+                    decal_collection_name=parent_collection.name+DECAL_SUFFIX
                 case None:
                     self.report(
                     {"ERROR"},
@@ -618,9 +618,9 @@ class MakeDecalCollection(bpy.types.Operator):
 
             for exist_collection in bpy.data.collections: #collection 命名冲突时
                 if exist_collection.name == decal_collection_name and exist_collection is not decal_collection:
-                    file_c_parent=Collection.find_parent_recur(exist_collection,type="Prop_Collection")
+                    file_c_parent=Collection.find_parent_recur(exist_collection,type=Const.TYPE_PROP_COLLECTION)
                     if file_c_parent: #有parent 时根据parent命名
-                        exist_collection.name=file_c_parent.name+"_Decal"
+                        exist_collection.name=file_c_parent.name+DECAL_SUFFIX
                     else: #无parent时删除并把包含的decal移入当前collection
                         ex_decal_meshes=Object.filter_hst_type(objects=exist_collection.all_objects, type="DECAL", mode="INCLUDE")
                         if ex_decal_meshes:
