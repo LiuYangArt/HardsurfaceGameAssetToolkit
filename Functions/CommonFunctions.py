@@ -2391,7 +2391,7 @@ class Mesh:
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_mode(use_extend=False, use_expand=False, type='VERT')
         bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.remove_doubles(threshold=0.001,use_unselected=True,use_sharp_edge_from_normals=True)
+        bpy.ops.mesh.remove_doubles(threshold=0.0001,use_unselected=True,use_sharp_edge_from_normals=True)
         bpy.ops.object.mode_set(mode="OBJECT")
 
 class Modifier:

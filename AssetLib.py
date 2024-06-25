@@ -205,7 +205,7 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
         
 
         if selected_objects:
-            
+            5
             with bpy.context.temp_override(
             window=bpy.context.window,
             area=view_area,
