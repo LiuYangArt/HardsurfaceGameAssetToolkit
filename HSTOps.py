@@ -166,7 +166,6 @@ def prep_wearmask_objects(selected_objects):
         mesh.hide_render = True
 
     for proxy_object in proxy_object_list:  # 处理proxy模型
-        print(f"name:{proxy_object.name}")
         cleanup_color_attributes(proxy_object)
         add_vertexcolor_attribute(proxy_object, WEARMASK_ATTR)
         set_active_color_attribute(proxy_object, WEARMASK_ATTR)

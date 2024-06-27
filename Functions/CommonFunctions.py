@@ -2435,21 +2435,37 @@ class Modifier:
         """删除某个modifier,返回modifier对应的子object"""
 
         modifier_objects = []
-        for modifier in object.modifiers:
-            if modifier is not None:
-                if modifier.name == modifier_name:
-                    # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
-                    if has_subobject is True and modifier.object is not None:
-                        modifier_objects.append(modifier.object)
-                    object.modifiers.remove(modifier)
+        # bad_modifier_objects=[]
+        if object.modifiers:
+            for modifier in object.modifiers:
+                if modifier is not None:
+                    if modifier.name == modifier_name:
+                        # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
+                        if has_subobject is True and modifier.object is not None:
+                            # if modifier.object not in modifier_objects:
+                            modifier_objects.append(modifier.object)
+                        object.modifiers.remove(modifier)
 
         if len(modifier_objects) > 0:
             for modifier_object in modifier_objects:
-                if modifier_object.parent.name == object.name:
+                # print(f"modifier_object: {modifier_object.name}")
+                to_remove=False
+                parent_name=modifier_object.name.removeprefix(TRANSFERPROXY_PREFIX)
+                if modifier_object.parent:
+                    # print("has parent")
+                    if modifier_object.parent.name == parent_name:
+                        to_remove=True
+                else:
+                    to_remove=True
+
+                if to_remove is True:
+                    # print(f"{modifier_object.name} will be removed")
                     old_mesh = modifier_object.data
                     old_mesh.name = "OldTP_" + old_mesh.name
                     bpy.data.objects.remove(modifier_object)
                     bpy.data.meshes.remove(old_mesh)
+
+
 
     def move_to_bottom(object,modifier_name):
         target_modifier = object.modifiers[modifier_name]
