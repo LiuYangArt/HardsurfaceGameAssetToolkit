@@ -1564,6 +1564,9 @@ class Object:
                 case "ORIGIN":
                     if object_type == Const.TYPE_ORIGIN:
                         include_objects.append(object)
+                case "PROXY":
+                    if object_type == Const.TYPE_PROXY:
+                        include_objects.append(object)
 
         if mode == "INCLUDE":
             filtered_objects = include_objects
@@ -2442,24 +2445,21 @@ class Modifier:
                     if modifier.name == modifier_name:
                         # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
                         if has_subobject is True and modifier.object is not None:
-                            # if modifier.object not in modifier_objects:
-                            modifier_objects.append(modifier.object)
+                            if modifier.object not in modifier_objects:
+                                modifier_objects.append(modifier.object)
                         object.modifiers.remove(modifier)
 
         if len(modifier_objects) > 0:
             for modifier_object in modifier_objects:
-                # print(f"modifier_object: {modifier_object.name}")
-                to_remove=False
-                parent_name=modifier_object.name.removeprefix(TRANSFERPROXY_PREFIX)
-                if modifier_object.parent:
-                    # print("has parent")
-                    if modifier_object.parent.name == parent_name:
-                        to_remove=True
-                else:
-                    to_remove=True
+                to_remove=True
+                # parent_name=modifier_object.name.removeprefix(TRANSFERPROXY_PREFIX)
+                # if modifier_object.parent:
+                #     if modifier_object.parent.name == parent_name:
+                #         to_remove=True
+                # else:
+                #     to_remove=True
 
                 if to_remove is True:
-                    # print(f"{modifier_object.name} will be removed")
                     old_mesh = modifier_object.data
                     old_mesh.name = "OldTP_" + old_mesh.name
                     bpy.data.objects.remove(modifier_object)

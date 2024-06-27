@@ -137,6 +137,7 @@ def prep_wearmask_objects(selected_objects):
     """ process meshes for wearmask baking """
 
     selected_meshes = filter_type(selected_objects, "MESH")
+    selected_meshes=Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
     rename_prop_meshes(selected_objects)
     target_collections=filter_collections_selection(selected_objects)
     for collection in target_collections:
@@ -192,6 +193,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, type="MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
+        selected_meshes = Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
 
         if collection is None:
             self.report(
@@ -248,6 +250,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         collection = get_collection(active_object)
         selected_meshes = filter_type(selected_objects, "MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
+        selected_meshes = Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
 
         if collection is None:
             self.report(
