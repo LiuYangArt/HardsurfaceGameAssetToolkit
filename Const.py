@@ -1,10 +1,23 @@
 from bpy.utils import resource_path
+import addon_utils
 from pathlib import Path
 import os
 # from mathutils import Matrix
 
 class Addon:
     NAME = "HardsurfaceGameAssetToolkit"
+
+    def get_install_path():
+        for mod in addon_utils.modules():
+            if mod.bl_info['name'] == Addon.NAME:
+                filepath = mod.__file__
+                break
+        # filepath=str(filepath)
+        # filepath=filepath.removesuffix("/__init__.py")
+        filepath=Path(filepath)
+        return filepath
+                
+
 
 # bake groups
 LOW_SUFFIX = "_low"
@@ -92,12 +105,15 @@ NORMAL_TYPE_ATTRIBUTE="NormalType"
 NORMAL_TYPE_NUM=5
 
 
+
 class Paths:
+    
     """ 文件和路径 """
     ASSET_DIR = "PresetFiles"
-    BLENDER_DIR = Path(resource_path("USER"))
-    PRESETS_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME / ASSET_DIR
-    ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
+    # BLENDER_DIR = Path(resource_path("USER"))
+    # ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
+    ADDON_DIR = Addon.get_install_path()
+    PRESETS_DIR = ADDON_DIR / ASSET_DIR
     NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
     PRESET_FILE = PRESETS_DIR / "Presets.blend"
     CONFIG_FILE= ADDON_DIR / "prefs.json"

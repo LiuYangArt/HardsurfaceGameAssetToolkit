@@ -157,12 +157,8 @@ class TestFuncOperator(bpy.types.Operator):
     bl_label = "TestFunc"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        collection = get_collection(selected_objects[0])
-        print(f"collection: {collection.name}")
-        print(f"collection_children: {collection.children}")
-        print(f"collection_objects: {collection.objects}")
-        is_local_view = Viewport.is_local_view()
-        print(is_local_view)
+        print("Test Func")
+        print(Paths.ADDON_DIR)
+        print(Addon.get_install_path())
 
         return {"FINISHED"}
