@@ -292,6 +292,8 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.sort_collections", icon="SORTALPHA")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         box.operator("hst.break_link_from_library", icon="UNLINKED")
+        box.operator("hst.reimportwearmasknode", icon="FILE_REFRESH")
+        
         
         
         

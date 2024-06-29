@@ -294,6 +294,19 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.
     return proxy_mesh
 
 
+def remove_node(name):
+    node_exist = False
+    for node in bpy.data.node_groups:
+        if name not in node.name:
+            node_exist = False
+        else:
+            node_exist = True
+            node_import = node
+            break
+    if node_exist:
+        #remove node
+        bpy.data.node_groups.remove(node_import)
+
 def import_node_group(file_path, node_name) -> bpy.types.NodeGroup:
     """从文件载入NodeGroup"""
 

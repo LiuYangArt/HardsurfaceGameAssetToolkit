@@ -741,7 +741,39 @@ class MarkNormalType(bpy.types.Operator):
         self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
         return {'FINISHED'}
         
+
+
+class ReimportWearmaskNodeOperator(bpy.types.Operator):
+    bl_idname = "hst.reimportwearmasknode"
+    bl_label = "Reimport Wearmask Node"
+
+    def execute(self, context):
         
+        wearmask_meshes=[]
+        for object in bpy.data.objects:
+            if object.type=="MESH":
+                for modifier in object.modifiers:
+                    if modifier.name == COLOR_GNODE_MODIFIER:
+                        wearmask_meshes.append(object)
+                        break
+
+        if len(wearmask_meshes)==0:
+            self.report({"ERROR"}, "No Object with Wearmask found")
+        if len(wearmask_meshes)>0:
+            remove_node(WEARMASK_NODE)
+            remove_node("ConcaveEdgeMask")
+            remove_node("VerticleGradient")
+            remove_node("EdgeMaskByNormal")
+            import_node_group(PRESET_FILE_PATH,WEARMASK_NODE)
+            for mesh in wearmask_meshes:
+                for modifier in mesh.modifiers:
+                    if modifier.name == COLOR_GNODE_MODIFIER:
+                        modifier.node_group = bpy.data.node_groups[WEARMASK_NODE]
+                    break
+            self.report({"INFO"}, f"{len(wearmask_meshes)} Object(s) updated")
+
+        return {'FINISHED'}
+
     
 
 
