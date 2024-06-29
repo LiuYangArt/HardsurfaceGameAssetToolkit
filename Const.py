@@ -114,7 +114,7 @@ class Paths:
     # ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
     ADDON_DIR = Addon.get_install_path()
     PRESETS_DIR = ADDON_DIR / ASSET_DIR
-    NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
+    # NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
     PRESET_FILE = PRESETS_DIR / "Presets.blend"
     CONFIG_FILE= ADDON_DIR / "prefs.json"
     OS_USER_DIR=os.environ['USERPROFILE']
