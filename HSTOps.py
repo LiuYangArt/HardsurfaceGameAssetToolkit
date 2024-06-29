@@ -160,7 +160,7 @@ def prep_wearmask_objects(selected_objects):
             mesh, TRANSFERPROXY_PREFIX, proxy_collection
         )
         proxy_object_list.append(proxy_mesh)
-        add_face_weight_attribute(mesh, value=1)
+        # add_face_weight_attribute(mesh, value=1)
         add_color_transfer_modifier(mesh)
         add_gn_wearmask_modifier(mesh)
         add_triangulate_modifier(mesh)
