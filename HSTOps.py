@@ -694,6 +694,12 @@ class MarkTintObjectOperator(bpy.types.Operator):
         
 
         target_collections=filter_collections_selection(selected_objects)
+        if target_collections is None:
+            self.report(
+                {"ERROR"},
+                "Not in collection",
+            )
+            return {"CANCELLED"}
         for collection in target_collections:
             if collection is not None:
                 collection_objects=collection.objects
@@ -710,6 +716,49 @@ class MarkTintObjectOperator(bpy.types.Operator):
                             MeshAttributes.fill_points(object,tint_attr,value=1.0)
         self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
         return {'FINISHED'}
+
+class MarkAdditionalAttribute(bpy.types.Operator):
+    bl_idname = "hst.mark_attribute"
+    bl_label = "Mark Additional Attribute"
+    bl_description = "为选中的物体添加额外的Attribute，用于特殊材质混合"
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        if selected_meshes is None:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+        
+
+        target_collections=filter_collections_selection(selected_objects)
+        if target_collections is None:
+            self.report(
+                {"ERROR"},
+                "Not in collection",
+            )
+            return {"CANCELLED"}
+        for collection in target_collections:
+            if collection is not None:
+                collection_objects=collection.objects
+
+                for object in collection_objects:
+                    if object.type=="MESH":
+
+                        spec_attr=MeshAttributes.add(object,attribute_name=Const.SPEC_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+                        
+                        if object not in selected_meshes:
+                            MeshAttributes.fill_points(object,spec_attr,value=0.0)
+                        if object in selected_meshes:
+
+                            MeshAttributes.fill_points(object,spec_attr,value=1.0)
+        self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
+        return {'FINISHED'}
+
 
 class MarkNormalType(bpy.types.Operator):
     bl_idname = "hst.mark_normal_type"
@@ -740,7 +789,37 @@ class MarkNormalType(bpy.types.Operator):
         
         self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
         return {'FINISHED'}
+
+
+class MarkSpecType(bpy.types.Operator):
+    bl_idname = "hst.mark_spec_type"
+    bl_label = "Mark Spec Type"
+    bl_description = "为选中的物体标记Spec Type，用于特殊材质混合"
+
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        parameters = context.scene.hst_params
+        spec_type=parameters.spec_type/SPEC_TYPE_NUM
+        print(spec_type)
+
+        if selected_meshes is None:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
         
+        for mesh in selected_meshes:
+            spec_attr=MeshAttributes.add(mesh,attribute_name=SPEC_TYPE_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+
+            MeshAttributes.fill_points(mesh,spec_attr,value=spec_type)
+
+        
+        self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
+        return {'FINISHED'}
 
 
 class ReimportWearmaskNodeOperator(bpy.types.Operator):

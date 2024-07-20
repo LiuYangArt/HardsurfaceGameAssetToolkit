@@ -555,8 +555,8 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
         uv_space.display_channels = "COLOR"
         uv_editor_fit_view(uv_editor)
         bpy.context.scene.tool_settings.use_uv_select_sync = True
-
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+        switch_to_eevee()
+        # bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
 
         restore_select_mode(store_mode)
@@ -634,8 +634,8 @@ class HST_PatternMatSetup(bpy.types.Operator):
 
         uv_editor_fit_view(uv_editor)
         bpy.context.scene.tool_settings.use_uv_select_sync = True
-
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+        switch_to_eevee()
+        # bpy.context.scene.render.engine = "BLENDER_EEVEE"
         viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
 
         restore_select_mode(store_mode)
@@ -709,7 +709,8 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         if bpy.context.scene.world is not world:
             bpy.context.scene.world = world
 
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+        switch_to_eevee()
+        # bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
         viewport_shading_mode("VIEW_3D", "RENDERED")
 
         restore_select_mode(store_mode)

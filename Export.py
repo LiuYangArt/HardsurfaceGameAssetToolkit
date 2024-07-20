@@ -69,7 +69,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 if origin_objects:
                     origin_obj=origin_objects[0]
                     origin_visibility=origin_obj.visible_get()
-                    print(f"{collection.name} origin {origin_obj} vis: {origin_visibility}")
+                    # print(f"{collection.name} origin {origin_obj} vis: {origin_visibility}")
                     origin_transform[origin_obj] = origin_obj.matrix_world.copy()
                     origin_obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
                     

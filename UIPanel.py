@@ -59,6 +59,13 @@ class UIParams(PropertyGroup):
         max=NORMAL_TYPE_NUM,
     )
 
+    spec_type: IntProperty(
+        description="Spec Type",
+        default=0,
+        min=0,
+        max=SPEC_TYPE_NUM,
+    )
+
     texture_size: EnumProperty(
         items=[
             ("512", "512", "Texture Size 512x512"),
@@ -293,8 +300,9 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         box.operator("hst.break_link_from_library", icon="UNLINKED")
         box.operator("hst.reimportwearmasknode", icon="FILE_REFRESH")
-        
-        
+        box.operator("hst.mark_attribute", icon="COLOR")
+        box.operator("hst.mark_spec_type", icon="NODE_TEXTURE")
+        box.prop(parameters, "spec_type", text="Spec Type")
         
         
         box.operator("hst.testfunc", icon="SORTALPHA")

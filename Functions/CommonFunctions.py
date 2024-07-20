@@ -21,6 +21,14 @@ def message_box(text="", title="WARNING", icon="ERROR") -> None:
 
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 
+def switch_to_eevee()->None:
+    """切换到EEVEE渲染引擎,4.2以上切换为EEVEE Next"""
+
+    if BL_VERSION>=4.2:
+            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+    else:
+        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+
 
 def rename_meshes(target_objects, new_name) -> None:
     """重命名mesh"""
@@ -2421,7 +2429,8 @@ class Modifier:
                 name=TRIANGULAR_MODIFIER, type="TRIANGULATE"
             )
 
-        triangulate_modifier.keep_custom_normals = True
+        if BL_VERSION<4.2:
+            triangulate_modifier.keep_custom_normals = True
         triangulate_modifier.min_vertices = 4
         triangulate_modifier.quad_method = "SHORTEST_DIAGONAL"
         return triangulate_modifier

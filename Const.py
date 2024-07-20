@@ -1,4 +1,5 @@
 from bpy.utils import resource_path
+import bpy
 import addon_utils
 from pathlib import Path
 import os
@@ -16,8 +17,15 @@ class Addon:
         # filepath=filepath.removesuffix("/__init__.py")
         filepath=Path(filepath)
         return filepath
+    
+    def get_blender_version()->float:
+            blver=bpy.app.version
+            bl_version_num=f"{blver[0]}.{blver[1]}"
+            bl_version_num=float(bl_version_num)
+            return bl_version_num
                 
 
+BL_VERSION=Addon.get_blender_version()
 
 # bake groups
 LOW_SUFFIX = "_low"
@@ -102,7 +110,9 @@ UE_SCRIPT_CMD = "batch_import_hs_props"
 BAD_MESHES_COLLECTION="_BadMeshes"
 
 NORMAL_TYPE_ATTRIBUTE="NormalType"
+SPEC_TYPE_ATTRIBUTE="SpecType"
 NORMAL_TYPE_NUM=5
+SPEC_TYPE_NUM=3
 
 
 
@@ -160,5 +170,6 @@ class Const:
     UV_PATTERN = "UV1_Pattern"
 
     TINT_ATTRIBUTE = "TintMask"
+    SPEC_ATTRIBUTE = "SpecMask"
 
     WORK_VIEWLAYER="HST_WorkViewLayer"
