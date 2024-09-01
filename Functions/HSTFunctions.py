@@ -152,5 +152,32 @@ def add_face_weight_attribute(mesh, value=1):
         )
         mesh.data.update()
 
+def add_subd_modifier(mesh):
+    """添加subdivision Modifier"""
+    if SUBD_MODIFIER in mesh.modifiers:
+        subd_mod = mesh.modifiers[SUBD_MODIFIER]
+    else:
+        subd_mod = mesh.modifiers.new(name=SUBD_MODIFIER, type="SUBSURF")
+
+
+    subd_mod.subdivision_type = "SIMPLE"
+
+def add_shrinkwrap_modifier(mesh,target_object):
+    """添加shrinkwrap Modifier"""
+    if SHRINKWRAP_MODIFIER in mesh.modifiers:
+        shrinkwrap_mod = mesh.modifiers[SHRINKWRAP_MODIFIER]
+    else:
+        shrinkwrap_mod = mesh.modifiers.new(name=SHRINKWRAP_MODIFIER, type="SHRINKWRAP")
+
+    shrinkwrap_mod.target = target_object
+    shrinkwrap_mod.wrap_method = "PROJECT"
+    shrinkwrap_mod.wrap_mode = "ON_SURFACE"
+    shrinkwrap_mod.use_negative_direction = True
+    shrinkwrap_mod.use_positive_direction = False
+    shrinkwrap_mod.offset = 0.002
+
+
+
+
 
 
