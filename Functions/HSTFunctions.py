@@ -74,9 +74,10 @@ def add_triangulate_modifier(mesh):
         triangulate_modifier = mesh.modifiers.new(
             name=TRIANGULAR_MODIFIER, type="TRIANGULATE"
         )
-    if BL_VERSION<4.2:
-        triangulate_modifier.keep_custom_normals = True
-    
+    # if BL_VERSION<4.2:
+    #     triangulate_modifier.keep_custom_normals = True
+
+    triangulate_modifier.keep_custom_normals = True
     triangulate_modifier.min_vertices = 4
     triangulate_modifier.quad_method = "SHORTEST_DIAGONAL"
 
