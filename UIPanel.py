@@ -304,7 +304,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.mark_spec_type", icon="NODE_TEXTURE")
         box.prop(parameters, "spec_type", text="Spec Type")
         box.operator("hst.projectdecal", icon="MOD_SHRINKWRAP")
-        
+        box.operator("hst.marksharp", icon="SHARPCURVE")
         box.operator("hst.testfunc", icon="SORTALPHA")
         
         

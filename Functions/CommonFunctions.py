@@ -500,7 +500,51 @@ def scale_uv(mesh, uv_layer, scale=(1, 1), pivot=(0.5, 0.5)) -> None:
             uv_layer.data[uv_index].uv = x, y
 
 
+def mark_sharp_edges_by_split_normal(obj) -> None:
+    """ 根据SplitNormal标记锐边 """
 
+    bm = bmesh.new()
+    mesh = obj.data
+    bm.from_mesh(mesh)
+
+    bm.edges.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    loops = mesh.loops
+
+
+
+    split_edges = set()
+
+    for vert in bm.verts:
+        for edge in vert.link_edges:
+            loops_for_vert_and_edge = []
+            for face in edge.link_faces:
+                for loop in face.loops:
+                    if loop.vert == vert:
+                        loops_for_vert_and_edge.append(loop)
+            if len(loops_for_vert_and_edge) != 2:
+                continue
+            loop1, loop2 = loops_for_vert_and_edge
+            normal1 = loops[loop1.index].normal
+            normal2 = loops[loop2.index].normal
+
+            if are_normals_different(normal1, normal2):
+                split_edges.add(edge)
+
+    for edge in bm.edges:
+        if edge in split_edges:
+            edge.smooth = False
+            edge.seam = True
+
+    bm.to_mesh(obj.data)
+    bm.free()
+
+def are_normals_different(normal_a, normal_b, threshold_angle_degrees=5.0):
+    """ 计算法线是否朝向一致 """
+    threshold_cosine = math.cos(math.radians(threshold_angle_degrees))
+    dot_product = normal_a.dot(normal_b)
+    return dot_product < threshold_cosine
 
 
 def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
@@ -2429,8 +2473,8 @@ class Modifier:
                 name=TRIANGULAR_MODIFIER, type="TRIANGULATE"
             )
 
-        if BL_VERSION<4.2:
-            triangulate_modifier.keep_custom_normals = True
+        # if BL_VERSION<4.2:
+        triangulate_modifier.keep_custom_normals = True
         triangulate_modifier.min_vertices = 4
         triangulate_modifier.quad_method = "SHORTEST_DIAGONAL"
         return triangulate_modifier

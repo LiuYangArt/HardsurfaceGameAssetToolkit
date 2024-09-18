@@ -236,8 +236,8 @@ class FixSpaceClaimObjOperator(bpy.types.Operator):
             #         "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
             #     )
             #     return {"CANCELLED"}
-
-            mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
+            mark_sharp_edges_by_split_normal(mesh)
+            # mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)
 
         bpy.ops.object.mode_set(mode="EDIT")
@@ -1308,3 +1308,23 @@ class ResetPropTransformToOriginOperator(bpy.types.Operator):
                     
 
         return {'FINISHED'}
+
+
+
+
+
+
+class MarkSharpOperator(bpy.types.Operator):
+    bl_idname = "hst.marksharp"
+    bl_label = "Mark Sharp by Normal"
+    bl_description = "Mark Sharp Edge by Split Normal"
+
+    def execute(self, context):
+        selected_objects=bpy.context.selected_objects
+        for obj in selected_objects:
+            mark_sharp_edges_by_split_normal(obj)
+
+        return {'FINISHED'}
+    
+
+
