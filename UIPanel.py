@@ -207,7 +207,10 @@ class HST_PT_HST(bpy.types.Panel):
         box_column.label(text="Workflow")
 
         box_column.operator(
-            "hst.prepspaceclaimcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK"
+            "hst.prepcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK"
+        )
+        box_column.operator(
+            "hst.fixcadobj", text="Fix CAD Obj", icon="MESH_CUBE"
         )
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
@@ -284,9 +287,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         )
         box_column.operator("hst.cleanvert", text="Clean Verts", icon="VERTEXSEL")
         box_column.operator("hst.sepmultiuser", text="Clean Multi Users", icon="USER")
-        box_column.operator(
-            "hst.fixspaceclaimobj", text="Fix SpaceClaim Obj", icon="MESH_CUBE"
-        )
+
         box_column.operator(
             "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
         )

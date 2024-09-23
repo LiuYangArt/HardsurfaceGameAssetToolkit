@@ -23,12 +23,12 @@ def check_non_solid_meshes(meshes):
     elif bad_meshes ==0:
         return None
 
-class PrepSpaceClaimCADMeshOperator(bpy.types.Operator):
-    bl_idname = "hst.prepspaceclaimcadmesh"
-    bl_label = "Cleanup SpaceClaim FBX Mesh"
+class PrepCADMeshOperator(bpy.types.Operator):
+    bl_idname = "hst.prepcadmesh"
+    bl_label = "Prep CAD FBX Mesh"
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
         需要保持模型水密\
-        如果模型的面是分开的请先使用FixSpaceClaimObj工具修理"
+        如果模型的面是分开的请先使用FixCADObj工具修理"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -181,11 +181,11 @@ class CleanVertexOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class FixSpaceClaimObjOperator(bpy.types.Operator):
-    bl_idname = "hst.fixspaceclaimobj"
-    bl_label = "FixSpaceClaimObj"
-    bl_description = "修理spaceclaim输出的obj，以便进行后续操作\
-        自动合并面，并根据角度标记锐边"
+class FixCADObjOperator(bpy.types.Operator):
+    bl_idname = "hst.fixcadobj"
+    bl_label = "Fix CAD Obj"
+    bl_description = "修理CAD输出的obj，以便进行后续操作\
+        自动合并面，并根据顶点法线标记锐边"
 
     def execute(self, context):
         SHARP_ANGLE = 0.08
