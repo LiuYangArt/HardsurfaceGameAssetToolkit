@@ -23,8 +23,7 @@ class ProjectDecalOperator(bpy.types.Operator):
         decal_objects=Object.filter_hst_type(selected_objects,type="DECAL",mode="INCLUDE")
 
         selected_meshes = filter_type(selected_objects, "MESH")
-        print(f"decal_objects: {decal_objects}")
-        print(f"active_object: {active_object}")
+
         if len(selected_objects) == 0:
             self.report(
                 {"ERROR"},
@@ -45,11 +44,6 @@ class ProjectDecalOperator(bpy.types.Operator):
             add_shrinkwrap_modifier(object,active_object)
 
         self.report({"INFO"},f"{len(decal_objects)} Decal Projected")
-        return {'FINISHED'}
-
-
-        
-
         return {'FINISHED'}
 
 

@@ -962,6 +962,8 @@ def clean_collection_name(collection_name: str) -> str:
         .replace(" ", "")
         .split(LOW_SUFFIX)[0]
         .split(HIGH_SUFFIX)[0]
+        .split(LOWB_SUFFIX)[0]
+        .split(HIGHB_SUFFIX)[0]
         .split(DECAL_SUFFIX)[0]
     )
     return clean_name

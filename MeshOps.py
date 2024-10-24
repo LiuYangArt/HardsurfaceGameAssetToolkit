@@ -210,7 +210,7 @@ class FixCADObjOperator(bpy.types.Operator):
             object.select_set(False)
 
         for mesh in selected_meshes:
-            apply_modifiers(mesh)
+            # apply_modifiers(mesh)
             Transform.apply(mesh, location=False, rotation=True, scale=True)
         Mesh.merge_verts_ops(selected_meshes)
 
@@ -240,12 +240,12 @@ class FixCADObjOperator(bpy.types.Operator):
             # mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
             mesh.select_set(True)
 
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_mode(type="FACE")
-        bpy.ops.mesh.select_all(action="SELECT")
-        bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
-        bpy.ops.mesh.select_all(action="DESELECT")
-        bpy.ops.object.mode_set(mode="OBJECT")
+        # bpy.ops.object.mode_set(mode="EDIT")
+        # bpy.ops.mesh.select_mode(type="FACE")
+        # bpy.ops.mesh.select_all(action="SELECT")
+        # bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
+        # bpy.ops.mesh.select_all(action="DESELECT")
+        # bpy.ops.object.mode_set(mode="OBJECT")
 
         restore_select_mode(store_mode)
         self.report({"INFO"}, "Selected meshes fixed")
@@ -992,39 +992,55 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         bad_meshes = []
         store_mode = prep_select_mode()
         for mesh in selected_meshes:
+            bpy.ops.object.material_slot_remove_unused() # remove unused material slot
             bad_mat_index=[]
-            mesh_has_good_mat=False
+            good_mat_in_mesh=False
+            mat_has_good_mat=False
+            
             for i in range(len(mesh.material_slots)):
+                is_bad_mat=False # 记录是否为重复材质
                 mat = mesh.material_slots[i].material
-                if mat in bad_materials:
-                    bad_mat_index.append(i)
+                if mat in bad_materials: #如果插槽内的材质在bad_materials中，则记录此插槽的index
+                    is_bad_mat=True
+
                 elif mat not in bad_materials:
-                    #check if mat is bad mat
-                    mat_name_split = mat.name.split(".00")
+                    mat_name_split = mat.name.split(".00") # 检查材质名称是否带序号
                     if len(mat_name_split) > 1:
                         mat_name = mat_name_split[0]
-                        mat_good = get_scene_material(mat_name)
-                        if mat_good is not None:
-                            bad_mat_index.append(i)
-                        else:
+                        mat_good = get_scene_material(mat_name) #检查是否有原始材质（不带序号的）
+                        if mat_good is not None: #如果有原始材质，则记录此插槽的index
+                            is_bad_mat=True
+                        else:# 没有原始材质，则修改材质名称，去除 .00x 后缀
                             mat.name = mat_name
-                        bad_materials.append(mat)
-
-
-
-            if len(bad_mat_index)>0:
-                bad_meshes.append(mesh)
-                for mat_slots in mesh.material_slots:
-                    mat=mat_slots.material
-                    if mat_good == mat:
-                        mesh_has_good_mat=True
-                        break
-            if mesh_has_good_mat:
-                for index in bad_mat_index:
-                    mesh.data.materials.pop(index = index)
-            else:
-                for index in bad_mat_index:
+                if is_bad_mat:
+                    bad_mat_index.append(i)
+                    bad_materials.append(mat)
+                    # mesh.material_slots[i].material = mat_good
+            #     print(f"matgood:{mat_good.name}")
+                        
+            # print(f"bad mats:{bad_mat_index}")
+            if len(bad_mat_index)>0: # 有重复材质时
+                bad_meshes.append(mesh) 
+                for i in bad_mat_index:
+                    mat = mesh.material_slots[i].material
+                    mat_name_split = mat.name.split(".00")
+                    mat_name = mat_name_split[0]
+                    mat_good = get_scene_material(mat_name)
                     mesh.material_slots[i].material = mat_good
+
+            # if len(bad_mat_index)>0: # 有重复材质时
+            #     bad_meshes.append(mesh)#记录mesh，用于计数
+            #     for mat_slots in mesh.material_slots:
+            #         mat=mat_slots.material
+            #         if mat_good == mat:
+            #             mesh_has_good_mat=True
+            #             break
+            # if mesh_has_good_mat:
+            #     for index in bad_mat_index:
+            #         mesh.data.materials.pop(index = index)
+            # else:
+            #     for i in bad_mat_index:
+            #         mesh.material_slots[i].material = mat_good
 
 
             

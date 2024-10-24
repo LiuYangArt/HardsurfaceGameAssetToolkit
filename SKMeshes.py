@@ -426,9 +426,9 @@ class FixSplitMesh(bpy.types.Operator):
     bl_label = "Fix Split Faces Mesh"
     bl_description = "Merge split faces mesh without breaking the custom normal"
 
-    def add_datatransfer_modifier(self, mesh):
+    def add_datatransfer_modifier(self, mesh,transfer_source_mesh):
         """add datatransfer modifier to mesh"""
-        transfer_source_mesh = bpy.data.objects[TRANSFER_MESH_PREFIX + mesh.name]
+        # transfer_source_mesh = bpy.data.objects[TRANSFER_MESH_PREFIX + mesh.name]
         if NORMALTRANSFER_MODIFIER in mesh.modifiers:
             datatransfermod = mesh.modifiers[NORMALTRANSFER_MODIFIER]
 
@@ -439,7 +439,7 @@ class FixSplitMesh(bpy.types.Operator):
         datatransfermod.object = transfer_source_mesh
         datatransfermod.use_loop_data = True
         datatransfermod.data_types_loops = {"CUSTOM_NORMAL"}
-        datatransfermod.loop_mapping = "TOPOLOGY"
+        datatransfermod.loop_mapping = "NEAREST_POLYNOR"
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -465,17 +465,16 @@ class FixSplitMesh(bpy.types.Operator):
         transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
         set_visibility(transfer_collection, True)
         transfer_object_list = []
-
         for mesh in selected_meshes:
             current_matrix = mesh.matrix_world.copy()
             Transform.apply(mesh)
-            transfer_object_list.append(
-                make_transfer_proxy_mesh(
+            proxy_mesh=make_transfer_proxy_mesh(
                     mesh, TRANSFER_MESH_PREFIX, transfer_collection
                 )
-            )
-            self.add_datatransfer_modifier(mesh)
-            merge_vertes_by_distance(mesh, merge_distance=0.001)
+
+            transfer_object_list.append(proxy_mesh)
+            self.add_datatransfer_modifier(mesh,proxy_mesh)
+            Mesh.merge_verts_by_distance(mesh, merge_distance=0.0001)
             for modifier in mesh.modifiers:
                 if modifier.type == "DATA_TRANSFER":
                     bpy.context.view_layer.objects.active = mesh

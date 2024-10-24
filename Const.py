@@ -28,8 +28,10 @@ class Addon:
 BL_VERSION=Addon.get_blender_version()
 
 # bake groups
-LOW_SUFFIX = "_low"
-HIGH_SUFFIX = "_high"
+LOW_SUFFIX = "_Low"
+HIGH_SUFFIX = "_High"
+LOWB_SUFFIX = "_low"
+HIGHB_SUFFIX = "_high"
 LOW_COLLECTION_COLOR = "05"
 HIGH_COLLECTION_COLOR = "06"
 BAKECOLOR_ATTR = "VertexColor"

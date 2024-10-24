@@ -14,11 +14,14 @@ def set_bake_collection(collection, type="LOW"):
         case "LOW":
             new_name = collection_name + LOW_SUFFIX
             Collection.mark_hst_type(collection, "LOW")
-            Object.mark_hst_type(objects, "LOW")
+            for obj in objects:
+                Object.mark_hst_type(obj, "LOW")
+            
         case "HIGH":
             new_name = collection_name + HIGH_SUFFIX
             Collection.mark_hst_type(collection, "HIGH")
-            Object.mark_hst_type(objects, "HIGH")
+            for obj in objects:
+                Object.mark_hst_type(obj, "HIGH")
 
     collection.name = new_name
 
