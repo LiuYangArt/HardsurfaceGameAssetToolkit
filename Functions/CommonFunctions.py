@@ -1472,7 +1472,7 @@ class BMesh:
         bm.clear()
         bm.free()
 
-
+import time
 class Material:
     def assign_to_mesh(mesh, target_mat) -> bpy.types.Material:
         """assign material to mesh, return assigned material"""
@@ -1497,6 +1497,19 @@ class Material:
         if not has_mat:
             placeholder_mat_ = bpy.data.materials.new(name=mat_name)
         return new_mat
+    
+    def remove_duplicated_mats_ops(object):
+        bpy.ops.object.select_all(action="DESELECT")
+        object.select_set(True)
+        bpy.context.view_layer.objects.active=object
+        bpy.ops.object.mode_set(mode="EDIT")
+        # bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.separate(type="MATERIAL")
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+        bpy.ops.object.join()
+
+
 
 
 def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
