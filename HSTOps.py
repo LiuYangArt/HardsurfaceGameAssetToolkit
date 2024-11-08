@@ -268,7 +268,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
             )
             return {"CANCELLED"}
         
-        proxy_collection=prep_wearmask_objects(selected_objects)
+        proxy_collection=prep_wearmask_objects(selected_objects) # 处理proxy模型
 
 
         bpy.context.scene.render.engine = "CYCLES"
@@ -288,6 +288,11 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                         print("modifier target object missing")
                         break
                         # continue
+                    elif Object.check_empty_mesh(modifier.object) is True:
+                        print(f"{mesh} is empty mesh for bake, skip it")
+                        Modifier.remove(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
+                        # bpy.data.meshes.remove(modifier.object.data)
+
                     else:
                         bake_list.append(modifier.object)
                         break
@@ -423,11 +428,28 @@ class HSTRemoveEmptyMesh(bpy.types.Operator):
             )
             return {"CANCELLED"}
         empty_mesh_count=0
+        temp_collection = Collection.create("_MeshCheck", type="PROXY")
+        
+        #duplicate selected meshes, apply modifiers, checck if empty. if empty , add original mesh to list
+
+        
         for mesh in selected_meshes:
-            if Object.check_empty_mesh(mesh) is True:
+            proxy_mesh = make_transfer_proxy_mesh(mesh, "_Check_", temp_collection)
+            if Object.check_empty_mesh(proxy_mesh) is True:
                 empty_mesh_count+=1
                 print(f"{mesh.name} is empty mesh, remove it")
-                bpy.data.objects.remove(mesh)
+                # bpy.data.objects.remove(mesh)
+                bpy.data.meshes.remove(mesh.data)
+            bpy.data.meshes.remove(proxy_mesh.data)
+            # bpy.data.objects.remove(proxy_mesh)
+            
+        bpy.data.collections.remove(temp_collection)
+
+        # for mesh in selected_meshes:
+        #     if Object.check_empty_mesh(mesh) is True:
+        #         empty_mesh_count+=1
+        #         print(f"{mesh.name} is empty mesh, remove it")
+        #         bpy.data.objects.remove(mesh)
         self.report({"INFO"}, f"Removed {empty_mesh_count} empty mesh objects")
         return {'FINISHED'}
     

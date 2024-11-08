@@ -998,9 +998,9 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         for mesh in selected_meshes:
             bpy.ops.object.material_slot_remove_unused() # remove unused material slot
             bad_mat_index=[]
-            is_good_mat_in_mesh=False
-            good_mats=[]
-            good_mats_in_mesh=[]
+            # is_good_mat_in_mesh=False
+            # good_mats=[]
+            # good_mats_in_mesh=[]
             
             
             for i in range(len(mesh.material_slots)):
@@ -1014,8 +1014,8 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
                     if len(mat_name_split) > 1:
                         mat_name = mat_name_split[0]
                         mat_good = get_scene_material(mat_name) #检查是否有原始材质（不带序号的）
-                        if mat_good not in good_mats:
-                            good_mats.append(mat_good)
+                        # if mat_good not in good_mats:
+                        #     good_mats.append(mat_good)
                         if mat_good is not None: #如果有原始材质，则记录此插槽的index
                             is_bad_mat=True
                         else:# 没有原始材质，则修改材质名称，去除 .00x 后缀

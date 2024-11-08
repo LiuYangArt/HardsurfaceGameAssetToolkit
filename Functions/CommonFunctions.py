@@ -1472,7 +1472,7 @@ class BMesh:
         bm.clear()
         bm.free()
 
-import time
+
 class Material:
     def assign_to_mesh(mesh, target_mat) -> bpy.types.Material:
         """assign material to mesh, return assigned material"""
