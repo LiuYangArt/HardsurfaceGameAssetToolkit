@@ -16,21 +16,28 @@ class StaticMeshExportOperator(bpy.types.Operator):
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         file_prefix = parameters.file_prefix
-        if export_path == "":
-            self.report(
-                {"ERROR"},
-                "No export path set, please set export path and retry | "
-                + "没有设置导出路径，请设置导出路径后重试",
-            )
-            return {"CANCELLED"}
-        if export_path.endswith("/") is False:
+        blend_file_path = (bpy.path.abspath("//"))
+        if export_path == "": #未设置保存路径时
+            if blend_file_path =="": #未保存.blend文件时
+                self.report(
+                    {"ERROR"},
+                    "No export path set and .blend file did not saved, please set export path and retry | "
+                    + "没有设置导出路径且.blend文件未保存，请设置导出路径后重试",
+                )
+                return {"CANCELLED"}
+
+            export_path = str(bpy.path.abspath("//")) + "Meshes/" #未设置保存路径时使用.blend文件路径/Meshes作为默认导出路径
+            print(f"use default path when export path is not set: {export_path}")
+
+
+        if export_path.endswith("/") is False: #修正路径
             export_path = export_path + "/"
-        make_dir(export_path)
+        make_dir(export_path) #建立目标路径
         visible_collections = filter_collection_by_visibility(type="VISIBLE")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
-        bpy.ops.object.select_all(action="DESELECT")
+        bpy.ops.object.select_all(action="DESELECT") #collection类型筛查
         
         (
             bake_collections,
