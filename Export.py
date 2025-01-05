@@ -144,13 +144,17 @@ class OpenFileExplorer(bpy.types.Operator):
     def execute(self, context):
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
-        if export_path == "":
-            self.report(
-                {"ERROR"},
-                "No export path set, please set export path and retry | "
-                + "没有设置导出路径，请设置导出路径后重试",
-            )
-            return {"CANCELLED"}
+        blend_file_path = (bpy.path.abspath("//"))
+        if export_path == "": #未设置保存路径时
+            if blend_file_path =="": #未保存.blend文件时
+                self.report(
+                    {"ERROR"},
+                    "No export path set and .blend file did not saved, please set export path and retry | "
+                    + "没有设置导出路径且.blend文件未保存，请设置导出路径后重试",
+                )
+                return {"CANCELLED"}
+
+            export_path = str(bpy.path.abspath("//")) + "Meshes/" #未设置保存路径时使用.blend文件路径/Meshes作为默认导出路径
         if export_path.endswith("/") is False:
             export_path = export_path + "/"
         FilePath.open_os_path(export_path)

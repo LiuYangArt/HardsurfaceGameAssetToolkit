@@ -88,15 +88,22 @@ class AssetPreview:
 
     def set_render_settings():
         # Set render engine to eevee
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+        bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
         # Set render resolution to 128x128
         bpy.context.scene.render.resolution_x = 128
         bpy.context.scene.render.resolution_y = 128
 
-        bpy.context.scene.eevee.taa_render_samples = 16
-        bpy.context.scene.eevee.use_gtao = True
-        bpy.context.scene.eevee.use_ssr = True
-        bpy.context.scene.eevee.use_ssr_refraction = False
+        # bpy.context.scene.eevee.taa_render_samples = 16
+        # bpy.context.scene.eevee.use_gtao = True
+        # bpy.context.scene.eevee.use_ssr = True
+        # bpy.context.scene.eevee.use_ssr_refraction = False
+
+        # bpy.context.SceneEEVEE.taa_render_samples = 16
+        # bpy.context.SceneEEVEE.use_gtao = True
+        # bpy.context.SceneEEVEE.use_ssr = True
+        # bpy.context.SceneEEVEE.use_ssr_refraction = False
+        bpy.context.scene.eevee.use_shadows = True
+        bpy.context.scene.eevee.use_raytracing = True
 
         bpy.context.scene.render.image_settings.color_mode = "RGBA"
         bpy.context.scene.render.film_transparent = True
@@ -176,10 +183,14 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
                 bpy.ops.view3d.localview(frame_selected=False)
         
         print(f"is local view: {is_local_view}")
+        
         for obj in all_objects:
             visiblity= obj.hide_render
+            # print(f"{obj.name} visiblity: {visiblity}")
             if visiblity is False:
                 visible_objects.append(obj)
+        # print("visible objects")
+        # print(visible_objects)
         if selected_objects:
             for obj in visible_objects:
                 if obj.type == "LIGHT":
@@ -224,7 +235,7 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
 
         for obj in visible_objects:
             obj.hide_render=False
-        
+            # print(f"{obj.name} visiblity: {obj.hide_render} restore visiblity")
 
 
         self.report({"INFO"}, "Asset Preview Created")
