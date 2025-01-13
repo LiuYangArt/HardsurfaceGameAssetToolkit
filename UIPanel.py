@@ -292,7 +292,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
             "hst.fixduplicatedmaterial", text="Fix Duplicated Mat", icon="MATERIAL"
         )
         box_column.operator("hst.makeassetpreview", icon="RENDERLAYERS")
-        box.operator("hst.fill_weight", icon="GPBRUSH_WEIGHT")
+        box.operator("hst.fill_weight", icon="WPAINT_HLT")
         box.operator("hst.fix_splitmesh", icon="FACE_MAPS")
         box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
