@@ -33,12 +33,14 @@ class StaticMeshExportOperator(bpy.types.Operator):
         if export_path.endswith("/") is False: #修正路径
             export_path = export_path + "/"
         make_dir(export_path) #建立目标路径
-        visible_collections = filter_collection_by_visibility(type="VISIBLE")
+        visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
+
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
-        bpy.ops.object.select_all(action="DESELECT") #collection类型筛查
+        bpy.ops.object.select_all(action="DESELECT")
         
+        #collection类型筛查
         (
             bake_collections,
             decal_collections,
@@ -47,8 +49,16 @@ class StaticMeshExportOperator(bpy.types.Operator):
             skm_collections,
             rig_collections,
         ) = Collection.sort_hst_types(visible_collections)
+
+        #筛查 bake collection， 只要最上层的
+        bake_export_collections=[]
+        for collection in bake_collections:
+            parent_collection=Collection.find_parent(collection)
+            if parent_collection is None:
+                bake_export_collections.append(collection)
+        
         target_collections = (
-            bake_collections + decal_collections + prop_collections + sm_collections
+            bake_export_collections + decal_collections + prop_collections + sm_collections
         )
 
         if len(skm_collections) == 0:

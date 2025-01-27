@@ -1011,12 +1011,24 @@ class FBXExport:
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
         hidden_objects = []
+
         if target.type == "COLLECTION":
+            collection_type = Object.read_custom_property(
+                target, Const.CUSTOM_TYPE)
+            
+            if target.all_objects is None:
+                is_empty_collection = True
+
             for object in target.objects:
-                export_objects.append(object)
                 if object.hide_get() is True:
                     hidden_objects.append(object)
                     object.hide_set(False)
+            
+            #对Bake Collection进行处理
+            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or Const.TYPE_BAKE_HIGH_COLLECTION:
+                for object in target.all_objects:
+                    if object not in export_objects:
+                        export_objects.append(object)
 
         elif target.type == "MESH":
             export_objects.append(target)
@@ -1995,12 +2007,12 @@ class Collection:
         rig_collections = []
 
         for collection in collections:
+            # if len(collection.objects) > 0:
+            collection_type = Object.read_custom_property(
+                collection, Const.CUSTOM_TYPE
+            )
             if len(collection.objects) > 0:
-                collection_type = Object.read_custom_property(
-                    collection, Const.CUSTOM_TYPE
-                )
                 match collection_type:
-
                     case Const.TYPE_PROXY_COLLECTION:
                         continue
                     case Const.TYPE_BAKE_LOW_COLLECTION:
@@ -2017,6 +2029,16 @@ class Collection:
                         rig_collections.append(collection)
                     case _:
                         sm_collections.append(collection)
+                        
+            if len(collection.all_objects) > 0:
+                match collection_type:
+                    case Const.TYPE_BAKE_LOW_COLLECTION:
+                        if collection not in bake_collections:
+                            bake_collections.append(collection)
+                    case Const.TYPE_BAKE_HIGH_COLLECTION:
+                        if collection not in bake_collections:
+                            bake_collections.append(collection)
+
         return (
             bake_collections,
             decal_collections,

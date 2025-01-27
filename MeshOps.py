@@ -408,7 +408,7 @@ class AddAssetOriginOperator(bpy.types.Operator):
     
 class BatchAddAssetOriginOperator(bpy.types.Operator):
     bl_idname = "hst.batch_add_asset_origin"
-    bl_label = "Add All Prop Asset Origin"
+    bl_label = "Add All Prop Asset Origins"
     bl_description = "为所有Prop Collection添加Asset Origin"\
 
     def execute(self, context):

@@ -121,9 +121,7 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
     bl_region_type = "UI"
     bl_order = 0
 
-    # @classmethod
-    # def poll(cls, context):
-    #     return context.object is not None
+
 
     def draw(self, context):
         layout = self.layout
@@ -150,10 +148,7 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
             "hst.blur_vertexcolor", icon="PROP_OFF"
         )
         
-        # box_column.operator(
-        #     "hst.set_vertexcolor_alpha", text="Set Alpha", icon="COLOR"
-        # )
-        
+
 
 
 class HST_PT_HST(bpy.types.Panel):
@@ -195,10 +190,7 @@ class HST_PT_HST(bpy.types.Panel):
             text="Bake Vertex Color AO",
             icon="RESTRICT_RENDER_OFF",
         )
-        # box_column.operator(
-        #     "hst.curvature_vertexcolor",
-        #     icon="RESTRICT_RENDER_OFF",
-        # )
+
 
         box_column.separator()
         box_column.operator("hst.cleanhstobject", text="Clean HST Object", icon="TRASH")
@@ -265,7 +257,6 @@ class HST_PT_HST(bpy.types.Panel):
 
         
 
-        # box_column.operator("hst.checkassets", text="Check Assets", icon="ERROR")
 
 class HST_PT_TOOLS(bpy.types.Panel):
     bl_idname = "HST_PT_TOOLS"
@@ -281,7 +272,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         layout = self.layout
         box = layout.box()
         box_column = box.column()
-        # box_column.label(text="Utilities")
+
         box_column.operator(
             "hst.setsceneunits", text="Set Scene Units", icon="SCENE_DATA"
         )
@@ -325,8 +316,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
         box = layout.box()
         box_column = box.column()
 
-        # fbx_io_row = box_column.row(align=True)
-        # fbx_io_row.operator("hst.importcadfbx", text="Import FBX", icon="IMPORT")
+
         box_column.operator(
             "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
         )
@@ -337,12 +327,7 @@ class HST_PT_EXPORT(bpy.types.Panel):
             "hst.open_file_explorer", icon="FILEBROWSER"
         )
         
-        # box_column.separator()
-        # ue_io_row = box_column.row(align=True)  
-        # ue_io_row.operator("hst.start_rpc_servers", text="Start Server", icon="PLAY")
-        # ue_io_row.operator("hst.sendprops_ue",text="Send to UE", icon="EXPORT")
-        # box_column.prop(parameters, "unreal_path")
-        # box_column.operator("hst.testfunc")
+
 
 class HST_PT_Skeletel(bpy.types.Panel):
     bl_idname = "HST_PT_Skeletel"
@@ -361,7 +346,5 @@ class HST_PT_Skeletel(bpy.types.Panel):
         box.operator(
             "hst.skeletel_separator", icon="ARMATURE_DATA"
         )
-        # box.operator("hst.get_bone_pos")
-        # box.operator("object.displayuebonedirection")
 
 
