@@ -3,7 +3,7 @@ bl_info = {
     "author": "LiuYang",
     "description": "用于自定义流程游戏资产制作的blender插件",
     "blender": (4, 2, 0),
-    "version": (2025, 1),
+    "version": (2025, 2),
     "location": "",
     "warning": "插件开发中，会带有一些临时内容以及变动",
     "category": "Generic",

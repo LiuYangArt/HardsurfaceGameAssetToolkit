@@ -407,11 +407,14 @@ class AddAssetOriginOperator(bpy.types.Operator):
         return {"FINISHED"}
     
 class BatchAddAssetOriginOperator(bpy.types.Operator):
+    """ 为所有Prop Collection添加Asset Origin """
+
     bl_idname = "hst.batch_add_asset_origin"
     bl_label = "Add All Prop Asset Origins"
     bl_description = "为所有Prop Collection添加Asset Origin"\
 
     def execute(self, context):
+        is_local_view=Viewport.is_local_view()
         new_origins_count=0
         store_mode = prep_select_mode()
         selected_objects=Object.get_selected()
@@ -469,10 +472,12 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
             
             
             for object in asset_objs:
-                
+
                 # object.parent = origin_object
                 # object.matrix_parent_inverse = origin_object.matrix_world.inverted()
                 #TBD: REPLACE WITH MATRIX MATH
+                if is_local_view:
+                    bpy.ops.view3d.localview(frame_selected=False)
                 object.select_set(True)
                 origin_object.select_set(True)
                 bpy.context.view_layer.objects.active = origin_object
@@ -1131,68 +1136,11 @@ class HSTSortCollectionsOperator(bpy.types.Operator):
 
 
 
-# class IsolateCollectionsOperator(bpy.types.Operator):
-#     bl_idname = "hst.isolate_collections"
-#     bl_label = "Isolate Collections ViewLayer"
-
-#     def execute(self, context):
-#         selected_objects = bpy.context.selected_objects
-#         selected_collections = filter_collections_selection(selected_objects)
-#         scene = bpy.context.scene
-
-#         default_view_layer=scene.view_layers["View Layer"]
-
-#         if Const.WORK_VIEWLAYER in scene.view_layers.keys():
-#             work_layer = scene.view_layers[Const.WORK_VIEWLAYER]
-#         else:
-#             work_layer = scene.view_layers.new(Const.WORK_VIEWLAYER)
-
-#         proxy_collections=[]
-#         for collection in bpy.data.collections:
-#             collection_hst_type=Collection.get_hst_type(collection)
-#             if collection_hst_type == Const.TYPE_PROXY_COLLECTION:
-#                 proxy_collections.append(collection)
-#         if len(proxy_collections)==0:
-#             proxy_collections=None
-
-
-#         if selected_collections is not None:
-#             selected_coll_names =[]
-#             for collection in selected_collections:
-
-#                 parent_collection=Collection.find_parent(collection)
-#                 if parent_collection is not None:
-#                     parent_coll_name=parent_collection.name
-#                     if parent_coll_name not in selected_coll_names:
-#                         selected_coll_names.append(parent_coll_name)
-
-#                 coll_name= collection.name
-#                 if coll_name not in selected_coll_names:
-#                     selected_coll_names.append(coll_name)
-#             if proxy_collections:
-#                 for proxy_collection in proxy_collections:
-#                     if proxy_collection.name not in selected_coll_names:
-#                         selected_coll_names.append(proxy_collection.name)
-
-#             for layer_coll in work_layer.layer_collection.children:
-#                 if layer_coll.name not in selected_coll_names:
-#                     layer_coll.exclude = True
-
-#             bpy.context.window.view_layer = work_layer
-#             Collection.active(selected_collections[0])
-        
-#         elif selected_collections is None:
-#             for layer_coll in work_layer.layer_collection.children:
-#                 layer_coll.exclude = False
-            
-#             bpy.context.window.view_layer = default_view_layer
-
-
-#         return {'FINISHED'}
-
 class IsolateCollectionsAltOperator(bpy.types.Operator):
+    """ 选中collection中的任一物体，单独显示此collection """
     bl_idname = "hst.isolate_collections_alt"
     bl_label = "Isolate Collections"
+    bl_description = "选中collection中的任一物体，单独显示此collection"
 
     def execute(self, context):
         is_local_view=Viewport.is_local_view()
