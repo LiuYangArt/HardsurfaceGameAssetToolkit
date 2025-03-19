@@ -1023,12 +1023,19 @@ class FBXExport:
                 if object.hide_get() is True:
                     hidden_objects.append(object)
                     object.hide_set(False)
+
+            for object in target.objects:
+                if object not in export_objects:
+                    export_objects.append(object)
             
             #对Bake Collection进行处理
-            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or Const.TYPE_BAKE_HIGH_COLLECTION:
+            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or collection_type == Const.TYPE_BAKE_HIGH_COLLECTION:
                 for object in target.all_objects:
                     if object not in export_objects:
                         export_objects.append(object)
+
+            # print(f"export_objects: {export_objects}")
+            # print(f"collection_type: {collection_type}")
 
         elif target.type == "MESH":
             export_objects.append(target)
