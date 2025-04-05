@@ -35,6 +35,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
         make_dir(export_path) #建立目标路径
         visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
 
+
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
@@ -107,6 +108,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
                 new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                 file_path = export_path + new_name + ".fbx"
+                print(f"exporting {collection.name} to {file_path}")
                 FBXExport.staticmesh(collection, file_path)
                 sm_count += 1
 
@@ -181,5 +183,10 @@ class TestFuncOperator(bpy.types.Operator):
         print("Test Func")
         print(Paths.ADDON_DIR)
         print(Addon.get_install_path())
+        selected_objects = bpy.context.selected_objects
+        for obj in selected_objects:
+            if obj.instance_collection:
+                print(f"{obj.name} is instance of {obj.instance_collection.name}")
+
 
         return {"FINISHED"}

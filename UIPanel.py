@@ -298,6 +298,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.operator("hst.projectdecal", icon="MOD_SHRINKWRAP")
         box.operator("hst.marksharp", icon="SHARPCURVE")
         box.operator("hst.testfunc", icon="SORTALPHA")
+        box.operator("hst.extractucx", icon="MESH_CUBE")
         
         
         

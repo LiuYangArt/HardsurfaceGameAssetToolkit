@@ -1302,3 +1302,48 @@ class MarkSharpOperator(bpy.types.Operator):
     
 
 
+class ExtractUCXOperator(bpy.types.Operator):
+    bl_idname = "hst.extractucx"
+    bl_label = "ExtractUCX"
+
+    def execute(self, context):
+        # selected_objects=bpy.context.selected_objects
+        ucx_meshes=[]
+        non_ucx_meshes=[]
+        #deselct all
+        current_mode = bpy.context.active_object.mode
+        if current_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        all_objects = bpy.data.objects
+        selected_meshes = filter_type(all_objects, "MESH")
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in selected_meshes:
+            if obj.name.startswith("UCX_") or obj.name.startswith("U_"):
+                ucx_meshes.append(obj)
+            else:
+                non_ucx_meshes.append(obj)
+
+        if len(ucx_meshes)==0:
+            self.report({"ERROR"},"No UCX mesh selected, please select UCX mesh and retry")
+            return {'CANCELLED'}
+        
+        for mesh in non_ucx_meshes:
+            #delete them all
+            bpy.data.objects.remove(mesh)
+
+        for mesh in ucx_meshes:
+            #rename them, remove ucx_ prefix
+            mesh.name=mesh.name.replace("UCX_","U_")
+            mesh.select_set(True)
+        for mesh in ucx_meshes:
+            bpy.context.view_layer.objects.active = mesh
+            break
+
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.normals_make_consistent(inside=False)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.select_all(action="DESELECT")
+        self.report({"INFO"},f"{len(non_ucx_meshes)} meshes removed, {len(ucx_meshes)} UCX meshes extracted")
+        return {"FINISHED"}
+
+

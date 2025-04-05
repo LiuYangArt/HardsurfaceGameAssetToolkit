@@ -976,7 +976,7 @@ def filter_collection_by_visibility(type="VISIBLE"):
         all_collections.append(collection)
     visible_collections = []
     hidden_collections = []
-    for collection in all_collections:
+    for collection in all_collections: # 过滤掉隐藏的collection
         layer_coll = Collection.find_layer_collection_coll(collection)
         if layer_coll:
             if layer_coll.exclude == True:
@@ -989,6 +989,11 @@ def filter_collection_by_visibility(type="VISIBLE"):
                 for child in collection.children:
                     hidden_collections.append(child)
     for collection in all_collections:
+        # print(f"collection: {collection.name}")
+        if collection.users_dupli_group: # 过滤掉instance collection
+            print("Collection " + collection.name + " is instance collection")
+            # print(f"collection.users_dupli_group: {collection.users_dupli_group}")
+            break
         if collection not in hidden_collections:
             visible_collections.append(collection)
     match type:
@@ -1044,6 +1049,8 @@ class FBXExport:
                 target.hide_set(False)
 
         obj_transform = {}
+
+        print(f"export_objects: {export_objects}")
 
         for obj in export_objects:
             obj.hide_set(False)
