@@ -993,7 +993,7 @@ def filter_collection_by_visibility(type="VISIBLE"):
         if collection.users_dupli_group: # 过滤掉instance collection
             print("Collection " + collection.name + " is instance collection")
             # print(f"collection.users_dupli_group: {collection.users_dupli_group}")
-            break
+            continue
         if collection not in hidden_collections:
             visible_collections.append(collection)
     match type:
