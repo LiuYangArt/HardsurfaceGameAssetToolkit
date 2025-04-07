@@ -3,6 +3,67 @@ from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
 
+GROUPPRO_SUFFIX = "_coll"
+
+def filter_instance_collection(objects):
+    """筛选instance collection的父collection"""
+    instance_collections = []
+    for obj in objects:
+        if obj.instance_collection:
+            if obj.instance_collection not in instance_collections: #避免重复添加
+                instance_collections.append(obj.instance_collection)
+    return instance_collections
+
+def add_instance_collection_to_scene(collections):
+    """添加instance collection到场景"""
+    # print (bpy.context.scene.collection.children)
+    # print (collections)
+    for collection in collections:
+        if collection.name not in bpy.context.scene.collection.children:
+            bpy.context.scene.collection.children.link(collection)
+        for obj in collection.objects:
+            if obj.instance_collection:
+                add_instance_collection_to_scene(obj.instance_collection)
+
+    #     # Select the collection
+    # bpy.context.view_layer.active_layer_collection = bpy.context.view_layer.layer_collection.children[collection.name]
+def remove_instance_collection_from_scene(collections):
+    """从场景中移除instance collection"""
+    for collection in collections:
+        if collection.name in bpy.context.scene.collection.children:
+            bpy.context.scene.collection.children.unlink(collection)
+        for obj in collection.objects:
+            if obj.instance_collection:
+                remove_instance_collection_from_scene(obj.instance_collection)
+
+def filter_visible_objects(objects):
+    """筛选可见的物体"""
+    visible_objects = []
+    for obj in objects:
+        if obj.visible_get():
+            visible_objects.append(obj)
+    return visible_objects
+
+def filter_instance_coll_objs(collections):
+    """筛选Instance Collection对应的场景中的instance"""
+    instance_objects = []
+    for collection in collections:
+        instance_objs = collection.users_dupli_group
+        if instance_objs:
+            #add first one to instance_objects
+            if instance_objs[0] not in instance_objects:
+                instance_objects.append(instance_objs[0])
+    return instance_objects
+
+def export_instance_collection(target, export_path, file_prefix):
+    """导出实例化的collection"""
+    new_name = target.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
+    new_name = target.name.removesuffix(GROUPPRO_SUFFIX)
+    new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
+    file_path = export_path + new_name + ".fbx"
+    print(f"exporting instance: {target.name} to {file_path}")
+    FBXExport.instance_collection(target, file_path,reset_transform=True)
+
 
 class StaticMeshExportOperator(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
@@ -12,10 +73,11 @@ class StaticMeshExportOperator(bpy.types.Operator):
         在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
 
     def execute(self, context):
-
+        all_objects = bpy.data.objects #blender文件内的所有物体
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         file_prefix = parameters.file_prefix
+        export_count = 0
         blend_file_path = (bpy.path.abspath("//"))
         if export_path == "": #未设置保存路径时
             if blend_file_path =="": #未保存.blend文件时
@@ -33,7 +95,20 @@ class StaticMeshExportOperator(bpy.types.Operator):
         if export_path.endswith("/") is False: #修正路径
             export_path = export_path + "/"
         make_dir(export_path) #建立目标路径
+
+        visible_objects= filter_visible_objects(all_objects) #筛选可见的物体
+        instance_collections = filter_instance_collection(visible_objects) #筛选实例化的collection
+        # instances= filter_instance_coll_objs(instance_collections) #筛选实例化的collection对应的场景中的instance
+        # for instance in instances:
+        #     export_instance_collection(instance, export_path, file_prefix) #导出实例化的collection
+        #     export_count += 1
+
+        add_instance_collection_to_scene(instance_collections) #添加实例化的collection到场景中
+        
         visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
+
+        print(f"visible collections: {visible_collections}")
+
 
 
         # selected_objects = bpy.context.selected_objects
@@ -74,7 +149,6 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 return {"CANCELLED"}
 
         # check_collections(self, bake_collections, prop_collections, decal_collections)
-        sm_count = 0
 
 
         if len(target_collections) > 0:
@@ -110,7 +184,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
                 file_path = export_path + new_name + ".fbx"
                 print(f"exporting {collection.name} to {file_path}")
                 FBXExport.staticmesh(collection, file_path)
-                sm_count += 1
+                export_count += 1
 
 
             if len(origin_transform)>0: #reset origin transform
@@ -140,8 +214,10 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         restore_select_mode(store_mode)
 
+        remove_instance_collection_from_scene(instance_collections) #移除实例化的collection
+
         export_count = (
-            sm_count + skm_count + len(rig_collections)
+            export_count + skm_count + len(rig_collections)
         )
         self.report(
             {"INFO"},

@@ -969,7 +969,7 @@ def clean_collection_name(collection_name: str) -> str:
     return clean_name
 
 
-def filter_collection_by_visibility(type="VISIBLE"):
+def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> list:
     """筛选可见或不可见的collection"""
     all_collections = []
     for collection in bpy.data.collections:
@@ -989,12 +989,10 @@ def filter_collection_by_visibility(type="VISIBLE"):
                 for child in collection.children:
                     hidden_collections.append(child)
     for collection in all_collections:
-        # print(f"collection: {collection.name}")
-        if collection.users_dupli_group: # 过滤掉instance collection
-            print("Collection " + collection.name + " is instance collection")
-            # print(f"collection.users_dupli_group: {collection.users_dupli_group}")
-            continue
-        if collection not in hidden_collections:
+        if filter_instance:
+            if collection.users_dupli_group: # 过滤掉instance collection
+                continue
+        if collection not in hidden_collections: #只导出可见的collection
             visible_collections.append(collection)
     match type:
         case "VISIBLE":
@@ -1011,6 +1009,73 @@ def reset_transform(target_object: bpy.types.Object) -> None:
 
 
 class FBXExport:
+    def instance_collection(target, file_path: str, reset_transform=False):
+        """导出staticmesh fbx"""
+        bpy.ops.object.select_all(action="DESELECT")
+        export_objects = []
+        # hidden_objects = []
+        obj_transform = {}
+        if target.type == "EMPTY":
+            target.select_set(True) #for use_selection=True
+            if reset_transform is True:
+                obj_transform[target] = target.matrix_world.copy()
+                target.location = (0, 0, 0)
+                target.rotation_euler = (0, 0, 0)
+                target.rotation_quaternion = Quaternion((1, 0, 0, 0))
+
+        if target.type == "COLLECTION":
+            #add collection.objects to view layer
+            bpy.context.view_layer.active_layer_collection.exclude = False
+            # collection_type = Object.read_custom_property(
+            #     target, Const.CUSTOM_TYPE)
+            
+            # if target.all_objects is None:
+            #     is_empty_collection = True
+            #     return
+
+            # for object in target.all_objects:
+            #     if object.hide_get() is True:
+            #         # hidden_objects.append(object)
+            #         object.hide_set(False)
+
+            # for object in target.all_objects:
+            #     if object not in export_objects:
+            #         export_objects.append(object)
+
+        bpy.ops.export_scene.fbx(
+            filepath=file_path,
+            use_selection=True,
+            use_active_collection=False,
+            use_visible=False,
+            axis_forward="-Z",
+            axis_up="Y",
+            global_scale=1.0,
+            apply_unit_scale=True,
+            apply_scale_options="FBX_SCALE_NONE",
+            colors_type="LINEAR",
+            object_types={"MESH", "EMPTY"},
+            use_mesh_modifiers=True,
+            mesh_smooth_type="FACE",
+            use_triangles=True,
+            use_tspace=True,
+            bake_space_transform=True,
+            path_mode="AUTO",
+            embed_textures=False,
+            batch_mode="OFF",
+            # use_batch_own_dir=True,
+            use_metadata=False,
+            use_custom_props=False,
+            add_leaf_bones=False,
+            use_armature_deform_only=False,
+            bake_anim=False,
+        )
+
+
+        if reset_transform is True:
+            for target in obj_transform:
+                target.matrix_world = obj_transform[target]
+
+
     def staticmesh(target, file_path: str, reset_transform=False):
         """导出staticmesh fbx"""
         bpy.ops.object.select_all(action="DESELECT")
@@ -1023,6 +1088,7 @@ class FBXExport:
             
             if target.all_objects is None:
                 is_empty_collection = True
+                return
 
             for object in target.objects:
                 if object.hide_get() is True:
@@ -1039,8 +1105,6 @@ class FBXExport:
                     if object not in export_objects:
                         export_objects.append(object)
 
-            # print(f"export_objects: {export_objects}")
-            # print(f"collection_type: {collection_type}")
 
         elif target.type == "MESH":
             export_objects.append(target)
@@ -1050,11 +1114,9 @@ class FBXExport:
 
         obj_transform = {}
 
-        print(f"export_objects: {export_objects}")
-
         for obj in export_objects:
             obj.hide_set(False)
-            obj.select_set(True)
+            obj.select_set(True) #for use_selection=True
             if obj.type=="MESH":
                 Modifier.add_triangulate(obj)
 
