@@ -549,7 +549,7 @@ class MakeDecalCollection(bpy.types.Operator):
             
             #check selected collection's state:
             collection_type=Collection.get_hst_type(collection)
-            parent_collection=Collection.find_parent_recur(collection,type=Const.TYPE_PROP_COLLECTION)
+            parent_collection=Collection.find_parent_recur_by_type(collection,type=Const.TYPE_PROP_COLLECTION)
             # print(f"parent_collection:{parent_collection}")
             if parent_collection:
                 origin_objects=Object.filter_hst_type(objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE")
@@ -642,7 +642,7 @@ class MakeDecalCollection(bpy.types.Operator):
 
             for exist_collection in bpy.data.collections: #collection 命名冲突时
                 if exist_collection.name == decal_collection_name and exist_collection is not decal_collection:
-                    file_c_parent=Collection.find_parent_recur(exist_collection,type=Const.TYPE_PROP_COLLECTION)
+                    file_c_parent=Collection.find_parent_recur_by_type(exist_collection,type=Const.TYPE_PROP_COLLECTION)
                     if file_c_parent: #有parent 时根据parent命名
                         exist_collection.name=file_c_parent.name+DECAL_SUFFIX
                     else: #无parent时删除并把包含的decal移入当前collection

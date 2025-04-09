@@ -976,7 +976,22 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
         all_collections.append(collection)
     visible_collections = []
     hidden_collections = []
+    skip_collections = []
+    #find collection parent
+    
+
+
     for collection in all_collections: # 过滤掉隐藏的collection
+        print(f"collection.name:{collection.name}")
+        if collection.name.startswith("_"):
+            # print(collection.children)
+            
+            for child in collection.children:
+                skip_collections.append(child)
+            for obj in collection.all_objects:
+                if obj.instance_collection:
+                    skip_collections.append(obj.instance_collection)
+
         layer_coll = Collection.find_layer_collection_coll(collection)
         if layer_coll:
             if layer_coll.exclude == True:
@@ -988,12 +1003,15 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
             if collection.children is not None:
                 for child in collection.children:
                     hidden_collections.append(child)
+    # print(f"skip: {skip_collections}")
     for collection in all_collections:
-        if filter_instance:
-            if collection.users_dupli_group: # 过滤掉instance collection
-                continue
-        if collection not in hidden_collections: #只导出可见的collection
-            visible_collections.append(collection)
+        if collection not in skip_collections:
+            if filter_instance:
+                if collection.users_dupli_group: # 过滤掉instance collection
+                    continue
+            if collection not in hidden_collections: #只导出可见的collection
+                if not collection.name.startswith("_"):
+                    visible_collections.append(collection)
     match type:
         case "VISIBLE":
             return visible_collections
@@ -2138,7 +2156,7 @@ class Collection:
 
         return parent_collection
     
-    def find_parent_recur(collection:bpy.types.Collection,type:str):
+    def find_parent_recur_by_type(collection:bpy.types.Collection,type:str):
         parent_c=Collection.find_parent(collection)
         if parent_c == None:
             return None
@@ -2148,7 +2166,7 @@ class Collection:
             # else:
             parent_c_type=Collection.get_hst_type(parent_c)
             if parent_c_type != type:
-                parent_c=Collection.find_parent_recur(parent_c,type)
+                parent_c=Collection.find_parent_recur_by_type(parent_c,type)
                 if parent_c:
                     return parent_c
             else:

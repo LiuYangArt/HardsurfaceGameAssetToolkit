@@ -9,9 +9,12 @@ def filter_instance_collection(objects):
     """筛选instance collection的父collection"""
     instance_collections = []
     for obj in objects:
+        
+        # if not obj.name.startswith("_"):
         if obj.instance_collection:
-            if obj.instance_collection not in instance_collections: #避免重复添加
-                instance_collections.append(obj.instance_collection)
+            if not obj.instance_collection.name.startswith("_"):
+                if obj.instance_collection not in instance_collections: #避免重复添加
+                    instance_collections.append(obj.instance_collection)
     return instance_collections
 
 def add_instance_collection_to_scene(collections):
@@ -69,7 +72,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
     bl_label = "HST StaticMesh Export UE"
     bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
-        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体\
+        只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体，不导出“_”开头的Collection\
         在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
 
     def execute(self, context):
@@ -98,19 +101,11 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         visible_objects= filter_visible_objects(all_objects) #筛选可见的物体
         instance_collections = filter_instance_collection(visible_objects) #筛选实例化的collection
-        # instances= filter_instance_coll_objs(instance_collections) #筛选实例化的collection对应的场景中的instance
-        # for instance in instances:
-        #     export_instance_collection(instance, export_path, file_prefix) #导出实例化的collection
-        #     export_count += 1
 
         add_instance_collection_to_scene(instance_collections) #添加实例化的collection到场景中
         
         visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
-
-        print(f"visible collections: {visible_collections}")
-
-
-
+        print(f"visible_colls: {visible_collections}")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
@@ -139,6 +134,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         if len(skm_collections) == 0:
             if len(target_collections) == 0:
+                restore_select_mode(store_mode)
+                remove_instance_collection_from_scene(instance_collections)
                 self.report(
                     {"ERROR"},
                     "No available collection for export. Please check visibility "
@@ -174,8 +171,6 @@ class StaticMeshExportOperator(bpy.types.Operator):
             for collection in invisible_origin_colls:
                 if collection in target_collections:
                     target_collections.remove(collection)
-    
-
 
             for collection in target_collections:
 
