@@ -978,11 +978,12 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
     hidden_collections = []
     skip_collections = []
     #find collection parent
-    
-
+    all_instance_coll_obj = []
+    for obj in bpy.data.objects:
+        if obj.instance_collection:
+            all_instance_coll_obj.append(obj)
 
     for collection in all_collections: # 过滤掉隐藏的collection
-        print(f"collection.name:{collection.name}")
         if collection.name.startswith("_"):
             # print(collection.children)
             
@@ -1003,15 +1004,36 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
             if collection.children is not None:
                 for child in collection.children:
                     hidden_collections.append(child)
-    # print(f"skip: {skip_collections}")
+
+    visible_instance_colls=[]
+    for obj in all_instance_coll_obj:
+        visibility=obj.visible_get()
+        coll=obj.instance_collection
+        if obj.name.startswith("_"):
+            continue
+        if coll.name.startswith("_"):
+            continue
+        if visibility is False:
+            if coll not in hidden_collections:
+                hidden_collections.append(coll)
+        else:
+            if coll not in visible_collections:
+                visible_instance_colls.append(coll)
+
     for collection in all_collections:
-        if collection not in skip_collections:
-            if filter_instance:
-                if collection.users_dupli_group: # 过滤掉instance collection
-                    continue
-            if collection not in hidden_collections: #只导出可见的collection
-                if not collection.name.startswith("_"):
-                    visible_collections.append(collection)
+        if collection in skip_collections:
+            continue
+        if filter_instance:
+            if collection.users_dupli_group: # 过滤掉instance collection
+                continue
+        if collection not in hidden_collections: #只导出可见的collection
+            if not collection.name.startswith("_"):
+                visible_collections.append(collection)
+    for collection in visible_instance_colls:
+        if collection not in visible_collections:
+            visible_collections.append(collection)
+    
+    
     match type:
         case "VISIBLE":
             return visible_collections

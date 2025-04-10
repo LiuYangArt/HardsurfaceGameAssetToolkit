@@ -9,12 +9,13 @@ def filter_instance_collection(objects):
     """筛选instance collection的父collection"""
     instance_collections = []
     for obj in objects:
-        
+        visibility=obj.visible_get()
+        if visibility is True:
         # if not obj.name.startswith("_"):
-        if obj.instance_collection:
-            if not obj.instance_collection.name.startswith("_"):
-                if obj.instance_collection not in instance_collections: #避免重复添加
-                    instance_collections.append(obj.instance_collection)
+            if obj.instance_collection:
+                if not obj.instance_collection.name.startswith("_"):
+                    if obj.instance_collection not in instance_collections: #避免重复添加
+                        instance_collections.append(obj.instance_collection)
     return instance_collections
 
 def add_instance_collection_to_scene(collections):
@@ -103,6 +104,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
         instance_collections = filter_instance_collection(visible_objects) #筛选实例化的collection
 
         add_instance_collection_to_scene(instance_collections) #添加实例化的collection到场景中
+
+        print(f"instance colls: {instance_collections}")
         
         visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
         print(f"visible_colls: {visible_collections}")
