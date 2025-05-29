@@ -3,7 +3,7 @@ from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
 
-GROUPPRO_SUFFIX = "_coll"
+GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
 
 def filter_instance_collection(objects):
     """筛选instance collection的父collection"""
@@ -11,7 +11,6 @@ def filter_instance_collection(objects):
     for obj in objects:
         visibility=obj.visible_get()
         if visibility is True:
-        # if not obj.name.startswith("_"):
             if obj.instance_collection:
                 if not obj.instance_collection.name.startswith("_"):
                     if obj.instance_collection not in instance_collections: #避免重复添加
@@ -20,8 +19,6 @@ def filter_instance_collection(objects):
 
 def add_instance_collection_to_scene(collections):
     """添加instance collection到场景"""
-    # print (bpy.context.scene.collection.children)
-    # print (collections)
     for collection in collections:
         if collection.name not in bpy.context.scene.collection.children:
             bpy.context.scene.collection.children.link(collection)
@@ -105,10 +102,10 @@ class StaticMeshExportOperator(bpy.types.Operator):
 
         add_instance_collection_to_scene(instance_collections) #添加实例化的collection到场景中
 
-        print(f"instance colls: {instance_collections}")
+        # print(f"instance colls: {instance_collections}")
         
         visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
-        print(f"visible_colls: {visible_collections}")
+        # print(f"visible_colls: {visible_collections}")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米

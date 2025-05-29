@@ -1052,8 +1052,7 @@ class FBXExport:
     def instance_collection(target, file_path: str, reset_transform=False):
         """导出staticmesh fbx"""
         bpy.ops.object.select_all(action="DESELECT")
-        export_objects = []
-        # hidden_objects = []
+
         obj_transform = {}
         if target.type == "EMPTY":
             target.select_set(True) #for use_selection=True
@@ -1066,21 +1065,6 @@ class FBXExport:
         if target.type == "COLLECTION":
             #add collection.objects to view layer
             bpy.context.view_layer.active_layer_collection.exclude = False
-            # collection_type = Object.read_custom_property(
-            #     target, Const.CUSTOM_TYPE)
-            
-            # if target.all_objects is None:
-            #     is_empty_collection = True
-            #     return
-
-            # for object in target.all_objects:
-            #     if object.hide_get() is True:
-            #         # hidden_objects.append(object)
-            #         object.hide_set(False)
-
-            # for object in target.all_objects:
-            #     if object not in export_objects:
-            #         export_objects.append(object)
 
         bpy.ops.export_scene.fbx(
             filepath=file_path,
