@@ -240,3 +240,25 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
 
         self.report({"INFO"}, "Asset Preview Created")
         return {"FINISHED"}
+
+
+class AddMatsToAssetLibraryOperator(bpy.types.Operator):
+    bl_idname = "hst.add_mats_to_assetlibrary"
+    bl_label = "Add Mats To AssetLibrary"
+
+    def execute(self, context):
+        o = bpy.context.object
+        selected_objects=Object.get_selected()
+        target_mats=[]
+        for obj in selected_objects:
+            for mat in obj.data.materials:
+                if mat not in target_mats:
+                    target_mats.append(mat)
+        for mat in target_mats:
+            # mat.asset_mark()
+            preview_image=mat.preview
+            print(f"preview image: {preview_image}")
+            
+
+        return {"FINISHED"}
+

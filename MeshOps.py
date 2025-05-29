@@ -2,6 +2,7 @@ import bpy
 from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
+from mathutils import Vector
 
 def check_non_solid_meshes(meshes):
     bad_mesh_count=0
@@ -335,161 +336,323 @@ class AddSnapSocketOperator(bpy.types.Operator):
         socket_object.select_set(True)
 
         return {"FINISHED"}
+    
+
+def find_objs_bb_center(objs) -> Vector:
+    """Find the center of the bounding box of all objects"""
+
+    all_coords = []
+    for o in objs:
+        bb = o.bound_box
+        mat = o.matrix_world
+        for vert in bb:
+            coord = mat @ Vector(vert)
+            all_coords.append(coord)
+
+    if not all_coords:
+        return Vector((0, 0, 0))
+
+    center = sum(all_coords, Vector((0, 0, 0))) / len(all_coords)
+    return center
+
+
+def find_objs_bb_lowest_center(objs) -> Vector:
+    """Find the lowest_center of the bounding box of all objects"""
+
+    all_coords = []
+    for o in objs:
+        bb = o.bound_box
+        mat = o.matrix_world
+        for vert in bb:
+            coord = mat @ Vector(vert)
+            all_coords.append(coord)
+
+    if not all_coords:
+        return Vector((0, 0, 0))
+
+    # Find the lowest Z value among all bounding box coordinates
+    lowest_z = min(coord.z for coord in all_coords)
+    # Find the center in X and Y
+    center_xy = sum(
+        (Vector((coord.x, coord.y, 0)) for coord in all_coords), Vector((0, 0, 0))
+    ) / len(all_coords)
+    center = Vector((center_xy.x, center_xy.y, lowest_z))
+    return center
+
+
+def find_selected_element_center() -> Vector:
+    """When in object mode, find the center of the selected objects.
+    When in edit mode, find the center of the selected vertices in all selected mesh objects.
+    """
+
+    selected_objects = bpy.context.selected_objects
+    if len(selected_objects) == 0:
+        return None
+
+    # Check if any selected object is in edit mode and is a mesh
+    edit_mode_meshes = [
+        obj for obj in selected_objects if obj.type == "MESH" and obj.mode == "EDIT"
+    ]
+    if edit_mode_meshes:
+        all_selected_verts = []
+        # Switch all edit mode objects to object mode to access their mesh data
+        for obj in edit_mode_meshes:
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.mode_set(mode="OBJECT")
+            all_selected_verts.extend(
+                [obj.matrix_world @ v.co for v in obj.data.vertices if v.select]
+            )
+        # Restore the first object to edit mode
+        bpy.context.view_layer.objects.active = edit_mode_meshes[0]
+        bpy.ops.object.mode_set(mode="EDIT")
+        if not all_selected_verts:
+            return None
+        center = sum(all_selected_verts, Vector((0, 0, 0))) / len(all_selected_verts)
+        return center
+    else:
+        # Get the center of the selected objects in object mode
+        center = find_objs_bb_center(selected_objects)
+        return center
+
+
+
 
 class AddAssetOriginOperator(bpy.types.Operator):
     bl_idname = "hst.add_asset_origin"
     bl_label = "Add Asset Origin"
-    bl_description = "选中Collection中任意模型，为此Collection添加Asset Origin"\
+    bl_description = "选中Collection中任意模型，为此Collection添加Asset Origin"
 
     def execute(self, context):
-
-        cursor = bpy.context.scene.cursor
-        cursor_current_transform = cursor.matrix.copy()
         selected_objects = bpy.context.selected_objects
-        selected_meshes = filter_type(selected_objects, "MESH")
-        active_object=bpy.context.active_object
-        # parameters = context.scene.hst_params
-
-        if active_object is None:
-
-            self.report(
-                {"ERROR"},
-                "No active object, please select mesh objects and retry\n"
-                + "没有选中Mesh物体，请选中Mesh物体后重试",
-            )
-            return {"CANCELLED"}
-
+        active_object = bpy.context.active_object
         collection = active_object.users_collection[0]
+        # 直接计算目标位置
+        mesh_objs = [obj for obj in collection.all_objects if obj.type == "MESH"]
+        pivots = [obj.matrix_world.translation for obj in mesh_objs]
+        all_same = all((pivots[0] - p).length < 1e-6 for p in pivots) if pivots else False
 
-
-        existing_origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
-        if existing_origin_objects is not None:
-            existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
-            self.report({"INFO"}, "Asset Origin already exists")
-            return {"CANCELLED"}
-
-        if bpy.context.mode == "EDIT_MESH":
-            self.report({"INFO"}, "In edit mode, create socket from selected faces")
-            rotation = get_selected_rotation_quat()
-            bpy.ops.view3d.snap_cursor_to_selected()
-            bpy.context.scene.cursor.rotation_mode = "QUATERNION"
-            bpy.context.scene.cursor.rotation_quaternion = rotation
-            bpy.ops.object.mode_set(mode="OBJECT")
+        if all_same and pivots:
+            origin_location = pivots[0].copy()
+        elif pivots:
+            # 取所有mesh的中心点
+            origin_location = sum(pivots, Vector((0, 0, 0))) / len(pivots)
         else:
+            origin_location = active_object.location.copy()
 
-            bpy.context.scene.cursor.matrix=Const.WORLD_ORIGIN_MATRIX
-            self.report({"INFO"}, "In object mode, create socket from selected objects")
-
-        # add empty, set name to SOCKET_XXX and location to cursor location
         origin_name = ORIGIN_PREFIX + collection.name
         origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-        # rename_alt(origin_object, origin_name, num=2)
-        origin_object.location = cursor.location
-        origin_object.rotation_mode = "QUATERNION"
-        origin_object.rotation_quaternion = cursor.rotation_quaternion
+        origin_object.location = origin_location
         origin_object.empty_display_type = "PLAIN_AXES"
         origin_object.empty_display_size = 0.4
         origin_object.show_name = True
         collection.objects.link(origin_object)
         Object.mark_hst_type(origin_object, "ORIGIN")
 
-        bpy.context.scene.cursor.matrix = cursor_current_transform
-
         for object in collection.all_objects:
             if object.type == "MESH":
+                obj_loc_raw=object.location.copy()
+                obj_loc=obj_loc_raw-origin_object.location #计算collection objects 和 origin object的相对位置，使最后保持原始世界位置
                 object.parent = origin_object
-                object.matrix_parent_inverse = origin_object.matrix_world.inverted()
-
+                object.location = obj_loc
         for object in selected_objects:
             object.select_set(False)
         origin_object.select_set(True)
 
         return {"FINISHED"}
+
+    def invoke(self, context, event):
+        selected_objects = bpy.context.selected_objects
+        if not selected_objects:
+            self.report({"ERROR"}, "No objects selected")
+            return {"CANCELLED"}
+        active_object = bpy.context.active_object
+        if not active_object:
+            self.report({"ERROR"}, "No active object")
+            return {"CANCELLED"}
+        collection = active_object.users_collection[0]
+        existing_origin_objects = Object.filter_hst_type(
+            objects=collection.all_objects, type="ORIGIN", mode="INCLUDE"
+        )
+        if existing_origin_objects is not None:
+            existing_origin_objects[0].name = ORIGIN_PREFIX + collection.name
+            self.report({"INFO"}, "Asset Origin already exists")
+            return {"CANCELLED"}
+        mesh_objs = [obj for obj in collection.all_objects if obj.type == "MESH"]
+        if not mesh_objs:
+            self.report({"ERROR"}, "No mesh objects in collection")
+            return {"CANCELLED"}
+        pivots = [obj.matrix_world.translation for obj in mesh_objs]
+        all_same = all((pivots[0] - p).length < 1e-6 for p in pivots)
+        if all_same:
+            return self.execute(context)
+        else:
+            return context.window_manager.invoke_confirm(self, event)
+        
+        #TODO: invoke 添加选项 ， 当pivot不一致时， 弹出菜单，多个选项: 1.世界中心 2.Collection中心 3.Collection底部 4.Active Object中心 5.Cursor位置  。 如果在Edit Mode，使用选中顶点的中心   
     
 class BatchAddAssetOriginOperator(bpy.types.Operator):
     """ 为所有Prop Collection添加Asset Origin """
 
     bl_idname = "hst.batch_add_asset_origin"
     bl_label = "Add All Prop Asset Origins"
-    bl_description = "为所有Prop Collection添加Asset Origin"\
+    bl_description = "为所有Prop Collection添加Asset Origin"
+
+    # 添加属性用于invoke弹窗
+    origin_mode: bpy.props.EnumProperty(
+        name="Origin Mode",
+        description="选择Origin的位置",
+        items=[
+            ("WORLD_CENTER", "World Center", "使用世界中心作为Origin"),
+            ("COLLECTION_CENTER", "Collection Center", "使用Collection所有对象Pivots的中心"),
+            ("COLLECTION_BOTTOM", "Collection Bottom", "使用Collection所有对象的底部中心"),
+        ],
+        default="COLLECTION_CENTER",
+    )
 
     def execute(self, context):
-        is_local_view=Viewport.is_local_view()
-        new_origins_count=0
+        is_local_view = Viewport.is_local_view()
+        new_origins_count = 0
         store_mode = prep_select_mode()
-        selected_objects=Object.get_selected()
+        selected_objects = Object.get_selected()
         if selected_objects:
             for obj in selected_objects:
                 obj.select_set(False)
 
-        prop_collections = Collection.filter_hst_type(collections=bpy.data.collections,type="PROP",mode="INCLUDE")
+        prop_collections = Collection.filter_hst_type(
+            collections=bpy.data.collections, type="PROP", mode="INCLUDE"
+        )
         if prop_collections is None:
-            self.report({"ERROR"},"No Prop Collections, mark prop collections with 'Mark Prop' first")
+            self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
             return {"CANCELLED"}
-        
-        #为所有prop collection 添加origin
+
         for collection in prop_collections:
-            collection_objs=[]
-            for obj in collection.all_objects:
-                collection_objs.append(obj)
-            existing_origin_objects=Object.filter_hst_type(objects=collection_objs,type="ORIGIN",mode="INCLUDE")
-            
-            asset_objs=[]
+            collection_objs = [obj for obj in collection.all_objects]
+            existing_origin_objects = Object.filter_hst_type(
+                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
+            )
+
+            asset_objs = []
             if existing_origin_objects is not None:
                 for obj in collection_objs:
-                        if obj not in existing_origin_objects:
-                            asset_objs.append(obj)
-            else: #没有origin时asset objs为collection下所有objects
-                asset_objs=collection_objs
+                    if obj not in existing_origin_objects:
+                        asset_objs.append(obj)
+            else:
+                asset_objs = collection_objs
 
+            # 计算origin位置
+            pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
+            all_same = all((pivots[0] - p).length < 1e-6 for p in pivots) if pivots else False
 
-
-            if existing_origin_objects is not None: #collection已有origin
-                new_asset_objs=[]
+            if existing_origin_objects is not None:
+                new_asset_objs = []
                 for obj in asset_objs:
                     if obj.parent is None:
                         new_asset_objs.append(obj)
                     else:
-                        if obj.parent!=existing_origin_objects[0]: #父对象不是origin
+                        if obj.parent != existing_origin_objects[0]:
                             new_asset_objs.append(obj)
-                asset_objs=new_asset_objs 
-                existing_origin_objects[0].name=ORIGIN_PREFIX+collection.name
-                origin_object=existing_origin_objects[0]
+                asset_objs = new_asset_objs
+                existing_origin_objects[0].name = ORIGIN_PREFIX + collection.name
+                origin_object = existing_origin_objects[0]
                 self.report({"INFO"}, f"{collection.name} has Asset Origin already")
-
-
-            else: #collection没有origin ， 新建
+            else:
+                # 新建origin
                 origin_name = ORIGIN_PREFIX + collection.name
                 origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-                origin_object.matrix_world=Const.WORLD_ORIGIN_MATRIX
+                # 根据origin_mode设置origin位置
+                if all_same and pivots:
+                    origin_location = pivots[0].copy()
+                elif self.origin_mode == "WORLD_CENTER":
+                    origin_location = Vector((0, 0, 0))
+                elif self.origin_mode == "COLLECTION_CENTER":
+                    origin_location = (
+                        sum(pivots, Vector((0, 0, 0))) / len(pivots) if pivots else Vector((0, 0, 0))
+                    )
+                elif self.origin_mode == "COLLECTION_BOTTOM":
+                    if pivots:
+                        lowest_z = min(p.z for p in pivots)
+                        center_xy = sum((Vector((p.x, p.y, 0)) for p in pivots), Vector((0, 0, 0))) / len(pivots)
+                        origin_location = Vector((center_xy.x, center_xy.y, lowest_z))
+                    else:
+                        origin_location = Vector((0, 0, 0))
+                else:
+                    origin_location = Vector((0, 0, 0))
+                origin_object.location = origin_location
                 origin_object.empty_display_type = "PLAIN_AXES"
                 origin_object.empty_display_size = 0.4
                 origin_object.show_name = True
                 collection.objects.link(origin_object)
                 Object.mark_hst_type(origin_object, "ORIGIN")
-                new_origins_count +=1
+                new_origins_count += 1
 
-            
-            
             for object in asset_objs:
-
-                # object.parent = origin_object
-                # object.matrix_parent_inverse = origin_object.matrix_world.inverted()
-                #TBD: REPLACE WITH MATRIX MATH
                 if is_local_view:
                     bpy.ops.view3d.localview(frame_selected=False)
-                object.select_set(True)
-                origin_object.select_set(True)
-                bpy.context.view_layer.objects.active = origin_object
-                bpy.ops.object.parent_no_inverse_set(keep_transform=True)
-                object.select_set(False)
-                origin_object.select_set(False)
-                
+                if object.type == "MESH":
+                    obj_loc_raw = object.location.copy()
+                    obj_loc = obj_loc_raw - origin_object.location
+                    object.parent = origin_object
+                    object.location = obj_loc
+
         restore_select_mode(store_mode)
-
         self.report({"INFO"}, f"{new_origins_count} new origins created")
-
         return {"FINISHED"}
+
+    def invoke(self, context, event):
+        prop_collections = Collection.filter_hst_type(
+            collections=bpy.data.collections, type="PROP", mode="INCLUDE"
+        )
+        if prop_collections is None:
+            self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
+            return {"CANCELLED"}
+
+        # 检查是否所有prop collections都已经有origin object
+        all_has_origin = True
+        for collection in prop_collections:
+            collection_objs = [obj for obj in collection.objects]
+            existing_origin_objects = Object.filter_hst_type(
+                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
+            )
+            if not existing_origin_objects:
+                all_has_origin = False
+                break
+
+        if all_has_origin:
+            self.report({"INFO"}, "All prop collections already have Asset Origin")
+            return {"CANCELLED"}
+
+        # 检查每个collection下objects的pivots是否一致，分别计算
+        need_choice = False
+        for collection in prop_collections:
+            collection_objs = [obj for obj in collection.objects]
+            existing_origin_objects = Object.filter_hst_type(
+                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
+            )
+            asset_objs = []
+            if existing_origin_objects is not None:
+                for obj in collection_objs:
+                    if obj not in existing_origin_objects:
+                        asset_objs.append(obj)
+            else:
+                asset_objs = collection_objs
+            pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
+            all_same = all((pivots[0] - p).length < 1e-6 for p in pivots) if pivots else False
+            if not all_same:
+                need_choice = True
+                break
+
+        if need_choice:
+            # 只要有一组collection下objects的pivot不一致，就弹出菜单让用户选择origin_mode
+            return context.window_manager.invoke_props_dialog(self)
+        else:
+            # 每组collection下objects的pivot都一致，直接执行
+            self.origin_mode = "COLLECTION_CENTER"
+            return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="物体的Pivot不一致，手动选择原点的位置：")
+        layout.prop(self, "origin_mode", expand=True)
     
 
 
@@ -933,10 +1096,19 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
             for mesh in static_meshes:
+                print(mesh.name)
                 mats=get_materials(mesh)
                 for mat in mats:
-                    if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX):
+                    if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX) or mat.name.endswith(DECAL_SUFFIX) or mat.name.startswith(DECAL_PREFIX):
                         Object.mark_hst_type(mesh, "DECAL")
+                        
+                        # bpy.context.object.visible_shadow = False
+                        # bpy.context.object.display.show_shadows = False
+                        mesh.visible_shadow = False
+                        mesh.display.show_shadows = False
+                        # Object.display.show_shadows = False
+
+
                         
 
             self.report(

@@ -255,9 +255,38 @@ class TestFuncOperator(bpy.types.Operator):
         print(Paths.ADDON_DIR)
         print(Addon.get_install_path())
         selected_objects = bpy.context.selected_objects
+        active_object=bpy.context.active_object 
+        dim_x=active_object.dimensions.x
+        dim_y=active_object.dimensions.y
+        dim_z=active_object.dimensions.z
+        
+        length_unit = get_scene_length_unit()
+        dim_x=convert_length(dim_x)
+        dim_y=convert_length(dim_y)
+        dim_z=convert_length(dim_z)
+        print(f"dimensions: {active_object.dimensions}")
+        print(f"dimensions: {dim_x} {dim_y} {dim_z} {length_unit}")
+
         for obj in selected_objects:
             if obj.instance_collection:
                 print(f"{obj.name} is instance of {obj.instance_collection.name}")
 
 
         return {"FINISHED"}
+def get_scene_length_unit():
+    current_scene = bpy.context.object.users_scene[0].name
+    length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
+    return length_unit
+    
+def convert_length(length: float) -> float:
+    """根据场景单位设置转换长度"""
+    length_unit = get_scene_length_unit()
+    match length_unit:
+        case "METERS":
+            new_length = length * 1
+        case "CENTIMETERS":
+            new_length = length * 100
+        case "MILLIMETERS":
+            new_length = length * 1000
+
+    return new_length

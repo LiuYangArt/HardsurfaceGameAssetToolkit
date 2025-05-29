@@ -520,7 +520,7 @@ class HSTActiveCollection(bpy.types.Operator):
 class MakeDecalCollection(bpy.types.Operator):
     bl_idname = "hst.make_decal_collection"
     bl_label = "Make Decal Collection"
-    bl_description = "添加对应的Decal Collection"
+    bl_description = "为Prop加对应的Decal Collection"
 
     def execute(self, context):
         target_collections=Collection.get_selected()

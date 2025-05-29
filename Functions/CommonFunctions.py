@@ -1433,7 +1433,7 @@ def set_collision_object(target_object, new_name) -> None:
 
 
 def filter_static_meshes(collection) -> tuple:
-    """筛选collection中的mesh,返回staticmeshes,ucx_meshes"""
+    """筛选collection中的mesh,返回staticmeshes,ucx_meshes,剔除掉decal"""
     staticmeshes = []
     ucx_meshes = []
 
@@ -1640,6 +1640,7 @@ def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
 
 
 class Object:
+    
     def get_selected():
         selected_objects = bpy.context.selected_objects
         outliner_objs=Outliner.get_selected_objects()
@@ -1658,6 +1659,19 @@ class Object:
             deltamx = matrix.inverted_safe() @ obj.matrix_world
             obj.matrix_world = matrix
             obj.data.transform(deltamx)
+
+    def set_pivot_location(obj, location: Vector):
+        """
+        Set the object's origin (pivot) to the specified world location.
+        """
+
+        offset = location - obj.location
+        obj.location += offset
+        # Move all vertices in the opposite direction to keep the mesh in place
+        if obj.type == "MESH":
+            mesh = obj.data
+            for v in mesh.vertices:
+                v.co -= offset
 
     def move_to_world_origin(obj):
         world_origin_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
