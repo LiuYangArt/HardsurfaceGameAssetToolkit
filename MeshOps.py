@@ -496,6 +496,7 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
     bl_idname = "hst.batch_add_asset_origin"
     bl_label = "Add All Prop Asset Origins"
     bl_description = "为所有Prop Collection添加Asset Origin"
+    bl_options = {"REGISTER", "UNDO"}
 
     # 添加属性用于invoke弹窗
     origin_mode: bpy.props.EnumProperty(
@@ -503,8 +504,7 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
         description="选择Origin的位置",
         items=[
             ("WORLD_CENTER", "World Center", "使用世界中心作为Origin"),
-            ("COLLECTION_CENTER", "Collection Center", "使用Collection所有对象Pivots的中心"),
-            ("COLLECTION_BOTTOM", "Collection Bottom", "使用Collection所有对象的底部中心"),
+            ("COLLECTION_CENTER", "Collection Pivots Center", "使用Collection所有对象Pivots的中心"),
         ],
         default="COLLECTION_CENTER",
     )
@@ -514,6 +514,9 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
         new_origins_count = 0
         store_mode = prep_select_mode()
         selected_objects = Object.get_selected()
+
+        
+
         if selected_objects:
             for obj in selected_objects:
                 obj.select_set(False)
@@ -527,6 +530,10 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
 
         for collection in prop_collections:
             collection_objs = [obj for obj in collection.all_objects]
+            # 跳过没有object的collection
+            if not collection_objs:
+                continue
+
             existing_origin_objects = Object.filter_hst_type(
                 objects=collection_objs, type="ORIGIN", mode="INCLUDE"
             )
@@ -541,7 +548,6 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
 
             # 计算origin位置
             pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
-            all_same = all((pivots[0] - p).length < 1e-6 for p in pivots) if pivots else False
 
             if existing_origin_objects is not None:
                 new_asset_objs = []
@@ -559,24 +565,17 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                 # 新建origin
                 origin_name = ORIGIN_PREFIX + collection.name
                 origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
-                # 根据origin_mode设置origin位置
-                if all_same and pivots:
-                    origin_location = pivots[0].copy()
-                elif self.origin_mode == "WORLD_CENTER":
-                    origin_location = Vector((0, 0, 0))
-                elif self.origin_mode == "COLLECTION_CENTER":
+
+                if self.origin_mode == "COLLECTION_CENTER":
                     origin_location = (
                         sum(pivots, Vector((0, 0, 0))) / len(pivots) if pivots else Vector((0, 0, 0))
                     )
-                elif self.origin_mode == "COLLECTION_BOTTOM":
-                    if pivots:
-                        lowest_z = min(p.z for p in pivots)
-                        center_xy = sum((Vector((p.x, p.y, 0)) for p in pivots), Vector((0, 0, 0))) / len(pivots)
-                        origin_location = Vector((center_xy.x, center_xy.y, lowest_z))
-                    else:
-                        origin_location = Vector((0, 0, 0))
-                else:
+                elif self.origin_mode == "WORLD_CENTER":
                     origin_location = Vector((0, 0, 0))
+                print("origin_location:", origin_location,"mode:",self.origin_mode)
+                
+                # 移除了 COLLECTION_BOTTOM 选项
+
                 origin_object.location = origin_location
                 origin_object.empty_display_type = "PLAIN_AXES"
                 origin_object.empty_display_size = 0.4
@@ -595,7 +594,8 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
                     object.location = obj_loc
 
         restore_select_mode(store_mode)
-        self.report({"INFO"}, f"{new_origins_count} new origins created")
+        self.report({"INFO"}, f"Added {new_origins_count} Asset Origins")
+
         return {"FINISHED"}
 
     def invoke(self, context, event):
@@ -621,38 +621,18 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
             self.report({"INFO"}, "All prop collections already have Asset Origin")
             return {"CANCELLED"}
 
-        # 检查每个collection下objects的pivots是否一致，分别计算
-        need_choice = False
-        for collection in prop_collections:
-            collection_objs = [obj for obj in collection.objects]
-            existing_origin_objects = Object.filter_hst_type(
-                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
-            )
-            asset_objs = []
-            if existing_origin_objects is not None:
-                for obj in collection_objs:
-                    if obj not in existing_origin_objects:
-                        asset_objs.append(obj)
-            else:
-                asset_objs = collection_objs
-            pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
-            all_same = all((pivots[0] - p).length < 1e-6 for p in pivots) if pivots else False
-            if not all_same:
-                need_choice = True
-                break
 
-        if need_choice:
-            # 只要有一组collection下objects的pivot不一致，就弹出菜单让用户选择origin_mode
-            return context.window_manager.invoke_props_dialog(self)
-        else:
-            # 每组collection下objects的pivot都一致，直接执行
-            self.origin_mode = "COLLECTION_CENTER"
-            return self.execute(context)
-
+        return self.execute(context)
     def draw(self, context):
-        layout = self.layout
-        layout.label(text="物体的Pivot不一致，手动选择原点的位置：")
-        layout.prop(self, "origin_mode", expand=True)
+            # self.layout.use_property_split = True
+            layout = self.layout
+            box = layout.box()
+            box_column = box.column()
+
+            box_column.label(text="Choose Origin Location")
+            box_column.prop(self, "origin_mode", expand=True)
+
+
     
 
 
