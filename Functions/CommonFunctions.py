@@ -721,7 +721,7 @@ def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
 
     old_mesh = object.data
 
-    deps_graph = bpy.context.view_layer.depsgraph
+    deps_graph = bpy.context.evaluated_depsgraph_get()
     deps_graph.update()
     object_evaluated = object.evaluated_get(deps_graph)
     mesh_evaluated = bpy.data.meshes.new_from_object(
