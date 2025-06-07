@@ -203,6 +203,36 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
     #     print(target_object + " is not mesh object")
     return color_attribute
 
+def get_vertex_color_from_obj(obj)->list:
+    if obj.type == 'MESH':
+        # 使用第一个 color attribute
+        color_attr = None
+        for attr in obj.data.color_attributes:
+            print(attr.name , attr)
+            if attr.domain in {'POINT', 'CORNER'}:
+                color_attr = obj.data.attributes[attr.name]
+            break
+        if color_attr:
+            color_data = color_attr.data
+            color_list = []
+            for i in color_data:
+                # 支持 COLOR 和 BYTE_COLOR 两种类型
+                if hasattr(i, "color_srgb"):
+                    color_list.append(i.color_srgb)
+                elif hasattr(i, "color"):
+                    color_list.append(i.color)
+                elif hasattr(i, "vertex_colors"):
+                    color_list.append(i.color)
+                else:
+                    color_list.append(None)
+            if color_list:
+                color = [
+                sum(c[i] for c in color_list) / len(color_list)
+                for i in range(len(color_list[0]))
+                ]
+                return color
+        else:
+            return None
 
 def vertexcolor_to_vertices(target_mesh, color_attribute, color):
     mesh = target_mesh.data

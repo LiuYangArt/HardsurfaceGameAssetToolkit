@@ -3,6 +3,7 @@ from .Const import *
 from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
 from mathutils import Vector
+import math
 
 def check_non_solid_meshes(meshes):
     bad_mesh_count=0
@@ -1499,3 +1500,87 @@ class ExtractUCXOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class SnapTransformOperator(bpy.types.Operator):
+    bl_idname = "hst.snap_transform"
+    bl_label = "Snap Transform"
+    bl_description = "把物体的位置/角度/缩放吸附到格子上"
+    bl_options  = {'REGISTER', 'UNDO'}
+
+    snap_location_toggle: bpy.props.BoolProperty(name="Snap Location",default=True)
+    snap_rotation_toggle: bpy.props.BoolProperty(name="Snap Rotation",default=True)
+    snap_scale_toggle: bpy.props.BoolProperty(name="Snap Scale",default=False)
+    
+    snap_grid: bpy.props.EnumProperty(
+        name="Grid (cm)",
+        items=[
+            ("1", "1", "1"),
+            ("5", "5", "5"),
+            ("10", "10", "10"),
+        ],
+        default="1"
+    )
+    snap_angle: bpy.props.EnumProperty(
+        name="Angle (deg)",
+        items=[
+            ("1", "1", "1"),
+            ("5", "5", "5"),
+            ("10", "10", "10"),
+            ("15", "15", "15"),
+            ("30", "30", "30"),
+            ("45", "45", "45"),
+            ("60", "60", "60"),
+            ("90", "90", "90"),
+        ],
+        default="5"
+    )
+    snap_scale:bpy.props.EnumProperty(
+        name="Scale",
+        items=[
+            ("1", "1", "1"),
+            ("0.5", "0.5", "0.5"),
+            ("0.25", "0.25", "0.25"),
+            ("0.125", "0.125", "0.125"),
+            ("0.0625", "0.0625", "0.0625"),
+        ],default="0.125"
+    )
+
+    def execute(self, context):
+        # 对于选中的对象，逐个检查 transform 的 location 和 rotation，
+        # 如果 location 不是 snap_grid 的倍数（以厘米为单位），则修改 location 到最接近的 snap_grid 的倍数。
+        # 如果 rotation 不是 snap_angle 的倍数，则修改 rotation 到最接近的 snap_angle 的倍数。
+        
+        selected_objs = context.selected_objects
+        snap_grid_cm = float(self.snap_grid)  # 单位：厘米
+        snap_grid = snap_grid_cm / 100.0      # Blender内部单位：米
+        snap_angle = float(self.snap_angle)
+        snap_scale_val = float(self.snap_scale) if hasattr(self, 'snap_scale') and self.snap_scale_toggle else None
+        changed_count = 0
+        for obj in selected_objs:
+            # 位置吸附（以厘米为单位）
+            if self.snap_location_toggle:
+                loc = obj.location
+                snapped_loc = [round(coord / snap_grid) * snap_grid for coord in loc]
+                if any(abs(a - b) > 1e-5 for a, b in zip(loc, snapped_loc)):
+                    obj.location = snapped_loc
+                    changed_count += 1
+            # 旋转吸附
+            if self.snap_rotation_toggle:
+                rot = obj.rotation_euler
+                snapped_rot = [math.radians(round(math.degrees(angle) / snap_angle) * snap_angle) for angle in rot]
+                if any(abs(a - b) > 1e-5 for a, b in zip(rot, snapped_rot)):
+                    obj.rotation_euler = snapped_rot
+                    changed_count += 1
+            # 缩放吸附
+            if self.snap_scale_toggle and snap_scale_val is not None:
+                scale = obj.scale
+                snapped_scale = [round(s / snap_scale_val) * snap_scale_val for s in scale]
+                if any(abs(a - b) > 1e-5 for a, b in zip(scale, snapped_scale)):
+                    obj.scale = snapped_scale
+                    changed_count += 1
+        self.report({'INFO'}, f"已吸附 {changed_count} 个对象的位置/旋转/缩放")
+        return {"FINISHED"}
+    def invoke(self, context,event):
+        selected_objs = context.selected_objects
+        if len(selected_objs) == 0: 
+            return {"CANCELLED"}
+        return self.execute(context)

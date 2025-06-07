@@ -9,13 +9,14 @@ class Addon:
     NAME = "HardsurfaceGameAssetToolkit"
 
     def get_install_path():
+        filepath = None
         for mod in addon_utils.modules():
             if mod.bl_info['name'] == Addon.NAME:
                 filepath = mod.__file__
                 break
-        # filepath=str(filepath)
-        # filepath=filepath.removesuffix("/__init__.py")
-        filepath=Path(filepath)
+        if filepath is None:
+            raise RuntimeError(f"未找到名为 {Addon.NAME} 的插件模块")
+        filepath = Path(filepath)
         return filepath
     
     def get_blender_version()->float:

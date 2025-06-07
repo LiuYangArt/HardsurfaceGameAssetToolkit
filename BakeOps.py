@@ -118,7 +118,54 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
 
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}
-    
+
+
+
+class CopyColorAttributeFromActiveOperator(bpy.types.Operator):
+    bl_idname = "hst.copy_vertex_color_from_active"
+    bl_label = "Copy Vertex Color From Active"
+    bl_options = {"UNDO"}
+    bl_description = "Copy Vertex Color From Active"
+
+    def execute(self, context):
+        selected_objs = context.selected_objects
+        active_obj = context.active_object
+        selected_objs.remove(active_obj)
+        selected_meshes = filter_type(selected_objs, "MESH")
+        source_obj = active_obj
+        color = get_vertex_color_from_obj(source_obj)
+        
+
+        if color is None: 
+            self.report({'ERROR'}, "Source object has no vertex color")
+            return {"CANCELLED"}
+
+        for mesh in selected_meshes:
+            vertex_color_layer=check_vertex_color(mesh)
+            if vertex_color_layer:
+                # print("has vc")
+                set_active_color_attribute(mesh, vertex_color_layer.name)
+                set_object_vertexcolor(mesh, color, vertex_color_layer.name)
+            else:
+                add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
+                set_active_color_attribute(mesh, BAKECOLOR_ATTR)
+                set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
+
+
+        self.report({"INFO"}, "Set vertex color")
+
+        return {"FINISHED"}
+    def invoke(self, context, event):
+        selected_objs = context.selected_objects
+        
+        if len(selected_objs) < 2: # only two objects are selected
+            self.report({'WARNING'}, "Please select at least two objects")
+            return {"CANCELLED"}
+        # if active_obj[CUSTOM_NAME] != DECAL_NAME:
+        #     self.report({'WARNING'}, "Active object is not a Decal Object")
+        return self.execute(context)
+
+
 class BlurVertexColorOperator(bpy.types.Operator):
     bl_idname = "hst.blur_vertexcolor"
     bl_label = "HST Blur Vertex Color"

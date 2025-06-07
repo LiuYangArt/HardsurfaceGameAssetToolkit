@@ -3,6 +3,7 @@ from .Const import *
 from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
 
+#TODO: 合并两个bevel ops， 增加UI修改参数时选中objects的bevel参数功能
 
 class HST_BevelTransferNormal(bpy.types.Operator):
     bl_idname = "hst.hstbeveltransfernormal"

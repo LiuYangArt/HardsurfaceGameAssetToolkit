@@ -16,6 +16,11 @@ def axis_check_toggle(self, context):
     """当在UI中点击按钮时，调用axischeck操作"""
     bpy.ops.hst.axischeck()
 
+def run_set_vertex_color_ops(self, context):
+    """当在UI中点击按钮时，调用set_vertex_color操作"""
+    bpy.ops.hst.setobjectvertexcolor()
+
+
 
 class UIParams(PropertyGroup):
     """UI参数"""
@@ -27,6 +32,7 @@ class UIParams(PropertyGroup):
         min=0.0,
         max=1.0,
         default=(1.0, 1.0, 1.0, 1.0),
+        update=run_set_vertex_color_ops,
     )
 
     set_bevel_width: FloatProperty(
@@ -145,6 +151,9 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
             "hst.setobjectvertexcolor", text="Batch Set Color ID", icon="COLOR"
         )
         box_column.prop(context.scene.hst_params, "vertexcolor", text="Color ID Picker")
+        box_column.operator(
+                "hst.copy_vertex_color_from_active", text="Copy Vertex Color", icon="COPY_ID"
+            )
         box_column.operator(
             "hst.blur_vertexcolor", icon="PROP_OFF"
         )
@@ -300,9 +309,10 @@ class HST_PT_TOOLS(bpy.types.Panel):
         box.prop(parameters, "spec_type", text="Spec Type")
         box.operator("hst.projectdecal", icon="MOD_SHRINKWRAP")
         box.operator("hst.marksharp", icon="SHARPCURVE")
-        box.operator("hst.testfunc", icon="SORTALPHA")
-        # box.operator("hst.add_mats_to_assetlibrary", icon="SORTALPHA")
+
         box.operator("hst.extractucx", icon="MESH_CUBE")
+        box.operator("hst.snap_transform", icon="SNAP_GRID")
+        
         
         
         
