@@ -6,13 +6,15 @@ import os
 # from mathutils import Matrix
 
 class Addon:
-    NAME = "HardsurfaceGameAssetToolkit"
+    NAME = "Hardsurface GameAsset Toolkit"
 
     def get_install_path():
         filepath = None
         for mod in addon_utils.modules():
             if mod.bl_info['name'] == Addon.NAME:
                 filepath = mod.__file__
+                filepath = filepath.split("\__init__.py")[0]
+                filepath = filepath.replace("\\", "/")
                 break
         if filepath is None:
             raise RuntimeError(f"未找到名为 {Addon.NAME} 的插件模块")
@@ -74,11 +76,13 @@ SWATCH_MATERIAL = MATERIAL_PREFIX + "HSPropSwatch"
 PATTERN_MATERIAL= MATERIAL_PREFIX + "TilePattern"
 
 # import asset
-ADDON_DIR = "HardsurfaceGameAssetToolkit"
+ADDON_NAME = "Hardsurface GameAsset Toolkit"
+
+# ADDON_DIR = "HardsurfaceGameAssetToolkit"
 ASSET_DIR = "PresetFiles"
-USER = Path(resource_path("USER"))
-ASSET_PATH = USER / "scripts/addons/" / ADDON_DIR / ASSET_DIR
-# NODE_FILE_PATH = ASSET_PATH / "GN_WearMaskVertexColor.blend"
+
+addon_path= Addon.get_install_path()
+ASSET_PATH = addon_path / ASSET_DIR
 PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"

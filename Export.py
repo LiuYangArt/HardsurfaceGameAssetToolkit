@@ -36,16 +36,6 @@ def find_gpro_insts(objs):
     return gpro_instances
 
 
-class UBIO_OT_ExportUnrealJSON(bpy.types.Operator):
-    bl_idname = "ubio.export_unreal_scene_json"
-    bl_label = "Export Unreal Scene JSON"
-    bl_description = "Export Unreal Scene JSON"
-    bl_options = {"UNDO"}
-
-    def execute(self, context):
-# ... existing code ...
-
-
 
 def filter_instance_collection(objects):
     """筛选instance collection的父collection"""

@@ -4,7 +4,7 @@ schema_version = "1.0.0"
 # Change the values according to your extension
 id = "hard_surface_toolkit"
 version = "1.0.0"
-name = "HardsurfaceGameAssetToolkit"
+name = "Hardsurface GameAsset Toolkit"
 tagline = "for my custom pipeline"
 maintainer = "LiuYang"
 # Supported types: "add-on", "theme"

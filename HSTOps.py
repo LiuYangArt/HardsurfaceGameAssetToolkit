@@ -59,6 +59,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
+        bevel_width = self.bevel_width*0.01 # fix for scene unit = cm
 
         ###=====================================================###
         rename_prop_meshes(selected_objects)
@@ -75,7 +76,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             )
             add_bevel_modifier(
                 mesh,
-                self.bevel_width,
+                bevel_width,
                 self.bevel_segments
 
             )
@@ -163,7 +164,7 @@ class HST_BatchBevel(bpy.types.Operator):
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
-        
+        bevel_width = self.bevel_width*0.01 # fix for scene unit = cm
 
 
         selected_collections = filter_collections_selection(selected_objects)
@@ -175,7 +176,7 @@ class HST_BatchBevel(bpy.types.Operator):
             remove_modifier(mesh, NORMALTRANSFER_MODIFIER, has_subobject=True)
             add_bevel_modifier(
                 mesh,
-                self.bevel_width,
+                bevel_width,
                 self.bevel_segments,
             )
             add_weightednormal_modifier(mesh)
@@ -209,6 +210,7 @@ def prep_wearmask_objects(selected_objects):
     target_collections=filter_collections_selection(selected_objects)
     for collection in target_collections:
         collection.hide_render=True
+    print(PRESET_FILE_PATH)
     import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
     proxy_object_list = []
     proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")

@@ -5,7 +5,7 @@ from .CommonFunctions import *
 
 def add_bevel_modifier(mesh, width=0.05, segments=1):
     """添加Bevel Modifier"""
-
+    
     check_sharp = False
     # bpy.data.meshes[mesh.to_mesh().name].use_auto_smooth = True
 
