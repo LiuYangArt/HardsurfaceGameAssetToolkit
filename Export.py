@@ -4,6 +4,48 @@ from .Functions.CommonFunctions import *
 from .Functions.AssetCheckFunctions import *
 
 GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
+CAT_GROUP_MOD = "CAT_MeshGroup"
+GPRO_MOD = "GPro_Instance"
+
+
+# ... existing code ...
+
+def find_gpro_insts(objs):
+    """
+    在给定对象列表中查找具有“GPro_Instance”几何节点修改器的对象，
+    并返回这些修改器中“Instanced Collection”输入所引用的集合中的所有对象。
+    参数：
+        objs (list[bpy.types.Object]): 需要检查的对象列表
+    返回：
+        list[bpy.types.Object]: 从Geometry Nodes修改器中“Instanced Collection”获取的所有对象
+    """
+    gpro_instances = []
+    for obj in objs:
+        if obj.modifiers:
+            for mod in obj.modifiers:
+                if mod.type == 'NODES' and mod.node_group:
+                    node_name=mod.node_group.name
+                    if node_name == GPRO_MOD or node_name == CAT_GROUP_MOD:
+                        # 查找名为 "Instanced Collection" 的输入
+                        for input_socket in mod.node_group.inputs:
+                            if input_socket.name == "Instanced Collection" and input_socket.type == 'COLLECTION':
+                                # 获取引用的集合
+                                if input_socket.default_value:
+                                    collection = input_socket.default_value
+                                    gpro_instances.extend(collection.all_objects)
+    return gpro_instances
+
+
+class UBIO_OT_ExportUnrealJSON(bpy.types.Operator):
+    bl_idname = "ubio.export_unreal_scene_json"
+    bl_label = "Export Unreal Scene JSON"
+    bl_description = "Export Unreal Scene JSON"
+    bl_options = {"UNDO"}
+
+    def execute(self, context):
+# ... existing code ...
+
+
 
 def filter_instance_collection(objects):
     """筛选instance collection的父collection"""
@@ -72,6 +114,8 @@ class StaticMeshExportOperator(bpy.types.Operator):
     bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
         只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体，不导出“_”开头的Collection\
         在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
+
+#TODO: 增加对GPro Instance的支持， 增加对MeshGroupInstance的支持
 
     def execute(self, context):
         all_objects = bpy.data.objects #blender文件内的所有物体
