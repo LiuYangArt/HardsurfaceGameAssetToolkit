@@ -59,7 +59,8 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
-        bevel_width = self.bevel_width*0.01 # fix for scene unit = cm
+        b_width=convert_length_by_scene_unit(self.bevel_width)
+        bevel_width = b_width
 
         ###=====================================================###
         rename_prop_meshes(selected_objects)
@@ -164,7 +165,8 @@ class HST_BatchBevel(bpy.types.Operator):
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
-        bevel_width = self.bevel_width*0.01 # fix for scene unit = cm
+        b_width=convert_length_by_scene_unit(self.bevel_width)
+        bevel_width = b_width
 
 
         selected_collections = filter_collections_selection(selected_objects)
