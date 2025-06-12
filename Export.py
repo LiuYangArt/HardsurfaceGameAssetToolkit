@@ -274,6 +274,15 @@ class OpenFileExplorer(bpy.types.Operator):
             export_path = str(bpy.path.abspath("//")) + "Meshes/" #未设置保存路径时使用.blend文件路径/Meshes作为默认导出路径
         if export_path.endswith("/") is False:
             export_path = export_path + "/"
+
+        #先检查export_path是否存在
+        if not FilePath.is_path_exists(export_path):
+            self.report(
+                    {"ERROR"},
+                    "目标路径不存在",
+,
+                )
+            return {"CANCELLED"}
         FilePath.open_os_path(export_path)
 
 

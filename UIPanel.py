@@ -344,22 +344,22 @@ class HST_PT_EXPORT(bpy.types.Panel):
         
 
 
-class HST_PT_Skeletel(bpy.types.Panel):
-    bl_idname = "HST_PT_Skeletel"
-    bl_label = "Skeletel Tools"
-    bl_category = "HST"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_order = 3
+# class HST_PT_Skeletel(bpy.types.Panel):
+#     bl_idname = "HST_PT_Skeletel"
+#     bl_label = "Skeletel Tools"
+#     bl_category = "HST"
+#     bl_space_type = "VIEW_3D"
+#     bl_region_type = "UI"
+#     bl_order = 3
 
-    def draw(self, context):
+#     def draw(self, context):
 
-        layout = self.layout
-        box = layout.box()
-        box = box.column()
+#         layout = self.layout
+#         box = layout.box()
+#         box = box.column()
 
-        box.operator(
-            "hst.skeletel_separator", icon="ARMATURE_DATA"
-        )
+#         box.operator(
+#             "hst.skeletel_separator", icon="ARMATURE_DATA"
+#         )
 
 
