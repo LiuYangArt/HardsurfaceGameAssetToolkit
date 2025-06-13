@@ -2537,6 +2537,9 @@ class FilePath:
         else:
             opener = "open" if platform.system() == "Darwin" else "xdg-open"
             subprocess.call([opener, path])
+    
+    def is_path_exists(path:str) -> bool:
+        return os.path.exists(path)
 
 class Mesh:
 
