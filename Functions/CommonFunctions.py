@@ -1974,7 +1974,6 @@ class Armature:
             use_snap_edit=True,
             use_snap_nonedit=True,
             use_snap_selectable=False,
-            alt_navigation=True,
         )
         bpy.ops.object.mode_set(mode="OBJECT")
 

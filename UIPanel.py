@@ -344,22 +344,42 @@ class HST_PT_EXPORT(bpy.types.Panel):
         
 
 
-# class HST_PT_Skeletel(bpy.types.Panel):
-#     bl_idname = "HST_PT_Skeletel"
-#     bl_label = "Skeletel Tools"
-#     bl_category = "HST"
-#     bl_space_type = "VIEW_3D"
-#     bl_region_type = "UI"
-#     bl_order = 3
+class HST_PT_Skeletel(bpy.types.Panel):
+    bl_idname = "HST_PT_Skeletel"
+    bl_label = "Skeletel Tools"
+    bl_category = "HST"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_order = 3
 
-#     def draw(self, context):
+    def draw(self, context):
 
-#         layout = self.layout
-#         box = layout.box()
-#         box = box.column()
+        layout = self.layout
+        box = layout.box()
+        box = box.column()
 
-#         box.operator(
-#             "hst.skeletel_separator", icon="ARMATURE_DATA"
-#         )
 
+        box.operator(
+            "hst.set_scene_unit_for_unreal_rig", icon="HIDE_OFF")
+        # box.operator(
+        #     "hst.mark_skm_collection", icon="COLLECTION_NEW")
+        box.operator(
+            "hst.cleanup_ue_skm", icon="ARMATURE_DATA")
+        box.operator(
+            "hst.quickweight", icon="MOD_VERTEX_WEIGHT")
+        box.operator(
+            "hst.rename_bones", icon="SORTALPHA")
+        box.operator(
+            "hst.rename_tree_bones", icon="SORTSIZE")
+        box.operator(
+            "hst.bone_display_settings", icon="BONE_DATA")
+        # box.operator(
+        #     "hst.show_bone_weight", icon="EMPTY_ARROWS")
+        
+        # box.operator(
+        #     "hst.skeletel_separator", icon="ARMATURE_DATA"
+        # )
+        # box.operator(
+        #     "hst.isolate_selected_bones", icon="BONE_DATA"
+        # )
 

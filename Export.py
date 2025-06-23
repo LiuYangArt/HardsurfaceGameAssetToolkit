@@ -167,17 +167,18 @@ class StaticMeshExportOperator(bpy.types.Operator):
         )
 
         if len(skm_collections) == 0:
-            if len(target_collections) == 0:
-                restore_select_mode(store_mode)
-                remove_instance_collection_from_scene(instance_collections)
-                self.report(
-                    {"ERROR"},
-                    "No available collection for export. Please check visibility "
-                    + "and ensure objects are placed in collections，"
-                    + "set collection in correct type\n"
-                    + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试",
-                )
-                return {"CANCELLED"}
+            if len(rig_collections) == 0:
+                if len(target_collections) == 0:
+                    restore_select_mode(store_mode)
+                    remove_instance_collection_from_scene(instance_collections)
+                    self.report(
+                        {"ERROR"},
+                        "No available collection for export. Please check visibility "
+                        + "and ensure objects are placed in collections，"
+                        + "set collection in correct type\n"
+                        + "没有可导出的collection，请检查collection可见性，把要导出的资产放在collection中，并设置正确的类型后重试",
+                    )
+                    return {"CANCELLED"}
 
         # check_collections(self, bake_collections, prop_collections, decal_collections)
 

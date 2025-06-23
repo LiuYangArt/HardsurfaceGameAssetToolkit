@@ -2,6 +2,8 @@ import bpy
 
 from .Const import *
 from .Functions.CommonFunctions import *
+#TODO: 一键发送到marmoset 进行烘焙，  marmoset中给高模的材质自动开启bevel normal
+
 
 def set_bake_collection(collection, type="LOW"):
     """Set bake collection name and color tag,rename meshes in collection,types:LOW,HIGH"""

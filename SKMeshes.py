@@ -544,3 +544,5 @@ class DisplayUEBoneDirectionOperator(bpy.types.Operator):
                         pose_bone.custom_shape = custom_shape_mesh
 
         return {"FINISHED"}
+
+
