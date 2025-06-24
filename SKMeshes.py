@@ -546,3 +546,59 @@ class DisplayUEBoneDirectionOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
+
+class FixRootBoneForUEOperator(bpy.types.Operator):
+    bl_idname = "hst.fix_root_bone_for_ue"
+    bl_label = "Fix Root Bone For UE"
+    bl_description = "修正root bone的朝向，适配UE规范。使用armature的第一根骨骼作为root bone。"
+
+    def execute(self, context):
+        # 块注释：
+        # 对于选中的 armature object，进入编辑模式，对其 root bone（第一个 bone）进行如下处理：
+        # 1. 与其所有子级 bone 断开（disconnect）。
+        # 2. 调整 root bone 的朝向：X轴朝向世界-Y，Y轴朝向世界X，Z轴朝向世界Z（head:0,0,0 tail:x:0.1,0,0）。
+        # 3. 恢复原有模式和选择。
+
+        selected_objects = bpy.context.selected_objects
+        armatures = [obj for obj in selected_objects if obj.type == "ARMATURE"]
+        if not armatures:
+            self.report({'ERROR'}, "未选中任何骨骼对象（Armature）")
+            return {'CANCELLED'}
+
+        for armature in armatures:
+            # 存储当前模式和选择，便于恢复
+            store_mode = prep_select_mode()
+            bpy.context.view_layer.objects.active = armature
+            armature.select_set(True)
+            bpy.ops.object.mode_set(mode='EDIT')
+
+            edit_bones = armature.data.edit_bones
+            if not edit_bones:
+                self.report({'ERROR'}, f"骨架 {armature.name} 没有任何骨骼")
+                restore_select_mode(store_mode)
+                return {'CANCELLED'}
+
+            # 寻找 root bone（无 parent 的 bone，若无则取第一个）
+            root_bone = None
+            for bone in edit_bones:
+                if bone.parent is None:
+                    root_bone = bone
+                    break
+            if root_bone is None:
+                root_bone = edit_bones[0]
+
+            # 断开 root bone 的所有子骨骼连接
+            for child in root_bone.children:
+                child.use_connect = False
+
+            # 调整 root bone 的 head 和 tail
+            root_bone.head = (0.0, 0.0, 0.0)
+            root_bone.tail = (0.01, 0.0, 0.0)  # Y轴朝向世界X
+            root_bone.roll = 0.0
+
+            bpy.ops.object.mode_set(mode='OBJECT')
+            restore_select_mode(store_mode)
+
+        self.report({'INFO'}, "Root Bone 处理完成")
+        return {'FINISHED'}
+

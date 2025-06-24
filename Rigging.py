@@ -30,6 +30,19 @@ def set_ue_armature_display(object):
         return object
     else:
         return None
+    
+def set_blender_armature_display(object):
+    if object.type == 'ARMATURE':
+        # 设置骨架显示类型为线框
+        object.data.display_type = 'OCTAHEDRAL'
+        object.data.show_names = True
+
+        # 显示骨架轴线
+        object.data.show_axes = True
+        # 前置显示
+        object.show_in_front = True
+        # 关系线位置为头部
+        object.data.relation_line_position = 'HEAD'
 
 
 class SetSceneUnitForUnrealRigOperator(bpy.types.Operator):
@@ -111,7 +124,18 @@ class CleanupUESKMOperator(bpy.types.Operator):
 class QuickWeightOperator(bpy.types.Operator):
     bl_idname = "hst.quickweight"
     bl_label = "QuickWeight"
-    bl_description = "将选中模型的所有顶点权重刷到当前激活的骨骼上"
+    bl_description = "将选中模型的所有顶点权重刷到当前激活的骨骼上，或仅刷Edit模式下选中的顶点"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: bpy.props.EnumProperty(
+        name="Weight Mode",
+        description="选择权重分配方式",
+        items=[
+            ('ALL_VERTS', "Object", "对选中的整个Mesh填充权重"),
+            ('EDIT_SELECTED_VERTS', "Selected Verts", "仅将Edit模式下选中的顶点填充权重")
+        ],
+        default='ALL_VERTS'
+    )
 
     @classmethod
     def poll(cls, context):
@@ -178,11 +202,19 @@ class QuickWeightOperator(bpy.types.Operator):
             if not vertex_group:
                 # 如果不存在，则创建新顶点组
                 vertex_group = mesh_obj.vertex_groups.new(name=bone_name)
-            
-            # 将网格的所有顶点以1.0的权重指定给该顶点组
-            all_vertex_indices = [v.index for v in mesh_obj.data.vertices]
-            
-            vertex_group.add(all_vertex_indices, 1.0, 'REPLACE')
+
+            if self.mode == 'ALL_VERTS':
+                # 所有顶点赋权重
+                all_vertex_indices = [v.index for v in mesh_obj.data.vertices]
+                vertex_group.add(all_vertex_indices, 1.0, 'REPLACE')
+            elif self.mode == 'EDIT_SELECTED_VERTS':
+                # 仅Edit模式下选中的顶点赋权重，未选中顶点移除
+                selected_indices = [v.index for v in mesh_obj.data.vertices if v.select]
+                unselected_indices = [v.index for v in mesh_obj.data.vertices if not v.select]
+                if selected_indices:
+                    vertex_group.add(selected_indices, 1.0, 'REPLACE')
+                if unselected_indices:
+                    vertex_group.remove(unselected_indices)
 
         self.report({'INFO'}, f"权重已成功赋予到骨骼: {bone_name}")
             
@@ -298,31 +330,14 @@ class RenameTreeBonesOperator(bpy.types.Operator):
 
 class BoneDisplaySettingsOperator(bpy.types.Operator):
     bl_idname = "hst.bone_display_settings"
-    bl_label = "BoneDisplaySettings"
+    bl_label = "Bone Display Settings"
 
     def execute(self, context):
-        for obj in context.selected_objects:
-            if obj.type == 'ARMATURE':
-                # 设置骨架显示类型为八面体
-                obj.data.display_type = 'OCTAHEDRAL'
-                # 显示骨骼名称
-                obj.data.show_names = True
-                # 设置关系线位置为头部
-                obj.data.relation_line_position = 'HEAD'
-                # 前置显示
-                obj.show_in_front = True
-                obj.data.show_axes = True
-                obj.data.axes_position = 0  # 设置轴位置为0（默认位置）
-        # bpy.context.object.data.show_axes = True
-        # bpy.context.object.data.axes_position = 0
-        # bpy.context.object.data.display_type = 'OCTAHEDRAL'
-        # bpy.context.object.data.show_names = True
-        # bpy.context.object.data.relation_line_position = 'HEAD'
-        # bpy.context.object.show_in_front = True
-
-
-        return {"FINISHED"}
-
+            selected_objects = context.selected_objects
+            for obj in selected_objects:
+                set_blender_armature_display(obj)
+            self.report({'INFO'}, "已设置选中骨架的显示设置")
+            return {"FINISHED"}
 
 
 
