@@ -3,16 +3,19 @@ from .Const import *
 from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
 
-#TODO: 合并两个bevel ops， 增加UI修改参数时选中objects的bevel参数功能
+# TODO: 合并两个bevel ops， 增加UI修改参数时选中objects的bevel参数功能
+
 
 class HST_BevelTransferNormal(bpy.types.Operator):
     bl_idname = "hst.hstbeveltransfernormal"
     bl_label = "HST Batch Bevel And Transfer Normal"
     bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
     bl_options = {"REGISTER", "UNDO"}
-    
-    bevel_width: bpy.props.FloatProperty(name = "set_bevel_width",default=0.5)
-    bevel_segments: bpy.props.IntProperty(name = "set_bevel_segments",default=1,min=1,max=100)
+
+    bevel_width: bpy.props.FloatProperty(name="set_bevel_width", default=0.5)
+    bevel_segments: bpy.props.IntProperty(
+        name="set_bevel_segments", default=1, min=1, max=100
+    )
 
     def invoke(self, context, event):
         selected_objects = bpy.context.selected_objects
@@ -42,15 +45,15 @@ class HST_BevelTransferNormal(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
+
         parameters = context.scene.hst_params
         self.bevel_width_global = parameters.set_bevel_width
         self.bevel_segments_global = parameters.set_bevel_segments
-        self.bevel_width=self.bevel_width_global
-        self.bevel_segments=self.bevel_segments_global
-
+        self.bevel_width = self.bevel_width_global
+        self.bevel_segments = self.bevel_segments_global
 
         return self.execute(context)
+
     def execute(self, context):
 
         selected_objects = bpy.context.selected_objects
@@ -59,7 +62,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
-        b_width=convert_length_by_scene_unit(self.bevel_width)
+        b_width = convert_length_by_scene_unit(self.bevel_width)
         bevel_width = b_width
 
         ###=====================================================###
@@ -75,18 +78,13 @@ class HST_BevelTransferNormal(bpy.types.Operator):
                     mesh, TRANSFER_MESH_PREFIX, transfer_collection
                 )
             )
-            add_bevel_modifier(
-                mesh,
-                bevel_width,
-                self.bevel_segments
-
-            )
+            add_bevel_modifier(mesh, bevel_width, self.bevel_segments)
             add_triangulate_modifier(mesh)
             add_datatransfer_modifier(mesh)
             mesh.select_set(True)
 
         set_visibility(transfer_collection, False)
-        
+
         ###=====================================================###
 
         self.report(
@@ -96,6 +94,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
             + " objects",
         )
         return {"FINISHED"}
+
     def draw(self, context):
 
         layout = self.layout
@@ -114,9 +113,10 @@ class HST_BatchBevel(bpy.types.Operator):
         在已有Bevel修改器的情况下使用会根据参数设置修改Bevel修改器宽度和段数"
     bl_options = {"REGISTER", "UNDO"}
 
-    bevel_width: bpy.props.FloatProperty(name = "set_bevel_width",default=0.5)
-    bevel_segments: bpy.props.IntProperty(name = "set_bevel_segments",default=1,min=1,max=100)
-
+    bevel_width: bpy.props.FloatProperty(name="set_bevel_width", default=0.5)
+    bevel_segments: bpy.props.IntProperty(
+        name="set_bevel_segments", default=1, min=1, max=100
+    )
 
     def invoke(self, context, event):
         selected_objects = bpy.context.selected_objects
@@ -146,32 +146,32 @@ class HST_BatchBevel(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
-        #从Global参数中获取参数
+
+        # 从Global参数中获取参数
         parameters = context.scene.hst_params
         self.bevel_width_global = parameters.set_bevel_width
         self.bevel_segments_global = parameters.set_bevel_segments
-        self.bevel_width=self.bevel_width_global
-        self.bevel_segments=self.bevel_segments_global
+        self.bevel_width = self.bevel_width_global
+        self.bevel_segments = self.bevel_segments_global
 
         return self.execute(context)
+
     def execute(self, context):
 
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
 
-        #同步Bevel参数到Global
+        # 同步Bevel参数到Global
         parameters = context.scene.hst_params
         parameters.set_bevel_width = self.bevel_width
         parameters.set_bevel_segments = self.bevel_segments
-        b_width=convert_length_by_scene_unit(self.bevel_width)
+        b_width = convert_length_by_scene_unit(self.bevel_width)
         bevel_width = b_width
-
 
         selected_collections = filter_collections_selection(selected_objects)
         for collection in selected_collections:
-            collection_meshes,ucx_meshes = filter_static_meshes(collection)
+            collection_meshes, ucx_meshes = filter_static_meshes(collection)
             rename_meshes(collection_meshes, collection.name)
 
         for mesh in selected_meshes:
@@ -192,6 +192,7 @@ class HST_BatchBevel(bpy.types.Operator):
             + " objects",
         )
         return {"FINISHED"}
+
     def draw(self, context):
         layout = self.layout
         box = layout.box()
@@ -202,16 +203,15 @@ class HST_BatchBevel(bpy.types.Operator):
         box_column.prop(self, "bevel_segments")
 
 
-
 def prep_wearmask_objects(selected_objects):
-    """ process meshes for wearmask baking """
+    """process meshes for wearmask baking"""
 
     selected_meshes = filter_type(selected_objects, "MESH")
-    selected_meshes=Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
+    selected_meshes = Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
     rename_prop_meshes(selected_objects)
-    target_collections=filter_collections_selection(selected_objects)
+    target_collections = filter_collections_selection(selected_objects)
     for collection in target_collections:
-        collection.hide_render=True
+        collection.hide_render = True
     print(PRESET_FILE_PATH)
     import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
     proxy_object_list = []
@@ -264,7 +264,9 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         collection = get_collection(selected_objects[0])
         selected_meshes = filter_type(selected_objects, type="MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
-        selected_meshes = Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
+        selected_meshes = Object.filter_hst_type(
+            selected_meshes, "PROXY", mode="EXCLUDE"
+        )
 
         if collection is None:
             self.report(
@@ -282,7 +284,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        proxy_collection=prep_wearmask_objects(selected_objects)
+        proxy_collection = prep_wearmask_objects(selected_objects)
 
         set_visibility(proxy_collection, False)
         for mesh in selected_meshes:
@@ -321,7 +323,9 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         collection = get_collection(active_object)
         selected_meshes = filter_type(selected_objects, "MESH")
         selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
-        selected_meshes = Object.filter_hst_type(selected_meshes, "PROXY", mode="EXCLUDE")
+        selected_meshes = Object.filter_hst_type(
+            selected_meshes, "PROXY", mode="EXCLUDE"
+        )
 
         if collection is None:
             self.report(
@@ -338,21 +342,20 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
-        proxy_collection=prep_wearmask_objects(selected_objects) # 处理proxy模型
 
+        proxy_collection = prep_wearmask_objects(selected_objects)  # 处理proxy模型
 
         bpy.context.scene.render.engine = "CYCLES"
         transfer_proxy_collection = proxy_collection
         set_visibility(transfer_proxy_collection, True)
-        proxy_layer_coll=Collection.find_layer_collection(proxy_collection)
-        proxy_layer_coll.hide_viewport=False #toggle eye-icon
+        proxy_layer_coll = Collection.find_layer_collection(proxy_collection)
+        proxy_layer_coll.hide_viewport = False  # toggle eye-icon
 
         for object in selected_objects:
             object.hide_render = True
             object.select_set(False)
 
-        for mesh in selected_meshes: #find proxy mesh
+        for mesh in selected_meshes:  # find proxy mesh
             for modifier in mesh.modifiers:
                 if modifier.name == COLOR_TRANSFER_MODIFIER:
                     if modifier.object is None:
@@ -361,7 +364,9 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
                         # continue
                     elif Object.check_empty_mesh(modifier.object) is True:
                         print(f"{mesh} is empty mesh for bake, skip it")
-                        Modifier.remove(mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True)
+                        Modifier.remove(
+                            mesh, COLOR_TRANSFER_MODIFIER, has_subobject=True
+                        )
                         # bpy.data.meshes.remove(modifier.object.data)
 
                     else:
@@ -441,7 +446,8 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         )
 
         return {"FINISHED"}
-    
+
+
 class CurvatureVertexcolorOperator(bpy.types.Operator):
     bl_idname = "hst.curvature_vertexcolor"
     bl_label = "Add Curvature VertexColor"
@@ -452,7 +458,8 @@ class CurvatureVertexcolorOperator(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         for mesh in selected_meshes:
             VertexColor.add_curvature(mesh)
-        return {'FINISHED'}
+        return {"FINISHED"}
+
 
 class HSTApplyMirrorModifierOperator(bpy.types.Operator):
     bl_idname = "hst.apply_mirror_modifier"
@@ -462,112 +469,104 @@ class HSTApplyMirrorModifierOperator(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes)==0:
+        if len(selected_meshes) == 0:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
+
         for mesh in selected_meshes:
-            has_modifiers=False
+            has_modifiers = False
             if mesh.modifiers is not None:
-                has_modifiers=True
+                has_modifiers = True
             if has_modifiers:
                 for modifier in mesh.modifiers:
-                    if modifier.type == 'MIRROR':
+                    if modifier.type == "MIRROR":
                         mesh.select_set(True)
                         bpy.context.view_layer.objects.active = mesh
                         bpy.ops.object.modifier_apply(modifier=modifier.name)
-        return {'FINISHED'}
+        return {"FINISHED"}
+
 
 class HSTRemoveEmptyMesh(bpy.types.Operator):
     bl_idname = "hst.remove_empty_mesh"
     bl_label = "Remove Empty Mesh"
     bl_description = "删除空的Mesh物体"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if len(selected_meshes)==0:
+        if len(selected_meshes) == 0:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        empty_mesh_count=0
+        empty_mesh_count = 0
         temp_collection = Collection.create("_MeshCheck", type="PROXY")
-        
-        #duplicate selected meshes, apply modifiers, checck if empty. if empty , add original mesh to list
 
-        
         for mesh in selected_meshes:
             proxy_mesh = make_transfer_proxy_mesh(mesh, "_Check_", temp_collection)
             if Object.check_empty_mesh(proxy_mesh) is True:
-                empty_mesh_count+=1
+                empty_mesh_count += 1
                 print(f"{mesh.name} is empty mesh, remove it")
-                # bpy.data.objects.remove(mesh)
+
                 bpy.data.meshes.remove(mesh.data)
             bpy.data.meshes.remove(proxy_mesh.data)
-            # bpy.data.objects.remove(proxy_mesh)
-            
+
         bpy.data.collections.remove(temp_collection)
 
-        # for mesh in selected_meshes:
-        #     if Object.check_empty_mesh(mesh) is True:
-        #         empty_mesh_count+=1
-        #         print(f"{mesh.name} is empty mesh, remove it")
-        #         bpy.data.objects.remove(mesh)
         self.report({"INFO"}, f"Removed {empty_mesh_count} empty mesh objects")
-        return {'FINISHED'}
-    
-class HSTDecalColName(bpy.types.Operator):
-    bl_idname = "hst.make_decal_collection_name"
-    bl_label = "Decal Collection Name"
-    bl_description = ""
+        return {"FINISHED"}
 
 
-    def execute(self, context):
-        selected_objects = bpy.context.selected_objects
-        if len(selected_objects)==0:
-            self.report(
-                {"ERROR"},
-                "No selected object, please select objects and retry | \n"
-                + "没有选中物体，请选中物体后重试",
-            )
-        collection = get_collection(selected_objects[0])
-        if collection is None:
-            self.report(
-                {"ERROR"},
-                "Not in Collection | \n"
-                + "所选物体不在Collection中",
-            )
-            return {"CANCELLED"}
-        if collection is not None:
-            if DECAL_SUFFIX not in collection.name:
-                decal_collection_name = collection.name + DECAL_SUFFIX
-                copy_to_clip(decal_collection_name)
-                self.report({"INFO"}, f"copy {decal_collection_name} to clipboard")
-            else:
-                self.report({"INFO"}, f"{collection.name} is already a decal collection")
+# class HSTDecalColName(bpy.types.Operator):
+#     bl_idname = "hst.make_decal_collection_name"
+#     bl_label = "Decal Collection Name"
+#     bl_description = ""
 
 
-        return {'FINISHED'}
-    
+#     def execute(self, context):
+#         selected_objects = bpy.context.selected_objects
+#         if len(selected_objects)==0:
+#             self.report(
+#                 {"ERROR"},
+#                 "No selected object, please select objects and retry | \n"
+#                 + "没有选中物体，请选中物体后重试",
+#             )
+#         collection = get_collection(selected_objects[0])
+#         if collection is None:
+#             self.report(
+#                 {"ERROR"},
+#                 "Not in Collection | \n"
+#                 + "所选物体不在Collection中",
+#             )
+#             return {"CANCELLED"}
+#         if collection is not None:
+#             if DECAL_SUFFIX not in collection.name:
+#                 decal_collection_name = collection.name + DECAL_SUFFIX
+#                 copy_to_clip(decal_collection_name)
+#                 self.report({"INFO"}, f"copy {decal_collection_name} to clipboard")
+#             else:
+#                 self.report({"INFO"}, f"{collection.name} is already a decal collection")
+
+
+#         return {'FINISHED'}
+
+
 class HSTActiveCollection(bpy.types.Operator):
     bl_idname = "hst.active_current_collection"
     bl_label = "Active Collection"
     bl_description = "把所选物体所在的Collection设为Active"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        outliner_coll=Outliner.get_selected_collections()
+        outliner_coll = Outliner.get_selected_collections()
         if outliner_coll is None:
-            if len(selected_objects)==0:
+            if len(selected_objects) == 0:
                 self.report(
                     {"ERROR"},
                     "No selected object, please select objects and retry | \n"
@@ -577,8 +576,7 @@ class HSTActiveCollection(bpy.types.Operator):
             if collection is None:
                 self.report(
                     {"ERROR"},
-                    "Not in Collection | \n"
-                    + "所选物体不在Collection中",
+                    "Not in Collection | \n" + "所选物体不在Collection中",
                 )
                 return {"CANCELLED"}
             if collection is not None:
@@ -586,7 +584,8 @@ class HSTActiveCollection(bpy.types.Operator):
         else:
             Collection.active(outliner_coll[0])
 
-        return {'FINISHED'}
+        return {"FINISHED"}
+
 
 class MakeDecalCollection(bpy.types.Operator):
     bl_idname = "hst.make_decal_collection"
@@ -594,44 +593,46 @@ class MakeDecalCollection(bpy.types.Operator):
     bl_description = "为Prop加对应的Decal Collection"
 
     def execute(self, context):
-        target_collections=Collection.get_selected()
+        target_collections = Collection.get_selected()
         if target_collections is None:
             self.report(
                 {"ERROR"},
-                "No collection selected | \n"
-                + "没有选中的Collection",
+                "No collection selected | \n" + "没有选中的Collection",
             )
             return {"CANCELLED"}
-        
 
-        selected_objects=Object.get_selected()
+        selected_objects = Object.get_selected()
         if selected_objects:
             for obj in selected_objects:
                 obj.select_set(False)
-        
 
         for collection in target_collections:
-            decal_collection=None
-            current_state=None
-            remove_exist_collection=False
-            count_exist=0
-            count_create=0
-            origin_object=None
-            
-            #check selected collection's state:
-            collection_type=Collection.get_hst_type(collection)
-            parent_collection=Collection.find_parent_recur_by_type(collection,type=Const.TYPE_PROP_COLLECTION)
+            decal_collection = None
+            current_state = None
+            remove_exist_collection = False
+            count_exist = 0
+            count_create = 0
+            origin_object = None
+
+            # check selected collection's state:
+            collection_type = Collection.get_hst_type(collection)
+            parent_collection = Collection.find_parent_recur_by_type(
+                collection, type=Const.TYPE_PROP_COLLECTION
+            )
             # print(f"parent_collection:{parent_collection}")
             if parent_collection:
-                origin_objects=Object.filter_hst_type(objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE")
-                origin_object_name=Const.STATICMESH_PREFIX+parent_collection.name
+                origin_objects = Object.filter_hst_type(
+                    objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE"
+                )
+                origin_object_name = Const.STATICMESH_PREFIX + parent_collection.name
             else:
-                origin_objects=Object.filter_hst_type(objects=collection.objects, type="ORIGIN", mode="INCLUDE")
-                origin_object_name=Const.STATICMESH_PREFIX+collection.name
+                origin_objects = Object.filter_hst_type(
+                    objects=collection.objects, type="ORIGIN", mode="INCLUDE"
+                )
+                origin_object_name = Const.STATICMESH_PREFIX + collection.name
             if origin_objects:
-                origin_object=origin_objects[0]
-                origin_object.name=origin_object_name
-            
+                origin_object = origin_objects[0]
+                origin_object.name = origin_object_name
 
             match collection_type:
                 case None:
@@ -639,116 +640,131 @@ class MakeDecalCollection(bpy.types.Operator):
                         current_state = "subobject_collection"
 
                     else:
-                        
+
                         current_state = "root_decal_collection"
                         self.report(
-                        {"ERROR"},
-                        f"{collection.name} is not prop collection, please check")
+                            {"ERROR"},
+                            f"{collection.name} is not prop collection, please check",
+                        )
                         return {"CANCELLED"}
 
                 case Const.TYPE_DECAL_COLLECTION:
                     if parent_collection:
-                        current_state="decal_collection"
+                        current_state = "decal_collection"
 
                     else:
-                        current_state = "root_decal_collection" 
+                        current_state = "root_decal_collection"
                         continue
                 case Const.TYPE_PROP_COLLECTION:
                     if parent_collection:
                         self.report(
-                        {"ERROR"},
-                        f"{collection.name} is prop collection in prop collection, please check")
+                            {"ERROR"},
+                            f"{collection.name} is prop collection in prop collection, please check",
+                        )
                         return {"CANCELLED"}
                     else:
                         if collection.children:
                             for child_collection in collection.children:
-                                child_type=Collection.get_hst_type(child_collection)
+                                child_type = Collection.get_hst_type(child_collection)
                                 if child_type == Const.TYPE_DECAL_COLLECTION:
-                                    current_state="prop_collection"
+                                    current_state = "prop_collection"
                         else:
-                            current_state="prop_collection_raw"
+                            current_state = "prop_collection_raw"
                 case _:
                     self.report(
-                    {"ERROR"},
-                    f"{collection.name} has bad collection type, please check")
+                        {"ERROR"},
+                        f"{collection.name} has bad collection type, please check",
+                    )
                     return {"CANCELLED"}
-
-
 
             match current_state:
                 case "subobject_collection":
                     if parent_collection.children:
                         for child_collection in parent_collection.children:
-                            child_type=Collection.get_hst_type(child_collection)
+                            child_type = Collection.get_hst_type(child_collection)
                             if child_type == Const.TYPE_DECAL_COLLECTION:
-                                decal_collection=child_collection
+                                decal_collection = child_collection
                                 break
-                    decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=parent_collection.name+DECAL_SUFFIX
-
-                # case "root_decal_collection":
-                #     decal_collection=collection
-                #     decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                #     decal_collection_name=collection.name+"_Decal"
+                    decal_meshes = Object.filter_hst_type(
+                        objects=parent_collection.all_objects,
+                        type="DECAL",
+                        mode="INCLUDE",
+                    )
+                    decal_collection_name = parent_collection.name + DECAL_SUFFIX
 
                 case "prop_collection":
-                    decal_collection=child_collection
-                    decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=collection.name+DECAL_SUFFIX
+                    decal_collection = child_collection
+                    decal_meshes = Object.filter_hst_type(
+                        objects=collection.all_objects, type="DECAL", mode="INCLUDE"
+                    )
+                    decal_collection_name = collection.name + DECAL_SUFFIX
                 case "prop_collection_raw":
-                    decal_collection=None
-                    decal_meshes=Object.filter_hst_type(objects=collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=collection.name+DECAL_SUFFIX
+                    decal_collection = None
+                    decal_meshes = Object.filter_hst_type(
+                        objects=collection.all_objects, type="DECAL", mode="INCLUDE"
+                    )
+                    decal_collection_name = collection.name + DECAL_SUFFIX
                 case "decal_collection":
-                    decal_collection=collection
-                    decal_meshes=Object.filter_hst_type(objects=parent_collection.all_objects, type="DECAL", mode="INCLUDE")
-                    decal_collection_name=parent_collection.name+DECAL_SUFFIX
+                    decal_collection = collection
+                    decal_meshes = Object.filter_hst_type(
+                        objects=parent_collection.all_objects,
+                        type="DECAL",
+                        mode="INCLUDE",
+                    )
+                    decal_collection_name = parent_collection.name + DECAL_SUFFIX
                 case None:
                     self.report(
-                    {"ERROR"},
-                    f"{collection.name} has bad collection type, please check")
+                        {"ERROR"},
+                        f"{collection.name} has bad collection type, please check",
+                    )
                     return {"CANCELLED"}
 
-
-
-            for exist_collection in bpy.data.collections: #collection 命名冲突时
-                if exist_collection.name == decal_collection_name and exist_collection is not decal_collection:
-                    file_c_parent=Collection.find_parent_recur_by_type(exist_collection,type=Const.TYPE_PROP_COLLECTION)
-                    if file_c_parent: #有parent 时根据parent命名
-                        exist_collection.name=file_c_parent.name+DECAL_SUFFIX
-                    else: #无parent时删除并把包含的decal移入当前collection
-                        ex_decal_meshes=Object.filter_hst_type(objects=exist_collection.all_objects, type="DECAL", mode="INCLUDE")
+            for exist_collection in bpy.data.collections:  # collection 命名冲突时
+                if (
+                    exist_collection.name == decal_collection_name
+                    and exist_collection is not decal_collection
+                ):
+                    file_c_parent = Collection.find_parent_recur_by_type(
+                        exist_collection, type=Const.TYPE_PROP_COLLECTION
+                    )
+                    if file_c_parent:  # 有parent 时根据parent命名
+                        exist_collection.name = file_c_parent.name + DECAL_SUFFIX
+                    else:  # 无parent时删除并把包含的decal移入当前collection
+                        ex_decal_meshes = Object.filter_hst_type(
+                            objects=exist_collection.all_objects,
+                            type="DECAL",
+                            mode="INCLUDE",
+                        )
                         if ex_decal_meshes:
                             if decal_meshes:
                                 decal_meshes.extend(ex_decal_meshes)
                             else:
-                                decal_meshes=ex_decal_meshes
-                        exist_collection.name="to_remove_"+exist_collection.name
-                        remove_exist_collection=True
+                                decal_meshes = ex_decal_meshes
+                        exist_collection.name = "to_remove_" + exist_collection.name
+                        remove_exist_collection = True
                     break
-                        
 
+            if decal_collection:  # 修改命名
+                decal_collection.name = decal_collection_name
+                count_exist += 1
 
-            if decal_collection: #修改命名
-                decal_collection.name=decal_collection_name
-                count_exist+=1
-
-            elif decal_collection is None: #新建Decal Collection
-                decal_collection = Collection.create(name=decal_collection_name,type="DECAL")
+            elif decal_collection is None:  # 新建Decal Collection
+                decal_collection = Collection.create(
+                    name=decal_collection_name, type="DECAL"
+                )
                 collection.children.link(decal_collection)
                 bpy.context.scene.collection.children.unlink(decal_collection)
-                count_create+=1
+                count_create += 1
 
-                
             decal_collection.hide_render = True
             Collection.active(decal_collection)
 
-            if decal_meshes: #将Decal添加到Decal Collection
+            if decal_meshes:  # 将Decal添加到Decal Collection
                 for decal_mesh in decal_meshes:
                     decal_mesh.users_collection[0].objects.unlink(decal_mesh)
                     decal_collection.objects.link(decal_mesh)
                     Transform.apply_scale(decal_mesh)
-                    decal_mesh=Object.break_link_from_assetlib(decal_mesh)
+                    decal_mesh = Object.break_link_from_assetlib(decal_mesh)
 
                     if origin_object:
                         decal_mesh.select_set(True)
@@ -758,22 +774,22 @@ class MakeDecalCollection(bpy.types.Operator):
                         decal_mesh.select_set(False)
                         origin_object.select_set(False)
 
-
-
-            if remove_exist_collection: #删除重复Collection
+            if remove_exist_collection:  # 删除重复Collection
                 bpy.data.collections.remove(exist_collection)
 
-            self.report({"INFO"}, f"{count_exist} Decal Collection(s) updated, {count_create} Decal Collection(s) created")
+            self.report(
+                {"INFO"},
+                f"{count_exist} Decal Collection(s) updated, {count_create} Decal Collection(s) created",
+            )
 
-        return {'FINISHED'}
-    
+        return {"FINISHED"}
+
 
 class MarkTintObjectOperator(bpy.types.Operator):
     bl_idname = "hst.mark_tint_object"
     bl_label = "Mark Tint Object"
     bl_description = "为选中的物体添加TintMask，储存于WearMask的Alpha通道"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
@@ -784,9 +800,8 @@ class MarkTintObjectOperator(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
 
-        target_collections=filter_collections_selection(selected_objects)
+        target_collections = filter_collections_selection(selected_objects)
         if target_collections is None:
             self.report(
                 {"ERROR"},
@@ -795,27 +810,32 @@ class MarkTintObjectOperator(bpy.types.Operator):
             return {"CANCELLED"}
         for collection in target_collections:
             if collection is not None:
-                collection_objects=collection.objects
+                collection_objects = collection.objects
 
                 for object in collection_objects:
-                    if object.type=="MESH":
+                    if object.type == "MESH":
 
-                        tint_attr=MeshAttributes.add(object,attribute_name=Const.TINT_ATTRIBUTE,data_type="FLOAT",domain="POINT")
-                        
+                        tint_attr = MeshAttributes.add(
+                            object,
+                            attribute_name=Const.TINT_ATTRIBUTE,
+                            data_type="FLOAT",
+                            domain="POINT",
+                        )
+
                         if object not in selected_meshes:
-                            MeshAttributes.fill_points(object,tint_attr,value=0.0)
+                            MeshAttributes.fill_points(object, tint_attr, value=0.0)
                         if object in selected_meshes:
 
-                            MeshAttributes.fill_points(object,tint_attr,value=1.0)
+                            MeshAttributes.fill_points(object, tint_attr, value=1.0)
         self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
-        return {'FINISHED'}
+        return {"FINISHED"}
+
 
 class MarkAdditionalAttribute(bpy.types.Operator):
     bl_idname = "hst.mark_attribute"
     bl_label = "Mark Additional Attribute"
     bl_description = "为选中的物体添加额外的Attribute，用于特殊材质混合"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
@@ -826,9 +846,8 @@ class MarkAdditionalAttribute(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
 
-        target_collections=filter_collections_selection(selected_objects)
+        target_collections = filter_collections_selection(selected_objects)
         if target_collections is None:
             self.report(
                 {"ERROR"},
@@ -837,20 +856,25 @@ class MarkAdditionalAttribute(bpy.types.Operator):
             return {"CANCELLED"}
         for collection in target_collections:
             if collection is not None:
-                collection_objects=collection.objects
+                collection_objects = collection.objects
 
                 for object in collection_objects:
-                    if object.type=="MESH":
+                    if object.type == "MESH":
 
-                        spec_attr=MeshAttributes.add(object,attribute_name=Const.SPEC_ATTRIBUTE,data_type="FLOAT",domain="POINT")
-                        
+                        spec_attr = MeshAttributes.add(
+                            object,
+                            attribute_name=Const.SPEC_ATTRIBUTE,
+                            data_type="FLOAT",
+                            domain="POINT",
+                        )
+
                         if object not in selected_meshes:
-                            MeshAttributes.fill_points(object,spec_attr,value=0.0)
+                            MeshAttributes.fill_points(object, spec_attr, value=0.0)
                         if object in selected_meshes:
 
-                            MeshAttributes.fill_points(object,spec_attr,value=1.0)
+                            MeshAttributes.fill_points(object, spec_attr, value=1.0)
         self.report({"INFO"}, f"{len(selected_meshes)} Tint Object(s) marked")
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class MarkNormalType(bpy.types.Operator):
@@ -858,12 +882,11 @@ class MarkNormalType(bpy.types.Operator):
     bl_label = "Mark Normal Type"
     bl_description = "为选中的物体标记Normal Type，储存于WearMask的B通道"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        normal_type=parameters.normal_type/NORMAL_TYPE_NUM
+        normal_type = parameters.normal_type / NORMAL_TYPE_NUM
         print(normal_type)
 
         if selected_meshes is None:
@@ -873,15 +896,19 @@ class MarkNormalType(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
+
         for mesh in selected_meshes:
-            normal_attr=MeshAttributes.add(mesh,attribute_name=NORMAL_TYPE_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+            normal_attr = MeshAttributes.add(
+                mesh,
+                attribute_name=NORMAL_TYPE_ATTRIBUTE,
+                data_type="FLOAT",
+                domain="POINT",
+            )
 
-            MeshAttributes.fill_points(mesh,normal_attr,value=normal_type)
+            MeshAttributes.fill_points(mesh, normal_attr, value=normal_type)
 
-        
         self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class MarkSpecType(bpy.types.Operator):
@@ -889,12 +916,11 @@ class MarkSpecType(bpy.types.Operator):
     bl_label = "Mark Spec Type"
     bl_description = "为选中的物体标记Spec Type，用于特殊材质混合"
 
-
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
-        spec_type=parameters.spec_type/SPEC_TYPE_NUM
+        spec_type = parameters.spec_type / SPEC_TYPE_NUM
         print(spec_type)
 
         if selected_meshes is None:
@@ -904,15 +930,19 @@ class MarkSpecType(bpy.types.Operator):
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        
+
         for mesh in selected_meshes:
-            spec_attr=MeshAttributes.add(mesh,attribute_name=SPEC_TYPE_ATTRIBUTE,data_type="FLOAT",domain="POINT")
+            spec_attr = MeshAttributes.add(
+                mesh,
+                attribute_name=SPEC_TYPE_ATTRIBUTE,
+                data_type="FLOAT",
+                domain="POINT",
+            )
 
-            MeshAttributes.fill_points(mesh,spec_attr,value=spec_type)
+            MeshAttributes.fill_points(mesh, spec_attr, value=spec_type)
 
-        
         self.report({"INFO"}, f"{len(selected_meshes)} Object(s) marked")
-        return {'FINISHED'}
+        return {"FINISHED"}
 
 
 class ReimportWearmaskNodeOperator(bpy.types.Operator):
@@ -920,23 +950,23 @@ class ReimportWearmaskNodeOperator(bpy.types.Operator):
     bl_label = "Reimport Wearmask Node"
 
     def execute(self, context):
-        
-        wearmask_meshes=[]
+
+        wearmask_meshes = []
         for object in bpy.data.objects:
-            if object.type=="MESH":
+            if object.type == "MESH":
                 for modifier in object.modifiers:
                     if modifier.name == COLOR_GNODE_MODIFIER:
                         wearmask_meshes.append(object)
                         break
 
-        if len(wearmask_meshes)==0:
+        if len(wearmask_meshes) == 0:
             self.report({"ERROR"}, "No Object with Wearmask found")
-        if len(wearmask_meshes)>0:
+        if len(wearmask_meshes) > 0:
             remove_node(WEARMASK_NODE)
             remove_node("ConcaveEdgeMask")
             remove_node("VerticleGradient")
             remove_node("EdgeMaskByNormal")
-            import_node_group(PRESET_FILE_PATH,WEARMASK_NODE)
+            import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)
             for mesh in wearmask_meshes:
                 for modifier in mesh.modifiers:
                     if modifier.name == COLOR_GNODE_MODIFIER:
@@ -944,8 +974,4 @@ class ReimportWearmaskNodeOperator(bpy.types.Operator):
                     break
             self.report({"INFO"}, f"{len(wearmask_meshes)} Object(s) updated")
 
-        return {'FINISHED'}
-
-    
-
-
+        return {"FINISHED"}

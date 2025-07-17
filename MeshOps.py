@@ -227,27 +227,12 @@ class FixCADObjOperator(bpy.types.Operator):
             return {"CANCELLED"}
 
         for mesh in selected_meshes:
-            # apply_modifiers(mesh)
-            # Transform.apply(mesh, location=True, rotation=True, scale=True)
-            # Mesh.merge_verts_by_distance(mesh, merge_distance=MERGE_DISTANCE)
 
-            # check_mesh = Mesh.check_open_bondary(mesh)
-            # if check_mesh is True:
-            #     self.report(
-            #         {"ERROR"},
-            #         "Selected mesh has open boundary, please check | 选中的模型有开放边界，请检查",
-            #     )
-            #     return {"CANCELLED"}
             mark_sharp_edges_by_split_normal(mesh)
-            # mark_sharp_edge_by_angle(mesh, sharp_angle=SHARP_ANGLE)
+
             mesh.select_set(True)
 
-        # bpy.ops.object.mode_set(mode="EDIT")
-        # bpy.ops.mesh.select_mode(type="FACE")
-        # bpy.ops.mesh.select_all(action="SELECT")
-        # bpy.ops.mesh.dissolve_limited(angle_limit=DISSOLVE_ANGLE)
-        # bpy.ops.mesh.select_all(action="DESELECT")
-        # bpy.ops.object.mode_set(mode="OBJECT")
+
 
         restore_select_mode(store_mode)
         self.report({"INFO"}, "Selected meshes fixed")
@@ -664,7 +649,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
                 uv_space = space
-
+        UV.show_uv_in_object_mode()
         scene_swatch_mat = get_scene_material(SWATCH_MATERIAL)
         if scene_swatch_mat is None:  # import material if not exist
             scene_swatch_mat = import_material(PRESET_FILE_PATH, SWATCH_MATERIAL)
@@ -738,6 +723,8 @@ class HST_PatternMatSetup(bpy.types.Operator):
         if uv_editor is None:
             uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
             uv_editor.ui_type = "UV"
+            uv_editor.show_uv = True
+            uv_editor.uv_face_opacity = 1
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
                 uv_space = space
@@ -817,6 +804,9 @@ class BaseUVEditModeOperator(bpy.types.Operator):
         if uv_editor is None:
             uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
             uv_editor.ui_type = "UV"
+
+        UV.show_uv_in_object_mode()
+
         for space in uv_editor.spaces:
             if space.type == "IMAGE_EDITOR":
                 uv_space = space
@@ -1021,17 +1011,7 @@ class CheckAssetsOperator(bpy.types.Operator):
             text="Length Units: " + str(bpy.context.scene.unit_settings.length_unit),
             icon=show_reusult(scene_unit_check()),
         )
-        # TBD
-        # 检查资产功能
-        # 如果Collection后缀没有_Decal,检查模型是否有Swatch UV
-        # 如果Collection后缀没有_Decal,检查模型是否有Base UV
-        # 如果Collection后缀没有_Decal,检查模型是否有WearMask
-        # 如果Collection后缀没有_Decal,检查模型Scale是否为1
-        # 如果Collection后缀没有_Decal,检查模型命名是否含有_decal
-        # 场景单位是否为厘米
-        # 检查文件中材质是否有重复/未使用的材质/命名后有.00x的材质
-        # 如果Collection后缀为_Decal，检查是否有重复的Decal材质
-        # Collection命名是否首字母大写
+
 
     def execute(self, context):
         print("CheckAssetsOperator")
@@ -1044,7 +1024,7 @@ class CheckAssetsOperator(bpy.types.Operator):
 class MarkDecalCollectionOperator(bpy.types.Operator):
     bl_idname = "hst.markdecalcollection"
     bl_label = "Mark Decal Collection"
-    bl_description = "设置所选为Decal Collection"
+    bl_description = "设置所选为Decal Collection，对collection中的Mesh，如果材质名是decal类型，则标记Mesh为decal。"
 
     def execute(self, context):
         selected_collections=Collection.get_selected()
@@ -1083,11 +1063,9 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
                     if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX) or mat.name.endswith(DECAL_SUFFIX) or mat.name.startswith(DECAL_PREFIX):
                         Object.mark_hst_type(mesh, "DECAL")
                         
-                        # bpy.context.object.visible_shadow = False
-                        # bpy.context.object.display.show_shadows = False
                         mesh.visible_shadow = False
                         mesh.display.show_shadows = False
-                        # Object.display.show_shadows = False
+
 
 
                         

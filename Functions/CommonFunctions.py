@@ -1842,6 +1842,29 @@ class Object:
         return unlinked_mesh
 
 
+class UV:
+    def show_uv_in_object_mode():
+        """显示UV编辑器"""
+
+        uv_area = None
+        for area in bpy.context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                uv_area = area
+
+                break
+        if uv_area:
+            with bpy.context.temp_override(
+                window=bpy.context.window,
+                area=uv_area,
+                region=next(region for region in area.regions if region.type == "WINDOW"),
+                screen=bpy.context.window.screen,
+            ):
+                bpy.context.space_data.uv_editor.show_uv = True
+                bpy.context.space_data.uv_editor.uv_face_opacity = 1
+        return uv_area
+
+
+
 class Transform:
     def rotate_quat(quaternion, angle, axis="Z") -> Quaternion:
         """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
