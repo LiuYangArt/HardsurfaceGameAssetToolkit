@@ -71,15 +71,13 @@ def filter_name(
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
     """获取所选object所在的collection"""
+    if target_object is None: return None
+
     target_collection = None
     collection = target_object.users_collection[0]
     if collection.name != "Scene Collection":
         target_collection = collection
-    # for collection in bpy.data.collections:
-    #     for object in collection.objects:
-    #         if object == target_object:
-    #             target_collection = collection
-    #             break
+
     return target_collection
 
 

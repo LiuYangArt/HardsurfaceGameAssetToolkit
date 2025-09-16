@@ -572,6 +572,7 @@ class HSTActiveCollection(bpy.types.Operator):
                     "No selected object, please select objects and retry | \n"
                     + "没有选中物体，请选中物体后重试",
                 )
+                return {"CANCELLED"}
             collection = get_collection(selected_objects[0])
             if collection is None:
                 self.report(

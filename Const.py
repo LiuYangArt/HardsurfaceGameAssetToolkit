@@ -26,6 +26,13 @@ class Addon:
             bl_version_num=f"{blver[0]}.{blver[1]}"
             bl_version_num=float(bl_version_num)
             return bl_version_num
+    
+#TBD: 自动匹配不同的场景单位设置
+# def get_scene_unit():
+#     current_scene = bpy.context.object.users_scene[0].name
+#     scene_length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
+#     unit_scale = bpy.data.scenes[current_scene].unit_settings.scale_length
+#     return scene_length_unit, unit_scale
                 
 
 BL_VERSION=Addon.get_blender_version()
