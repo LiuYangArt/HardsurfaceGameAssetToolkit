@@ -374,7 +374,13 @@ class HST_PT_Skeletel(bpy.types.Panel):
         box.operator(
             "hst.bone_display_settings", icon="BONE_DATA")
         box.operator(
+            "hst.set_socket_bone_for_ue", icon="EMPTY_DATA")
+        box.operator(
             "hst.fix_root_bone_for_ue", icon="EMPTY_ARROWS")
+        box.operator(
+            "hst.select_bone_in_outliner", icon="EMPTY_ARROWS")
+        
+        
         
         # box.operator(
         #     "hst.show_bone_weight", icon="EMPTY_ARROWS")

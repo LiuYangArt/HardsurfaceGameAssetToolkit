@@ -22,10 +22,12 @@ def message_box(text="", title="WARNING", icon="ERROR") -> None:
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 
 def switch_to_eevee()->None:
-    """切换到EEVEE渲染引擎,4.2以上切换为EEVEE Next"""
+    """切换到EEVEE渲染引擎,4.2-4.9切换为EEVEE Next, 5.0+统一为EEVEE"""
 
-    if BL_VERSION>=4.2:
-            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+    if BL_VERSION >= 5.0:
+        bpy.context.scene.render.engine = "BLENDER_EEVEE"
+    elif BL_VERSION >= 4.2:
+        bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
     else:
         bpy.context.scene.render.engine = "BLENDER_EEVEE"
 

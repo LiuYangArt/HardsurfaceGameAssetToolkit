@@ -1057,12 +1057,12 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
             decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
             for mesh in static_meshes:
-                print(mesh.name)
                 mats=get_materials(mesh)
                 for mat in mats:
                     if mat.name.endswith(MESHDECAL_SUFFIX) or mat.name.endswith(INFODECAL_SUFFIX) or mat.name.endswith(DECAL_SUFFIX) or mat.name.startswith(DECAL_PREFIX):
                         Object.mark_hst_type(mesh, "DECAL")
                         
+                        self.report({"INFO"}, mesh.name + " marked as Decal")
                         mesh.visible_shadow = False
                         mesh.display.show_shadows = False
 

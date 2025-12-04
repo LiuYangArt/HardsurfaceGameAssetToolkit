@@ -8,12 +8,14 @@ from mathutils import Vector
 def setup_ue_rig_scene():
     scene = bpy.context.scene
     scene.unit_settings.system = 'METRIC'
-    scene.unit_settings.length_unit = 'METERS'
-    scene.unit_settings.scale_length = 0.01
-    bpy.context.space_data.clip_start = 1
-    bpy.context.space_data.clip_end = 10000
+    scene.unit_settings.length_unit = 'CENTIMETERS'
+    scene.unit_settings.scale_length = 1
+    # bpy.context.space_data.clip_start = 1
+    # bpy.context.space_data.clip_end = 10000
     bpy.context.space_data.shading.color_type = 'OBJECT'
     bpy.context.space_data.shading.light = 'MATCAP'
+    bpy.context.space_data.overlay.show_text = True
+
 
 def set_ue_armature_display(object):
     """
@@ -31,10 +33,16 @@ def set_ue_armature_display(object):
     else:
         return None
     
-def set_blender_armature_display(object):
+def set_blender_armature_display(object,display_type='OCTAHEDRAL'):
+    """
+    Set the display type of armature objects to WIRE and show axes.
+    :param objects: List of objects to modify.
+    """
+    
+
     if object.type == 'ARMATURE':
         # 设置骨架显示类型为线框
-        object.data.display_type = 'OCTAHEDRAL'
+        object.data.display_type = display_type
         object.data.show_names = True
 
         # 显示骨架轴线
@@ -331,36 +339,189 @@ class RenameTreeBonesOperator(bpy.types.Operator):
 class BoneDisplaySettingsOperator(bpy.types.Operator):
     bl_idname = "hst.bone_display_settings"
     bl_label = "Bone Display Settings"
+    bl_options = {"REGISTER", "UNDO"}
 
+    # 添加属性用于invoke弹窗
+    display_type: bpy.props.EnumProperty(
+        name="Bone Display Type",
+        description="选择骨骼显示类型",
+        items=[
+            ('OCTAHEDRAL', "Octahedral", "八面体显示"),
+            ('ENVELOPE', "Envelope", "包络显示"),
+            ('WIRE', "Wire", "线框显示"),
+            ('STICK', "Stick", "棒状显示"),
+            ('BBONE', "B-Bone", "B样条骨骼显示")
+
+        ],
+        default="OCTAHEDRAL",)
     def execute(self, context):
             selected_objects = context.selected_objects
             for obj in selected_objects:
-                set_blender_armature_display(obj)
+                set_blender_armature_display(obj,display_type=self.display_type)
             self.report({'INFO'}, "已设置选中骨架的显示设置")
             return {"FINISHED"}
 
 
 
 
+class SetSocketBoneForUEOperator(bpy.types.Operator):
+    bl_idname = "hst.set_socket_bone_for_ue"
+    bl_label = "Set Socket Bone For UE"
+    bl_options = {"REGISTER", "UNDO"}
 
-#TODO: Rename Bones
 
-# class MarkSKMCollectionOperator(bpy.types.Operator):
-#     bl_idname = "hst.mark_skm_collection"
-#     bl_label = "Mark SKM Collection"
-#     bl_description = "Mark selected collection as SKM Collection"
+    socket_type: bpy.props.EnumProperty(
+        name="Socket Type",
+        description="Socket 类型",
+        items=[
+            ('ATTACH', "Attach", "Attach Component"),
+            ('SPAWN', "SPAWN", "Spawn Actor")
 
-#     def execute(self, context):
-#         selected_objs= context.selected_objects
-#         selected_colls = Collection.get_selected()
-#         if selected_colls is not None:
-#             for coll in selected_colls:
-#                 Collection.mark_hst_type(coll, "RIG")
-#                 coll_objs=coll.all_objects
-#                 meshes= filter_type(coll_objs, "MESH")
-#                 for mesh in meshes:
-#                     Object.mark_hst_type(mesh, "SKM")
+        ],
+        default="ATTACH",)
+    
+    def execute(self, context):
+        armature = context.active_object
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'WARNING'}, "Active object is not an Armature.")
+            return {'CANCELLED'}
 
-#         return {"FINISHED"}
+        if armature.mode != 'EDIT':
+            self.report({'WARNING'}, "Please run this operator in Edit Mode.")
+            return {'CANCELLED'}
+
+        selected_bones = context.selected_editable_bones
+        if not selected_bones:
+            self.report({'WARNING'}, "No bones selected in Edit Mode.")
+            return {'CANCELLED'}
+
+        # Define target axes in world space
+        # UE's X-forward, Z-up corresponds to Blender's Y-forward, Z-up
+        world_y = Vector((0.0, 1.0, 0.0))
+        world_z = Vector((0.0, 0.0, 1.0))
+
+        for bone in selected_bones:
+            # 1. Rename bone if necessary
+            if not bone.name.lower().startswith("socket_"):
+                bone.name = f"SOCKET_{bone.name}"
+
+            # 2. Re-orient the bone
+            # Keep the bone's head position, but change its orientation and length
+            bone_length = bone.length
+            head_pos = bone.head.copy()
+            bone.display_type = 'STICK'
+
+
+            if self.socket_type == 'ATTACH':
+                # ATTACH: Bone Y-axis (primary) aligns with World Y (UE Forward)
+                # Bone Z-axis aligns with World Z (UE Up)
+                bone.tail = head_pos + world_y * bone_length
+                bone.roll = 0.0
+            elif self.socket_type == 'SPAWN':
+                # SPAWN: Bone X-axis aligns with World Y (UE Forward)
+                # Bone Z-axis aligns with World Z (UE Up)
+                # This means the bone's primary axis (Y) must align with World -X
+                bone_direction = Vector((-1.0, 0.0, 0.0))
+                bone.tail = head_pos + bone_direction * bone_length
+                bone.roll = 0.0
+            
+            # Recalculate bone matrix after changes
+            armature.data.update_tag()
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.mode_set(mode='EDIT')
+
+
+        # 3. Set armature display for socket visibility
+        # Switch to object mode to apply display settings
+        # bpy.ops.object.mode_set(mode='OBJECT')
+        # set_blender_armature_display(armature, display_type='STICK')
+        # armature.data.show_names = True
+        
+        self.report({'INFO'}, f"Processed {len(selected_bones)} bones as {self.socket_type} sockets.")
+        return {"FINISHED"}
+
+
+
+class SelectBoneInOutlinerOperator(bpy.types.Operator):
+    bl_idname = "hst.select_bone_in_outliner"
+    bl_label = "Select Bone In Outliner"
+    bl_description = "For the selected bone, show it as selected in the Outliner, expand its parents, and collapse other unrelated parts."
+
+    @classmethod
+    def poll(cls, context):
+        # Check if there is an active armature in Pose or Edit mode
+        active_obj = context.active_object
+        if not active_obj or active_obj.type != 'ARMATURE':
+            return False
+        if active_obj.mode not in {'POSE', 'EDIT'}:
+            return False
+        # Check if there is an active bone
+        if active_obj.mode == 'POSE' and not context.active_pose_bone:
+            return False
+        if active_obj.mode == 'EDIT' and not context.active_bone:
+            return False
+        return True
+
+    def execute(self, context):
+        armature_obj = context.active_object
+        active_bone_name = None
+
+        # Get the active bone name from the current mode
+        if armature_obj.mode == 'POSE':
+            active_bone_name = context.active_pose_bone.name
+        elif armature_obj.mode == 'EDIT':
+            active_bone_name = context.active_bone.name
+
+        if not active_bone_name:
+            self.report({'WARNING'}, "No active bone found.")
+            return {'CANCELLED'}
+
+        # Get the Bone object from its name
+        active_bone = armature_obj.data.bones.get(active_bone_name)
+
+        if not active_bone:
+            self.report({'WARNING'}, f"Bone '{active_bone_name}' not found in armature data.")
+            return {'CANCELLED'}
+
+        # Find the Outliner area
+        outliner_area = None
+        for area in context.screen.areas:
+            if area.type == 'OUTLINER':
+                outliner_area = area
+                break
+        
+        if not outliner_area:
+            self.report({'WARNING'}, "Outliner area not found.")
+            return {'CANCELLED'}
+
+        # Override context for outliner operators
+        override = context.copy()
+        override['area'] = outliner_area
+        override['region'] = outliner_area.regions[-1] # Use the main region
+
+        # Switch Outliner to View Layer mode to ensure bones are visible
+        outliner_area.spaces.active.display_mode = 'VIEW_LAYER'
+
+        with context.temp_override(**override):
+            # Deselect all in the outliner to start fresh
+            bpy.ops.outliner.select_all(action='DESELECT')
+
+            # Select the armature object in the outliner
+            armature_obj.select_set(True)
+            context.view_layer.objects.active = armature_obj
+
+            # Collapse all hierarchies in the outliner
+            bpy.ops.outliner.show_hierarchy()
+
+            # Select the active bone in the armature's data
+            armature_obj.data.bones.active = active_bone
+            active_bone.select = True
+
+            # Expand the hierarchy to show the active bone
+            bpy.ops.outliner.show_active()
+
+        self.report({'INFO'}, f"Selected '{active_bone.name}' in Outliner.")
+        return {"FINISHED"}
+
 
 

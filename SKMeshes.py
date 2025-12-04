@@ -587,6 +587,8 @@ class FixRootBoneForUEOperator(bpy.types.Operator):
             if root_bone is None:
                 root_bone = edit_bones[0]
 
+            root_bone.name = "root"
+
             # 断开 root bone 的所有子骨骼连接
             for child in root_bone.children:
                 child.use_connect = False
