@@ -26,13 +26,15 @@ def find_gpro_insts(objs):
                 if mod.type == 'NODES' and mod.node_group:
                     node_name=mod.node_group.name
                     if node_name == GPRO_MOD or node_name == CAT_GROUP_MOD:
-                        # 查找名为 "Instanced Collection" 的输入
-                        for input_socket in mod.node_group.inputs:
-                            if input_socket.name == "Instanced Collection" and input_socket.type == 'COLLECTION':
-                                # 获取引用的集合
-                                if input_socket.default_value:
-                                    collection = input_socket.default_value
-                                    gpro_instances.extend(collection.all_objects)
+                        # 查找名为 "Instanced Collection" 的输入 (Blender 4.0+ API)
+                        for item in mod.node_group.interface.items_tree:
+                            if hasattr(item, 'bl_socket_idname') and item.name == "Instanced Collection" and item.bl_socket_idname == 'NodeSocketCollection':
+                                # 通过修改器获取输入值
+                                socket_id = item.identifier
+                                if socket_id in mod:
+                                    collection = mod[socket_id]
+                                    if collection:
+                                        gpro_instances.extend(collection.all_objects)
     return gpro_instances
 
 

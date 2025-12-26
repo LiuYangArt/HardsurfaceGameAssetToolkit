@@ -87,8 +87,8 @@ class AssetPreview:
         return camera_object
 
     def set_render_settings():
-        # Set render engine to eevee
-        bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+        # Set render engine to eevee (version compatible)
+        switch_to_eevee()
         # Set render resolution to 128x128
         bpy.context.scene.render.resolution_x = 128
         bpy.context.scene.render.resolution_y = 128
