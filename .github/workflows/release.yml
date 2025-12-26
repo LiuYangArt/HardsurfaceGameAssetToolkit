@@ -30,6 +30,8 @@ jobs:
             --exclude 'Addon' \
             --exclude '.git' \
             --exclude '.gitignore' \
+            --exclude '.github' \
+            --exclude '.agent' \
             --exclude '.cursor' \
             --exclude '.clinerules' \
             --exclude '__pycache__' \
@@ -40,6 +42,8 @@ jobs:
             --exclude 'build_staging' \
             --exclude 'versions.bat' \
             --exclude 'new_version.bat' \
+            --exclude 'publish_release.bat' \
+            --exclude 'version_manager.py' \
             --exclude '*.zip'
 
           # Zip the folder
