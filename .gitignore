@@ -2,9 +2,12 @@ __pycache__
 __pycache__/**
 **.blend1
 makerelease.bat
-*.bat
 _backup/**
 .clinerules/*
 .cursor/*
 memory-bank/*
 *.code-workspace
+
+# 版本管理器临时文件
+versions.bat
+new_version.bat

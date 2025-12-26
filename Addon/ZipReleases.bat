@@ -1,0 +1,1 @@
+7z.exe a -tzip HardsurfaceGameAssetToolkit.zip ..\ -mx0 -xr!Addon -xr!*.gitignore -xr!*.git -xr!*.blend1 -xr!__pycache__ -xr!*.pyc -xr!*.cursor -xr!*.clinerules -xr!*_backup -xr!memory-bank
