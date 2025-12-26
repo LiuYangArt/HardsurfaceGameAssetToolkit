@@ -1092,7 +1092,7 @@ class FBXExport:
                 target.rotation_euler = (0, 0, 0)
                 target.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
-        if target.type == "COLLECTION":
+        if isinstance(target, bpy.types.Collection):
             #add collection.objects to view layer
             bpy.context.view_layer.active_layer_collection.exclude = False
 
@@ -1136,7 +1136,7 @@ class FBXExport:
         export_objects = []
         hidden_objects = []
 
-        if target.type == "COLLECTION":
+        if isinstance(target, bpy.types.Collection):
             collection_type = Object.read_custom_property(
                 target, Const.CUSTOM_TYPE)
             
@@ -1225,7 +1225,7 @@ class FBXExport:
 
         export_objects = []
         armature_names = {}
-        if target.type == "COLLECTION":
+        if isinstance(target, bpy.types.Collection):
             for object in target.all_objects:
                 if object.hide_get() is True:
                     hide_objects.append(object)
