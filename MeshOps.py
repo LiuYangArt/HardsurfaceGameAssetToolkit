@@ -190,10 +190,6 @@ class HST_OT_FixCADObj(bpy.types.Operator):
         自动合并面，并根据顶点法线标记锐边"
 
     def execute(self, context):
-        SHARP_ANGLE = 0.08
-        MERGE_DISTANCE = 0.01
-        DISSOLVE_ANGLE = 0.00174533
-
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
@@ -837,7 +833,6 @@ class HST_OT_SetupLookDevEnv(bpy.types.Operator):
     def execute(self, context):
         file_path = PRESET_FILE_PATH
         world_name = LOOKDEV_HDR
-        selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
 
         import_world(file_path=file_path, world_name=world_name)

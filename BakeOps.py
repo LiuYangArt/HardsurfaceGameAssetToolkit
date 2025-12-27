@@ -189,7 +189,8 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
 
         if len(bad_meshes)>0:
             self.report({"ERROR"}, f"{len(bad_meshes)} Meshes has no vertex color attribute. {str(bad_meshes)}")
-        else: self.report({"INFO"}, f"{len(selected_meshes)} Meshes got blur vertex color")
+        else:
+            self.report({"INFO"}, f"{len(selected_meshes)} Meshes got blur vertex color")
 
         return {"FINISHED"}
 

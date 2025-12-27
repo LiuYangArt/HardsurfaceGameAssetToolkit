@@ -11,3 +11,4 @@ memory-bank/*
 # 版本管理器临时文件
 versions.bat
 new_version.bat
+*.txt

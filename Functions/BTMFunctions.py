@@ -171,7 +171,7 @@ def editcollandmat(self, is_low, is_high, collname, collobj):
                     break
                 lowmatexist = lowmatexist = 1
             break
-        if lowmatexist == None:
+        if lowmatexist is None:
             createmat(self, cleancollname, collobj)
         return collname
 
@@ -191,7 +191,7 @@ def editcollandmat(self, is_low, is_high, collname, collobj):
                         break
                     break
             break
-        if highmatexist == None:
+        if highmatexist is None:
             createmat(self, collname, collobj)
         return collname
 
@@ -257,7 +257,7 @@ def BTM_Export_Path():
     filepath = None
     bakedirpath = None
 
-    if bpy.data.is_saved == True:
+    if bpy.data.is_saved:
         filepath = bpy.path.abspath("//")
         bakedirpath = filepath + "Bake\\"
         if not os.path.exists(bakedirpath):
@@ -369,7 +369,6 @@ if os.path.exists(import_list):
 
 
 def btb_run_toolbag():
-    props = bpy.context.scene.hst_params
     toolbag = bpy.context.preferences.addons[
         "HardsurfaceGameAssetToolkit"
     ].preferences.toolbag_app_path
@@ -411,7 +410,6 @@ def create_palettes_color(pal, ver_col):
 
 
 def set_all_vertex_color(sel_obj, colattr, ver_col):
-    mesh: bpy.types.Mesh
     obj: bpy.types.Object
     for obj in sel_obj:
         for v in obj.data.vertices:

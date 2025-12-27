@@ -8,7 +8,7 @@ import platform
 import json
 # import mathutils
 
-from mathutils import Vector, Matrix, Quaternion, Euler, Color, geometry
+from mathutils import Vector, Matrix, Quaternion
 from ..Const import *
 """ 通用functions """
 
@@ -73,7 +73,8 @@ def filter_name(
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
     """获取所选object所在的collection"""
-    if target_object is None: return None
+    if target_object is None:
+        return None
 
     target_collection = None
     collection = target_object.users_collection[0]
@@ -249,9 +250,8 @@ def vertexcolor_to_vertices(target_mesh, color_attribute, color):
     if color_attribute.domain == "POINT":
         point_color_attribute = color_attribute
         point_color_layer = bm.verts.layers.color[point_color_attribute.name]
-        point_colors = []
         for vert in bm.verts:
-            if vert.select == True:
+            if vert.select:
                 vert[point_color_layer] = color
 
     elif color_attribute.domain == "CORNER":
@@ -259,7 +259,7 @@ def vertexcolor_to_vertices(target_mesh, color_attribute, color):
         corner_color_layer = bm.loops.layers.color[corner_color_attribute.name]
 
         for face in bm.faces:
-            if face.select == True:
+            if face.select:
                 for loop in face.loops:
                     loop[corner_color_layer] = color
 
@@ -1033,10 +1033,10 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
 
         layer_coll = Collection.find_layer_collection_coll(collection)
         if layer_coll:
-            if layer_coll.exclude == True:
+            if layer_coll.exclude:
                 hidden_collections.append(collection)
 
-        if collection.hide_viewport == True:
+        if collection.hide_viewport:
             if collection not in hidden_collections:
                 hidden_collections.append(collection)
             if collection.children is not None:
@@ -1149,7 +1149,6 @@ class FBXExport:
                 target, Const.CUSTOM_TYPE)
             
             if target.all_objects is None:
-                is_empty_collection = True
                 return
 
             for object in target.objects:
@@ -1317,7 +1316,6 @@ class FBXExport:
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的collection"""
     filtered_collections = []
-    SCENE = "Scene Collection"
     if target_objects:
         if len(target_objects) != 0:
             processed_collections = set()
@@ -1645,7 +1643,7 @@ class Material:
                 new_mat = mat
                 break
         if not has_mat:
-            placeholder_mat_ = bpy.data.materials.new(name=mat_name)
+            bpy.data.materials.new(name=mat_name)
         return new_mat
     
     def remove_duplicated_mats_ops(object):
@@ -2113,7 +2111,7 @@ class Collection:
                 collection_exist = True
                 collection = bpy.data.collections[name]
                 break
-        if collection_exist == False:  # 创建collection,并添加到scene
+        if not collection_exist:  # 创建collection,并添加到scene
             collection = bpy.data.collections.new(name)
             bpy.context.scene.collection.children.link(collection)
 
@@ -2158,7 +2156,7 @@ class Collection:
                     if collection_type == Const.TYPE_RIG_COLLECTION:
                         include_collections.append(collection)
                 case _:
-                    if collection_type == None:
+                    if collection_type is None:
                         include_collections.append(collection)
 
         if mode == "INCLUDE":
@@ -2238,7 +2236,7 @@ class Collection:
     
     def find_parent_recur_by_type(collection:bpy.types.Collection,type:str):
         parent_c=Collection.find_parent(collection)
-        if parent_c == None:
+        if parent_c is None:
             return None
         else:
             # if type == "NONE":
@@ -2268,7 +2266,6 @@ class Collection:
 
     def find_layer_collection_coll(collection):
         """递归查找collection对应的layer_collection"""
-        collection_name = collection.name
         if collection.objects:
             object = collection.objects[0]
 
@@ -2770,7 +2767,6 @@ class Modifier:
 
     def move_to_top(object,modifier_name):
         target_modifier = object.modifiers[modifier_name]
-        modifier_count=len(object.modifiers)
 
         while object.modifiers[0] != target_modifier:
             bpy.ops.object.modifier_move_up(modifier=target_modifier.name)

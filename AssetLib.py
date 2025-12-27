@@ -247,7 +247,6 @@ class HST_OT_AddMatsToAssetLibrary(bpy.types.Operator):
     bl_label = "Add Mats To AssetLibrary"
 
     def execute(self, context):
-        o = bpy.context.object
         selected_objects=Object.get_selected()
         target_mats=[]
         for obj in selected_objects:

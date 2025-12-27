@@ -166,10 +166,6 @@ class HST_OT_ExportFBX(bpy.types.Operator):
 
     def execute(self, context):
         base_coll: bpy.types.Collection
-        base_obj: bpy.types.Object
-
-        props = bpy.context.scene.hst_params
-        filename = bpy.path.basename(bpy.data.filepath).split(".")[0]
 
         get_export_path = BTM_Export_Path()
         base_colllist = HST_OT_ExportFBX.Get_Bakers()
@@ -202,9 +198,6 @@ class HST_OT_MoiTransStep(bpy.types.Operator, ImportHelper):
     bl_label = "Use Moi Transform Step"
 
     def execute(self, context):
-        obj_prop: bpy.types.Property
-        act_obj = bpy.context.active_object
-
         sel_filepath = self.filepath
         moi_config_filepath = (
             os.path.expanduser("~") + "\\AppData\\Roaming\\Moi\\moi.ini"
@@ -224,7 +217,7 @@ class HST_OT_MoiTransStep(bpy.types.Operator, ImportHelper):
         ].preferences.moi_app_path
         if moi_path:
             p = subprocess.Popen([moi_path, sel_filepath])
-            returncode = p.wait()
+            p.wait()
         else:
             message_box("No moi software execution file selected")
         if sel_filepath.endswith("step"):
@@ -298,7 +291,6 @@ class HST_OT_BatchSetVertexColor(bpy.types.Operator):
     def execute(self, context):
         obj: bpy.types.Object
         sel_obj = bpy.context.selected_objects
-        act_obj = bpy.context.active_object
         ver_col = bpy.data.brushes["TexDraw"].color
 
         for obj in sel_obj:

@@ -1,4 +1,3 @@
-from bpy.utils import resource_path
 import bpy
 import addon_utils
 from pathlib import Path

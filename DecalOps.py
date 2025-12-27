@@ -22,8 +22,6 @@ class HST_OT_ProjectDecal(bpy.types.Operator):
 
         decal_objects=Object.filter_hst_type(selected_objects,type="DECAL",mode="INCLUDE")
 
-        selected_meshes = filter_type(selected_objects, "MESH")
-
         if len(selected_objects) == 0:
             self.report(
                 {"ERROR"},

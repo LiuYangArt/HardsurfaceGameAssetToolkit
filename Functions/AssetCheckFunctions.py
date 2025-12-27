@@ -1,6 +1,6 @@
 import bpy
 from ..Const import *
-from .CommonFunctions import set_active_color_attribute, name_remove_digits, Object, Collection
+from .CommonFunctions import set_active_color_attribute, name_remove_digits, Object
 
 
 def scene_unit_check():
@@ -172,19 +172,19 @@ def check_prop_staticmesh(object):
                 uv1_check = True
 
             # check result
-            if vertex_color_check == False:
+            if not vertex_color_check:
                 vertex_color_result = "Missing"
             else:
                 vertex_color_result = CHECK_OK
-            if material_check == False:
+            if not material_check:
                 mat_result = mat_result
             else:
                 mat_result = CHECK_OK
-            if uv0_check == False:
+            if not uv0_check:
                 uv0_result = "No UV"
             else:
                 uv0_result = CHECK_OK
-            if uv1_check == False:
+            if not uv1_check:
                 uv1_result = "No UV"
             else:
                 uv1_result = CHECK_OK

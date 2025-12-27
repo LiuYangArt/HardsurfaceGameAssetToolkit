@@ -349,7 +349,7 @@ class HST_OT_SkeletelSeparator(bpy.types.Operator):
                 Object.mark_hst_type(armature, "SPLITSKEL")
                 # sk_name=armature.name
                 sk_name=current_collection.name
-                rig_collection = Collection.create(
+                Collection.create(
                     name=sk_name, type="RIG"
                 )
                 # rig_collection.objects.link(armature)
@@ -504,7 +504,6 @@ class HST_OT_GetBonePos(bpy.types.Operator):
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
-        cursor = bpy.context.scene.cursor
 
         for obj in selected_objects:
 
@@ -539,7 +538,6 @@ class HST_OT_DisplayUEBoneDirection(bpy.types.Operator):
             if custom_shape_mesh is not None:
                 if obj.type == "ARMATURE":
                     for bone in obj.data.bones:
-                        bone_name = bone.name
                         pose_bone = obj.pose.bones[bone.name]
                         pose_bone.custom_shape = custom_shape_mesh
 

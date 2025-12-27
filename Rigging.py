@@ -1,7 +1,6 @@
 import bpy
 import re
 
-from .Functions.CommonFunctions import Collection, Object, filter_type
 from mathutils import Vector
 
 
@@ -398,7 +397,6 @@ class HST_OT_SetSocketBoneForUE(bpy.types.Operator):
         # Define target axes in world space
         # UE's X-forward, Z-up corresponds to Blender's Y-forward, Z-up
         world_y = Vector((0.0, 1.0, 0.0))
-        world_z = Vector((0.0, 0.0, 1.0))
 
         for bone in selected_bones:
             # 1. Rename bone if necessary
