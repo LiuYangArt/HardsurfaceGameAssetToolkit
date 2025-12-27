@@ -175,18 +175,26 @@ def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
 def add_vertexcolor_attribute(
     target_object: bpy.types.Object, vertexcolor_name: str
 ) -> bpy.types.Object:
-    """为选中的物体添加顶点色属性，返回顶点色属性"""
+    """为选中的物体添加顶点色属性，返回顶点色属性
+    注意：Blender 5.0+ 要求 mesh 必须有顶点才能创建 color attribute
+    """
+    color_attribute = None
     if target_object.type == "MESH":
-        if vertexcolor_name in target_object.data.color_attributes:
-            color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
+        mesh = target_object.data
+        # Blender 5.0+: 空 mesh 无法添加 color attribute
+        if len(mesh.vertices) == 0:
+            print(f"{target_object.name} has no vertices, cannot add color attribute")
+            return None
+        if vertexcolor_name in mesh.color_attributes:
+            color_attribute = mesh.color_attributes.get(vertexcolor_name)
         else:
-            color_attribute = target_object.data.color_attributes.new(
+            color_attribute = mesh.color_attributes.new(
                 name=vertexcolor_name,
                 type="BYTE_COLOR",
                 domain="CORNER",
             )
     else:
-        print(target_object + " is not mesh object")
+        print(target_object.name + " is not mesh object")
     return color_attribute
 
 
@@ -2321,12 +2329,19 @@ class VertexColor:
     def add(
     target_object: bpy.types.Object, vertexcolor_name: str
     ) -> bpy.types.Object:
-        """为选中的物体添加顶点色属性，返回顶点色属性"""
+        """为选中的物体添加顶点色属性，返回顶点色属性
+        注意：Blender 5.0+ 要求 mesh 必须有顶点才能创建 color attribute
+        """
         if target_object.type == "MESH":
-            if vertexcolor_name in target_object.data.color_attributes:
-                color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
+            mesh = target_object.data
+            # Blender 5.0+: 空 mesh 无法添加 color attribute
+            if len(mesh.vertices) == 0:
+                print(f"{target_object.name} has no vertices, cannot add color attribute")
+                return None
+            if vertexcolor_name in mesh.color_attributes:
+                color_attribute = mesh.color_attributes.get(vertexcolor_name)
             else:
-                color_attribute = target_object.data.color_attributes.new(
+                color_attribute = mesh.color_attributes.new(
                     name=vertexcolor_name,
                     type="BYTE_COLOR",
                     domain="CORNER",
@@ -2334,7 +2349,7 @@ class VertexColor:
             print(f"{target_object} has vertexcolor {color_attribute.name}")
             return color_attribute
         else:
-            print(target_object + " is not mesh object")
+            print(target_object.name + " is not mesh object")
             return None
         
 
@@ -2364,7 +2379,14 @@ class VertexColor:
                             mesh.data.color_attributes.remove(attr)
 
     def add_curvature(mesh):
-        """为选中的mesh添加curvature vertex color层"""
+        """为选中的mesh添加curvature vertex color层
+        注意：Blender 5.0+ 要求 mesh 必须有顶点才能创建 color attribute
+        """
+        # Blender 5.0+: 空 mesh 无法添加 color attribute
+        if len(mesh.data.vertices) == 0:
+            print(f"{mesh.name} has no vertices, cannot add curvature color attribute")
+            return None
+
         visibility = mesh.visible_get()
         if visibility is False:
             mesh.hide_viewport = False

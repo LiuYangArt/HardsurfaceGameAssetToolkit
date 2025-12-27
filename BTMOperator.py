@@ -302,6 +302,10 @@ class BatchSetVerColOperator(bpy.types.Operator):
         ver_col = bpy.data.brushes["TexDraw"].color
 
         for obj in sel_obj:
+            # Blender 5.0+: 空 mesh 无法添加 color attribute
+            if len(obj.data.vertices) == 0:
+                print(f"{obj.name} has no vertices, skipping color attribute")
+                continue
             if "ID_Color" in obj.data.color_attributes:
                 colattr = obj.data.color_attributes[0]
             else:
