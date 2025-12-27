@@ -4,7 +4,7 @@ from .Functions.HSTFunctions import *
 from .Functions.CommonFunctions import *
 
 
-class ProjectDecalOperator(bpy.types.Operator):
+class HST_OT_ProjectDecal(bpy.types.Operator):
     bl_idname = "hst.projectdecal"
     bl_label = "Project Decal"
 

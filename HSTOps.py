@@ -6,7 +6,7 @@ from .Functions.CommonFunctions import *
 # TODO: 合并两个bevel ops， 增加UI修改参数时选中objects的bevel参数功能
 
 
-class HST_BevelTransferNormal(bpy.types.Operator):
+class HST_OT_BevelTransferNormal(bpy.types.Operator):
     bl_idname = "hst.hstbeveltransfernormal"
     bl_label = "HST Batch Bevel And Transfer Normal"
     bl_description = "添加倒角并从原模型传递法线到倒角后的模型，解决复杂曲面法线问题"
@@ -106,7 +106,7 @@ class HST_BevelTransferNormal(bpy.types.Operator):
         box_column.prop(self, "bevel_segments")
 
 
-class HST_BatchBevel(bpy.types.Operator):
+class HST_OT_BatchBevel(bpy.types.Operator):
     bl_idname = "hst.hstbevelmods"
     bl_label = "Batch Add Bevel Modifiers"
     bl_description = "批量添加Bevel和WeightedNormal\
@@ -244,7 +244,7 @@ def prep_wearmask_objects(selected_objects):
     return proxy_collection
 
 
-class HST_CreateTransferVertColorProxy(bpy.types.Operator):
+class HST_OT_CreateTransferVertColorProxy(bpy.types.Operator):
     bl_idname = "hst.hst_addtransvertcolorproxy"
     bl_label = "HST Make Transfer VertexColor Proxy"
     bl_description = "为选中的物体建立用于烘焙顶点色的代理模型\
@@ -300,7 +300,7 @@ class HST_CreateTransferVertColorProxy(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HST_BakeProxyVertexColorAO(bpy.types.Operator):
+class HST_OT_BakeProxyVertexColorAO(bpy.types.Operator):
     bl_idname = "hst.hst_bakeproxyvertcolrao"
     bl_label = "HST Bake Proxy VertexColor AO"
     bl_description = "烘焙代理模型的AO，需要先建立Proxy\
@@ -396,7 +396,7 @@ class HST_BakeProxyVertexColorAO(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HST_CleanHSTObjects(bpy.types.Operator):
+class HST_OT_CleanHSTObjects(bpy.types.Operator):
     bl_idname = "hst.cleanhstobject"
     bl_label = "Clean HST Objects"
     bl_description = "清理所选物体对应的HST修改器和传递模型"
@@ -448,7 +448,7 @@ class HST_CleanHSTObjects(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class CurvatureVertexcolorOperator(bpy.types.Operator):
+class HST_OT_CurvatureVertexcolor(bpy.types.Operator):
     bl_idname = "hst.curvature_vertexcolor"
     bl_label = "Add Curvature VertexColor"
     bl_description = "Add Curvature VertexColor"
@@ -461,7 +461,7 @@ class CurvatureVertexcolorOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HSTApplyMirrorModifierOperator(bpy.types.Operator):
+class HST_OT_ApplyMirrorModifier(bpy.types.Operator):
     bl_idname = "hst.apply_mirror_modifier"
     bl_label = "Apply Mirror Modifier"
     bl_description = "批量应用选中物体的Mirror Modifier"
@@ -490,7 +490,7 @@ class HSTApplyMirrorModifierOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HSTRemoveEmptyMesh(bpy.types.Operator):
+class HST_OT_RemoveEmptyMesh(bpy.types.Operator):
     bl_idname = "hst.remove_empty_mesh"
     bl_label = "Remove Empty Mesh"
     bl_description = "删除空的Mesh物体"
@@ -557,7 +557,7 @@ class HSTRemoveEmptyMesh(bpy.types.Operator):
 #         return {'FINISHED'}
 
 
-class HSTActiveCollection(bpy.types.Operator):
+class HST_OT_ActiveCollection(bpy.types.Operator):
     bl_idname = "hst.active_current_collection"
     bl_label = "Active Collection"
     bl_description = "把所选物体所在的Collection设为Active"
@@ -588,7 +588,7 @@ class HSTActiveCollection(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MakeDecalCollection(bpy.types.Operator):
+class HST_OT_MakeDecalCollection(bpy.types.Operator):
     bl_idname = "hst.make_decal_collection"
     bl_label = "Make Decal Collection"
     bl_description = "为Prop加对应的Decal Collection"
@@ -786,7 +786,7 @@ class MakeDecalCollection(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MarkTintObjectOperator(bpy.types.Operator):
+class HST_OT_MarkTintObject(bpy.types.Operator):
     bl_idname = "hst.mark_tint_object"
     bl_label = "Mark Tint Object"
     bl_description = "为选中的物体添加TintMask，储存于WearMask的Alpha通道"
@@ -832,7 +832,7 @@ class MarkTintObjectOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MarkAdditionalAttribute(bpy.types.Operator):
+class HST_OT_MarkAdditionalAttribute(bpy.types.Operator):
     bl_idname = "hst.mark_attribute"
     bl_label = "Mark Additional Attribute"
     bl_description = "为选中的物体添加额外的Attribute，用于特殊材质混合"
@@ -878,7 +878,7 @@ class MarkAdditionalAttribute(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MarkNormalType(bpy.types.Operator):
+class HST_OT_MarkNormalType(bpy.types.Operator):
     bl_idname = "hst.mark_normal_type"
     bl_label = "Mark Normal Type"
     bl_description = "为选中的物体标记Normal Type，储存于WearMask的B通道"
@@ -912,7 +912,7 @@ class MarkNormalType(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MarkSpecType(bpy.types.Operator):
+class HST_OT_MarkSpecType(bpy.types.Operator):
     bl_idname = "hst.mark_spec_type"
     bl_label = "Mark Spec Type"
     bl_description = "为选中的物体标记Spec Type，用于特殊材质混合"
@@ -946,7 +946,7 @@ class MarkSpecType(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ReimportWearmaskNodeOperator(bpy.types.Operator):
+class HST_OT_ReimportWearmaskNode(bpy.types.Operator):
     bl_idname = "hst.reimportwearmasknode"
     bl_label = "Reimport Wearmask Node"
 

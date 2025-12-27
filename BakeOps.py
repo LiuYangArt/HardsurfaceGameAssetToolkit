@@ -32,7 +32,7 @@ def set_bake_collection(collection, type="LOW"):
     return result
 
 
-class SetBakeCollectionLowOperator(bpy.types.Operator):
+class HST_OT_SetBakeCollectionLow(bpy.types.Operator):
     bl_idname = "hst.setbakecollectionlow"
     bl_label = "HST Set Bake-Collection Low"
     bl_description = (
@@ -61,7 +61,7 @@ class SetBakeCollectionLowOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetBakeCollectionHighOperator(bpy.types.Operator):
+class HST_OT_SetBakeCollectionHigh(bpy.types.Operator):
     bl_idname = "hst.setbakecollectionhigh"
     bl_label = "HST Set Bake-Collection High"
     bl_description = (
@@ -89,7 +89,7 @@ class SetBakeCollectionHighOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetObjectVertexColorOperator(bpy.types.Operator):
+class HST_OT_SetObjectVertexColor(bpy.types.Operator):
     bl_idname = "hst.setobjectvertexcolor"
     bl_label = "Batch Set Object VertexColor"
     bl_description = "设置选中模型的顶点色,顶点色名字为BakeColor\
@@ -123,7 +123,7 @@ class SetObjectVertexColorOperator(bpy.types.Operator):
 
 
 
-class CopyColorAttributeFromActiveOperator(bpy.types.Operator):
+class HST_OT_CopyColorAttributeFromActive(bpy.types.Operator):
     bl_idname = "hst.copy_vertex_color_from_active"
     bl_label = "Copy Vertex Color From Active"
     bl_options = {"UNDO"}
@@ -168,7 +168,7 @@ class CopyColorAttributeFromActiveOperator(bpy.types.Operator):
         return self.execute(context)
 
 
-class BlurVertexColorOperator(bpy.types.Operator):
+class HST_OT_BlurVertexColor(bpy.types.Operator):
     bl_idname = "hst.blur_vertexcolor"
     bl_label = "HST Blur Vertex Color"
     bl_description = "模糊选中模型的顶点色"

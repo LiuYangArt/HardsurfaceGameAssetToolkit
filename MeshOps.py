@@ -25,7 +25,7 @@ def check_non_solid_meshes(meshes):
     elif bad_meshes ==0:
         return None
 
-class PrepCADMeshOperator(bpy.types.Operator):
+class HST_OT_PrepCADMesh(bpy.types.Operator):
     bl_idname = "hst.prepcadmesh"
     bl_label = "Prep CAD FBX Mesh"
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
@@ -121,7 +121,7 @@ class PrepCADMeshOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HST_MakeSwatchUVOperator(bpy.types.Operator):
+class HST_OT_MakeSwatchUV(bpy.types.Operator):
     bl_idname = "hst.makeswatchuv"
     bl_label = "HST Make Swatch UV"
     bl_description = "为CAD模型添加Swatch UV"
@@ -149,7 +149,7 @@ class HST_MakeSwatchUVOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class CleanVertexOperator(bpy.types.Operator):
+class HST_OT_CleanVertex(bpy.types.Operator):
     bl_idname = "hst.cleanvert"
     bl_label = "Clean Verts"
     bl_description = "清理模型中的孤立顶点，只能用在水密模型上，否则会造成模型损坏"
@@ -183,7 +183,7 @@ class CleanVertexOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class FixCADObjOperator(bpy.types.Operator):
+class HST_OT_FixCADObj(bpy.types.Operator):
     bl_idname = "hst.fixcadobj"
     bl_label = "Fix CAD Obj"
     bl_description = "修理CAD输出的obj，以便进行后续操作\
@@ -239,7 +239,7 @@ class FixCADObjOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SeparateMultiUserOperator(bpy.types.Operator):
+class HST_OT_SeparateMultiUser(bpy.types.Operator):
     bl_idname = "hst.sepmultiuser"
     bl_label = "Clean Multi User"
     bl_description = "清理multi user，可能会造成冗余资源，请及时清除"
@@ -261,7 +261,7 @@ class SeparateMultiUserOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class AddSnapSocketOperator(bpy.types.Operator):
+class HST_OT_AddSnapSocket(bpy.types.Operator):
     bl_idname = "hst.addsnapsocket"
     bl_label = "Add Snap Socket"
     bl_description = "添加用于UE Modular Snap System的Socket，\
@@ -403,7 +403,7 @@ def find_selected_element_center() -> Vector:
 
 
 
-class AddAssetOriginOperator(bpy.types.Operator):
+class HST_OT_AddAssetOrigin(bpy.types.Operator):
     bl_idname = "hst.add_asset_origin"
     bl_label = "Add Asset Origin"
     bl_description = "选中Collection中任意模型，为此Collection添加Asset Origin"
@@ -476,7 +476,7 @@ class AddAssetOriginOperator(bpy.types.Operator):
         
         #TODO: invoke 添加选项 ， 当pivot不一致时， 弹出菜单，多个选项: 1.世界中心 2.Collection中心 3.Collection底部 4.Active Object中心 5.Cursor位置  。 如果在Edit Mode，使用选中顶点的中心   
     
-class BatchAddAssetOriginOperator(bpy.types.Operator):
+class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
     """ 为所有Prop Collection添加Asset Origin """
 
     bl_idname = "hst.batch_add_asset_origin"
@@ -622,7 +622,7 @@ class BatchAddAssetOriginOperator(bpy.types.Operator):
     
 
 
-class HST_SwatchMatSetupOperator(bpy.types.Operator):
+class HST_OT_SwatchMatSetup(bpy.types.Operator):
     bl_idname = "hst.swatchmatsetup"
     bl_label = "HST Swatch Edit Mode"
     bl_description = "设置Swatch材质的编辑环境，如果没有Swatch材质会自动导入"
@@ -699,7 +699,7 @@ class HST_SwatchMatSetupOperator(bpy.types.Operator):
 
         return {"FINISHED"}
     
-class HST_PatternMatSetup(bpy.types.Operator):
+class HST_OT_PatternMatSetup(bpy.types.Operator):
     bl_idname = "hst.patternmatsetup"
     bl_label = "PatternUV"
     bl_description = "设置Pattern材质的编辑环境，如果没有Pattern材质会自动导入"
@@ -781,7 +781,7 @@ class HST_PatternMatSetup(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class BaseUVEditModeOperator(bpy.types.Operator):
+class HST_OT_BaseUVEditMode(bpy.types.Operator):
     bl_idname = "hst.baseuveditmode"
     bl_label = "HST BaseUV Edit Mode"
     bl_description = "Base UV编辑环境"
@@ -828,7 +828,7 @@ class BaseUVEditModeOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetupLookDevEnvOperator(bpy.types.Operator):
+class HST_OT_SetupLookDevEnv(bpy.types.Operator):
 
     bl_idname = "hst.setuplookdevenv"
     bl_label = "Setup LookDev Env"
@@ -857,7 +857,7 @@ class SetupLookDevEnvOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class PreviewWearMaskOperator(bpy.types.Operator):
+class HST_OT_PreviewWearMask(bpy.types.Operator):
     bl_idname = "hst.previewwearmask"
     bl_label = "Preview WearMask"
     bl_description = "预览WearMask效果，需要Mesh有顶点色属性'WearMask'\
@@ -883,7 +883,7 @@ class PreviewWearMaskOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetTexelDensityOperator(bpy.types.Operator):
+class HST_OT_SetTexelDensity(bpy.types.Operator):
     bl_idname = "hst.setbaseuvtexeldensity"
     bl_label = "Set BaseUV TexelDensity"
     bl_description = "设置选中模型的BaseUV的Texel Density\
@@ -933,7 +933,7 @@ class SetTexelDensityOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class AxisCheckOperator(bpy.types.Operator):
+class HST_OT_AxisCheck(bpy.types.Operator):
     bl_idname = "hst.axischeck"
     bl_label = "Check UE Front Axis"
     bl_description = "显示UE模型坐标轴参考"
@@ -978,7 +978,7 @@ class AxisCheckOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class HST_SetSceneUnitsOperator(bpy.types.Operator):
+class HST_OT_SetSceneUnits(bpy.types.Operator):
     bl_idname = "hst.setsceneunits"
     bl_label = "SetSceneUnits"
     bl_description = "设置场景单位为厘米"
@@ -989,7 +989,7 @@ class HST_SetSceneUnitsOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class CheckAssetsOperator(bpy.types.Operator):
+class HST_OT_CheckAssets(bpy.types.Operator):
     bl_idname = "hst.checkassets"
     bl_label = "Check Assets"
 
@@ -1021,7 +1021,7 @@ class CheckAssetsOperator(bpy.types.Operator):
         return context.window_manager.invoke_props_dialog(self)
 
 
-class MarkDecalCollectionOperator(bpy.types.Operator):
+class HST_OT_MarkDecalCollection(bpy.types.Operator):
     bl_idname = "hst.markdecalcollection"
     bl_label = "Mark Decal Collection"
     bl_description = "设置所选为Decal Collection，对collection中的Mesh，如果材质名是decal类型，则标记Mesh为decal。"
@@ -1076,7 +1076,7 @@ class MarkDecalCollectionOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class MarkPropCollectionOperator(bpy.types.Operator):
+class HST_OT_MarkPropCollection(bpy.types.Operator):
     bl_idname = "hst.markpropcollection"
     bl_label = "Mark Prop Collection"
     bl_description = "设置所选为Prop Collection"
@@ -1111,7 +1111,7 @@ class MarkPropCollectionOperator(bpy.types.Operator):
 
 
 
-class FixDuplicatedMaterialOperator(bpy.types.Operator):
+class HST_OT_FixDuplicatedMaterial(bpy.types.Operator):
     bl_idname = "hst.fixduplicatedmaterial"
     bl_label = "Fix Duplicated Material"
     bl_description = "修复选中模型中的重复材质，例如 MI_Mat.001替换为MI_Mat"
@@ -1202,8 +1202,8 @@ class FixDuplicatedMaterialOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SetUECollisionOperator(bpy.types.Operator):
-    bl_idname = "object.adduecollision"
+class HST_OT_SetUECollision(bpy.types.Operator):
+    bl_idname = "hst.add_ue_collision"
     bl_label = "Set UE Collision"
     bl_description = "设置选中mesh为UE碰撞体，并设置命名与collection内的mesh对应\
         例如Collection内只有Mesh_01，那么碰撞体的命名需要是UCX_Mesh_01或者UCX_Mesh_01_01\
@@ -1255,7 +1255,7 @@ class SetUECollisionOperator(bpy.types.Operator):
 
         return {"FINISHED"}
 
-class HSTSortCollectionsOperator(bpy.types.Operator):
+class HST_OT_SortCollections(bpy.types.Operator):
     bl_idname = "hst.sort_collections"
     bl_label = "Sort Collections"
     bl_description = "按首字母对所有Collection进行排序"
@@ -1267,7 +1267,7 @@ class HSTSortCollectionsOperator(bpy.types.Operator):
 
 
 
-class IsolateCollectionsAltOperator(bpy.types.Operator):
+class HST_OT_IsolateCollectionsAlt(bpy.types.Operator):
     """ 选中collection中的任一物体，单独显示此collection """
     bl_idname = "hst.isolate_collections_alt"
     bl_label = "Isolate Collections"
@@ -1339,7 +1339,7 @@ class IsolateCollectionsAltOperator(bpy.types.Operator):
 
 
 
-class BreakLinkFromLibraryOperator(bpy.types.Operator):
+class HST_OT_BreakLinkFromLibrary(bpy.types.Operator):
     bl_idname = "hst.break_link_from_library"
     bl_label = "Break Link From Library"
     bl_description = "Break Link From Library"
@@ -1362,7 +1362,7 @@ class BreakLinkFromLibraryOperator(bpy.types.Operator):
             self.report({"INFO"}, f"{count} meshes break link from library")
         return {'FINISHED'}
 
-class ResetPropTransformToOriginOperator(bpy.types.Operator):
+class HST_OT_ResetPropTransformToOrigin(bpy.types.Operator):
     bl_idname = "hst.reset_prop_transform_to_origin"
     bl_label = "Reset Prop Transform To Origin"
     bl_description = "Reset Prop Transform To Origin"
@@ -1419,7 +1419,7 @@ class ResetPropTransformToOriginOperator(bpy.types.Operator):
 
 
 
-class MarkSharpOperator(bpy.types.Operator):
+class HST_OT_MarkSharp(bpy.types.Operator):
     bl_idname = "hst.marksharp"
     bl_label = "Mark Sharp by Normal"
     bl_description = "Mark Sharp Edge by Split Normal"
@@ -1433,7 +1433,7 @@ class MarkSharpOperator(bpy.types.Operator):
     
 
 
-class ExtractUCXOperator(bpy.types.Operator):
+class HST_OT_ExtractUCX(bpy.types.Operator):
     bl_idname = "hst.extractucx"
     bl_label = "ExtractUCX"
 
@@ -1478,7 +1478,7 @@ class ExtractUCXOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class SnapTransformOperator(bpy.types.Operator):
+class HST_OT_SnapTransform(bpy.types.Operator):
     bl_idname = "hst.snap_transform"
     bl_label = "Snap Transform"
     bl_description = "把物体的位置/角度/缩放吸附到格子上"

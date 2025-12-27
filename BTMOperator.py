@@ -7,8 +7,8 @@ from .Functions.BTMFunctions import *
 from .Functions.CommonFunctions import *
 
 
-class BTMLowOperator(bpy.types.Operator):
-    bl_idname = "object.btmlow"
+class HST_OT_BTMLow(bpy.types.Operator):
+    bl_idname = "hst.btm_low"
     bl_label = "Low Poly Group"
     bl_description = (
         "设置选中模型的整个Collection为LowPoly组，根据Collection名字修改命名"
@@ -32,8 +32,8 @@ class BTMLowOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class BTMHighOperator(bpy.types.Operator):
-    bl_idname = "object.btmhigh"
+class HST_OT_BTMHigh(bpy.types.Operator):
+    bl_idname = "hst.btm_high"
     bl_label = "High Poly Group"
     bl_description = (
         "设置选中模型的整个Collection为HighPoly组，根据Collection名字修改命名"
@@ -57,8 +57,8 @@ class BTMHighOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class OrgaCollOperator(bpy.types.Operator):
-    bl_idname = "object.orgacoll"
+class HST_OT_OrganizeCollections(bpy.types.Operator):
+    bl_idname = "hst.organize_collections"
     bl_label = "Organize Collections"
 
     def Fix_Coll_Name(coll):
@@ -107,19 +107,19 @@ class OrgaCollOperator(bpy.types.Operator):
         base_coll: bpy.types.Collection
 
         colllist = bpy.data.collections
-        high_coll_list = OrgaCollOperator.Get_High_Coll_List(colllist)
-        low_coll_list = OrgaCollOperator.Get_Low_Coll_List(colllist)
+        high_coll_list = HST_OT_OrganizeCollections.Get_High_Coll_List(colllist)
+        low_coll_list = HST_OT_OrganizeCollections.Get_Low_Coll_List(colllist)
 
-        OrgaCollOperator.Clean_Color_Tag(colllist)
+        HST_OT_OrganizeCollections.Clean_Color_Tag(colllist)
         for high_coll in high_coll_list:
             for low_coll in low_coll_list:
-                if OrgaCollOperator.Fix_Coll_Name(
+                if HST_OT_OrganizeCollections.Fix_Coll_Name(
                     high_coll
-                ) == OrgaCollOperator.Fix_Coll_Name(low_coll):
-                    have_base_coll = OrgaCollOperator.Check_Base_Coll(
+                ) == HST_OT_OrganizeCollections.Fix_Coll_Name(low_coll):
+                    have_base_coll = HST_OT_OrganizeCollections.Check_Base_Coll(
                         colllist, high_coll
                     )[0]
-                    base_coll_list = OrgaCollOperator.Check_Base_Coll(
+                    base_coll_list = HST_OT_OrganizeCollections.Check_Base_Coll(
                         colllist, high_coll
                     )[1]
                     if have_base_coll:
@@ -133,7 +133,7 @@ class OrgaCollOperator(bpy.types.Operator):
                             base_coll.color_tag = "COLOR_02"
                     else:
                         basecoll = bpy.data.collections.new(
-                            name=OrgaCollOperator.Fix_Coll_Name(high_coll)
+                            name=HST_OT_OrganizeCollections.Fix_Coll_Name(high_coll)
                         )
                         bpy.context.scene.collection.children.link(basecoll)
                         basecoll.children.link(high_coll)
@@ -144,8 +144,8 @@ class OrgaCollOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ExportFBXOperator(bpy.types.Operator):
-    bl_idname = "object.exportfbx"
+class HST_OT_ExportFBX(bpy.types.Operator):
+    bl_idname = "hst.export_fbx"
     bl_label = "Export FBX"
 
     def Get_Bakers():
@@ -172,7 +172,7 @@ class ExportFBXOperator(bpy.types.Operator):
         filename = bpy.path.basename(bpy.data.filepath).split(".")[0]
 
         get_export_path = BTM_Export_Path()
-        base_colllist = ExportFBXOperator.Get_Bakers()
+        base_colllist = HST_OT_ExportFBX.Get_Bakers()
         if bpy.data.is_saved:
             for base_coll in base_colllist:
                 self.Set_Obj_Active(1, base_coll.all_objects)
@@ -185,8 +185,8 @@ class ExportFBXOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class OpenmMrmosetOperator(bpy.types.Operator):
-    bl_idname = "object.openmarmoset"
+class HST_OT_OpenMarmoset(bpy.types.Operator):
+    bl_idname = "hst.open_marmoset"
     bl_label = "Open Marmoset"
 
     def execute(self, context):
@@ -197,8 +197,8 @@ class OpenmMrmosetOperator(bpy.types.Operator):
 # =========================================================================================
 
 
-class MoiTransStepOperator(bpy.types.Operator, ImportHelper):
-    bl_idname = "object.moitransfile"
+class HST_OT_MoiTransStep(bpy.types.Operator, ImportHelper):
+    bl_idname = "hst.moi_trans_step"
     bl_label = "Use Moi Transform Step"
 
     def execute(self, context):
@@ -243,8 +243,8 @@ class MoiTransStepOperator(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
-class ReloadObjOperator(bpy.types.Operator):
-    bl_idname = "object.reloadobj"
+class HST_OT_ReloadObj(bpy.types.Operator):
+    bl_idname = "hst.reload_obj"
     bl_label = "Reload Object"
 
     def execute(self, context):
@@ -258,8 +258,8 @@ class ReloadObjOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class GetVerColOperator(bpy.types.Operator):
-    bl_idname = "object.getvercol"
+class HST_OT_GetVertexColor(bpy.types.Operator):
+    bl_idname = "hst.get_vertex_color"
     bl_label = "Get Vertex Color"
     bl_description = "采样选中物体的顶点色"
 
@@ -290,8 +290,8 @@ class GetVerColOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class BatchSetVerColOperator(bpy.types.Operator):
-    bl_idname = "object.setvercol"
+class HST_OT_BatchSetVertexColor(bpy.types.Operator):
+    bl_idname = "hst.batch_set_vertex_color"
     bl_label = "Batch Set Vertex Color"
     bl_description = "为选中的物体赋予顶点色,用于烘焙ID Mask"
 
@@ -337,8 +337,8 @@ class BatchSetVerColOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class TestButtonOperator(bpy.types.Operator):
-    bl_idname = "object.testbutton"
+class HST_OT_TestButton(bpy.types.Operator):
+    bl_idname = "hst.test_button"
     bl_label = "Open Stp File"
 
     def execute(self, context):

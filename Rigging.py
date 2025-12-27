@@ -53,7 +53,7 @@ def set_blender_armature_display(object,display_type='OCTAHEDRAL'):
         object.data.relation_line_position = 'HEAD'
 
 
-class SetSceneUnitForUnrealRigOperator(bpy.types.Operator):
+class HST_OT_SetSceneUnitForUnrealRig(bpy.types.Operator):
     bl_idname = "hst.set_scene_unit_for_unreal_rig"
     bl_label = "Set Scene Unit For Unreal Rig"
     bl_description = "设置场景单位以便骨骼fbx导出到UE时单位正确"
@@ -79,7 +79,7 @@ def find_parent_empty_type(obj):
     return None
     
 
-class CleanupUESKMOperator(bpy.types.Operator):
+class HST_OT_CleanupUESKM(bpy.types.Operator):
     bl_idname = "hst.cleanup_ue_skm"
     bl_label = "Cleanup UE SKM"
 
@@ -129,7 +129,7 @@ class CleanupUESKMOperator(bpy.types.Operator):
 
 
 
-class QuickWeightOperator(bpy.types.Operator):
+class HST_OT_QuickWeight(bpy.types.Operator):
     bl_idname = "hst.quickweight"
     bl_label = "QuickWeight"
     bl_description = "将选中模型的所有顶点权重刷到当前激活的骨骼上，或仅刷Edit模式下选中的顶点"
@@ -230,7 +230,7 @@ class QuickWeightOperator(bpy.types.Operator):
 
 
 
-class RenameBonesOperator(bpy.types.Operator):
+class HST_OT_RenameBones(bpy.types.Operator):
     bl_idname = "hst.rename_bones"
     bl_label = "Rename Bones"
 
@@ -271,7 +271,7 @@ class RenameBonesOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class RenameTreeBonesOperator(bpy.types.Operator):
+class HST_OT_RenameTreeBones(bpy.types.Operator):
     bl_idname = "hst.rename_tree_bones"
     bl_label = "Rename Tree Bones"
     bl_description = "批量重命名选中有父子关系的骨骼，按树结构编号"
@@ -336,7 +336,7 @@ class RenameTreeBonesOperator(bpy.types.Operator):
 
 
 
-class BoneDisplaySettingsOperator(bpy.types.Operator):
+class HST_OT_BoneDisplaySettings(bpy.types.Operator):
     bl_idname = "hst.bone_display_settings"
     bl_label = "Bone Display Settings"
     bl_options = {"REGISTER", "UNDO"}
@@ -364,7 +364,7 @@ class BoneDisplaySettingsOperator(bpy.types.Operator):
 
 
 
-class SetSocketBoneForUEOperator(bpy.types.Operator):
+class HST_OT_SetSocketBoneForUE(bpy.types.Operator):
     bl_idname = "hst.set_socket_bone_for_ue"
     bl_label = "Set Socket Bone For UE"
     bl_options = {"REGISTER", "UNDO"}
@@ -442,7 +442,7 @@ class SetSocketBoneForUEOperator(bpy.types.Operator):
 
 
 
-class SelectBoneInOutlinerOperator(bpy.types.Operator):
+class HST_OT_SelectBoneInOutliner(bpy.types.Operator):
     bl_idname = "hst.select_bone_in_outliner"
     bl_label = "Select Bone In Outliner"
     bl_description = "For the selected bone, show it as selected in the Outliner, expand its parents, and collapse other unrelated parts."

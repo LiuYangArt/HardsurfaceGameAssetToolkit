@@ -120,8 +120,8 @@ class UIParams(PropertyGroup):
     )
 
 
-class HST_PT_BAKETOOL(bpy.types.Panel):
-    bl_idname = "HST_PT_BAKETOOL"
+class HST_PT_BakeTool(bpy.types.Panel):
+    bl_idname = "HST_PT_BakeTool"
     bl_label = "Bake Prep Tool"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -161,8 +161,8 @@ class HST_PT_BAKETOOL(bpy.types.Panel):
 
 
 
-class HST_PT_HST(bpy.types.Panel):
-    bl_idname = "HST_PT_HST"
+class HST_PT_MainPanel(bpy.types.Panel):
+    bl_idname = "HST_PT_MainPanel"
     bl_label = "Hard Surface Prop Toolkit"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -229,7 +229,7 @@ class HST_PT_HST(bpy.types.Panel):
         td_row.prop(parameters, "texture_size", text="Tex", icon="TEXTURE_DATA")
 
         box_column.separator()
-        box_column.operator("object.adduecollision", icon="MESH_ICOSPHERE")
+        box_column.operator("hst.add_ue_collision", icon="MESH_ICOSPHERE")
         
         # box_column.operator("hst.redo_operator", icon="EMPTY_AXIS")
         # box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
@@ -270,8 +270,8 @@ class HST_PT_HST(bpy.types.Panel):
         
 
 
-class HST_PT_TOOLS(bpy.types.Panel):
-    bl_idname = "HST_PT_TOOLS"
+class HST_PT_Tools(bpy.types.Panel):
+    bl_idname = "HST_PT_Tools"
     bl_label = "Utilities"
     bl_category = "HST"
     bl_space_type = "VIEW_3D"
@@ -317,7 +317,7 @@ class HST_PT_TOOLS(bpy.types.Panel):
         
         
 
-class HST_PT_EXPORT(bpy.types.Panel):
+class HST_PT_Export(bpy.types.Panel):
     bl_idname = "HST_PT_Export"
     bl_label = "Export Tools"
     bl_category = "HST"

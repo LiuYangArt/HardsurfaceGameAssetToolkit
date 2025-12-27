@@ -156,7 +156,7 @@ class AssetPreview:
     # print("remove temp render")
 
 
-class MakeAssetPreviewOperator(bpy.types.Operator):
+class HST_OT_MakeAssetPreview(bpy.types.Operator):
     bl_idname = "hst.makeassetpreview"
     bl_label = "MakeAssetPreview"
     bl_description = "Make asset preview from current 3d view. select asset in asset library and run this operator to set preview to selected asset\
@@ -242,7 +242,7 @@ class MakeAssetPreviewOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class AddMatsToAssetLibraryOperator(bpy.types.Operator):
+class HST_OT_AddMatsToAssetLibrary(bpy.types.Operator):
     bl_idname = "hst.add_mats_to_assetlibrary"
     bl_label = "Add Mats To AssetLibrary"
 

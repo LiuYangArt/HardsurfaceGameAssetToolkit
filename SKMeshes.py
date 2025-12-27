@@ -271,7 +271,7 @@ def make_sk_placeholder_mesh(armature):
 #     return placeholder_mat
 
 
-class SkeletelSeparatorOperator(bpy.types.Operator):
+class HST_OT_SkeletelSeparator(bpy.types.Operator):
     bl_idname = "hst.skeletel_separator"
     bl_label = "Skeletel Separator"
     bl_description = "Separate skeletel mesh for nanite\
@@ -403,7 +403,7 @@ class SkeletelSeparatorOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class FillWeightOperator(bpy.types.Operator):
+class HST_OT_FillWeight(bpy.types.Operator):
     bl_idname = "hst.fill_weight"
     bl_label = "Fill Weight"
     bl_description = "Fill active vertex group with 1.0 weight"
@@ -421,7 +421,7 @@ class FillWeightOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class FixSplitMesh(bpy.types.Operator):
+class HST_OT_FixSplitMesh(bpy.types.Operator):
     bl_idname = "hst.fix_splitmesh"
     bl_label = "Fix Split Faces Mesh"
     bl_description = "Merge split faces mesh without breaking the custom normal"
@@ -498,7 +498,7 @@ class FixSplitMesh(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class Get_Bone_PosOperator(bpy.types.Operator):
+class HST_OT_GetBonePos(bpy.types.Operator):
     bl_idname = "hst.get_bone_pos"
     bl_label = "Get_Bone_Pos"
 
@@ -524,8 +524,8 @@ class Get_Bone_PosOperator(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class DisplayUEBoneDirectionOperator(bpy.types.Operator):
-    bl_idname = "object.displayuebonedirection"
+class HST_OT_DisplayUEBoneDirection(bpy.types.Operator):
+    bl_idname = "hst.display_ue_bone_direction"
     bl_label = "DisplayUEBoneDirection"
 
     def execute(self, context):
@@ -547,7 +547,7 @@ class DisplayUEBoneDirectionOperator(bpy.types.Operator):
 
 
 
-class FixRootBoneForUEOperator(bpy.types.Operator):
+class HST_OT_FixRootBoneForUE(bpy.types.Operator):
     bl_idname = "hst.fix_root_bone_for_ue"
     bl_label = "Fix Root Bone For UE"
     bl_description = "修正root bone的朝向，适配UE规范。使用armature的第一根骨骼作为root bone。"

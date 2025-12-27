@@ -100,7 +100,7 @@ def export_instance_collection(target, export_path, file_prefix):
     FBXExport.instance_collection(target, file_path,reset_transform=True)
 
 
-class StaticMeshExportOperator(bpy.types.Operator):
+class HST_OT_StaticMeshExport(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
     bl_label = "HST StaticMesh Export UE"
     bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
@@ -257,7 +257,7 @@ class StaticMeshExportOperator(bpy.types.Operator):
         )
         return {"FINISHED"}
 
-class OpenFileExplorer(bpy.types.Operator):
+class HST_OT_OpenFileExplorer(bpy.types.Operator):
     bl_idname = "hst.open_file_explorer"
     bl_label = "Open Explorer"
 
@@ -291,7 +291,7 @@ class OpenFileExplorer(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class TestFuncOperator(bpy.types.Operator):
+class HST_OT_TestFunc(bpy.types.Operator):
     bl_idname = "hst.testfunc"
     bl_label = "TestFunc"
 
