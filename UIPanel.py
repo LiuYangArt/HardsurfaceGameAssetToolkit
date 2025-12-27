@@ -204,6 +204,7 @@ class HST_PT_MainPanel(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator("hst.cleanhstobject", text="Clean HST Object", icon="TRASH")
+        box_column.operator("hst.cleanorphanproxymesh", text="Clean Orphan Proxy", icon="ORPHAN_DATA")
 
         box_column.separator()
         box_column.label(text="Workflow")

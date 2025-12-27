@@ -448,6 +448,74 @@ class HST_OT_CleanHSTObjects(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class HST_OT_CleanOrphanProxyMesh(bpy.types.Operator):
+    """
+    清理 _TransferNormal 和 _TransferProxy collection 下的冗余 proxy mesh。
+    冗余判断标准：
+    - 没有 parent（原始 mesh 已被删除）
+    - 没有被任何 DATA_TRANSFER modifier 引用
+    """
+
+    bl_idname = "hst.cleanorphanproxymesh"
+    bl_label = "Clean Orphan Proxy Mesh"
+    bl_description = ("清理 _TransferNormal 和 _TransferProxy 下"
+                       "无 parent 或未被 modifier 引用的冗余 mesh")
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        # 收集所有被 DATA_TRANSFER modifier 引用的 objects
+        referenced_objects = set()
+        for obj in bpy.data.objects:
+            if obj.type == "MESH":
+                for modifier in obj.modifiers:
+                    if modifier.type == "DATA_TRANSFER" and modifier.object is not None:
+                        referenced_objects.add(modifier.object)
+
+        # 遍历两个 proxy collection
+        orphan_count = 0
+        removed_collections = []
+        collections_to_check = [TRANSFER_COLLECTION, TRANSFER_PROXY_COLLECTION]
+
+        for collection_name in collections_to_check:
+            if collection_name not in bpy.data.collections:
+                continue
+            collection = bpy.data.collections[collection_name]
+            orphans = []
+
+            for obj in list(collection.objects):
+                if obj.type != "MESH":
+                    continue
+                # 检查是否冗余：无 parent 或 未被引用
+                is_orphan = (obj.parent is None) or (obj not in referenced_objects)
+                if is_orphan:
+                    orphans.append(obj)
+
+            # 删除冗余 mesh
+            for orphan in orphans:
+                mesh_data = orphan.data
+                bpy.data.objects.remove(orphan)
+                if mesh_data is not None and mesh_data.users == 0:
+                    bpy.data.meshes.remove(mesh_data)
+                orphan_count += 1
+
+            # 如果 collection 变空，删除 collection
+            if len(collection.objects) == 0:
+                removed_collections.append(collection_name)
+                bpy.data.collections.remove(collection)
+
+        # 报告结果
+        if removed_collections:
+            self.report(
+                {"INFO"},
+                f"Cleaned {orphan_count} orphan proxy mesh(es), "
+                f"removed empty collection(s): {', '.join(removed_collections)}",
+            )
+        else:
+            self.report({"INFO"}, f"Cleaned {orphan_count} orphan proxy mesh(es)")
+
+        return {"FINISHED"}
+
+
 class HST_OT_CurvatureVertexcolor(bpy.types.Operator):
     bl_idname = "hst.curvature_vertexcolor"
     bl_label = "Add Curvature VertexColor"
