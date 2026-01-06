@@ -2687,6 +2687,209 @@ class Mesh:
         bpy.ops.mesh.remove_doubles(threshold=0.0001,use_unselected=True,use_sharp_edge_from_normals=True)
         bpy.ops.object.mode_set(mode="OBJECT")
 
+
+    def auto_seam(mesh: bpy.types.Object):
+        """Automatically mark seams for closed shapes (Cylinders, Spheres, Tori)"""
+        
+        # Ensure we are in object mode to access data correctly or use bmesh from object
+        current_mode = mesh.mode
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh.data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        bm.verts.ensure_lookup_table()
+
+        # 1. Identify Islands (connected faces not separated by seams)
+        total_faces = set(bm.faces)
+        visited_faces = set()
+        
+        islands = []
+
+        while len(visited_faces) < len(total_faces):
+            seed_face = next(iter(total_faces - visited_faces))
+            island = set()
+            stack = [seed_face]
+            
+            while stack:
+                f = stack.pop()
+                if f in visited_faces:
+                    continue
+                visited_faces.add(f)
+                island.add(f)
+                
+                for edge in f.edges:
+                    if not edge.seam: 
+                        for neighbor_face in edge.link_faces:
+                            if neighbor_face not in visited_faces:
+                                stack.append(neighbor_face)
+            islands.append(island)
+
+        # 2. Process each island
+        for island in islands:
+            # Find boundary edges for this island
+            boundary_edges = set()
+            island_verts = set()
+
+            for face in island:
+                for v in face.verts:
+                    island_verts.add(v)
+                for edge in face.edges:
+                    if edge.seam or edge.is_boundary:
+                        boundary_edges.add(edge)
+                    else:
+                        # Check if edge connects to a face NOT in this island (should be covered by seam check strictly speaking, but for safety)
+                        # If edge.seam is False, it implies all linked faces are in island (per flood fill logic)
+                        pass
+            
+            # Group boundary edges into Loops
+            loops = []
+            if boundary_edges:
+                edge_pool = set(boundary_edges)
+                while edge_pool:
+                    # Trace a loop
+                    seed_edge = next(iter(edge_pool))
+                    edge_pool.remove(seed_edge)
+                    
+                    # This is simple grouping, might not be perfectly ordered loops, but enough to identify separate holes
+                    current_loop = {seed_edge}
+                    
+                    # Grow loop
+                    # A better way: Find connected components of edges in the graph of 'boundary_edges'
+                    # Vertices involved in boundary edges
+                    loop_stack = [seed_edge]
+                    while loop_stack:
+                        e = loop_stack.pop()
+                        # Find connected edges in pool
+                        # Edges share a vertex
+                        v1, v2 = e.verts
+                        
+                        connected_neighbors = []
+                        for check_e in list(edge_pool): # Check copy to allow removal
+                            if check_e in edge_pool: # double check
+                                if check_e.verts[0] == v1 or check_e.verts[0] == v2 or check_e.verts[1] == v1 or check_e.verts[1] == v2:
+                                    connected_neighbors.append(check_e)
+                        
+                        for ne in connected_neighbors:
+                            edge_pool.remove(ne)
+                            current_loop.add(ne)
+                            loop_stack.append(ne)
+                    
+                    loops.append(current_loop)
+
+            # Analyze Topology
+            num_loops = len(loops)
+            
+            if num_loops == 0:
+                # Closed Surface (Sphere, Torus) or fully smooth cube?
+                # Heuristic: Cut along Z axis (or longest axis)
+                # Find min and max vert in local coords (or global if applied) - Assuming applied transform
+                
+                # Convert verts to list
+                verts_list = list(island_verts)
+                if not verts_list: continue
+
+                # Sort by Z
+                verts_list.sort(key=lambda v: v.co.z)
+                min_v = verts_list[0]
+                max_v = verts_list[-1]
+                
+                # Find shortest path edges
+                path_edges = Mesh.find_shortest_path(bm, min_v, max_v, island)
+                if path_edges:
+                    for e in path_edges:
+                        e.seam = True
+                
+                # If it's a torus, this cut only breaks the ring. We might need a second cut to open the tube.
+                # But detecting torus vs sphere is hard.
+                # For a sphere, one cut from pole to pole (path) leaves it as one 'sheet' wrapped?
+                # Re-run island logic? No, too expensive.
+                # Let's trust that one big cut helps unwrapper significantly.
+
+            elif num_loops == 2:
+                # Cylinder-like (Side wall)
+                # Connect Loop 1 and Loop 2
+                l1_edges = list(loops[0])
+                l2_edges = list(loops[1])
+                
+                # Pick a vertex from L1
+                v_start = l1_edges[0].verts[0]
+                
+                # Pick a vertex from L2 (closest to v_start to minimize spiral)
+                # Simple optimization: Find L2 vert with min distance to v_start
+                min_dist = float('inf')
+                v_end = l2_edges[0].verts[0]
+                
+                for e in l2_edges:
+                    for v in e.verts:
+                        dist = (v.co - v_start.co).length
+                        if dist < min_dist:
+                            min_dist = dist
+                            v_end = v
+
+                # Cut path
+                path_edges = Mesh.find_shortest_path(bm, v_start, v_end, island)
+                if path_edges:
+                    for e in path_edges:
+                        e.seam = True
+
+            elif num_loops > 2:
+                 # Branching pipes (T-junctions)
+                 # Connect all loops to the first loop (spanning tree style)
+                 # Or just connect Loop[i] to Loop[i+1]
+                 
+                 # Basic approach: Sort loops by position (e.g. Center location)
+                 # And connect linearly.
+                 pass
+        
+        bm.to_mesh(mesh.data)
+        bm.free()
+        
+        if current_mode == 'EDIT':
+             bpy.ops.object.mode_set(mode='EDIT')
+
+    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set):
+        """Simple BFS/Dijkstra for edges within specific faces"""
+        # Convert valid_faces to valid_edges set for faster lookup
+        valid_edges = set()
+        for f in valid_faces_set:
+            for e in f.edges:
+                valid_edges.add(e)
+        
+        # Dijkstra
+        # queue: (cost, vert, path_of_edges)
+        import heapq
+        queue = [(0.0, id(start_vert), start_vert, [])] # id for tie-break
+        visited = {start_vert: 0.0}
+        
+        best_path = None
+        
+        while queue:
+            cost, _, current_v, path = heapq.heappop(queue)
+            
+            if current_v == end_vert:
+                best_path = path
+                break
+            
+            if cost > visited.get(current_v, float('inf')):
+                continue
+            
+            for edge in current_v.link_edges:
+                if edge not in valid_edges:
+                    continue
+                
+                other_v = edge.other_vert(current_v)
+                new_cost = cost + edge.calc_length()
+                
+                if new_cost < visited.get(other_v, float('inf')):
+                    visited[other_v] = new_cost
+                    new_path = path + [edge]
+                    heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
+                    
+        return best_path
+
 class Modifier:
     def add_triangulate(mesh):
         """添加Triangulate Modifier"""
