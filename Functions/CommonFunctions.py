@@ -2810,8 +2810,12 @@ class Mesh:
                 min_v = verts_list[0]
                 max_v = verts_list[-1]
                 
+                # Create bias vector for pathfinding (dominant axis)
+                bias_vector = Vector((0.0, 0.0, 0.0))
+                bias_vector[axis_idx] = 1.0
+                
                 # Find shortest path edges
-                path_edges = Mesh.find_shortest_path(bm, min_v, max_v, island)
+                path_edges = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
                 if path_edges:
                     for e in path_edges:
                         e.seam = True
@@ -2914,7 +2918,12 @@ class Mesh:
                         best_v1 = v
                         
                 # Connect best_v1 and best_v2
-                path_edges = Mesh.find_shortest_path(bm, best_v1, best_v2, island)
+                
+                # Create bias vector for pathfinding (dominant axis)
+                bias_vector = Vector((0.0, 0.0, 0.0))
+                bias_vector[axis_idx] = 1.0
+
+                path_edges = Mesh.find_shortest_path(bm, best_v1, best_v2, island, bias_vector=bias_vector)
                 if path_edges:
                     for e in path_edges:
                         e.seam = True
@@ -2925,8 +2934,8 @@ class Mesh:
         if current_mode == 'EDIT':
              bpy.ops.object.mode_set(mode='EDIT')
 
-    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set):
-        """Simple BFS/Dijkstra for edges within specific faces"""
+    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None):
+        """Simple BFS/Dijkstra for edges within specific faces with optional directional bias and flat edge penalty"""
         # Convert valid_faces to valid_edges set for faster lookup
         valid_edges = set()
         for f in valid_faces_set:
@@ -2934,7 +2943,7 @@ class Mesh:
                 valid_edges.add(e)
         
         # Dijkstra
-        # queue: (cost, vert, path_of_edges)
+        # queue: (cost, vert_id, vert, path_of_edges)
         import heapq
         queue = [(0.0, id(start_vert), start_vert, [])] # id for tie-break
         visited = {start_vert: 0.0}
@@ -2956,7 +2965,41 @@ class Mesh:
                     continue
                 
                 other_v = edge.other_vert(current_v)
-                new_cost = cost + edge.calc_length()
+                
+                # Calculate Cost
+                length = edge.calc_length()
+                penalty_multiplier = 1.0
+                
+                if bias_vector:
+                    # 1. Directional Penalty
+                    # Calculate edge vector
+                    v_diff = (other_v.co - current_v.co)
+                    if v_diff.length_squared > 0:
+                        v_dir = v_diff.normalized()
+                        # Dot product: 1 if parallel, 0 if perpendicular
+                        dot = abs(v_dir.dot(bias_vector))
+                        # Penalty increases as edge becomes perpendicular to bias
+                        # e.g. parallel (1.0) -> (1 - 1) = 0 penalty
+                        # perpendicular (0.0) -> (1 - 0) = 1.0 penalty * weight
+                        direction_penalty = (1.0 - dot) * 10.0 # Weight 10.0
+                        penalty_multiplier += direction_penalty
+                
+                # 2. Flat Edge Penalty
+                # Check face angle. If < 1 degree, it's flat.
+                # edge.calc_face_angle() returns radians.
+                # 1 degree ~= 0.01745 rad
+                try:
+                    face_angle = edge.calc_face_angle_signed() # or calc_face_angle()
+                except ValueError: 
+                    # Can fail on boundary edges or non-manifold
+                    face_angle = 0.0
+                
+                if abs(face_angle) < 0.02: # Approx 1.15 degrees
+                    # Massive penalty for walking across flat surfaces
+                    # effectively filtering them out unless critical
+                    penalty_multiplier += 100.0
+
+                new_cost = cost + (length * penalty_multiplier)
                 
                 if new_cost < visited.get(other_v, float('inf')):
                     visited[other_v] = new_cost
