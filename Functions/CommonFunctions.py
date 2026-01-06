@@ -2785,14 +2785,28 @@ class Mesh:
             if num_loops == 0:
                 # Closed Surface (Sphere, Torus) or fully smooth cube?
                 # Heuristic: Cut along Z axis (or longest axis)
-                # Find min and max vert in local coords (or global if applied) - Assuming applied transform
-                
-                # Convert verts to list
+                # Find min and max vert in local coords
                 verts_list = list(island_verts)
                 if not verts_list: continue
 
-                # Sort by Z
-                verts_list.sort(key=lambda v: v.co.z)
+                # Calculate bounding box to find dominant axis
+                min_bb = Vector((float('inf'), float('inf'), float('inf')))
+                max_bb = Vector((float('-inf'), float('-inf'), float('-inf')))
+                
+                for v in verts_list:
+                    for i in range(3):
+                        min_bb[i] = min(min_bb[i], v.co[i])
+                        max_bb[i] = max(max_bb[i], v.co[i])
+                
+                size = max_bb - min_bb
+                axis_idx = 0
+                if size.y > size.x and size.y > size.z:
+                    axis_idx = 1
+                elif size.z > size.x and size.z > size.y:
+                    axis_idx = 2
+                
+                # Sort by dominant axis
+                verts_list.sort(key=lambda v: v.co[axis_idx])
                 min_v = verts_list[0]
                 max_v = verts_list[-1]
                 
@@ -2801,48 +2815,109 @@ class Mesh:
                 if path_edges:
                     for e in path_edges:
                         e.seam = True
-                
-                # If it's a torus, this cut only breaks the ring. We might need a second cut to open the tube.
-                # But detecting torus vs sphere is hard.
-                # For a sphere, one cut from pole to pole (path) leaves it as one 'sheet' wrapped?
-                # Re-run island logic? No, too expensive.
-                # Let's trust that one big cut helps unwrapper significantly.
 
-            elif num_loops == 2:
-                # Cylinder-like (Side wall)
-                # Connect Loop 1 and Loop 2
-                l1_edges = list(loops[0])
-                l2_edges = list(loops[1])
+            elif num_loops >= 2:
+                # Cylinder-like (Side wall) with potentially multiple holes
+                # We want to connect the two "end" loops.
+                # Strategy: Identify dominant axis of the island, sort loops by their center's position on that axis.
                 
-                # Pick a vertex from L1
+                # 1. Calculate Island Bounding Box & Dominant Axis
+                verts_list = list(island_verts)
+                min_bb = Vector((float('inf'), float('inf'), float('inf')))
+                max_bb = Vector((float('-inf'), float('-inf'), float('-inf')))
+                
+                for v in verts_list:
+                    for i in range(3):
+                        min_bb[i] = min(min_bb[i], v.co[i])
+                        max_bb[i] = max(max_bb[i], v.co[i])
+                
+                size = max_bb - min_bb
+                axis_idx = 0
+                if size.y > size.x and size.y > size.z:
+                    axis_idx = 1
+                elif size.z > size.x and size.z > size.y:
+                    axis_idx = 2
+                
+                # 2. Calculate Center of each loop
+                loop_centers = []
+                for idx, loop in enumerate(loops):
+                    center = Vector((0.0, 0.0, 0.0))
+                    count = 0
+                    for edge in loop:
+                        for v in edge.verts:
+                            center += v.co
+                            count += 1
+                    if count > 0:
+                        center /= count
+                    loop_centers.append({'index': idx, 'center': center, 'measure': center[axis_idx]})
+                
+                # 3. Sort loops by position on dominant axis
+                loop_centers.sort(key=lambda x: x['measure'])
+                
+                # 4. Pick Start and End loops (First and Last)
+                start_loop_idx = loop_centers[0]['index']
+                end_loop_idx = loop_centers[-1]['index']
+                
+                l1_edges = list(loops[start_loop_idx])
+                l2_edges = list(loops[end_loop_idx])
+                
+                # 5. Connect them finding shortest distance vertices
                 v_start = l1_edges[0].verts[0]
                 
-                # Pick a vertex from L2 (closest to v_start to minimize spiral)
-                # Simple optimization: Find L2 vert with min distance to v_start
                 min_dist = float('inf')
                 v_end = l2_edges[0].verts[0]
                 
+                # Optimize: Find pair of verts (one from L1, one from L2) with min distance?
+                # Or just pick random L1 vert and find closest L2 vert. 
+                # Doing all-to-all is expensive O(N*M). 
+                # Let's Pick 4 points on L1 (extremes) and find closest on L2.
+                # For robustness, let's just use the loop centers to estimate direction, 
+                # but for the actual cut, we need vertices.
+                
+                # Simple robust approach: 
+                # 1. Find the vert in L1 with min coordinate on axis_idx? No, might not align.
+                # 2. Just iterate all verts in L1, find closest in L2? 
+                # If L1 has 100 verts and L2 has 100, that's 10000 checks. Cheap for Python.
+                
+                l1_verts = set()
+                for e in l1_edges:
+                    l1_verts.add(e.verts[0])
+                    l1_verts.add(e.verts[1])
+                    
+                l2_verts = set()
                 for e in l2_edges:
-                    for v in e.verts:
-                        dist = (v.co - v_start.co).length
-                        if dist < min_dist:
-                            min_dist = dist
-                            v_end = v
+                    l2_verts.add(e.verts[0])
+                    l2_verts.add(e.verts[1])
 
-                # Cut path
-                path_edges = Mesh.find_shortest_path(bm, v_start, v_end, island)
+                best_pair = (None, None)
+                
+                # Optimization: To avoid N*M, just pick a representative from L1 (e.g. centroid projected to surface)
+                # or just the first one in the set.
+                ref_v1 = next(iter(l1_verts))
+                
+                # Find closest v2 in L2 to ref_v1
+                best_v2 = None
+                min_dist_v2 = float('inf')
+                for v in l2_verts:
+                    d = (v.co - ref_v1.co).length_squared
+                    if d < min_dist_v2:
+                        min_dist_v2 = d
+                        best_v2 = v
+                
+                # Now find closest v1 in L1 to best_v2 (to minimize spiral twist)
+                best_v1 = None
+                min_dist_v1 = float('inf')
+                for v in l1_verts:
+                    d = (v.co - best_v2.co).length_squared
+                    if d < min_dist_v1:
+                        min_dist_v1 = d
+                        best_v1 = v
+                        
+                # Connect best_v1 and best_v2
+                path_edges = Mesh.find_shortest_path(bm, best_v1, best_v2, island)
                 if path_edges:
                     for e in path_edges:
                         e.seam = True
-
-            elif num_loops > 2:
-                 # Branching pipes (T-junctions)
-                 # Connect all loops to the first loop (spanning tree style)
-                 # Or just connect Loop[i] to Loop[i+1]
-                 
-                 # Basic approach: Sort loops by position (e.g. Center location)
-                 # And connect linearly.
-                 pass
         
         bm.to_mesh(mesh.data)
         bm.free()
