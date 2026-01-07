@@ -2998,25 +2998,37 @@ class Mesh:
             for e in f.edges:
                 all_edges.add(e)
         
-        # FIRST PRINCIPLES FIX: Filter out flat edges ENTIRELY.
-        # An edge is "flat" if the angle between its two adjacent faces is close to 0 (or Pi).
-        # We only allow edges with significant dihedral angle (corners, bevels).
-        FLAT_ANGLE_THRESHOLD = 0.02  # ~1.1 degrees (lowered for smoother bevels)
+        # FILTER: Exclude "flat internal edges" (support edges of ngons).
+        # Definition: An edge is "flat internal" if:
+        #   1. It has exactly 2 linked faces
+        #   2. Those 2 faces have nearly identical normals (coplanar)
+        #   3. It is NOT a boundary edge
+        # These edges are meaningless for UV seams.
+        
+        NORMAL_THRESHOLD = 0.999  # Dot product threshold (~2.5 degrees)
         
         valid_edges = set()
         for edge in all_edges:
-            try:
-                face_angle = abs(edge.calc_face_angle_signed())
-            except ValueError:
-                # Boundary edges or non-manifold - these are typically important, keep them
+            # Boundary edges are always valid (they define shape outline)
+            if edge.is_boundary:
                 valid_edges.add(edge)
                 continue
             
-            # Edge is valid (non-flat) if angle is significant
-            if face_angle > FLAT_ANGLE_THRESHOLD:
+            # Must have exactly 2 linked faces to be a potential internal edge
+            if len(edge.link_faces) != 2:
+                valid_edges.add(edge)  # Keep unusual topology
+                continue
+            
+            # Compare face normals
+            f1, f2 = edge.link_faces
+            dot = f1.normal.dot(f2.normal)
+            
+            # If normals are nearly identical (dot ~ 1), this is an internal support edge -> EXCLUDE
+            # If normals differ significantly, this is a corner/bevel edge -> KEEP
+            if dot < NORMAL_THRESHOLD:
                 valid_edges.add(edge)
         
-        # If no valid edges remain (fully smooth surface), fallback to all edges
+        # If no valid edges remain, fallback to all edges
         if not valid_edges:
             valid_edges = all_edges
             fallback_used = True
