@@ -1567,6 +1567,18 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
     bl_label = "Debug Silhouette Edges"
     bl_options = {'REGISTER', 'UNDO'}
 
+    select_mode: bpy.props.EnumProperty(
+        name="Select Mode",
+        items=[
+            ('SILHOUETTE', "Silhouette", "Select silhouette edges (outer boundary + sharp)"),
+            ('BEVEL', "Bevel Edges", "Select bevel edges only"),
+            ('OUTER_BOUNDARY', "Outer Boundary", "Select outer boundary loops only"),
+            ('SHARP', "Sharp Edges", "Select sharp edges only"),
+            ('BEVEL_PATH', "Bevel Path", "Find shortest path on bevel edges connecting outer loops"),
+        ],
+        default='SILHOUETTE'
+    )
+
     def execute(self, context):
         import bmesh
         from mathutils import Vector
@@ -1804,12 +1816,89 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             silhouette_edges = sharp_edges_in_island | outer_boundary_edges
 
             print(f"[DEBUG] Result:")
+            print(f"  Sharp edges in island: {len(sharp_edges_in_island)}")
             print(f"  Outer boundary edges: {len(outer_boundary_edges)}")
+            print(f"  Bevel edges: {len(bevel_edges)}")
             print(f"  Total silhouette edges: {len(silhouette_edges)}")
 
-            all_silhouette_edges |= silhouette_edges
+            # 根据选择模式收集边
+            if self.select_mode == 'SILHOUETTE':
+                all_silhouette_edges |= silhouette_edges
+            elif self.select_mode == 'BEVEL':
+                all_silhouette_edges |= bevel_edges
+            elif self.select_mode == 'OUTER_BOUNDARY':
+                all_silhouette_edges |= outer_boundary_edges
+            elif self.select_mode == 'SHARP':
+                all_silhouette_edges |= sharp_edges_in_island
+            elif self.select_mode == 'BEVEL_PATH':
+                # Dijkstra 路径搜索：在 bevel edges 上找连接两个外轮廓 loops 的最短路径
+                import heapq
 
-        # 取消所有选择，然后选中 silhouette edges
+                def find_bevel_edge_path(start_verts, target_verts, valid_edges):
+                    """在 bevel edges 上搜索连接两组顶点的最短路径"""
+                    # 初始化：收集所有 valid_edges 涉及的顶点
+                    all_verts = set()
+                    for e in valid_edges:
+                        all_verts.add(e.verts[0])
+                        all_verts.add(e.verts[1])
+
+                    dist = {v: float('inf') for v in all_verts}
+                    prev_edge = {}  # 记录到达每个顶点的边
+
+                    pq = []
+                    for v in start_verts:
+                        if v in dist:
+                            dist[v] = 0
+                            heapq.heappush(pq, (0, id(v), v))
+
+                    while pq:
+                        d, _, v = heapq.heappop(pq)
+                        if d > dist[v]:
+                            continue
+
+                        # 检查是否到达目标
+                        if v in target_verts:
+                            # 回溯路径
+                            path = []
+                            current = v
+                            while current in prev_edge:
+                                edge = prev_edge[current]
+                                path.append(edge)
+                                current = edge.other_vert(current)
+                            return path, d
+
+                        # 遍历邻边
+                        for e in v.link_edges:
+                            if e in valid_edges:
+                                other = e.other_vert(v)
+                                new_dist = d + e.calc_length()
+                                if new_dist < dist.get(other, float('inf')):
+                                    dist[other] = new_dist
+                                    prev_edge[other] = e
+                                    heapq.heappush(pq, (new_dist, id(other), other))
+
+                    return [], float('inf')
+
+                # 获取外轮廓 loops 的顶点（按主轴排序后的首尾）
+                if len(outer_loops) >= 2:
+                    outer_loop_indices = sorted(outer_loops, key=lambda i: loop_info[i]['center'][axis_idx])
+                    loop1_verts = set(v for e in loops[outer_loop_indices[0]] for v in e.verts)
+                    loop2_verts = set(v for e in loops[outer_loop_indices[-1]] for v in e.verts)
+
+                    # Dijkstra 搜索
+                    path_edges, path_cost = find_bevel_edge_path(loop1_verts, loop2_verts, bevel_edges)
+
+                    print(f"[DEBUG BEVEL_PATH] outer_loops: {outer_loops}")
+                    print(f"[DEBUG BEVEL_PATH] loop1_verts: {len(loop1_verts)}, loop2_verts: {len(loop2_verts)}")
+                    print(f"[DEBUG BEVEL_PATH] bevel_edges: {len(bevel_edges)}")
+                    print(f"[DEBUG BEVEL_PATH] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+
+                    if path_edges:
+                        all_silhouette_edges |= set(path_edges)
+                else:
+                    print(f"[DEBUG BEVEL_PATH] Not enough outer loops: {len(outer_loops)}")
+
+        # 取消所有选择，然后选中对应的边
         for e in bm.edges:
             e.select = False
         for v in bm.verts:
@@ -1826,5 +1915,6 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.context.tool_settings.mesh_select_mode = (False, True, False)
 
-        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条轮廓边 (sharp + boundary)")
+        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path'}
+        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条 {mode_names[self.select_mode]} 边")
         return {'FINISHED'}

@@ -3053,39 +3053,79 @@ class Mesh:
                         silhouette_edges.add(edge)
 
                 # ============================================================
-                # 新方法：直接从 bevel edges 中选一条作为 UV seam
-                # bevel edges 连接两个外轮廓 loops，是理想的 seam 位置
+                # Dijkstra 路径搜索：在 bevel edges 上找连接两个外轮廓 loops 的最短路径
                 # ============================================================
+                import heapq
 
-                # 建立顶点到 loop 的映射
-                vert_to_loop = {}
-                for loop_idx, loop in enumerate(loops):
-                    for edge in loop:
-                        for v in edge.verts:
-                            vert_to_loop[v] = loop_idx
+                def find_bevel_edge_path(start_verts, target_verts, valid_edges):
+                    """在 bevel edges 上搜索连接两组顶点的最短路径"""
+                    # 初始化：收集所有 valid_edges 涉及的顶点
+                    all_verts = set()
+                    for e in valid_edges:
+                        all_verts.add(e.verts[0])
+                        all_verts.add(e.verts[1])
 
-                # 筛选：两端顶点分别在不同的外轮廓 loops 上
-                valid_seam_edges = []
-                for edge in bevel_edges:
-                    v1, v2 = edge.verts
-                    v1_loop = vert_to_loop.get(v1)
-                    v2_loop = vert_to_loop.get(v2)
-                    # 两端顶点在不同的 loop 上，且都是外轮廓 loop
-                    if v1_loop is not None and v2_loop is not None:
-                        if v1_loop != v2_loop and v1_loop in outer_loops and v2_loop in outer_loops:
-                            valid_seam_edges.append(edge)
+                    dist = {v: float('inf') for v in all_verts}
+                    prev_edge = {}  # 记录到达每个顶点的边
+
+                    pq = []
+                    for v in start_verts:
+                        if v in dist:
+                            dist[v] = 0
+                            heapq.heappush(pq, (0, id(v), v))
+
+                    while pq:
+                        d, _, v = heapq.heappop(pq)
+                        if d > dist[v]:
+                            continue
+
+                        # 检查是否到达目标
+                        if v in target_verts:
+                            # 回溯路径
+                            path = []
+                            current = v
+                            while current in prev_edge:
+                                edge = prev_edge[current]
+                                path.append(edge)
+                                current = edge.other_vert(current)
+                            return path, d
+
+                        # 遍历邻边
+                        for e in v.link_edges:
+                            if e in valid_edges:
+                                other = e.other_vert(v)
+                                new_dist = d + e.calc_length()
+                                if new_dist < dist.get(other, float('inf')):
+                                    dist[other] = new_dist
+                                    prev_edge[other] = e
+                                    heapq.heappush(pq, (new_dist, id(other), other))
+
+                    return [], float('inf')
 
                 print(f"[auto_seam DEBUG] Island has {len(island)} faces, {len(island_edges)} edges")
                 print(f"[auto_seam DEBUG] Sharp edges: {len(sharp_edges_in_island)}, Bevel edges: {len(bevel_edges)}")
-                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}, Valid seam edges: {len(valid_seam_edges)}")
+                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}")
 
-                if valid_seam_edges:
-                    # 选最长的那条（通常更稳定）
-                    seam_edge = max(valid_seam_edges, key=lambda e: e.calc_length())
-                    seam_edge.seam = True
-                    print(f"[auto_seam DEBUG] Marked 1 bevel edge as seam (length={seam_edge.calc_length():.4f})")
+                # 获取外轮廓 loops 的顶点（按主轴排序后的首尾）
+                if len(outer_loops) >= 2:
+                    outer_loop_indices = sorted(outer_loops, key=lambda i: loop_centers[i]['center'][axis_idx])
+                    loop1_verts = set(v for e in loops[outer_loop_indices[0]] for v in e.verts)
+                    loop2_verts = set(v for e in loops[outer_loop_indices[-1]] for v in e.verts)
+
+                    # Dijkstra 搜索
+                    path_edges, path_cost = find_bevel_edge_path(loop1_verts, loop2_verts, bevel_edges)
+
+                    print(f"[auto_seam DEBUG] loop1_verts: {len(loop1_verts)}, loop2_verts: {len(loop2_verts)}")
+                    print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+
+                    if path_edges:
+                        for e in path_edges:
+                            e.seam = True
+                        print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
+                    else:
+                        print(f"[auto_seam DEBUG] No path found on bevel edges!")
                 else:
-                    print(f"[auto_seam DEBUG] No valid seam edges found!")
+                    print(f"[auto_seam DEBUG] Not enough outer loops: {len(outer_loops)}")
 
         bm.to_mesh(mesh.data)
         bm.free()
