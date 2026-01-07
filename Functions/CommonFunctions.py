@@ -2939,12 +2939,22 @@ class Mesh:
                 # To be robust, use the axis orthogonal to dominant axis
                 # But simple Min/Max on all 3 axes is fine, duplicates don't hurt
                 
-                # Sort by X, Y, Z
+                # Sort by X, Y, Z (4 Candidates: Cardinals)
                 l1_all_verts.sort(key=lambda v: v.co.x)
                 candidates.append(l1_all_verts[0])
                 candidates.append(l1_all_verts[-1])
                 
                 l1_all_verts.sort(key=lambda v: v.co.y)
+                candidates.append(l1_all_verts[0])
+                candidates.append(l1_all_verts[-1])
+                
+                # Sort by X+Y, X-Y (4 Candidates: Diagonals/Corners)
+                # This ensures we hit corners on axis-aligned rounded boxes where cardinal min/max might be on flat faces
+                l1_all_verts.sort(key=lambda v: v.co.x + v.co.y)
+                candidates.append(l1_all_verts[0])
+                candidates.append(l1_all_verts[-1])
+                
+                l1_all_verts.sort(key=lambda v: v.co.x - v.co.y)
                 candidates.append(l1_all_verts[0])
                 candidates.append(l1_all_verts[-1])
                 
@@ -2963,6 +2973,10 @@ class Mesh:
                 bias_vector = Vector((0.0, 0.0, 0.0))
                 bias_vector[axis_idx] = 1.0
 
+                # PHASE 1: STRICT Search (allow_flat_edges = False)
+                # Try all candidates. If ANY valid path is found that doesn't touch a flat face, we take it.
+                # We strictly prefer a non-flat path.
+                
                 for v1 in candidates:
                     # Find closest v2 in L2
                     min_dist_v2 = float('inf')
@@ -2974,11 +2988,31 @@ class Mesh:
                             v2 = target_v
                     
                     if v2:
-                        path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector)
+                        path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector, allow_flat_edges=False)
                         if path_edges is not None:
                             if cost < min_total_cost:
                                 min_total_cost = cost
                                 best_path = path_edges
+                
+                # PHASE 2: FALLBACK Search (allow_flat_edges = True)
+                # Only if NO path was found in Phase 1 (e.g. cylinder with no corners at all)
+                if best_path is None:
+                     min_total_cost = float('inf')
+                     for v1 in candidates:
+                        min_dist_v2 = float('inf')
+                        v2 = None
+                        for target_v in l2_all_verts:
+                            d = (target_v.co - v1.co).length_squared
+                            if d < min_dist_v2:
+                                min_dist_v2 = d
+                                v2 = target_v
+                        
+                        if v2:
+                            path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector, allow_flat_edges=True)
+                            if path_edges is not None:
+                                if cost < min_total_cost:
+                                    min_total_cost = cost
+                                    best_path = path_edges
 
                 if best_path:
                     for e in best_path:
@@ -2990,8 +3024,8 @@ class Mesh:
         if current_mode == 'EDIT':
              bpy.ops.object.mode_set(mode='EDIT')
 
-    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None):
-        """Dijkstra pathfinder. Flat edges are EXCLUDED from traversal."""
+    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None, allow_flat_edges=False):
+        """Dijkstra pathfinder. Flat edges are EXCLUDED unless allow_flat_edges=True."""
         # Convert valid_faces to valid_edges set
         all_edges = set()
         for f in valid_faces_set:
@@ -3028,16 +3062,9 @@ class Mesh:
             if dot < NORMAL_THRESHOLD:
                 valid_edges.add(edge)
         
-        # If no valid edges remain, fallback to all edges
-        if not valid_edges:
+        # If no valid edges remain (e.g. fully smooth), fallback depends on parameter
+        if not valid_edges or allow_flat_edges:
             valid_edges = all_edges
-            fallback_used = True
-        else:
-            fallback_used = False
-        
-        # Dijkstra
-        # queue: (cost, vert_id, vert, path_of_edges)
-        import heapq
         
         def _run_dijkstra(edge_set):
             queue = [(0.0, id(start_vert), start_vert, [])]
@@ -3083,13 +3110,9 @@ class Mesh:
             
             return best_path, best_path_cost
         
-        # First try with filtered edges (no flat edges)
+        # Run Dijkstra
         best_path, best_path_cost = _run_dijkstra(valid_edges)
-        
-        # FALLBACK: If no path found (disconnected by filtering), retry with all edges
-        if best_path is None and not fallback_used:
-            best_path, best_path_cost = _run_dijkstra(all_edges)
-                    
+
         return best_path, best_path_cost
 
 class Modifier:
