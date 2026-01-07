@@ -3026,6 +3026,7 @@ class Mesh:
 
     def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None, allow_flat_edges=False):
         """Dijkstra pathfinder. Flat edges are EXCLUDED unless allow_flat_edges=True."""
+        import heapq
         # Convert valid_faces to valid_edges set
         all_edges = set()
         for f in valid_faces_set:
@@ -3067,6 +3068,7 @@ class Mesh:
             valid_edges = all_edges
         
         def _run_dijkstra(edge_set):
+            import heapq
             queue = [(0.0, id(start_vert), start_vert, [])]
             visited = {start_vert: 0.0}
             best_path = None
