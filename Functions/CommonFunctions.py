@@ -2938,12 +2938,34 @@ class Mesh:
              bpy.ops.object.mode_set(mode='EDIT')
 
     def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None):
-        """Simple BFS/Dijkstra for edges within specific faces with optional directional bias and flat edge penalty"""
-        # Convert valid_faces to valid_edges set for faster lookup
-        valid_edges = set()
+        """Dijkstra pathfinder. Flat edges are EXCLUDED from traversal."""
+        # Convert valid_faces to valid_edges set
+        all_edges = set()
         for f in valid_faces_set:
             for e in f.edges:
-                valid_edges.add(e)
+                all_edges.add(e)
+        
+        # FIRST PRINCIPLES FIX: Filter out flat edges ENTIRELY.
+        # An edge is "flat" if the angle between its two adjacent faces is close to 0 (or Pi).
+        # We only allow edges with significant dihedral angle (corners, bevels).
+        FLAT_ANGLE_THRESHOLD = 0.05  # ~2.8 degrees
+        
+        valid_edges = set()
+        for edge in all_edges:
+            try:
+                face_angle = abs(edge.calc_face_angle_signed())
+            except ValueError:
+                # Boundary edges or non-manifold - these are typically important, keep them
+                valid_edges.add(edge)
+                continue
+            
+            # Edge is valid (non-flat) if angle is significant
+            if face_angle > FLAT_ANGLE_THRESHOLD:
+                valid_edges.add(edge)
+        
+        # If no valid edges remain (fully smooth surface), fallback to all edges
+        if not valid_edges:
+            valid_edges = all_edges
         
         # Dijkstra
         # queue: (cost, vert_id, vert, path_of_edges)
@@ -2971,38 +2993,18 @@ class Mesh:
                 
                 other_v = edge.other_vert(current_v)
                 
-                # Calculate Cost
+                # Calculate Cost (Directional bias only, flat edges already excluded)
                 length = edge.calc_length()
                 penalty_multiplier = 1.0
                 
                 if bias_vector:
-                    # 1. Directional Penalty
-                    # Calculate edge vector
+                    # Directional Penalty: prefer edges aligned with dominant axis
                     v_diff = (other_v.co - current_v.co)
                     if v_diff.length_squared > 0:
                         v_dir = v_diff.normalized()
-                        # Dot product: 1 if parallel, 0 if perpendicular
                         dot = abs(v_dir.dot(bias_vector))
-                        # Penalty increases as edge becomes perpendicular to bias
-                        # e.g. parallel (1.0) -> (1 - 1) = 0 penalty
-                        # perpendicular (0.0) -> (1 - 0) = 1.0 penalty * weight
-                        direction_penalty = (1.0 - dot) * 10.0 # Weight 10.0
+                        direction_penalty = (1.0 - dot) * 5.0  # Lower weight since flat edges are already excluded
                         penalty_multiplier += direction_penalty
-                
-                # 2. Flat Edge Penalty
-                # Check face angle. If < 1 degree, it's flat.
-                # edge.calc_face_angle() returns radians.
-                # 1 degree ~= 0.01745 rad
-                try:
-                    face_angle = edge.calc_face_angle_signed() # or calc_face_angle()
-                except ValueError: 
-                    # Can fail on boundary edges or non-manifold
-                    face_angle = 0.0
-                
-                if abs(face_angle) < 0.05: # Changed from 0.02 (~1.1 deg) to 0.05 (~2.8 degrees) for wider tolerance
-                    # Massive penalty for walking across flat surfaces
-                    # effectively filtering them out unless critical
-                    penalty_multiplier += 500.0 # Increased from 100.0 to 500.0
 
                 new_cost = cost + (length * penalty_multiplier)
                 
