@@ -1562,7 +1562,7 @@ class HST_OT_SnapTransform(bpy.types.Operator):
 
 
 class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
-    """Debug: 选中所有轮廓边（排除中间孔洞和flat edges）"""
+    """Debug: 选中所有轮廓边（使用 sharp edge + 排除中间孔洞）"""
     bl_idname = "hst.debug_silhouette_edges"
     bl_label = "Debug Silhouette Edges"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1576,11 +1576,22 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             self.report({'ERROR'}, "请选中一个Mesh对象")
             return {'CANCELLED'}
 
-        current_mode = bpy.context.object.mode
         bpy.ops.object.mode_set(mode='OBJECT')
 
+        # 读取 sharp_edge attribute
+        mesh_data = mesh.data
+        sharp_edge_attr = mesh_data.attributes.get("sharp_edge")
+        if sharp_edge_attr:
+            sharp_edge_values = [d.value for d in sharp_edge_attr.data]
+            print(f"[DEBUG] Found sharp_edge attribute with {len(sharp_edge_values)} values")
+            print(f"[DEBUG] Sharp edges count: {sum(sharp_edge_values)}")
+        else:
+            # fallback: 用 edge.use_edge_sharp
+            sharp_edge_values = [e.use_edge_sharp for e in mesh_data.edges]
+            print(f"[DEBUG] No sharp_edge attribute, using edge.use_edge_sharp fallback")
+
         bm = bmesh.new()
-        bm.from_mesh(mesh.data)
+        bm.from_mesh(mesh_data)
         bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
 
@@ -1615,12 +1626,13 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                 for edge in face.edges:
                     island_edges.add(edge)
 
-            # 找boundary loops
+            # 找 boundary loops
             boundary_edges = [e for e in island_edges if e.is_boundary]
             if len(boundary_edges) < 2:
+                # 没有足够的 boundary loops，跳过
                 continue
 
-            # 分组boundary loops
+            # 分组 boundary loops
             visited_boundary = set()
             loops = []
             for edge in boundary_edges:
@@ -1643,7 +1655,7 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             if len(loops) < 2:
                 continue
 
-            # 计算每个loop的中心点
+            # 计算每个 loop 的中心点，确定主轴
             loop_info = []
             for idx, loop in enumerate(loops):
                 center = Vector((0.0, 0.0, 0.0))
@@ -1656,108 +1668,148 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                     center /= count
                 loop_info.append({'index': idx, 'center': center, 'edge_count': len(loop)})
 
-            # 通过loops的分布确定主轴：找哪个轴上loops的spread最大
-            if len(loop_info) >= 2:
-                centers = [li['center'] for li in loop_info]
-                spread_x = max(c.x for c in centers) - min(c.x for c in centers)
-                spread_y = max(c.y for c in centers) - min(c.y for c in centers)
-                spread_z = max(c.z for c in centers) - min(c.z for c in centers)
+            # 通过 loops 的分布确定主轴
+            centers = [li['center'] for li in loop_info]
+            spread_x = max(c.x for c in centers) - min(c.x for c in centers)
+            spread_y = max(c.y for c in centers) - min(c.y for c in centers)
+            spread_z = max(c.z for c in centers) - min(c.z for c in centers)
 
-                if spread_z >= spread_x and spread_z >= spread_y:
-                    axis_idx = 2
-                elif spread_y >= spread_x and spread_y >= spread_z:
-                    axis_idx = 1
-                else:
-                    axis_idx = 0
+            if spread_z >= spread_x and spread_z >= spread_y:
+                axis_idx = 2
+            elif spread_y >= spread_x and spread_y >= spread_z:
+                axis_idx = 1
             else:
-                # Fallback to bounding box
-                coords = [v.co for v in all_verts]
-                min_co = Vector((min(c.x for c in coords), min(c.y for c in coords), min(c.z for c in coords)))
-                max_co = Vector((max(c.x for c in coords), max(c.y for c in coords), max(c.z for c in coords)))
-                extents = max_co - min_co
                 axis_idx = 0
-                if extents.y > extents.x and extents.y > extents.z:
-                    axis_idx = 1
-                elif extents.z > extents.x and extents.z > extents.y:
-                    axis_idx = 2
 
-            # 按主轴排序loops
-            loop_centers = []
+            # 按主轴排序 loops
             for li in loop_info:
                 li['measure'] = li['center'][axis_idx]
-                loop_centers.append(li)
-            loop_centers.sort(key=lambda x: x['measure'])
+            loop_info.sort(key=lambda x: x['measure'])
 
-            # DEBUG: 打印loops信息
-            print(f"[DEBUG] Island has {len(loops)} boundary loops, axis={axis_idx}")
-            for lc in loop_centers:
-                print(f"  Loop {lc['index']}: center={lc['center']}, measure={lc['measure']:.4f}, edges={len(loops[lc['index']])}")
-
-            start_loop_idx = loop_centers[0]['index']
-            end_loop_idx = loop_centers[-1]['index']
-            print(f"[DEBUG] Selected start_loop={start_loop_idx}, end_loop={end_loop_idx}")
+            start_loop_idx = loop_info[0]['index']
+            end_loop_idx = loop_info[-1]['index']
             l1_edges = set(loops[start_loop_idx])
             l2_edges = set(loops[end_loop_idx])
             start_end_boundary_edges = l1_edges | l2_edges
 
             # ============================================================
-            # Method: Normal comparison
-            # If two faces on both sides of an edge have similar normals,
-            # the edge is a flat edge (coplanar). Otherwise it's a silhouette edge.
+            # 方法：sharp_edge attribute + bevel edges 连通性检测
+            # 1. 外轮廓边 = sharp edges（直接从 attribute）
+            # 2. Bevel edges = 法线角度法选中 + 非 sharp
+            # 3. 用 bevel edges 做连通性检测区分内外 boundary loops
             # ============================================================
-            NORMAL_THRESHOLD = 0.999  # dot > 0.999 means nearly identical normals
 
-            silhouette_edges = set()
-            boundary_included = 0
-            boundary_excluded = 0
-            seam_included = 0
-            coplanar_excluded = 0
-            silhouette_included = 0
+            ANGLE_THRESHOLD = 0.98  # dot < 0.98 意味着角度 > ~11°
 
+            # 1. 找出所有 sharp edges（外轮廓边）
+            sharp_edges_in_island = set()
             for edge in island_edges:
-                # 1. Boundary edges: only include start/end loops
                 if edge.is_boundary:
-                    if edge in start_end_boundary_edges:
-                        silhouette_edges.add(edge)
-                        boundary_included += 1
-                    else:
-                        boundary_excluded += 1
                     continue
+                if sharp_edge_values[edge.index]:
+                    sharp_edges_in_island.add(edge)
 
-                # 2. Existing seam edges: include
-                if edge.seam:
-                    silhouette_edges.add(edge)
-                    seam_included += 1
+            # 2. 法线角度法找 bevel edges（用于连通性检测）
+            bevel_edges = set()
+            for edge in island_edges:
+                if edge.is_boundary:
                     continue
-
-                # 3. Check faces on both sides
+                if sharp_edge_values[edge.index]:
+                    continue  # 跳过 sharp edges
                 linked_faces = [f for f in edge.link_faces if f in island_faces]
-                if len(linked_faces) != 2:
-                    # Edge with only one face in island - include as silhouette
-                    silhouette_edges.add(edge)
-                    silhouette_included += 1
+                if len(linked_faces) == 2:
+                    dot = linked_faces[0].normal.dot(linked_faces[1].normal)
+                    if dot < ANGLE_THRESHOLD:
+                        bevel_edges.add(edge)
+
+            print(f"[DEBUG] Edge classification:")
+            print(f"  Sharp edges in island: {len(sharp_edges_in_island)}")
+            print(f"  Bevel edges: {len(bevel_edges)}")
+
+            # 3. 用 bevel edges 做连通性检测
+            # 获取每个 loop 的顶点集合
+            loop_verts_list = []
+            for loop in loops:
+                verts = set()
+                for edge in loop:
+                    verts.add(edge.verts[0])
+                    verts.add(edge.verts[1])
+                loop_verts_list.append(verts)
+
+            def find_reachable_verts(start_verts, valid_edges):
+                """从 start_verts 出发，沿着 valid_edges 能到达的所有顶点"""
+                visited = set(start_verts)
+                stack = list(start_verts)
+                while stack:
+                    v = stack.pop()
+                    for e in v.link_edges:
+                        if e in valid_edges:
+                            other_v = e.other_vert(v)
+                            if other_v not in visited:
+                                visited.add(other_v)
+                                stack.append(other_v)
+                return visited
+
+            # 4. 找出通过 bevel edges 连通的 loops
+            connected_groups = []
+            visited_loops = set()
+
+            for start_idx in range(len(loops)):
+                if start_idx in visited_loops:
                     continue
 
-                f1, f2 = linked_faces
+                # 从这个 loop 的顶点开始 flood fill（沿着 bevel edges）
+                reachable = find_reachable_verts(loop_verts_list[start_idx], bevel_edges)
 
-                # Compare normals: if nearly identical, it's a flat edge
-                dot = f1.normal.dot(f2.normal)
-                if dot > NORMAL_THRESHOLD:
-                    # Flat edge - exclude
-                    coplanar_excluded += 1
-                else:
-                    # Silhouette edge - include
-                    silhouette_edges.add(edge)
-                    silhouette_included += 1
+                # 检查哪些其他 loops 的顶点在 reachable 中
+                connected_group = {start_idx}
+                for other_idx in range(len(loops)):
+                    if other_idx != start_idx:
+                        if loop_verts_list[other_idx] & reachable:
+                            connected_group.add(other_idx)
 
-            print(f"[DEBUG] Silhouette classification (Normal method, threshold={NORMAL_THRESHOLD}):")
-            print(f"  boundary_included={boundary_included}, boundary_excluded={boundary_excluded}")
-            print(f"  seam_included={seam_included}, silhouette_included={silhouette_included}, coplanar_excluded={coplanar_excluded}")
+                connected_groups.append(connected_group)
+                visited_loops |= connected_group
+
+            # 5. 选最大的连通组作为外轮廓
+            def calc_loop_perimeter(loop_idx):
+                return sum(e.calc_length() for e in loops[loop_idx])
+
+            best_group = None
+            best_score = (-1, -1)
+
+            for group in connected_groups:
+                size = len(group)
+                total_perimeter = sum(calc_loop_perimeter(idx) for idx in group)
+                score = (size, total_perimeter)
+                if score > best_score:
+                    best_score = score
+                    best_group = group
+
+            outer_loops = list(best_group) if best_group else []
+            inner_loops = [i for i in range(len(loops)) if i not in outer_loops]
+
+            print(f"[DEBUG] Connectivity-based Loop classification:")
+            print(f"  Total loops: {len(loops)}, Bevel edges: {len(bevel_edges)}")
+            print(f"  Connected groups: {connected_groups}")
+            print(f"  Outer loops: {outer_loops} (size={len(outer_loops)}, perimeter={best_score[1]:.2f})")
+            print(f"  Inner loops (holes): {inner_loops}")
+
+            # 6. 外轮廓 boundary edges
+            outer_boundary_edges = set()
+            for idx in outer_loops:
+                outer_boundary_edges |= loops[idx]
+
+            # 7. 最终轮廓边 = sharp edges + 外轮廓 boundary edges
+            silhouette_edges = sharp_edges_in_island | outer_boundary_edges
+
+            print(f"[DEBUG] Result:")
+            print(f"  Outer boundary edges: {len(outer_boundary_edges)}")
             print(f"  Total silhouette edges: {len(silhouette_edges)}")
 
             all_silhouette_edges |= silhouette_edges
 
-        # 取消所有选择，然后选中silhouette edges
+        # 取消所有选择，然后选中 silhouette edges
         for e in bm.edges:
             e.select = False
         for v in bm.verts:
@@ -1774,5 +1826,5 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.context.tool_settings.mesh_select_mode = (False, True, False)
 
-        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条轮廓边")
+        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条轮廓边 (sharp + boundary)")
         return {'FINISHED'}
