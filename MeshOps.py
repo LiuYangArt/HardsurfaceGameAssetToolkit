@@ -110,6 +110,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
             
+            Mesh.dissolve_flat_edges(mesh)  # 溶解平面内部支撑边
             Mesh.auto_seam(mesh)
 
         Mesh.merge_verts_ops(selected_meshes)

@@ -2688,6 +2688,59 @@ class Mesh:
         bpy.ops.object.mode_set(mode="OBJECT")
 
 
+    def dissolve_flat_edges(mesh: bpy.types.Object):
+        """
+        溶解平面区域的内部支撑边 (support edges)。
+        只保留平面区域的外轮廓边，避免 UV Seam 被标记到这些无意义的边上。
+        
+        定义"内部边"：
+        - 边的两个相邻面法线方向基本相同（在同一平面上）
+        - 边不是边界边 (is_boundary = False)
+        """
+        current_mode = mesh.mode
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh.data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        
+        FLAT_THRESHOLD = 0.02  # ~1.1 degrees in radians
+        
+        edges_to_dissolve = []
+        
+        for edge in bm.edges:
+            # Skip boundary edges (they are always important)
+            if edge.is_boundary:
+                continue
+            
+            # Must have exactly 2 linked faces
+            if len(edge.link_faces) != 2:
+                continue
+            
+            # Check dihedral angle
+            try:
+                face_angle = abs(edge.calc_face_angle_signed())
+            except ValueError:
+                continue
+            
+            # If edge is flat (angle close to 0 or Pi), it's a support edge
+            if face_angle < FLAT_THRESHOLD or abs(face_angle - 3.14159) < FLAT_THRESHOLD:
+                edges_to_dissolve.append(edge)
+        
+        # Dissolve the internal edges
+        if edges_to_dissolve:
+            bmesh.ops.dissolve_edges(bm, edges=edges_to_dissolve, use_verts=True, use_face_split=False)
+        
+        bm.to_mesh(mesh.data)
+        mesh.data.update()
+        bm.free()
+        
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+
+
     def auto_seam(mesh: bpy.types.Object):
         """Automatically mark seams for closed shapes (Cylinders, Spheres, Tori)"""
         
