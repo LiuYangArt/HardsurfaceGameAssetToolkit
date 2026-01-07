@@ -2876,27 +2876,10 @@ class Mesh:
             elif num_loops >= 2:
                 # Cylinder-like (Side wall) with potentially multiple holes
                 # We want to connect the two "end" loops.
-                # Strategy: Identify dominant axis of the island, sort loops by their center's position on that axis.
-                
-                # 1. Calculate Island Bounding Box & Dominant Axis
-                verts_list = list(island_verts)
-                min_bb = Vector((float('inf'), float('inf'), float('inf')))
-                max_bb = Vector((float('-inf'), float('-inf'), float('-inf')))
-                
-                for v in verts_list:
-                    for i in range(3):
-                        min_bb[i] = min(min_bb[i], v.co[i])
-                        max_bb[i] = max(max_bb[i], v.co[i])
-                
-                size = max_bb - min_bb
-                axis_idx = 0
-                if size.y > size.x and size.y > size.z:
-                    axis_idx = 1
-                elif size.z > size.x and size.z > size.y:
-                    axis_idx = 2
-                
-                # 2. Calculate Center of each loop
-                loop_centers = []
+                # Strategy: Identify dominant axis by loop distribution, not bounding box.
+
+                # 1. Calculate Center of each loop first
+                loop_info = []
                 for idx, loop in enumerate(loops):
                     center = Vector((0.0, 0.0, 0.0))
                     count = 0
@@ -2906,216 +2889,336 @@ class Mesh:
                             count += 1
                     if count > 0:
                         center /= count
-                    loop_centers.append({'index': idx, 'center': center, 'measure': center[axis_idx]})
-                
+                    loop_info.append({'index': idx, 'center': center, 'edge_count': len(loop)})
+
+                # 2. Determine dominant axis by loop spread (not bounding box)
+                centers = [li['center'] for li in loop_info]
+                spread_x = max(c.x for c in centers) - min(c.x for c in centers)
+                spread_y = max(c.y for c in centers) - min(c.y for c in centers)
+                spread_z = max(c.z for c in centers) - min(c.z for c in centers)
+
+                if spread_z >= spread_x and spread_z >= spread_y:
+                    axis_idx = 2
+                elif spread_y >= spread_x and spread_y >= spread_z:
+                    axis_idx = 1
+                else:
+                    axis_idx = 0
+
                 # 3. Sort loops by position on dominant axis
+                loop_centers = []
+                for li in loop_info:
+                    li['measure'] = li['center'][axis_idx]
+                    loop_centers.append(li)
                 loop_centers.sort(key=lambda x: x['measure'])
-                
+
                 # 4. Pick Start and End loops (First and Last)
                 start_loop_idx = loop_centers[0]['index']
                 end_loop_idx = loop_centers[-1]['index']
-                
+
                 l1_edges = list(loops[start_loop_idx])
                 l2_edges = list(loops[end_loop_idx])
-                
-                # 5. Connect them finding shortest distance vertices
-                # Deterministic Multi-Candidate Search
-                # Try 4 candidates from L1 (Min/Max X, Min/Max Y) to find the best start point
-                # This avoids random selection and ensures we find the "cleanest" path (one that avoids flat faces)
-                
-                l1_all_verts = set()
-                for e in l1_edges:
-                    l1_all_verts.add(e.verts[0])
-                    l1_all_verts.add(e.verts[1])
-                l1_all_verts = list(l1_all_verts)
-                
-                l2_all_verts = set()
-                for e in l2_edges:
-                    l2_all_verts.add(e.verts[0])
-                    l2_all_verts.add(e.verts[1])
 
-                candidates = []
-                # Find Min/Max X, Min/Max Y verts in L1 local coords
-                # To be robust, use the axis orthogonal to dominant axis
-                # But simple Min/Max on all 3 axes is fine, duplicates don't hurt
-                
-                # Sort by X, Y, Z (4 Candidates: Cardinals)
-                l1_all_verts.sort(key=lambda v: v.co.x)
-                candidates.append(l1_all_verts[0])
-                candidates.append(l1_all_verts[-1])
-                
-                l1_all_verts.sort(key=lambda v: v.co.y)
-                candidates.append(l1_all_verts[0])
-                candidates.append(l1_all_verts[-1])
-                
-                # Sort by X+Y, X-Y (4 Candidates: Diagonals/Corners)
-                # This ensures we hit corners on axis-aligned rounded boxes where cardinal min/max might be on flat faces
-                l1_all_verts.sort(key=lambda v: v.co.x + v.co.y)
-                candidates.append(l1_all_verts[0])
-                candidates.append(l1_all_verts[-1])
-                
-                l1_all_verts.sort(key=lambda v: v.co.x - v.co.y)
-                candidates.append(l1_all_verts[0])
-                candidates.append(l1_all_verts[-1])
-                
-                if len(l1_all_verts) > 4:
-                     # Add Z just in case
-                    l1_all_verts.sort(key=lambda v: v.co.z)
-                    candidates.append(l1_all_verts[0])
-                    candidates.append(l1_all_verts[-1])
-                
-                candidates = list(set(candidates)) # Remove duplicates
+                # 5. Connect them finding shortest distance vertices
+                # CRITICAL: Only use vertices that connect to non-boundary silhouette edges
+                # This ensures the path can start/end on a silhouette edge, not a flat edge
+
+                # First, get all island edges and identify silhouette vs flat
+                island_edges = set()
+                for face in island:
+                    for edge in face.edges:
+                        island_edges.add(edge)
+
+                # Identify coplanar regions (same algorithm as find_shortest_path)
+                PLANE_DIST_THRESHOLD = 0.01
+                face_to_region = {}
+                region_id = 0
+                region_visited = set()
+                island_faces = set(island)
+
+                while len(region_visited) < len(island_faces):
+                    seed_face = next(iter(island_faces - region_visited))
+                    ref_normal = seed_face.normal.copy()
+                    ref_point = seed_face.verts[0].co.copy()
+                    stack = [seed_face]
+
+                    while stack:
+                        f = stack.pop()
+                        if f in region_visited:
+                            continue
+                        all_verts_on_plane = True
+                        for v in f.verts:
+                            dist = abs((v.co - ref_point).dot(ref_normal))
+                            if dist > PLANE_DIST_THRESHOLD:
+                                all_verts_on_plane = False
+                                break
+                        if all_verts_on_plane:
+                            region_visited.add(f)
+                            face_to_region[f] = region_id
+                            for edge in f.edges:
+                                if not edge.seam and not edge.is_boundary:
+                                    for neighbor in edge.link_faces:
+                                        if neighbor in island_faces and neighbor not in region_visited:
+                                            stack.append(neighbor)
+                    region_id += 1
+
+                # Classify edges - EXCLUDE boundary edges of intermediate holes
+                # Only include boundary edges from start/end loops
+                start_end_boundary_edges = set(l1_edges) | set(l2_edges)
+
+                silhouette_edges = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        # Only include if it's part of start or end loop
+                        if edge in start_end_boundary_edges:
+                            silhouette_edges.add(edge)
+                        # Skip boundary edges from intermediate holes
+                        continue
+                    if edge.seam:
+                        silhouette_edges.add(edge)
+                        continue
+                    linked_faces = [f for f in edge.link_faces if f in island_faces]
+                    if len(linked_faces) != 2:
+                        silhouette_edges.add(edge)
+                        continue
+                    f1, f2 = linked_faces
+                    if face_to_region.get(f1, -1) != face_to_region.get(f2, -2):
+                        silhouette_edges.add(edge)
+
+                # Non-boundary silhouette edges (the "vertical" edges we want to use for seams)
+                non_boundary_silhouette = {e for e in silhouette_edges if not e.is_boundary}
+
+                # Get loop vertices
+                l1_loop_verts = set()
+                for e in l1_edges:
+                    l1_loop_verts.add(e.verts[0])
+                    l1_loop_verts.add(e.verts[1])
+
+                l2_loop_verts = set()
+                for e in l2_edges:
+                    l2_loop_verts.add(e.verts[0])
+                    l2_loop_verts.add(e.verts[1])
+
+                # Score vertices by how many non-boundary silhouette edges they connect to
+                def vert_silhouette_score(v):
+                    return sum(1 for e in v.link_edges if e in non_boundary_silhouette)
+
+                # Filter to vertices that connect to at least one non-boundary silhouette edge
+                l1_good_verts = [v for v in l1_loop_verts if vert_silhouette_score(v) > 0]
+                l2_good_verts = [v for v in l2_loop_verts if vert_silhouette_score(v) > 0]
+
+                # Fallback if none found
+                if not l1_good_verts:
+                    l1_good_verts = list(l1_loop_verts)
+                if not l2_good_verts:
+                    l2_good_verts = list(l2_loop_verts)
+
+                l1_all_verts = l1_good_verts
+                l2_all_verts = l2_good_verts
+
+                # Build candidates: vertices with highest silhouette connectivity
+                l1_all_verts.sort(key=lambda v: (-vert_silhouette_score(v), v.co.x, v.co.y, v.co.z))
+
+                # Take vertices with best score
+                if l1_all_verts:
+                    max_score = vert_silhouette_score(l1_all_verts[0])
+                    candidates = [v for v in l1_all_verts if vert_silhouette_score(v) == max_score]
+                    if len(candidates) > 8:
+                        candidates = candidates[:8]
+                else:
+                    candidates = []
 
                 best_path = None
                 min_total_cost = float('inf')
-                
+
                 # Create bias vector for pathfinding (dominant axis)
                 bias_vector = Vector((0.0, 0.0, 0.0))
                 bias_vector[axis_idx] = 1.0
 
+                # DEBUG output
+                print(f"[auto_seam DEBUG] Island has {len(island)} faces, {len(island_edges)} edges")
+                print(f"[auto_seam DEBUG] Silhouette edges: {len(silhouette_edges)}, Non-boundary silhouette: {len(non_boundary_silhouette)}")
+                print(f"[auto_seam DEBUG] L1 good verts: {len(l1_good_verts)}, L2 good verts: {len(l2_good_verts)}")
+                print(f"[auto_seam DEBUG] Candidates: {len(candidates)}")
+
+                # Convert L2 verts to set for multi-target Dijkstra
+                l2_verts_set = set(l2_all_verts)
+
                 # PHASE 1: STRICT Search (allow_flat_edges = False)
-                # Try all candidates. If ANY valid path is found that doesn't touch a flat face, we take it.
-                # We strictly prefer a non-flat path.
-                
+                # Find path from each candidate to ANY vertex in L2
+
+                phase1_attempts = 0
+                phase1_successes = 0
                 for v1 in candidates:
-                    # Find closest v2 in L2
-                    min_dist_v2 = float('inf')
-                    v2 = None
-                    for target_v in l2_all_verts:
-                        d = (target_v.co - v1.co).length_squared
-                        if d < min_dist_v2:
-                            min_dist_v2 = d
-                            v2 = target_v
-                    
-                    if v2:
-                        path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector, allow_flat_edges=False)
-                        if path_edges is not None:
-                            if cost < min_total_cost:
-                                min_total_cost = cost
-                                best_path = path_edges
-                
-                # PHASE 2: FALLBACK Search (allow_flat_edges = True)
-                # Only if NO path was found in Phase 1 (e.g. cylinder with no corners at all)
-                if best_path is None:
-                     min_total_cost = float('inf')
-                     for v1 in candidates:
-                        min_dist_v2 = float('inf')
-                        v2 = None
-                        for target_v in l2_all_verts:
-                            d = (target_v.co - v1.co).length_squared
-                            if d < min_dist_v2:
-                                min_dist_v2 = d
-                                v2 = target_v
-                        
-                        if v2:
-                            path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector, allow_flat_edges=True)
-                            if path_edges is not None:
-                                if cost < min_total_cost:
-                                    min_total_cost = cost
-                                    best_path = path_edges
+                    phase1_attempts += 1
+                    # Use end_verts_set to allow reaching ANY L2 vertex
+                    path_edges, cost = Mesh.find_shortest_path(
+                        bm, v1, None, island,
+                        bias_vector=bias_vector,
+                        allow_flat_edges=False,
+                        silhouette_edges_override=silhouette_edges,
+                        end_verts_set=l2_verts_set
+                    )
+                    if path_edges is not None:
+                        phase1_successes += 1
+                        if cost < min_total_cost:
+                            min_total_cost = cost
+                            best_path = path_edges
+
+                print(f"[auto_seam DEBUG] PHASE 1: {phase1_attempts} attempts, {phase1_successes} successes, best_path={'found' if best_path else 'None'}")
 
                 if best_path:
+                    marked_count = 0
                     for e in best_path:
-                        e.seam = True
-        
+                        if e in silhouette_edges:
+                            e.seam = True
+                            marked_count += 1
+                    print(f"[auto_seam DEBUG] Marked {marked_count}/{len(best_path)} edges as seam")
+
         bm.to_mesh(mesh.data)
         bm.free()
         
         if current_mode == 'EDIT':
              bpy.ops.object.mode_set(mode='EDIT')
 
-    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None, allow_flat_edges=False):
-        """Dijkstra pathfinder. Flat edges are EXCLUDED unless allow_flat_edges=True."""
+    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None, allow_flat_edges=False, silhouette_edges_override=None, end_verts_set=None):
+        """Dijkstra pathfinder. Flat edges are excluded unless allow_flat_edges=True.
+
+        Args:
+            end_vert: Single target vertex (used if end_verts_set is None)
+            end_verts_set: Set of target vertices - path ends when ANY is reached
+            silhouette_edges_override: If provided, use this set as silhouette edges instead of computing
+        """
         import heapq
+
+        # Determine target vertices
+        if end_verts_set is not None:
+            target_verts = end_verts_set
+        else:
+            target_verts = {end_vert}
+
         # Convert valid_faces to valid_edges set
         all_edges = set()
         for f in valid_faces_set:
             for e in f.edges:
                 all_edges.add(e)
-        
-        # FILTER: Exclude "flat internal edges" (support edges of ngons).
-        # Definition: An edge is "flat internal" if:
-        #   1. It has exactly 2 linked faces
-        #   2. Those 2 faces have nearly identical normals (coplanar)
-        #   3. It is NOT a boundary edge
-        # These edges are meaningless for UV seams.
-        
-        NORMAL_THRESHOLD = 0.999  # Dot product threshold (~2.5 degrees)
-        
-        valid_edges = set()
-        for edge in all_edges:
-            # Boundary edges are always valid (they define shape outline)
-            if edge.is_boundary:
-                valid_edges.add(edge)
-                continue
-            
-            # Must have exactly 2 linked faces to be a potential internal edge
-            if len(edge.link_faces) != 2:
-                valid_edges.add(edge)  # Keep unusual topology
-                continue
-            
-            # Compare face normals
-            f1, f2 = edge.link_faces
-            dot = f1.normal.dot(f2.normal)
-            
-            # If normals are nearly identical (dot ~ 1), this is an internal support edge -> EXCLUDE
-            # If normals differ significantly, this is a corner/bevel edge -> KEEP
-            if dot < NORMAL_THRESHOLD:
-                valid_edges.add(edge)
-        
-        # If no valid edges remain (e.g. fully smooth), fallback depends on parameter
-        if not valid_edges or allow_flat_edges:
-            valid_edges = all_edges
-        
-        def _run_dijkstra(edge_set):
-            import heapq
-            queue = [(0.0, id(start_vert), start_vert, [])]
-            visited = {start_vert: 0.0}
-            best_path = None
-            best_path_cost = float('inf')
-            
-            while queue:
-                cost, _, current_v, path = heapq.heappop(queue)
-                
-                if current_v == end_vert:
-                    best_path = path
-                    best_path_cost = cost
-                    break
-                
-                if cost > visited.get(current_v, float('inf')):
-                    continue
-                
-                for edge in current_v.link_edges:
-                    if edge not in edge_set:
+
+        # Use override if provided, otherwise compute
+        if silhouette_edges_override is not None:
+            silhouette_edges = silhouette_edges_override & all_edges
+        else:
+            # ============================================================
+            # Identify Coplanar Regions using flood fill
+            # ============================================================
+            PLANE_DIST_THRESHOLD = 0.01  # 1cm threshold
+
+            face_to_region = {}
+            region_id = 0
+            all_faces = set(valid_faces_set)
+            region_visited = set()
+
+            while len(region_visited) < len(all_faces):
+                seed_face = next(iter(all_faces - region_visited))
+                ref_normal = seed_face.normal.copy()
+                ref_point = seed_face.verts[0].co.copy()
+
+                stack = [seed_face]
+
+                while stack:
+                    f = stack.pop()
+                    if f in region_visited:
                         continue
-                    
-                    other_v = edge.other_vert(current_v)
-                    
-                    # Calculate Cost (Directional bias only)
-                    length = edge.calc_length()
-                    penalty_multiplier = 1.0
-                    
-                    if bias_vector:
-                        v_diff = (other_v.co - current_v.co)
-                        if v_diff.length_squared > 0:
-                            v_dir = v_diff.normalized()
-                            dot = abs(v_dir.dot(bias_vector))
-                            direction_penalty = (1.0 - dot) * 5.0
-                            penalty_multiplier += direction_penalty
 
-                    new_cost = cost + (length * penalty_multiplier)
-                    
-                    if new_cost < visited.get(other_v, float('inf')):
-                        visited[other_v] = new_cost
-                        new_path = path + [edge]
-                        heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
-            
-            return best_path, best_path_cost
-        
-        # Run Dijkstra
-        best_path, best_path_cost = _run_dijkstra(valid_edges)
+                    # Check if ALL vertices of this face lie on the reference plane
+                    all_verts_on_plane = True
+                    for v in f.verts:
+                        dist = abs((v.co - ref_point).dot(ref_normal))
+                        if dist > PLANE_DIST_THRESHOLD:
+                            all_verts_on_plane = False
+                            break
 
-        return best_path, best_path_cost
+                    if all_verts_on_plane:
+                        region_visited.add(f)
+                        face_to_region[f] = region_id
+
+                        # Add neighbors through non-seam, non-boundary edges
+                        for edge in f.edges:
+                            if not edge.seam and not edge.is_boundary:
+                                for neighbor in edge.link_faces:
+                                    if neighbor in all_faces and neighbor not in region_visited:
+                                        stack.append(neighbor)
+
+                region_id += 1
+
+            # Classify edges as silhouette or flat
+            silhouette_edges = set()
+
+            for edge in all_edges:
+                if edge.is_boundary:
+                    silhouette_edges.add(edge)
+                    continue
+
+                if edge.seam:
+                    silhouette_edges.add(edge)
+                    continue
+
+                linked_faces = [f for f in edge.link_faces if f in all_faces]
+                if len(linked_faces) != 2:
+                    silhouette_edges.add(edge)
+                    continue
+
+                f1, f2 = linked_faces
+                region1 = face_to_region.get(f1, -1)
+                region2 = face_to_region.get(f2, -2)
+
+                if region1 != region2:
+                    silhouette_edges.add(edge)
+
+        # ============================================================
+        # Dijkstra with edge filtering
+        # ============================================================
+        # When allow_flat_edges=False, COMPLETELY EXCLUDE flat edges
+        valid_edges_for_path = all_edges if allow_flat_edges else silhouette_edges
+
+        queue = [(0.0, id(start_vert), start_vert, [])]
+        visited = {start_vert: 0.0}
+
+        while queue:
+            cost, _, current_v, path = heapq.heappop(queue)
+
+            # Check if reached ANY target vertex
+            if current_v in target_verts:
+                return path, cost
+
+            if cost > visited.get(current_v, float('inf')):
+                continue
+
+            for edge in current_v.link_edges:
+                if edge not in valid_edges_for_path:
+                    continue
+
+                other_v = edge.other_vert(current_v)
+
+                # Calculate Cost
+                length = edge.calc_length()
+                penalty_multiplier = 1.0
+
+                # Directional bias penalty
+                if bias_vector:
+                    v_diff = (other_v.co - current_v.co)
+                    if v_diff.length_squared > 0:
+                        v_dir = v_diff.normalized()
+                        dot = abs(v_dir.dot(bias_vector))
+                        direction_penalty = (1.0 - dot) * 5.0
+                        penalty_multiplier += direction_penalty
+
+                new_cost = cost + (length * penalty_multiplier)
+
+                if new_cost < visited.get(other_v, float('inf')):
+                    visited[other_v] = new_cost
+                    new_path = path + [edge]
+                    heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
+
+        return None, float('inf')
 
 class Modifier:
     def add_triangulate(mesh):

@@ -1556,6 +1556,223 @@ class HST_OT_SnapTransform(bpy.types.Operator):
         return {"FINISHED"}
     def invoke(self, context,event):
         selected_objs = context.selected_objects
-        if len(selected_objs) == 0: 
+        if len(selected_objs) == 0:
             return {"CANCELLED"}
         return self.execute(context)
+
+
+class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
+    """Debug: 选中所有轮廓边（排除中间孔洞和flat edges）"""
+    bl_idname = "hst.debug_silhouette_edges"
+    bl_label = "Debug Silhouette Edges"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        import bmesh
+        from mathutils import Vector
+
+        mesh = context.active_object
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'ERROR'}, "请选中一个Mesh对象")
+            return {'CANCELLED'}
+
+        current_mode = bpy.context.object.mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh.data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        # 获取所有face islands
+        all_faces = set(bm.faces)
+        islands = []
+        visited = set()
+
+        while len(visited) < len(all_faces):
+            seed = next(iter(all_faces - visited))
+            island = set()
+            stack = [seed]
+            while stack:
+                f = stack.pop()
+                if f in island:
+                    continue
+                island.add(f)
+                for edge in f.edges:
+                    if not edge.seam:
+                        for neighbor in edge.link_faces:
+                            if neighbor not in island:
+                                stack.append(neighbor)
+            visited |= island
+            islands.append(island)
+
+        all_silhouette_edges = set()
+
+        for island in islands:
+            island_faces = set(island)
+            island_edges = set()
+            for face in island:
+                for edge in face.edges:
+                    island_edges.add(edge)
+
+            # 找boundary loops
+            boundary_edges = [e for e in island_edges if e.is_boundary]
+            if len(boundary_edges) < 2:
+                continue
+
+            # 分组boundary loops
+            visited_boundary = set()
+            loops = []
+            for edge in boundary_edges:
+                if edge in visited_boundary:
+                    continue
+                loop = set()
+                stack = [edge]
+                while stack:
+                    e = stack.pop()
+                    if e in loop:
+                        continue
+                    loop.add(e)
+                    for v in e.verts:
+                        for linked in v.link_edges:
+                            if linked.is_boundary and linked in boundary_edges and linked not in loop:
+                                stack.append(linked)
+                visited_boundary |= loop
+                loops.append(loop)
+
+            if len(loops) < 2:
+                continue
+
+            # 计算每个loop的中心点
+            loop_info = []
+            for idx, loop in enumerate(loops):
+                center = Vector((0.0, 0.0, 0.0))
+                count = 0
+                for edge in loop:
+                    for v in edge.verts:
+                        center += v.co
+                        count += 1
+                if count > 0:
+                    center /= count
+                loop_info.append({'index': idx, 'center': center, 'edge_count': len(loop)})
+
+            # 通过loops的分布确定主轴：找哪个轴上loops的spread最大
+            if len(loop_info) >= 2:
+                centers = [li['center'] for li in loop_info]
+                spread_x = max(c.x for c in centers) - min(c.x for c in centers)
+                spread_y = max(c.y for c in centers) - min(c.y for c in centers)
+                spread_z = max(c.z for c in centers) - min(c.z for c in centers)
+
+                if spread_z >= spread_x and spread_z >= spread_y:
+                    axis_idx = 2
+                elif spread_y >= spread_x and spread_y >= spread_z:
+                    axis_idx = 1
+                else:
+                    axis_idx = 0
+            else:
+                # Fallback to bounding box
+                coords = [v.co for v in all_verts]
+                min_co = Vector((min(c.x for c in coords), min(c.y for c in coords), min(c.z for c in coords)))
+                max_co = Vector((max(c.x for c in coords), max(c.y for c in coords), max(c.z for c in coords)))
+                extents = max_co - min_co
+                axis_idx = 0
+                if extents.y > extents.x and extents.y > extents.z:
+                    axis_idx = 1
+                elif extents.z > extents.x and extents.z > extents.y:
+                    axis_idx = 2
+
+            # 按主轴排序loops
+            loop_centers = []
+            for li in loop_info:
+                li['measure'] = li['center'][axis_idx]
+                loop_centers.append(li)
+            loop_centers.sort(key=lambda x: x['measure'])
+
+            # DEBUG: 打印loops信息
+            print(f"[DEBUG] Island has {len(loops)} boundary loops, axis={axis_idx}")
+            for lc in loop_centers:
+                print(f"  Loop {lc['index']}: center={lc['center']}, measure={lc['measure']:.4f}, edges={len(loops[lc['index']])}")
+
+            start_loop_idx = loop_centers[0]['index']
+            end_loop_idx = loop_centers[-1]['index']
+            print(f"[DEBUG] Selected start_loop={start_loop_idx}, end_loop={end_loop_idx}")
+            l1_edges = set(loops[start_loop_idx])
+            l2_edges = set(loops[end_loop_idx])
+            start_end_boundary_edges = l1_edges | l2_edges
+
+            # ============================================================
+            # Method: Normal comparison
+            # If two faces on both sides of an edge have similar normals,
+            # the edge is a flat edge (coplanar). Otherwise it's a silhouette edge.
+            # ============================================================
+            NORMAL_THRESHOLD = 0.999  # dot > 0.999 means nearly identical normals
+
+            silhouette_edges = set()
+            boundary_included = 0
+            boundary_excluded = 0
+            seam_included = 0
+            coplanar_excluded = 0
+            silhouette_included = 0
+
+            for edge in island_edges:
+                # 1. Boundary edges: only include start/end loops
+                if edge.is_boundary:
+                    if edge in start_end_boundary_edges:
+                        silhouette_edges.add(edge)
+                        boundary_included += 1
+                    else:
+                        boundary_excluded += 1
+                    continue
+
+                # 2. Existing seam edges: include
+                if edge.seam:
+                    silhouette_edges.add(edge)
+                    seam_included += 1
+                    continue
+
+                # 3. Check faces on both sides
+                linked_faces = [f for f in edge.link_faces if f in island_faces]
+                if len(linked_faces) != 2:
+                    # Edge with only one face in island - include as silhouette
+                    silhouette_edges.add(edge)
+                    silhouette_included += 1
+                    continue
+
+                f1, f2 = linked_faces
+
+                # Compare normals: if nearly identical, it's a flat edge
+                dot = f1.normal.dot(f2.normal)
+                if dot > NORMAL_THRESHOLD:
+                    # Flat edge - exclude
+                    coplanar_excluded += 1
+                else:
+                    # Silhouette edge - include
+                    silhouette_edges.add(edge)
+                    silhouette_included += 1
+
+            print(f"[DEBUG] Silhouette classification (Normal method, threshold={NORMAL_THRESHOLD}):")
+            print(f"  boundary_included={boundary_included}, boundary_excluded={boundary_excluded}")
+            print(f"  seam_included={seam_included}, silhouette_included={silhouette_included}, coplanar_excluded={coplanar_excluded}")
+            print(f"  Total silhouette edges: {len(silhouette_edges)}")
+
+            all_silhouette_edges |= silhouette_edges
+
+        # 取消所有选择，然后选中silhouette edges
+        for e in bm.edges:
+            e.select = False
+        for v in bm.verts:
+            v.select = False
+        for f in bm.faces:
+            f.select = False
+
+        for e in all_silhouette_edges:
+            e.select = True
+
+        bm.to_mesh(mesh.data)
+        bm.free()
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.context.tool_settings.mesh_select_mode = (False, True, False)
+
+        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条轮廓边")
+        return {'FINISHED'}
