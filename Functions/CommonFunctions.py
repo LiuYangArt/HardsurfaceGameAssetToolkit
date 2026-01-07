@@ -2948,7 +2948,7 @@ class Mesh:
         # FIRST PRINCIPLES FIX: Filter out flat edges ENTIRELY.
         # An edge is "flat" if the angle between its two adjacent faces is close to 0 (or Pi).
         # We only allow edges with significant dihedral angle (corners, bevels).
-        FLAT_ANGLE_THRESHOLD = 0.05  # ~2.8 degrees
+        FLAT_ANGLE_THRESHOLD = 0.02  # ~1.1 degrees (lowered for smoother bevels)
         
         valid_edges = set()
         for edge in all_edges:
@@ -2966,52 +2966,64 @@ class Mesh:
         # If no valid edges remain (fully smooth surface), fallback to all edges
         if not valid_edges:
             valid_edges = all_edges
+            fallback_used = True
+        else:
+            fallback_used = False
         
         # Dijkstra
         # queue: (cost, vert_id, vert, path_of_edges)
         import heapq
-        queue = [(0.0, id(start_vert), start_vert, [])] # id for tie-break
-        visited = {start_vert: 0.0}
         
-        best_path = None
-        best_path_cost = float('inf')
-        
-        while queue:
-            cost, _, current_v, path = heapq.heappop(queue)
+        def _run_dijkstra(edge_set):
+            queue = [(0.0, id(start_vert), start_vert, [])]
+            visited = {start_vert: 0.0}
+            best_path = None
+            best_path_cost = float('inf')
             
-            if current_v == end_vert:
-                best_path = path
-                best_path_cost = cost
-                break
-            
-            if cost > visited.get(current_v, float('inf')):
-                continue
-            
-            for edge in current_v.link_edges:
-                if edge not in valid_edges:
+            while queue:
+                cost, _, current_v, path = heapq.heappop(queue)
+                
+                if current_v == end_vert:
+                    best_path = path
+                    best_path_cost = cost
+                    break
+                
+                if cost > visited.get(current_v, float('inf')):
                     continue
                 
-                other_v = edge.other_vert(current_v)
-                
-                # Calculate Cost (Directional bias only, flat edges already excluded)
-                length = edge.calc_length()
-                penalty_multiplier = 1.0
-                
-                if bias_vector:
-                    # Directional Penalty: prefer edges aligned with dominant axis
-                    v_diff = (other_v.co - current_v.co)
-                    if v_diff.length_squared > 0:
-                        v_dir = v_diff.normalized()
-                        dot = abs(v_dir.dot(bias_vector))
-                        direction_penalty = (1.0 - dot) * 5.0  # Lower weight since flat edges are already excluded
-                        penalty_multiplier += direction_penalty
+                for edge in current_v.link_edges:
+                    if edge not in edge_set:
+                        continue
+                    
+                    other_v = edge.other_vert(current_v)
+                    
+                    # Calculate Cost (Directional bias only)
+                    length = edge.calc_length()
+                    penalty_multiplier = 1.0
+                    
+                    if bias_vector:
+                        v_diff = (other_v.co - current_v.co)
+                        if v_diff.length_squared > 0:
+                            v_dir = v_diff.normalized()
+                            dot = abs(v_dir.dot(bias_vector))
+                            direction_penalty = (1.0 - dot) * 5.0
+                            penalty_multiplier += direction_penalty
 
-                new_cost = cost + (length * penalty_multiplier)
-                
-                if new_cost < visited.get(other_v, float('inf')):
-                    visited[other_v] = new_cost
-                    new_path = path + [edge]
-                    heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
+                    new_cost = cost + (length * penalty_multiplier)
+                    
+                    if new_cost < visited.get(other_v, float('inf')):
+                        visited[other_v] = new_cost
+                        new_path = path + [edge]
+                        heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
+            
+            return best_path, best_path_cost
+        
+        # First try with filtered edges (no flat edges)
+        best_path, best_path_cost = _run_dijkstra(valid_edges)
+        
+        # FALLBACK: If no path found (disconnected by filtering), retry with all edges
+        if best_path is None and not fallback_used:
+            best_path, best_path_cost = _run_dijkstra(all_edges)
                     
         return best_path, best_path_cost
 
