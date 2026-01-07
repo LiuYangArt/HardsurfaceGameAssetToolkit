@@ -2815,7 +2815,7 @@ class Mesh:
                 bias_vector[axis_idx] = 1.0
                 
                 # Find shortest path edges
-                path_edges = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
+                path_edges, _ = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
                 if path_edges:
                     for e in path_edges:
                         e.seam = True
@@ -2866,66 +2866,69 @@ class Mesh:
                 l2_edges = list(loops[end_loop_idx])
                 
                 # 5. Connect them finding shortest distance vertices
-                v_start = l1_edges[0].verts[0]
+                # Deterministic Multi-Candidate Search
+                # Try 4 candidates from L1 (Min/Max X, Min/Max Y) to find the best start point
+                # This avoids random selection and ensures we find the "cleanest" path (one that avoids flat faces)
                 
-                min_dist = float('inf')
-                v_end = l2_edges[0].verts[0]
-                
-                # Optimize: Find pair of verts (one from L1, one from L2) with min distance?
-                # Or just pick random L1 vert and find closest L2 vert. 
-                # Doing all-to-all is expensive O(N*M). 
-                # Let's Pick 4 points on L1 (extremes) and find closest on L2.
-                # For robustness, let's just use the loop centers to estimate direction, 
-                # but for the actual cut, we need vertices.
-                
-                # Simple robust approach: 
-                # 1. Find the vert in L1 with min coordinate on axis_idx? No, might not align.
-                # 2. Just iterate all verts in L1, find closest in L2? 
-                # If L1 has 100 verts and L2 has 100, that's 10000 checks. Cheap for Python.
-                
-                l1_verts = set()
+                l1_all_verts = set()
                 for e in l1_edges:
-                    l1_verts.add(e.verts[0])
-                    l1_verts.add(e.verts[1])
-                    
-                l2_verts = set()
+                    l1_all_verts.add(e.verts[0])
+                    l1_all_verts.add(e.verts[1])
+                l1_all_verts = list(l1_all_verts)
+                
+                l2_all_verts = set()
                 for e in l2_edges:
-                    l2_verts.add(e.verts[0])
-                    l2_verts.add(e.verts[1])
+                    l2_all_verts.add(e.verts[0])
+                    l2_all_verts.add(e.verts[1])
 
-                best_pair = (None, None)
+                candidates = []
+                # Find Min/Max X, Min/Max Y verts in L1 local coords
+                # To be robust, use the axis orthogonal to dominant axis
+                # But simple Min/Max on all 3 axes is fine, duplicates don't hurt
                 
-                # Optimization: To avoid N*M, just pick a representative from L1 (e.g. centroid projected to surface)
-                # or just the first one in the set.
-                ref_v1 = next(iter(l1_verts))
+                # Sort by X, Y, Z
+                l1_all_verts.sort(key=lambda v: v.co.x)
+                candidates.append(l1_all_verts[0])
+                candidates.append(l1_all_verts[-1])
                 
-                # Find closest v2 in L2 to ref_v1
-                best_v2 = None
-                min_dist_v2 = float('inf')
-                for v in l2_verts:
-                    d = (v.co - ref_v1.co).length_squared
-                    if d < min_dist_v2:
-                        min_dist_v2 = d
-                        best_v2 = v
+                l1_all_verts.sort(key=lambda v: v.co.y)
+                candidates.append(l1_all_verts[0])
+                candidates.append(l1_all_verts[-1])
                 
-                # Now find closest v1 in L1 to best_v2 (to minimize spiral twist)
-                best_v1 = None
-                min_dist_v1 = float('inf')
-                for v in l1_verts:
-                    d = (v.co - best_v2.co).length_squared
-                    if d < min_dist_v1:
-                        min_dist_v1 = d
-                        best_v1 = v
-                        
-                # Connect best_v1 and best_v2
+                if len(l1_all_verts) > 4:
+                     # Add Z just in case
+                    l1_all_verts.sort(key=lambda v: v.co.z)
+                    candidates.append(l1_all_verts[0])
+                    candidates.append(l1_all_verts[-1])
+                
+                candidates = list(set(candidates)) # Remove duplicates
+
+                best_path = None
+                min_total_cost = float('inf')
                 
                 # Create bias vector for pathfinding (dominant axis)
                 bias_vector = Vector((0.0, 0.0, 0.0))
                 bias_vector[axis_idx] = 1.0
 
-                path_edges = Mesh.find_shortest_path(bm, best_v1, best_v2, island, bias_vector=bias_vector)
-                if path_edges:
-                    for e in path_edges:
+                for v1 in candidates:
+                    # Find closest v2 in L2
+                    min_dist_v2 = float('inf')
+                    v2 = None
+                    for target_v in l2_all_verts:
+                        d = (target_v.co - v1.co).length_squared
+                        if d < min_dist_v2:
+                            min_dist_v2 = d
+                            v2 = target_v
+                    
+                    if v2:
+                        path_edges, cost = Mesh.find_shortest_path(bm, v1, v2, island, bias_vector=bias_vector)
+                        if path_edges is not None:
+                            if cost < min_total_cost:
+                                min_total_cost = cost
+                                best_path = path_edges
+
+                if best_path:
+                    for e in best_path:
                         e.seam = True
         
         bm.to_mesh(mesh.data)
@@ -2949,12 +2952,14 @@ class Mesh:
         visited = {start_vert: 0.0}
         
         best_path = None
+        best_path_cost = float('inf')
         
         while queue:
             cost, _, current_v, path = heapq.heappop(queue)
             
             if current_v == end_vert:
                 best_path = path
+                best_path_cost = cost
                 break
             
             if cost > visited.get(current_v, float('inf')):
@@ -2994,10 +2999,10 @@ class Mesh:
                     # Can fail on boundary edges or non-manifold
                     face_angle = 0.0
                 
-                if abs(face_angle) < 0.02: # Approx 1.15 degrees
+                if abs(face_angle) < 0.05: # Changed from 0.02 (~1.1 deg) to 0.05 (~2.8 degrees) for wider tolerance
                     # Massive penalty for walking across flat surfaces
                     # effectively filtering them out unless critical
-                    penalty_multiplier += 100.0
+                    penalty_multiplier += 500.0 # Increased from 100.0 to 500.0
 
                 new_cost = cost + (length * penalty_multiplier)
                 
@@ -3006,7 +3011,7 @@ class Mesh:
                     new_path = path + [edge]
                     heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
                     
-        return best_path
+        return best_path, best_path_cost
 
 class Modifier:
     def add_triangulate(mesh):
