@@ -38,7 +38,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
         description="选择自动UV Seam的处理模式",
         items=[
             ('STANDARD', "Standard", "标准模式：适用于两端开口的管道/圆柱（在两个 boundary 之间找 seam）"),
-            ('CAPPED', "Capped", "带盖模式：适用于单端封闭的环形模型（用 Side Boundary 分离盖子）"),
+            ('CAPPED', "Capped", "带盖模式：适用于单端或双端封闭的回转体模型（智能识别 Side Faces）"),
         ],
         default='STANDARD'
     )
@@ -1589,6 +1589,7 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             ('BEVEL_LOOPS', "Bevel Loops", "Find closed bevel edge loops (cap separators)"),
             ('SIDE_BOUNDARY', "Side Boundary", "Find boundary between side faces and cap faces (using boundary loops)"),
             ('CAP_BOUNDARY_PARALLEL', "Cap Boundary (Parallel)", "Find cap boundary using parallel area method (for closed shapes)"),
+            ('DOUBLE_CAP', "Double Cap", "Find seams for closed shapes with two caps (top and bottom)"),
         ],
         default='SILHOUETTE'
     )
@@ -1694,6 +1695,14 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                 print(f"[DEBUG CAP_BOUNDARY_PARALLEL] Found {len(boundary_edges_found)} boundary edges")
                 all_silhouette_edges |= boundary_edges_found
                 continue  # 处理下一个 island
+
+            # DOUBLE_CAP: 双盖模型的边界环检测
+            if self.select_mode == 'DOUBLE_CAP':
+                boundary_edges_found, axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
+                print(f"[DEBUG DOUBLE_CAP] Found {len(boundary_edges_found)} boundary edges, Axis: {axis_idx}")
+                all_silhouette_edges |= boundary_edges_found
+                continue  # 处理下一个 island
+
 
             # 找 boundary loops（SIDE_BOUNDARY 和其他模式需要）
             boundary_edges = [e for e in island_edges if e.is_boundary]
@@ -2062,6 +2071,6 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.context.tool_settings.mesh_select_mode = (False, True, False)
 
-        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path', 'BEVEL_LOOPS': 'closed bevel loops', 'SIDE_BOUNDARY': 'side boundary', 'CAP_BOUNDARY_PARALLEL': 'cap boundary (parallel)'}
+        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path', 'BEVEL_LOOPS': 'closed bevel loops', 'SIDE_BOUNDARY': 'side boundary', 'CAP_BOUNDARY_PARALLEL': 'cap boundary (parallel)', 'DOUBLE_CAP': 'double cap'}
         self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条 {mode_names[self.select_mode]} 边")
         return {'FINISHED'}
