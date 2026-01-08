@@ -3316,10 +3316,8 @@ class Mesh:
                     axis_idx = precise_axis_idx
                                         
                     if cap_boundary_edges:
-                        # 标记盖子边界为 seam
-                        for edge in cap_boundary_edges:
-                            edge.seam = True
-                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges, marked as seam")
+                        # 不标记盖子边界为 seam，只用于路径搜索的终点
+                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges")
                         
                         # 获取盖子边界边的顶点作为路径搜索的终点
                         cap_boundary_verts = set()
