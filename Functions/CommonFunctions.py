@@ -2687,6 +2687,598 @@ class Mesh:
         bpy.ops.mesh.remove_doubles(threshold=0.0001,use_unselected=True,use_sharp_edge_from_normals=True)
         bpy.ops.object.mode_set(mode="OBJECT")
 
+
+    def dissolve_flat_edges(mesh: bpy.types.Object):
+        """
+        溶解平面区域的内部支撑边 (support edges)。
+        只保留平面区域的外轮廓边，避免 UV Seam 被标记到这些无意义的边上。
+        
+        定义"内部边"：
+        - 边的两个相邻面法线方向基本相同（在同一平面上）
+        - 边不是边界边 (is_boundary = False)
+        """
+        current_mode = mesh.mode
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh.data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        
+        FLAT_THRESHOLD = 0.02  # ~1.1 degrees in radians
+        
+        edges_to_dissolve = []
+        
+        for edge in bm.edges:
+            # Skip boundary edges (they are always important)
+            if edge.is_boundary:
+                continue
+            
+            # Must have exactly 2 linked faces
+            if len(edge.link_faces) != 2:
+                continue
+            
+            # Check dihedral angle
+            try:
+                face_angle = abs(edge.calc_face_angle_signed())
+            except ValueError:
+                continue
+            
+            # If edge is flat (angle close to 0 or Pi), it's a support edge
+            if face_angle < FLAT_THRESHOLD or abs(face_angle - 3.14159) < FLAT_THRESHOLD:
+                edges_to_dissolve.append(edge)
+        
+        # Dissolve the internal edges
+        if edges_to_dissolve:
+            bmesh.ops.dissolve_edges(bm, edges=edges_to_dissolve, use_verts=True, use_face_split=False)
+        
+        bm.to_mesh(mesh.data)
+        mesh.data.update()
+        bm.free()
+        
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+
+
+    def auto_seam(mesh: bpy.types.Object):
+        """Automatically mark seams for closed shapes (Cylinders, Spheres, Tori)"""
+
+        # Ensure we are in object mode to access data correctly or use bmesh from object
+        current_mode = mesh.mode
+        if current_mode == 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        # 读取 sharp_edge attribute
+        mesh_data = mesh.data
+        sharp_edge_attr = mesh_data.attributes.get("sharp_edge")
+        if sharp_edge_attr:
+            sharp_edge_values = [d.value for d in sharp_edge_attr.data]
+        else:
+            # fallback: 用 edge.use_edge_sharp
+            sharp_edge_values = [e.use_edge_sharp for e in mesh_data.edges]
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh_data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        bm.verts.ensure_lookup_table()
+
+        # 1. Identify Islands (connected faces not separated by seams)
+        total_faces = set(bm.faces)
+        visited_faces = set()
+        
+        islands = []
+
+        while len(visited_faces) < len(total_faces):
+            seed_face = next(iter(total_faces - visited_faces))
+            island = set()
+            stack = [seed_face]
+            
+            while stack:
+                f = stack.pop()
+                if f in visited_faces:
+                    continue
+                visited_faces.add(f)
+                island.add(f)
+                
+                for edge in f.edges:
+                    if not edge.seam: 
+                        for neighbor_face in edge.link_faces:
+                            if neighbor_face not in visited_faces:
+                                stack.append(neighbor_face)
+            islands.append(island)
+
+        # 2. Process each island
+        for island in islands:
+            # Find boundary edges for this island
+            boundary_edges = set()
+            island_verts = set()
+
+            for face in island:
+                for v in face.verts:
+                    island_verts.add(v)
+                for edge in face.edges:
+                    if edge.seam or edge.is_boundary:
+                        boundary_edges.add(edge)
+                    else:
+                        # Check if edge connects to a face NOT in this island (should be covered by seam check strictly speaking, but for safety)
+                        # If edge.seam is False, it implies all linked faces are in island (per flood fill logic)
+                        pass
+            
+            # Group boundary edges into Loops
+            loops = []
+            if boundary_edges:
+                edge_pool = set(boundary_edges)
+                while edge_pool:
+                    # Trace a loop
+                    seed_edge = next(iter(edge_pool))
+                    edge_pool.remove(seed_edge)
+                    
+                    # This is simple grouping, might not be perfectly ordered loops, but enough to identify separate holes
+                    current_loop = {seed_edge}
+                    
+                    # Grow loop
+                    # A better way: Find connected components of edges in the graph of 'boundary_edges'
+                    # Vertices involved in boundary edges
+                    loop_stack = [seed_edge]
+                    while loop_stack:
+                        e = loop_stack.pop()
+                        # Find connected edges in pool
+                        # Edges share a vertex
+                        v1, v2 = e.verts
+                        
+                        connected_neighbors = []
+                        for check_e in list(edge_pool): # Check copy to allow removal
+                            if check_e in edge_pool: # double check
+                                if check_e.verts[0] == v1 or check_e.verts[0] == v2 or check_e.verts[1] == v1 or check_e.verts[1] == v2:
+                                    connected_neighbors.append(check_e)
+                        
+                        for ne in connected_neighbors:
+                            edge_pool.remove(ne)
+                            current_loop.add(ne)
+                            loop_stack.append(ne)
+                    
+                    loops.append(current_loop)
+
+            # Analyze Topology
+            num_loops = len(loops)
+            
+            if num_loops == 0:
+                # Closed Surface (Sphere, Torus) or fully smooth cube?
+                # Heuristic: Cut along Z axis (or longest axis)
+                # Find min and max vert in local coords
+                verts_list = list(island_verts)
+                if not verts_list: continue
+
+                # Calculate bounding box to find dominant axis
+                min_bb = Vector((float('inf'), float('inf'), float('inf')))
+                max_bb = Vector((float('-inf'), float('-inf'), float('-inf')))
+                
+                for v in verts_list:
+                    for i in range(3):
+                        min_bb[i] = min(min_bb[i], v.co[i])
+                        max_bb[i] = max(max_bb[i], v.co[i])
+                
+                size = max_bb - min_bb
+                axis_idx = 0
+                if size.y > size.x and size.y > size.z:
+                    axis_idx = 1
+                elif size.z > size.x and size.z > size.y:
+                    axis_idx = 2
+                
+                # Sort by dominant axis
+                verts_list.sort(key=lambda v: v.co[axis_idx])
+                min_v = verts_list[0]
+                max_v = verts_list[-1]
+                
+                # Create bias vector for pathfinding (dominant axis)
+                bias_vector = Vector((0.0, 0.0, 0.0))
+                bias_vector[axis_idx] = 1.0
+                
+                # Find shortest path edges
+                path_edges, _ = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
+                if path_edges:
+                    for e in path_edges:
+                        e.seam = True
+
+            elif num_loops >= 2:
+                # Cylinder-like (Side wall) with potentially multiple holes
+                # We want to connect the two "end" loops.
+                # Strategy: Identify dominant axis by loop distribution, not bounding box.
+
+                # 1. Calculate Center of each loop first
+                loop_info = []
+                for idx, loop in enumerate(loops):
+                    center = Vector((0.0, 0.0, 0.0))
+                    count = 0
+                    for edge in loop:
+                        for v in edge.verts:
+                            center += v.co
+                            count += 1
+                    if count > 0:
+                        center /= count
+                    loop_info.append({'index': idx, 'center': center, 'edge_count': len(loop)})
+
+                # 2. Determine dominant axis by loop spread (not bounding box)
+                centers = [li['center'] for li in loop_info]
+                spread_x = max(c.x for c in centers) - min(c.x for c in centers)
+                spread_y = max(c.y for c in centers) - min(c.y for c in centers)
+                spread_z = max(c.z for c in centers) - min(c.z for c in centers)
+
+                if spread_z >= spread_x and spread_z >= spread_y:
+                    axis_idx = 2
+                elif spread_y >= spread_x and spread_y >= spread_z:
+                    axis_idx = 1
+                else:
+                    axis_idx = 0
+
+                # 3. Sort loops by position on dominant axis
+                loop_centers = []
+                for li in loop_info:
+                    li['measure'] = li['center'][axis_idx]
+                    loop_centers.append(li)
+                loop_centers.sort(key=lambda x: x['measure'])
+
+                # First, get all island edges
+                island_edges = set()
+                for face in island:
+                    for edge in face.edges:
+                        island_edges.add(edge)
+
+                island_faces = set(island)
+                ANGLE_THRESHOLD = 0.98  # dot < 0.98 means angle > ~11°
+
+                # ============================================================
+                # 方法：sharp_edge attribute + bevel edges 连通性检测
+                # 1. 外轮廓边 = sharp edges（直接从 attribute）
+                # 2. Bevel edges = 法线角度法选中 + 非 sharp
+                # 3. 用 bevel edges 做连通性检测区分内外 boundary loops
+                # ============================================================
+
+                # 1. 找出所有 sharp edges（外轮廓边）
+                sharp_edges_in_island = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        continue
+                    if sharp_edge_values[edge.index]:
+                        sharp_edges_in_island.add(edge)
+
+                # 2. 法线角度法找 bevel edges（用于连通性检测）
+                bevel_edges = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        continue
+                    if sharp_edge_values[edge.index]:
+                        continue  # 跳过 sharp edges
+                    linked_faces = [f for f in edge.link_faces if f in island_faces]
+                    if len(linked_faces) == 2:
+                        dot = linked_faces[0].normal.dot(linked_faces[1].normal)
+                        if dot < ANGLE_THRESHOLD:
+                            bevel_edges.add(edge)
+
+                # 3. 用 bevel edges 做连通性检测
+                # 获取每个 loop 的顶点集合
+                loop_verts_list = []
+                for loop in loops:
+                    verts = set()
+                    for edge in loop:
+                        verts.add(edge.verts[0])
+                        verts.add(edge.verts[1])
+                    loop_verts_list.append(verts)
+
+                def find_reachable_verts(start_verts, valid_edges):
+                    """从 start_verts 出发，沿着 valid_edges 能到达的所有顶点"""
+                    visited = set(start_verts)
+                    stack = list(start_verts)
+                    while stack:
+                        v = stack.pop()
+                        for e in v.link_edges:
+                            if e in valid_edges:
+                                other_v = e.other_vert(v)
+                                if other_v not in visited:
+                                    visited.add(other_v)
+                                    stack.append(other_v)
+                    return visited
+
+                # 4. 找出通过 bevel edges 连通的 loops
+                connected_groups = []
+                visited_loops = set()
+
+                for start_idx in range(len(loops)):
+                    if start_idx in visited_loops:
+                        continue
+
+                    # 从这个 loop 的顶点开始 flood fill（沿着 bevel edges）
+                    reachable = find_reachable_verts(loop_verts_list[start_idx], bevel_edges)
+
+                    # 检查哪些其他 loops 的顶点在 reachable 中
+                    connected_group = {start_idx}
+                    for other_idx in range(len(loops)):
+                        if other_idx != start_idx:
+                            if loop_verts_list[other_idx] & reachable:
+                                connected_group.add(other_idx)
+
+                    connected_groups.append(connected_group)
+                    visited_loops |= connected_group
+
+                # 5. 选最大的连通组作为外轮廓
+                def calc_loop_perimeter(loop_idx):
+                    return sum(e.calc_length() for e in loops[loop_idx])
+
+                best_group = None
+                best_score = (-1, -1)
+
+                for group in connected_groups:
+                    size = len(group)
+                    total_perimeter = sum(calc_loop_perimeter(idx) for idx in group)
+                    score = (size, total_perimeter)
+                    if score > best_score:
+                        best_score = score
+                        best_group = group
+
+                outer_loops = list(best_group) if best_group else []
+
+                # 6. 从外轮廓 loops 中选首尾两个（按主轴排序）
+                outer_loop_centers = [lc for lc in loop_centers if lc['index'] in outer_loops]
+                if len(outer_loop_centers) >= 2:
+                    start_loop_idx = outer_loop_centers[0]['index']
+                    end_loop_idx = outer_loop_centers[-1]['index']
+                else:
+                    # fallback: 用所有 loops 的首尾
+                    start_loop_idx = loop_centers[0]['index']
+                    end_loop_idx = loop_centers[-1]['index']
+
+                l1_edges = list(loops[start_loop_idx])
+                l2_edges = list(loops[end_loop_idx])
+
+                # 7. 外轮廓 boundary edges
+                outer_boundary_edges = set()
+                for idx in outer_loops:
+                    outer_boundary_edges |= loops[idx]
+
+                # Classify edges - use sharp_edge attribute
+                silhouette_edges = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        # Only include if it's part of outer loops
+                        if edge in outer_boundary_edges:
+                            silhouette_edges.add(edge)
+                        continue
+                    if edge.seam:
+                        silhouette_edges.add(edge)
+                        continue
+                    # Use sharp_edge attribute instead of coplanar region detection
+                    if sharp_edge_values[edge.index]:
+                        silhouette_edges.add(edge)
+
+                # ============================================================
+                # Dijkstra 路径搜索：在 bevel edges 上找连接两个外轮廓 loops 的最短路径
+                # ============================================================
+                import heapq
+
+                def find_bevel_edge_path(start_verts, target_verts, valid_edges):
+                    """在 bevel edges 上搜索连接两组顶点的最短路径"""
+                    # 初始化：收集所有 valid_edges 涉及的顶点
+                    all_verts = set()
+                    for e in valid_edges:
+                        all_verts.add(e.verts[0])
+                        all_verts.add(e.verts[1])
+
+                    dist = {v: float('inf') for v in all_verts}
+                    prev_edge = {}  # 记录到达每个顶点的边
+
+                    pq = []
+                    for v in start_verts:
+                        if v in dist:
+                            dist[v] = 0
+                            heapq.heappush(pq, (0, id(v), v))
+
+                    while pq:
+                        d, _, v = heapq.heappop(pq)
+                        if d > dist[v]:
+                            continue
+
+                        # 检查是否到达目标
+                        if v in target_verts:
+                            # 回溯路径
+                            path = []
+                            current = v
+                            while current in prev_edge:
+                                edge = prev_edge[current]
+                                path.append(edge)
+                                current = edge.other_vert(current)
+                            return path, d
+
+                        # 遍历邻边
+                        for e in v.link_edges:
+                            if e in valid_edges:
+                                other = e.other_vert(v)
+                                new_dist = d + e.calc_length()
+                                if new_dist < dist.get(other, float('inf')):
+                                    dist[other] = new_dist
+                                    prev_edge[other] = e
+                                    heapq.heappush(pq, (new_dist, id(other), other))
+
+                    return [], float('inf')
+
+                print(f"[auto_seam DEBUG] Island has {len(island)} faces, {len(island_edges)} edges")
+                print(f"[auto_seam DEBUG] Sharp edges: {len(sharp_edges_in_island)}, Bevel edges: {len(bevel_edges)}")
+                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}")
+
+                # 获取外轮廓 loops 的顶点（按主轴排序后的首尾）
+                if len(outer_loops) >= 2:
+                    outer_loop_indices = sorted(outer_loops, key=lambda i: loop_centers[i]['center'][axis_idx])
+                    loop1_verts = set(v for e in loops[outer_loop_indices[0]] for v in e.verts)
+                    loop2_verts = set(v for e in loops[outer_loop_indices[-1]] for v in e.verts)
+
+                    # Dijkstra 搜索
+                    path_edges, path_cost = find_bevel_edge_path(loop1_verts, loop2_verts, bevel_edges)
+
+                    print(f"[auto_seam DEBUG] loop1_verts: {len(loop1_verts)}, loop2_verts: {len(loop2_verts)}")
+                    print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+
+                    if path_edges:
+                        for e in path_edges:
+                            e.seam = True
+                        print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
+                    else:
+                        print(f"[auto_seam DEBUG] No path found on bevel edges!")
+                else:
+                    print(f"[auto_seam DEBUG] Not enough outer loops: {len(outer_loops)}")
+
+        bm.to_mesh(mesh.data)
+        bm.free()
+        
+        if current_mode == 'EDIT':
+             bpy.ops.object.mode_set(mode='EDIT')
+
+    def find_shortest_path(bm, start_vert, end_vert, valid_faces_set, bias_vector=None, allow_flat_edges=False, silhouette_edges_override=None, end_verts_set=None):
+        """Dijkstra pathfinder. Flat edges are excluded unless allow_flat_edges=True.
+
+        Args:
+            end_vert: Single target vertex (used if end_verts_set is None)
+            end_verts_set: Set of target vertices - path ends when ANY is reached
+            silhouette_edges_override: If provided, use this set as silhouette edges instead of computing
+        """
+        import heapq
+
+        # Determine target vertices
+        if end_verts_set is not None:
+            target_verts = end_verts_set
+        else:
+            target_verts = {end_vert}
+
+        # Convert valid_faces to valid_edges set
+        all_edges = set()
+        for f in valid_faces_set:
+            for e in f.edges:
+                all_edges.add(e)
+
+        # Use override if provided, otherwise compute
+        if silhouette_edges_override is not None:
+            silhouette_edges = silhouette_edges_override & all_edges
+            print(f"[find_shortest_path DEBUG] Override provided: {len(silhouette_edges_override)}, all_edges: {len(all_edges)}, intersection: {len(silhouette_edges)}")
+        else:
+            # ============================================================
+            # Identify Coplanar Regions using flood fill
+            # ============================================================
+            PLANE_DIST_THRESHOLD = 0.01  # 1cm threshold
+
+            face_to_region = {}
+            region_id = 0
+            all_faces = set(valid_faces_set)
+            region_visited = set()
+
+            while len(region_visited) < len(all_faces):
+                seed_face = next(iter(all_faces - region_visited))
+                ref_normal = seed_face.normal.copy()
+                ref_point = seed_face.verts[0].co.copy()
+
+                stack = [seed_face]
+
+                while stack:
+                    f = stack.pop()
+                    if f in region_visited:
+                        continue
+
+                    # Check if ALL vertices of this face lie on the reference plane
+                    all_verts_on_plane = True
+                    for v in f.verts:
+                        dist = abs((v.co - ref_point).dot(ref_normal))
+                        if dist > PLANE_DIST_THRESHOLD:
+                            all_verts_on_plane = False
+                            break
+
+                    if all_verts_on_plane:
+                        region_visited.add(f)
+                        face_to_region[f] = region_id
+
+                        # Add neighbors through non-seam, non-boundary edges
+                        for edge in f.edges:
+                            if not edge.seam and not edge.is_boundary:
+                                for neighbor in edge.link_faces:
+                                    if neighbor in all_faces and neighbor not in region_visited:
+                                        stack.append(neighbor)
+
+                region_id += 1
+
+            # Classify edges as silhouette or flat
+            silhouette_edges = set()
+
+            for edge in all_edges:
+                if edge.is_boundary:
+                    silhouette_edges.add(edge)
+                    continue
+
+                if edge.seam:
+                    silhouette_edges.add(edge)
+                    continue
+
+                linked_faces = [f for f in edge.link_faces if f in all_faces]
+                if len(linked_faces) != 2:
+                    silhouette_edges.add(edge)
+                    continue
+
+                f1, f2 = linked_faces
+                region1 = face_to_region.get(f1, -1)
+                region2 = face_to_region.get(f2, -2)
+
+                if region1 != region2:
+                    silhouette_edges.add(edge)
+
+        # ============================================================
+        # Dijkstra with edge filtering
+        # ============================================================
+        # When allow_flat_edges=False, COMPLETELY EXCLUDE flat edges
+        valid_edges_for_path = all_edges if allow_flat_edges else silhouette_edges
+        print(f"[find_shortest_path DEBUG] valid_edges_for_path: {len(valid_edges_for_path)}, target_verts: {len(target_verts)}")
+
+        # Check if start_vert connects to any valid edge
+        start_valid_edges = [e for e in start_vert.link_edges if e in valid_edges_for_path]
+        print(f"[find_shortest_path DEBUG] start_vert has {len(start_valid_edges)} valid edges out of {len(start_vert.link_edges)} total")
+
+        queue = [(0.0, id(start_vert), start_vert, [])]
+        visited = {start_vert: 0.0}
+
+        while queue:
+            cost, _, current_v, path = heapq.heappop(queue)
+
+            # Check if reached ANY target vertex
+            if current_v in target_verts:
+                return path, cost
+
+            if cost > visited.get(current_v, float('inf')):
+                continue
+
+            for edge in current_v.link_edges:
+                if edge not in valid_edges_for_path:
+                    continue
+
+                other_v = edge.other_vert(current_v)
+
+                # Calculate Cost
+                length = edge.calc_length()
+                penalty_multiplier = 1.0
+
+                # Directional bias penalty
+                if bias_vector:
+                    v_diff = (other_v.co - current_v.co)
+                    if v_diff.length_squared > 0:
+                        v_dir = v_diff.normalized()
+                        dot = abs(v_dir.dot(bias_vector))
+                        direction_penalty = (1.0 - dot) * 5.0
+                        penalty_multiplier += direction_penalty
+
+                new_cost = cost + (length * penalty_multiplier)
+
+                if new_cost < visited.get(other_v, float('inf')):
+                    visited[other_v] = new_cost
+                    new_path = path + [edge]
+                    heapq.heappush(queue, (new_cost, id(other_v), other_v, new_path))
+
+        return None, float('inf')
+
 class Modifier:
     def add_triangulate(mesh):
         """添加Triangulate Modifier"""

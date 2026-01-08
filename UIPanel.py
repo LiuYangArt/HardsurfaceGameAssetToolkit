@@ -213,6 +213,9 @@ class HST_PT_MainPanel(bpy.types.Panel):
             "hst.prepcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK"
         )
         box_column.operator(
+            "hst.debug_silhouette_edges", text="Debug Silhouette Edges", icon="EDGESEL"
+        )
+        box_column.operator(
             "hst.fixcadobj", text="Fix CAD Obj", icon="MESH_CUBE"
         )
         uv_mode_row = box_column.row(align=True)

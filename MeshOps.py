@@ -109,6 +109,8 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
 
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
+            
+            Mesh.auto_seam(mesh)
 
         Mesh.merge_verts_ops(selected_meshes)
 
@@ -1554,6 +1556,365 @@ class HST_OT_SnapTransform(bpy.types.Operator):
         return {"FINISHED"}
     def invoke(self, context,event):
         selected_objs = context.selected_objects
-        if len(selected_objs) == 0: 
+        if len(selected_objs) == 0:
             return {"CANCELLED"}
         return self.execute(context)
+
+
+class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
+    """Debug: 选中所有轮廓边（使用 sharp edge + 排除中间孔洞）"""
+    bl_idname = "hst.debug_silhouette_edges"
+    bl_label = "Debug Silhouette Edges"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    select_mode: bpy.props.EnumProperty(
+        name="Select Mode",
+        items=[
+            ('SILHOUETTE', "Silhouette", "Select silhouette edges (outer boundary + sharp)"),
+            ('BEVEL', "Bevel Edges", "Select bevel edges only"),
+            ('OUTER_BOUNDARY', "Outer Boundary", "Select outer boundary loops only"),
+            ('SHARP', "Sharp Edges", "Select sharp edges only"),
+            ('BEVEL_PATH', "Bevel Path", "Find shortest path on bevel edges connecting outer loops"),
+        ],
+        default='SILHOUETTE'
+    )
+
+    def execute(self, context):
+        import bmesh
+        from mathutils import Vector
+
+        mesh = context.active_object
+        if mesh is None or mesh.type != 'MESH':
+            self.report({'ERROR'}, "请选中一个Mesh对象")
+            return {'CANCELLED'}
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        # 读取 sharp_edge attribute
+        mesh_data = mesh.data
+        sharp_edge_attr = mesh_data.attributes.get("sharp_edge")
+        if sharp_edge_attr:
+            sharp_edge_values = [d.value for d in sharp_edge_attr.data]
+            print(f"[DEBUG] Found sharp_edge attribute with {len(sharp_edge_values)} values")
+            print(f"[DEBUG] Sharp edges count: {sum(sharp_edge_values)}")
+        else:
+            # fallback: 用 edge.use_edge_sharp
+            sharp_edge_values = [e.use_edge_sharp for e in mesh_data.edges]
+            print(f"[DEBUG] No sharp_edge attribute, using edge.use_edge_sharp fallback")
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh_data)
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        # 获取所有face islands
+        all_faces = set(bm.faces)
+        islands = []
+        visited = set()
+
+        while len(visited) < len(all_faces):
+            seed = next(iter(all_faces - visited))
+            island = set()
+            stack = [seed]
+            while stack:
+                f = stack.pop()
+                if f in island:
+                    continue
+                island.add(f)
+                for edge in f.edges:
+                    if not edge.seam:
+                        for neighbor in edge.link_faces:
+                            if neighbor not in island:
+                                stack.append(neighbor)
+            visited |= island
+            islands.append(island)
+
+        all_silhouette_edges = set()
+
+        for island in islands:
+            island_faces = set(island)
+            island_edges = set()
+            for face in island:
+                for edge in face.edges:
+                    island_edges.add(edge)
+
+            # 找 boundary loops
+            boundary_edges = [e for e in island_edges if e.is_boundary]
+            if len(boundary_edges) < 2:
+                # 没有足够的 boundary loops，跳过
+                continue
+
+            # 分组 boundary loops
+            visited_boundary = set()
+            loops = []
+            for edge in boundary_edges:
+                if edge in visited_boundary:
+                    continue
+                loop = set()
+                stack = [edge]
+                while stack:
+                    e = stack.pop()
+                    if e in loop:
+                        continue
+                    loop.add(e)
+                    for v in e.verts:
+                        for linked in v.link_edges:
+                            if linked.is_boundary and linked in boundary_edges and linked not in loop:
+                                stack.append(linked)
+                visited_boundary |= loop
+                loops.append(loop)
+
+            if len(loops) < 2:
+                continue
+
+            # 计算每个 loop 的中心点，确定主轴
+            loop_info = []
+            for idx, loop in enumerate(loops):
+                center = Vector((0.0, 0.0, 0.0))
+                count = 0
+                for edge in loop:
+                    for v in edge.verts:
+                        center += v.co
+                        count += 1
+                if count > 0:
+                    center /= count
+                loop_info.append({'index': idx, 'center': center, 'edge_count': len(loop)})
+
+            # 通过 loops 的分布确定主轴
+            centers = [li['center'] for li in loop_info]
+            spread_x = max(c.x for c in centers) - min(c.x for c in centers)
+            spread_y = max(c.y for c in centers) - min(c.y for c in centers)
+            spread_z = max(c.z for c in centers) - min(c.z for c in centers)
+
+            if spread_z >= spread_x and spread_z >= spread_y:
+                axis_idx = 2
+            elif spread_y >= spread_x and spread_y >= spread_z:
+                axis_idx = 1
+            else:
+                axis_idx = 0
+
+            # 按主轴排序 loops
+            for li in loop_info:
+                li['measure'] = li['center'][axis_idx]
+            loop_info.sort(key=lambda x: x['measure'])
+
+            start_loop_idx = loop_info[0]['index']
+            end_loop_idx = loop_info[-1]['index']
+            l1_edges = set(loops[start_loop_idx])
+            l2_edges = set(loops[end_loop_idx])
+            start_end_boundary_edges = l1_edges | l2_edges
+
+            # ============================================================
+            # 方法：sharp_edge attribute + bevel edges 连通性检测
+            # 1. 外轮廓边 = sharp edges（直接从 attribute）
+            # 2. Bevel edges = 法线角度法选中 + 非 sharp
+            # 3. 用 bevel edges 做连通性检测区分内外 boundary loops
+            # ============================================================
+
+            ANGLE_THRESHOLD = 0.98  # dot < 0.98 意味着角度 > ~11°
+
+            # 1. 找出所有 sharp edges（外轮廓边）
+            sharp_edges_in_island = set()
+            for edge in island_edges:
+                if edge.is_boundary:
+                    continue
+                if sharp_edge_values[edge.index]:
+                    sharp_edges_in_island.add(edge)
+
+            # 2. 法线角度法找 bevel edges（用于连通性检测）
+            bevel_edges = set()
+            for edge in island_edges:
+                if edge.is_boundary:
+                    continue
+                if sharp_edge_values[edge.index]:
+                    continue  # 跳过 sharp edges
+                linked_faces = [f for f in edge.link_faces if f in island_faces]
+                if len(linked_faces) == 2:
+                    dot = linked_faces[0].normal.dot(linked_faces[1].normal)
+                    if dot < ANGLE_THRESHOLD:
+                        bevel_edges.add(edge)
+
+            print(f"[DEBUG] Edge classification:")
+            print(f"  Sharp edges in island: {len(sharp_edges_in_island)}")
+            print(f"  Bevel edges: {len(bevel_edges)}")
+
+            # 3. 用 bevel edges 做连通性检测
+            # 获取每个 loop 的顶点集合
+            loop_verts_list = []
+            for loop in loops:
+                verts = set()
+                for edge in loop:
+                    verts.add(edge.verts[0])
+                    verts.add(edge.verts[1])
+                loop_verts_list.append(verts)
+
+            def find_reachable_verts(start_verts, valid_edges):
+                """从 start_verts 出发，沿着 valid_edges 能到达的所有顶点"""
+                visited = set(start_verts)
+                stack = list(start_verts)
+                while stack:
+                    v = stack.pop()
+                    for e in v.link_edges:
+                        if e in valid_edges:
+                            other_v = e.other_vert(v)
+                            if other_v not in visited:
+                                visited.add(other_v)
+                                stack.append(other_v)
+                return visited
+
+            # 4. 找出通过 bevel edges 连通的 loops
+            connected_groups = []
+            visited_loops = set()
+
+            for start_idx in range(len(loops)):
+                if start_idx in visited_loops:
+                    continue
+
+                # 从这个 loop 的顶点开始 flood fill（沿着 bevel edges）
+                reachable = find_reachable_verts(loop_verts_list[start_idx], bevel_edges)
+
+                # 检查哪些其他 loops 的顶点在 reachable 中
+                connected_group = {start_idx}
+                for other_idx in range(len(loops)):
+                    if other_idx != start_idx:
+                        if loop_verts_list[other_idx] & reachable:
+                            connected_group.add(other_idx)
+
+                connected_groups.append(connected_group)
+                visited_loops |= connected_group
+
+            # 5. 选最大的连通组作为外轮廓
+            def calc_loop_perimeter(loop_idx):
+                return sum(e.calc_length() for e in loops[loop_idx])
+
+            best_group = None
+            best_score = (-1, -1)
+
+            for group in connected_groups:
+                size = len(group)
+                total_perimeter = sum(calc_loop_perimeter(idx) for idx in group)
+                score = (size, total_perimeter)
+                if score > best_score:
+                    best_score = score
+                    best_group = group
+
+            outer_loops = list(best_group) if best_group else []
+            inner_loops = [i for i in range(len(loops)) if i not in outer_loops]
+
+            print(f"[DEBUG] Connectivity-based Loop classification:")
+            print(f"  Total loops: {len(loops)}, Bevel edges: {len(bevel_edges)}")
+            print(f"  Connected groups: {connected_groups}")
+            print(f"  Outer loops: {outer_loops} (size={len(outer_loops)}, perimeter={best_score[1]:.2f})")
+            print(f"  Inner loops (holes): {inner_loops}")
+
+            # 6. 外轮廓 boundary edges
+            outer_boundary_edges = set()
+            for idx in outer_loops:
+                outer_boundary_edges |= loops[idx]
+
+            # 7. 最终轮廓边 = sharp edges + 外轮廓 boundary edges
+            silhouette_edges = sharp_edges_in_island | outer_boundary_edges
+
+            print(f"[DEBUG] Result:")
+            print(f"  Sharp edges in island: {len(sharp_edges_in_island)}")
+            print(f"  Outer boundary edges: {len(outer_boundary_edges)}")
+            print(f"  Bevel edges: {len(bevel_edges)}")
+            print(f"  Total silhouette edges: {len(silhouette_edges)}")
+
+            # 根据选择模式收集边
+            if self.select_mode == 'SILHOUETTE':
+                all_silhouette_edges |= silhouette_edges
+            elif self.select_mode == 'BEVEL':
+                all_silhouette_edges |= bevel_edges
+            elif self.select_mode == 'OUTER_BOUNDARY':
+                all_silhouette_edges |= outer_boundary_edges
+            elif self.select_mode == 'SHARP':
+                all_silhouette_edges |= sharp_edges_in_island
+            elif self.select_mode == 'BEVEL_PATH':
+                # Dijkstra 路径搜索：在 bevel edges 上找连接两个外轮廓 loops 的最短路径
+                import heapq
+
+                def find_bevel_edge_path(start_verts, target_verts, valid_edges):
+                    """在 bevel edges 上搜索连接两组顶点的最短路径"""
+                    # 初始化：收集所有 valid_edges 涉及的顶点
+                    all_verts = set()
+                    for e in valid_edges:
+                        all_verts.add(e.verts[0])
+                        all_verts.add(e.verts[1])
+
+                    dist = {v: float('inf') for v in all_verts}
+                    prev_edge = {}  # 记录到达每个顶点的边
+
+                    pq = []
+                    for v in start_verts:
+                        if v in dist:
+                            dist[v] = 0
+                            heapq.heappush(pq, (0, id(v), v))
+
+                    while pq:
+                        d, _, v = heapq.heappop(pq)
+                        if d > dist[v]:
+                            continue
+
+                        # 检查是否到达目标
+                        if v in target_verts:
+                            # 回溯路径
+                            path = []
+                            current = v
+                            while current in prev_edge:
+                                edge = prev_edge[current]
+                                path.append(edge)
+                                current = edge.other_vert(current)
+                            return path, d
+
+                        # 遍历邻边
+                        for e in v.link_edges:
+                            if e in valid_edges:
+                                other = e.other_vert(v)
+                                new_dist = d + e.calc_length()
+                                if new_dist < dist.get(other, float('inf')):
+                                    dist[other] = new_dist
+                                    prev_edge[other] = e
+                                    heapq.heappush(pq, (new_dist, id(other), other))
+
+                    return [], float('inf')
+
+                # 获取外轮廓 loops 的顶点（按主轴排序后的首尾）
+                if len(outer_loops) >= 2:
+                    outer_loop_indices = sorted(outer_loops, key=lambda i: loop_info[i]['center'][axis_idx])
+                    loop1_verts = set(v for e in loops[outer_loop_indices[0]] for v in e.verts)
+                    loop2_verts = set(v for e in loops[outer_loop_indices[-1]] for v in e.verts)
+
+                    # Dijkstra 搜索
+                    path_edges, path_cost = find_bevel_edge_path(loop1_verts, loop2_verts, bevel_edges)
+
+                    print(f"[DEBUG BEVEL_PATH] outer_loops: {outer_loops}")
+                    print(f"[DEBUG BEVEL_PATH] loop1_verts: {len(loop1_verts)}, loop2_verts: {len(loop2_verts)}")
+                    print(f"[DEBUG BEVEL_PATH] bevel_edges: {len(bevel_edges)}")
+                    print(f"[DEBUG BEVEL_PATH] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+
+                    if path_edges:
+                        all_silhouette_edges |= set(path_edges)
+                else:
+                    print(f"[DEBUG BEVEL_PATH] Not enough outer loops: {len(outer_loops)}")
+
+        # 取消所有选择，然后选中对应的边
+        for e in bm.edges:
+            e.select = False
+        for v in bm.verts:
+            v.select = False
+        for f in bm.faces:
+            f.select = False
+
+        for e in all_silhouette_edges:
+            e.select = True
+
+        bm.to_mesh(mesh.data)
+        bm.free()
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.context.tool_settings.mesh_select_mode = (False, True, False)
+
+        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path'}
+        self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条 {mode_names[self.select_mode]} 边")
+        return {'FINISHED'}
