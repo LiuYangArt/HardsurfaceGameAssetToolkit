@@ -2914,9 +2914,14 @@ class Mesh:
             num_loops = len(loops)
             
             if num_loops == 0:
-                # Closed Surface (Sphere, Torus) or fully smooth cube?
-                # Heuristic: Cut along Z axis (or longest axis)
-                # Find min and max vert in local coords
+                # Closed Surface (Sphere, Torus) or Double-capped model
+                # Get all island edges and faces for processing
+                island_edges = set()
+                for face in island:
+                    for edge in face.edges:
+                        island_edges.add(edge)
+                island_faces = set(island)
+                
                 verts_list = list(island_verts)
                 if not verts_list: continue
 
@@ -2936,20 +2941,139 @@ class Mesh:
                 elif size.z > size.x and size.z > size.y:
                     axis_idx = 2
                 
-                # Sort by dominant axis
-                verts_list.sort(key=lambda v: v.co[axis_idx])
-                min_v = verts_list[0]
-                max_v = verts_list[-1]
-                
-                # Create bias vector for pathfinding (dominant axis)
-                bias_vector = Vector((0.0, 0.0, 0.0))
-                bias_vector[axis_idx] = 1.0
-                
-                # Find shortest path edges
-                path_edges, _ = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
-                if path_edges:
-                    for e in path_edges:
-                        e.seam = True
+                # ============================================================
+                # CAPPED 模式：对于封闭的双盖模型，使用 find_revolve_cap_boundaries
+                # ============================================================
+                if mode == 'CAPPED':
+                    # 用 Revolve Cap 算法找盖子边界边
+                    cap_boundary_edges, precise_axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
+                    
+                    print(f"[auto_seam DEBUG] num_loops=0, CAPPED mode: found {len(cap_boundary_edges)} cap boundary edges")
+                    
+                    if cap_boundary_edges:
+                        # 标记盖子边界为 seam
+                        for edge in cap_boundary_edges:
+                            edge.seam = True
+                        print(f"[auto_seam DEBUG] Marked {len(cap_boundary_edges)} cap boundary edges as seam")
+                        
+                        # 获取边界边的顶点，用于找垂直连接路径
+                        cap_boundary_verts = set()
+                        for edge in cap_boundary_edges:
+                            cap_boundary_verts.add(edge.verts[0])
+                            cap_boundary_verts.add(edge.verts[1])
+                        
+                        # 将边界边按高度分成上下两组
+                        edge_heights = []
+                        for edge in cap_boundary_edges:
+                            mid = (edge.verts[0].co + edge.verts[1].co) / 2
+                            edge_heights.append((edge, mid[precise_axis_idx]))
+                        
+                        if edge_heights:
+                            min_height = min(h for _, h in edge_heights)
+                            max_height = max(h for _, h in edge_heights)
+                            mid_height = (min_height + max_height) / 2
+                            
+                            lower_verts = set()
+                            upper_verts = set()
+                            for edge, h in edge_heights:
+                                if h < mid_height:
+                                    lower_verts.add(edge.verts[0])
+                                    lower_verts.add(edge.verts[1])
+                                else:
+                                    upper_verts.add(edge.verts[0])
+                                    upper_verts.add(edge.verts[1])
+                            
+                            print(f"[auto_seam DEBUG] lower_verts: {len(lower_verts)}, upper_verts: {len(upper_verts)}")
+                            
+                            # 找 bevel edges 用于路径搜索
+                            ANGLE_THRESHOLD = 0.98
+                            bevel_edges = set()
+                            for edge in island_edges:
+                                if edge.is_boundary or edge.seam:
+                                    continue
+                                if sharp_edge_values[edge.index]:
+                                    continue
+                                linked_faces = [f for f in edge.link_faces if f in island_faces]
+                                if len(linked_faces) == 2:
+                                    dot = linked_faces[0].normal.dot(linked_faces[1].normal)
+                                    if dot < ANGLE_THRESHOLD:
+                                        bevel_edges.add(edge)
+                            
+                            # 在两个边界环之间找 bevel path
+                            if lower_verts and upper_verts and bevel_edges:
+                                import heapq
+                                
+                                def find_bevel_path(start_verts, target_verts, valid_edges):
+                                    all_verts = set()
+                                    for e in valid_edges:
+                                        all_verts.add(e.verts[0])
+                                        all_verts.add(e.verts[1])
+                                    
+                                    dist = {v: float('inf') for v in all_verts}
+                                    prev_edge = {}
+                                    pq = []
+                                    
+                                    for v in start_verts:
+                                        if v in dist:
+                                            dist[v] = 0
+                                            heapq.heappush(pq, (0, id(v), v))
+                                    
+                                    while pq:
+                                        d, _, v = heapq.heappop(pq)
+                                        if d > dist[v]:
+                                            continue
+                                        if v in target_verts:
+                                            path = []
+                                            current = v
+                                            while current in prev_edge:
+                                                edge = prev_edge[current]
+                                                path.append(edge)
+                                                current = edge.other_vert(current)
+                                            return path
+                                        for e in v.link_edges:
+                                            if e in valid_edges:
+                                                other = e.other_vert(v)
+                                                new_dist = d + e.calc_length()
+                                                if new_dist < dist.get(other, float('inf')):
+                                                    dist[other] = new_dist
+                                                    prev_edge[other] = e
+                                                    heapq.heappush(pq, (new_dist, id(other), other))
+                                    return []
+                                
+                                path_edges = find_bevel_path(lower_verts, upper_verts, bevel_edges)
+                                if path_edges:
+                                    for e in path_edges:
+                                        e.seam = True
+                                    print(f"[auto_seam DEBUG] Marked {len(path_edges)} vertical seam edges")
+                                else:
+                                    print(f"[auto_seam DEBUG] No bevel path found between cap boundaries")
+                    else:
+                        print(f"[auto_seam DEBUG] No cap boundary edges found, using default path")
+                        # Fallback: 使用默认的 shortest path
+                        verts_list.sort(key=lambda v: v.co[axis_idx])
+                        min_v = verts_list[0]
+                        max_v = verts_list[-1]
+                        bias_vector = Vector((0.0, 0.0, 0.0))
+                        bias_vector[axis_idx] = 1.0
+                        path_edges, _ = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
+                        if path_edges:
+                            for e in path_edges:
+                                e.seam = True
+                else:
+                    # STANDARD 模式: 原来的逻辑
+                    verts_list.sort(key=lambda v: v.co[axis_idx])
+                    min_v = verts_list[0]
+                    max_v = verts_list[-1]
+                    
+                    # Create bias vector for pathfinding (dominant axis)
+                    bias_vector = Vector((0.0, 0.0, 0.0))
+                    bias_vector[axis_idx] = 1.0
+                    
+                    # Find shortest path edges
+                    path_edges, _ = Mesh.find_shortest_path(bm, min_v, max_v, island, bias_vector=bias_vector)
+                    if path_edges:
+                        for e in path_edges:
+                            e.seam = True
 
             elif num_loops >= 2:
                 # Cylinder-like (Side wall) with potentially multiple holes
