@@ -2741,48 +2741,65 @@ class Mesh:
             bpy.ops.object.mode_set(mode='EDIT')
 
 
-    def find_side_boundary_edges(island_faces: set, island_edges: set, axis_idx: int) -> set:
+    def find_revolve_cap_boundaries(island_faces: set, island_edges: set) -> tuple[set, int]:
         """
-        找到 side faces 和 cap faces 的边界边（用于环形带盖模型）
+        找到回转体/双盖模型的侧面边界环（使用极性分数选轴 + 严格侧面判定）
         
         参数：
-            island_faces: 当前 island 的所有面 (set of BMFace)
-            island_edges: 当前 island 的所有边 (set of BMEdge)  
-            axis_idx: 主轴索引 (0=X, 1=Y, 2=Z)
-        
+            island_faces: 当前 island 的所有面
+            island_edges: 当前 island 的所有边
+            
         返回：
-            set[BMEdge] - side/cap 边界边集合
+            (boundary_edges, axis_idx)
+            boundary_edges: set[BMEdge] - 侧面与盖子的分界边
+            axis_idx: int - 判定出的主轴索引 (0=X, 1=Y, 2=Z)
         """
         from mathutils import Vector
         
+        # 1. 确定主轴：使用“极性分数”
         axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+        axis_scores = [0.0, 0.0, 0.0]
+
+        POLARITY_TOLERANCE_SIDE = 0.1  # 视为侧面的 dot 阈值
+        POLARITY_TOLERANCE_CAP = 0.9   # 视为盖面的 dot 阈值
+
+        for face in island_faces:
+            area = face.calc_area()
+            for i, axis in enumerate(axis_vectors):
+                dot = abs(face.normal.dot(axis))
+                # 如果 dot 落在两极区间，加分
+                if dot < POLARITY_TOLERANCE_SIDE or dot > POLARITY_TOLERANCE_CAP:
+                    axis_scores[i] += area
+
+        axis_idx = max(range(3), key=lambda i: axis_scores[i])
         axis_vec = axis_vectors[axis_idx]
         
-        # 阈值：dot < 0.1 才算 side face（近乎垂直于主轴）
-        SIDE_THRESHOLD = 0.1
+        # 2. 严格定义 Side Face
+        # 使用非常严格的阈值提取侧面 (STRICT_SIDE_THRESHOLD = 0.05)
+        STRICT_SIDE_THRESHOLD = 0.05 
         
-        side_faces = set()
-        cap_faces = set()
+        strict_side_faces = set()
         for face in island_faces:
             dot = abs(face.normal.dot(axis_vec))
-            if dot < SIDE_THRESHOLD:
-                side_faces.add(face)
-            else:
-                cap_faces.add(face)
-        
-        # 找 side/cap 边界边
+            if dot < STRICT_SIDE_THRESHOLD:
+                strict_side_faces.add(face)
+                
+        # 3. 找出 Strict Side Region 的边界边
         boundary_edges = set()
         for edge in island_edges:
             if edge.is_boundary:
                 continue
+                
             linked = [f for f in edge.link_faces if f in island_faces]
             if len(linked) == 2:
-                f0_is_side = linked[0] in side_faces
-                f1_is_side = linked[1] in side_faces
+                f0_is_side = linked[0] in strict_side_faces
+                f1_is_side = linked[1] in strict_side_faces
+                
+                # XOR: 只有一侧是 strict side，说明这是侧面与倒角/盖面的分界线
                 if f0_is_side != f1_is_side:
                     boundary_edges.add(edge)
-        
-        return boundary_edges
+                    
+        return boundary_edges, axis_idx
 
 
     def auto_seam(mesh: bpy.types.Object, mode: str = 'STANDARD'):
@@ -3163,9 +3180,12 @@ class Mesh:
                 # 然后也执行 STANDARD 逻辑处理两端开口的部分
                 # ============================================================
                 if mode == 'CAPPED':
-                    # 用 Side Boundary 算法找盖子边界边
-                    cap_boundary_edges = Mesh.find_side_boundary_edges(island_faces, island_edges, axis_idx)
+                    # 用 Revolve Cap 算法找盖子边界边 (V3 极性分数 + 严格侧面)
+                    cap_boundary_edges, precise_axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
                     
+                    # 更新主轴为更精确的计算结果
+                    axis_idx = precise_axis_idx
+                                        
                     if cap_boundary_edges:
                         # 标记盖子边界为 seam
                         for edge in cap_boundary_edges:
