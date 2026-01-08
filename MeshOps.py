@@ -38,7 +38,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
         description="选择自动UV Seam的处理模式",
         items=[
             ('STANDARD', "Standard", "标准模式：适用于两端开口的管道/圆柱（在两个 boundary 之间找 seam）"),
-            ('CAPPED', "Capped", "带盖模式：适用于单端封闭的环形模型（用 Side Boundary 分离盖子）"),
+            ('CAPPED', "Capped", "带盖模式：适用于单端或双端封闭的回转体模型（智能识别 Side Faces）"),
         ],
         default='STANDARD'
     )
@@ -1696,88 +1696,10 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                 all_silhouette_edges |= boundary_edges_found
                 continue  # 处理下一个 island
 
-            # DOUBLE_CAP: 双盖模型的边界环检测（V3: 极性分数选轴 + 严格侧面提取）
+            # DOUBLE_CAP: 双盖模型的边界环检测
             if self.select_mode == 'DOUBLE_CAP':
-                # 1. 确定主轴：使用“极性分数”
-                # 正确的主轴应该让面的法线集中在 dot~0 (Side) 和 dot~1 (Cap)
-                # 错误的轴会让侧面法线分布在 0~1 之间 (cos分布)
-                axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
-                axis_scores = [0.0, 0.0, 0.0]
-
-                POLARITY_TOLERANCE_SIDE = 0.1  # 视为侧面的 dot 阈值
-                POLARITY_TOLERANCE_CAP = 0.9   # 视为盖面的 dot 阈值
-
-                for face in island_faces:
-                    area = face.calc_area()
-                    for i, axis in enumerate(axis_vectors):
-                        dot = abs(face.normal.dot(axis))
-                        # 如果 dot 落在两极区间，加分
-                        if dot < POLARITY_TOLERANCE_SIDE or dot > POLARITY_TOLERANCE_CAP:
-                            axis_scores[i] += area
-                        else:
-                            # 落在中间模糊区间，不加分（或减分）
-                            pass
-
-                axis_idx_local = max(range(3), key=lambda i: axis_scores[i])
-                axis_vec = axis_vectors[axis_idx_local]
-
-                print(f"[DEBUG DOUBLE_CAP] Axis Scores: X={axis_scores[0]:.2f}, Y={axis_scores[1]:.2f}, Z={axis_scores[2]:.2f}")
-                print(f"[DEBUG DOUBLE_CAP] Selected Axis: {['X', 'Y', 'Z'][axis_idx_local]}")
-
-                # 2. 严格定义 Side Face
-                # 使用非常严格的阈值提取侧面
-                STRICT_SIDE_THRESHOLD = 0.05 
-
-                strict_side_faces = set()
-                for face in island_faces:
-                    dot = abs(face.normal.dot(axis_vec))
-                    if dot < STRICT_SIDE_THRESHOLD:
-                        strict_side_faces.add(face)
-
-                print(f"[DEBUG DOUBLE_CAP] Strict Side Faces: {len(strict_side_faces)}")
-
-                # 3. 找出 Strict Side Region 的边界边
-                # 边界定义：一条边连接一个 STRICT SIDE Face 和一个 NON-STRICT SIDE Face (Bevel or Cap)
-                boundary_edges_found = set()
-                for edge in island_edges:
-                    if edge.is_boundary:
-                        continue 
-                        
-                    linked = [f for f in edge.link_faces if f in island_faces]
-                    if len(linked) == 2:
-                        f0_is_side = linked[0] in strict_side_faces
-                        f1_is_side = linked[1] in strict_side_faces
-                        
-                        # XOR: 只有一侧是 strict side，说明这是侧面与倒角/盖面的分界线
-                        if f0_is_side != f1_is_side:
-                            boundary_edges_found.add(edge)
-
-                # 4. 调试输出环信息
-                edge_pool = set(boundary_edges_found)
-                loops_found = []
-                while edge_pool:
-                    seed = next(iter(edge_pool))
-                    edge_pool.remove(seed)
-                    loop = {seed}
-                    stack = [seed]
-                    while stack:
-                        e = stack.pop()
-                        for v in e.verts:
-                            for link_e in v.link_edges:
-                                if link_e in edge_pool:
-                                    edge_pool.remove(link_e)
-                                    loop.add(link_e)
-                                    stack.append(link_e)
-                    loops_found.append(loop)
-
-                print(f"[DEBUG DOUBLE_CAP] Found {len(loops_found)} loops")
-                for i, loop in enumerate(loops_found):
-                    center = Vector((0,0,0))
-                    for e in loop:
-                        center += (e.verts[0].co + e.verts[1].co)/2
-                    center /= len(loop)
-                    print(f"  Loop {i}: {len(loop)} edges, Z={center.z:.2f}")
-
+                boundary_edges_found, axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
+                print(f"[DEBUG DOUBLE_CAP] Found {len(boundary_edges_found)} boundary edges, Axis: {axis_idx}")
                 all_silhouette_edges |= boundary_edges_found
                 continue  # 处理下一个 island
 
