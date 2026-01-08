@@ -31,6 +31,17 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
         需要保持模型水密\
         如果模型的面是分开的请先使用FixCADObj工具修理"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uv_seam_mode: bpy.props.EnumProperty(
+        name="UV Seam Mode",
+        description="选择自动UV Seam的处理模式",
+        items=[
+            ('STANDARD', "Standard", "标准模式：适用于两端开口的管道/圆柱（在两个 boundary 之间找 seam）"),
+            ('CAPPED', "Capped", "带盖模式：适用于单端封闭的环形模型（用 Side Boundary 分离盖子）"),
+        ],
+        default='STANDARD'
+    )
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -110,7 +121,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
             
-            Mesh.auto_seam(mesh)
+            Mesh.auto_seam(mesh, mode=self.uv_seam_mode)
 
         Mesh.merge_verts_ops(selected_meshes)
 
@@ -1575,6 +1586,9 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             ('OUTER_BOUNDARY', "Outer Boundary", "Select outer boundary loops only"),
             ('SHARP', "Sharp Edges", "Select sharp edges only"),
             ('BEVEL_PATH', "Bevel Path", "Find shortest path on bevel edges connecting outer loops"),
+            ('BEVEL_LOOPS', "Bevel Loops", "Find closed bevel edge loops (cap separators)"),
+            ('SIDE_BOUNDARY', "Side Boundary", "Find boundary between side faces and cap faces (using boundary loops)"),
+            ('CAP_BOUNDARY_PARALLEL', "Cap Boundary (Parallel)", "Find cap boundary using parallel area method (for closed shapes)"),
         ],
         default='SILHOUETTE'
     )
@@ -1638,7 +1652,50 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                 for edge in face.edges:
                     island_edges.add(edge)
 
-            # 找 boundary loops
+            # CAP_BOUNDARY_PARALLEL: 平行面积法（适用于封闭形状，不依赖 boundary loops）
+            if self.select_mode == 'CAP_BOUNDARY_PARALLEL':
+                axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+                parallel_areas = [0.0, 0.0, 0.0]
+
+                for face in island_faces:
+                    area = face.calc_area()
+                    for i, axis in enumerate(axis_vectors):
+                        if abs(face.normal.dot(axis)) > 0.7:
+                            parallel_areas[i] += area
+
+                axis_idx_local = max(range(3), key=lambda i: parallel_areas[i])
+                axis_vec = axis_vectors[axis_idx_local]
+
+                SIDE_THRESHOLD = 0.7
+
+                side_faces = set()
+                cap_faces = set()
+                for face in island_faces:
+                    dot = abs(face.normal.dot(axis_vec))
+                    if dot < SIDE_THRESHOLD:
+                        side_faces.add(face)
+                    else:
+                        cap_faces.add(face)
+
+                print(f"[DEBUG CAP_BOUNDARY_PARALLEL] Parallel areas: X={parallel_areas[0]:.4f}, Y={parallel_areas[1]:.4f}, Z={parallel_areas[2]:.4f}")
+                print(f"[DEBUG CAP_BOUNDARY_PARALLEL] Axis: {['X', 'Y', 'Z'][axis_idx_local]}, Side: {len(side_faces)}, Cap: {len(cap_faces)}")
+
+                boundary_edges_found = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        continue
+                    linked = [f for f in edge.link_faces if f in island_faces]
+                    if len(linked) == 2:
+                        f0_is_side = linked[0] in side_faces
+                        f1_is_side = linked[1] in side_faces
+                        if f0_is_side != f1_is_side:
+                            boundary_edges_found.add(edge)
+
+                print(f"[DEBUG CAP_BOUNDARY_PARALLEL] Found {len(boundary_edges_found)} boundary edges")
+                all_silhouette_edges |= boundary_edges_found
+                continue  # 处理下一个 island
+
+            # 找 boundary loops（SIDE_BOUNDARY 和其他模式需要）
             boundary_edges = [e for e in island_edges if e.is_boundary]
             if len(boundary_edges) < 2:
                 # 没有足够的 boundary loops，跳过
@@ -1703,6 +1760,47 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
             l1_edges = set(loops[start_loop_idx])
             l2_edges = set(loops[end_loop_idx])
             start_end_boundary_edges = l1_edges | l2_edges
+
+            # ============================================================
+            # SIDE_BOUNDARY 模式：用 boundary loops 的 spread 确定主轴
+            # 用更严格的阈值，使 bevel 过渡面归入 cap，边界更靠近纯侧面
+            # ============================================================
+            if self.select_mode == 'SIDE_BOUNDARY':
+                axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+                axis_vec = axis_vectors[axis_idx]
+
+                # 降低阈值：dot < 0.3 才算 side face（近乎垂直于主轴）
+                # 这样 bevel 过渡面会被归类为 cap，边界边更靠近纯侧面
+                SIDE_THRESHOLD = 0.1
+
+                side_faces = set()
+                cap_faces = set()
+                for face in island_faces:
+                    dot = abs(face.normal.dot(axis_vec))
+                    if dot < SIDE_THRESHOLD:
+                        side_faces.add(face)
+                    else:
+                        cap_faces.add(face)
+
+                print(f"[DEBUG SIDE_BOUNDARY] Axis from loops spread: {['X', 'Y', 'Z'][axis_idx]}")
+                print(f"[DEBUG SIDE_BOUNDARY] spread X={spread_x:.4f}, Y={spread_y:.4f}, Z={spread_z:.4f}")
+                print(f"[DEBUG SIDE_BOUNDARY] SIDE_THRESHOLD={SIDE_THRESHOLD}")
+                print(f"[DEBUG SIDE_BOUNDARY] Side faces: {len(side_faces)}, Cap faces: {len(cap_faces)}")
+
+                boundary_edges_found = set()
+                for edge in island_edges:
+                    if edge.is_boundary:
+                        continue
+                    linked = [f for f in edge.link_faces if f in island_faces]
+                    if len(linked) == 2:
+                        f0_is_side = linked[0] in side_faces
+                        f1_is_side = linked[1] in side_faces
+                        if f0_is_side != f1_is_side:
+                            boundary_edges_found.add(edge)
+
+                print(f"[DEBUG SIDE_BOUNDARY] Found {len(boundary_edges_found)} boundary edges")
+                all_silhouette_edges |= boundary_edges_found
+                continue  # 处理下一个 island
 
             # ============================================================
             # 方法：sharp_edge attribute + bevel edges 连通性检测
@@ -1897,6 +1995,55 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                         all_silhouette_edges |= set(path_edges)
                 else:
                     print(f"[DEBUG BEVEL_PATH] Not enough outer loops: {len(outer_loops)}")
+            elif self.select_mode == 'BEVEL_LOOPS':
+                # 找闭合 bevel edge loops（用于分离 cap 和 side 区域）
+                # 条件：每个顶点恰好连接 2 条 bevel edges = 形成闭合环
+
+                # 1. 统计每个顶点连接的 bevel edge 数量
+                vert_bevel_count = {}
+                for e in bevel_edges:
+                    for v in e.verts:
+                        vert_bevel_count[v] = vert_bevel_count.get(v, 0) + 1
+
+                # 2. 只保留两端顶点都恰好连接 2 条 bevel edges 的边
+                loop_candidate_edges = set()
+                for e in bevel_edges:
+                    v0_count = vert_bevel_count.get(e.verts[0], 0)
+                    v1_count = vert_bevel_count.get(e.verts[1], 0)
+                    if v0_count == 2 and v1_count == 2:
+                        loop_candidate_edges.add(e)
+
+                # 3. 分组成独立的闭合环
+                closed_loops = []
+                visited_edges = set()
+                for start_edge in loop_candidate_edges:
+                    if start_edge in visited_edges:
+                        continue
+                    # Flood fill 找连通的边
+                    loop = set()
+                    stack = [start_edge]
+                    while stack:
+                        e = stack.pop()
+                        if e in loop:
+                            continue
+                        loop.add(e)
+                        for v in e.verts:
+                            for linked in v.link_edges:
+                                if linked in loop_candidate_edges and linked not in loop:
+                                    stack.append(linked)
+                    visited_edges |= loop
+                    closed_loops.append(loop)
+
+                print(f"[DEBUG BEVEL_LOOPS] Bevel edges: {len(bevel_edges)}")
+                print(f"[DEBUG BEVEL_LOOPS] Loop candidate edges: {len(loop_candidate_edges)}")
+                print(f"[DEBUG BEVEL_LOOPS] Found {len(closed_loops)} closed loops:")
+                for i, loop in enumerate(closed_loops):
+                    perimeter = sum(e.calc_length() for e in loop)
+                    print(f"  Loop {i}: {len(loop)} edges, perimeter: {perimeter:.4f}")
+
+                # 选中所有闭合环的边
+                for loop in closed_loops:
+                    all_silhouette_edges |= loop
 
         # 取消所有选择，然后选中对应的边
         for e in bm.edges:
@@ -1915,6 +2062,6 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.context.tool_settings.mesh_select_mode = (False, True, False)
 
-        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path'}
+        mode_names = {'SILHOUETTE': 'silhouette', 'BEVEL': 'bevel', 'OUTER_BOUNDARY': 'outer boundary', 'SHARP': 'sharp', 'BEVEL_PATH': 'bevel path', 'BEVEL_LOOPS': 'closed bevel loops', 'SIDE_BOUNDARY': 'side boundary', 'CAP_BOUNDARY_PARALLEL': 'cap boundary (parallel)'}
         self.report({'INFO'}, f"选中了 {len(all_silhouette_edges)} 条 {mode_names[self.select_mode]} 边")
         return {'FINISHED'}
