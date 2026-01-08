@@ -3316,75 +3316,52 @@ class Mesh:
                     axis_idx = precise_axis_idx
                                         
                     if cap_boundary_edges:
-                        # 不标记盖子边界为 seam，只用于路径搜索的终点
-                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges")
-                        
-                        # 获取盖子边界边的顶点作为路径搜索的终点
-                        cap_boundary_verts = set()
+                        # 标记盖子边界为 seam
                         for edge in cap_boundary_edges:
-                            cap_boundary_verts.add(edge.verts[0])
-                            cap_boundary_verts.add(edge.verts[1])
+                            edge.seam = True
+                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges, marked as seam")
                         
-                        # 从 boundary loops 到盖子边界找路径
-                        all_loop_verts = set()
-                        for loop in loops:
-                            for e in loop:
-                                all_loop_verts.add(e.verts[0])
-                                all_loop_verts.add(e.verts[1])
+                        # 将盖子边界边按高度分成上下两组
+                        edge_heights = []
+                        for edge in cap_boundary_edges:
+                            mid = (edge.verts[0].co + edge.verts[1].co) / 2
+                            edge_heights.append((edge, mid[axis_idx]))
                         
-                        if all_loop_verts:
-                            # 将盖子边界边按高度（主轴坐标）分成两组
-                            edge_heights = []
-                            for edge in cap_boundary_edges:
-                                mid = (edge.verts[0].co + edge.verts[1].co) / 2
-                                edge_heights.append((edge, mid[axis_idx]))
+                        if edge_heights:
+                            min_height = min(h for _, h in edge_heights)
+                            max_height = max(h for _, h in edge_heights)
+                            mid_height = (min_height + max_height) / 2
                             
-                            if edge_heights:
-                                min_height = min(h for _, h in edge_heights)
-                                max_height = max(h for _, h in edge_heights)
-                                mid_height = (min_height + max_height) / 2
-                                
-                                lower_cap_verts = set()
-                                upper_cap_verts = set()
-                                for edge, h in edge_heights:
-                                    if h < mid_height:
-                                        lower_cap_verts.add(edge.verts[0])
-                                        lower_cap_verts.add(edge.verts[1])
-                                    else:
-                                        upper_cap_verts.add(edge.verts[0])
-                                        upper_cap_verts.add(edge.verts[1])
-                                
-                                # 确定洞口在哪一端（上还是下）
-                                loop_avg_height = sum(v.co[axis_idx] for v in all_loop_verts) / len(all_loop_verts)
-                                
-                                # 选择对面的盖子边界作为目标
-                                if loop_avg_height > mid_height:
-                                    # 洞口在上方，目标是底部盖子边界
-                                    target_verts = lower_cap_verts
-                                    print(f"[auto_seam DEBUG] Loop is at top, targeting bottom cap boundary")
+                            lower_cap_verts = set()
+                            upper_cap_verts = set()
+                            for edge, h in edge_heights:
+                                if h < mid_height:
+                                    lower_cap_verts.add(edge.verts[0])
+                                    lower_cap_verts.add(edge.verts[1])
                                 else:
-                                    # 洞口在下方，目标是顶部盖子边界
-                                    target_verts = upper_cap_verts
-                                    print(f"[auto_seam DEBUG] Loop is at bottom, targeting top cap boundary")
+                                    upper_cap_verts.add(edge.verts[0])
+                                    upper_cap_verts.add(edge.verts[1])
+                            
+                            print(f"[auto_seam DEBUG] lower_cap_verts: {len(lower_cap_verts)}, upper_cap_verts: {len(upper_cap_verts)}")
+                            
+                            # 在上方盖子边界和下方盖子边界之间找路径
+                            # 这条路径只会穿过侧面，不会穿过顶部盖子区域
+                            if lower_cap_verts and upper_cap_verts:
+                                valid_path_edges = island_edges
+                                path_edges, path_cost = find_bevel_edge_path(upper_cap_verts, lower_cap_verts, valid_path_edges)
                                 
-                                print(f"[auto_seam DEBUG] all_loop_verts: {len(all_loop_verts)}, target_verts: {len(target_verts)}")
-                                print(f"[auto_seam DEBUG] lower_cap_verts: {len(lower_cap_verts)}, upper_cap_verts: {len(upper_cap_verts)}")
+                                print(f"[auto_seam DEBUG] Searching path from upper to lower cap boundary")
+                                print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)}")
+                                print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
                                 
-                                if target_verts:
-                                    valid_path_edges = island_edges
-                                    path_edges, path_cost = find_bevel_edge_path(all_loop_verts, target_verts, valid_path_edges)
-                                    
-                                    print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)}")
-                                    print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
-                                    
-                                    if path_edges:
-                                        for e in path_edges:
-                                            e.seam = True
-                                        print(f"[auto_seam DEBUG] Marked {len(path_edges)} path edges as seam")
-                                    else:
-                                        print(f"[auto_seam DEBUG] No path found from loops to opposite cap boundary!")
+                                if path_edges:
+                                    for e in path_edges:
+                                        e.seam = True
+                                    print(f"[auto_seam DEBUG] Marked {len(path_edges)} path edges as seam")
                                 else:
-                                    print(f"[auto_seam DEBUG] No target verts found on opposite end!")
+                                    print(f"[auto_seam DEBUG] No path found between cap boundaries!")
+                            else:
+                                print(f"[auto_seam DEBUG] Missing upper or lower cap verts!")
                     else:
                         print(f"[auto_seam DEBUG] No cap boundary edges found, falling back to STANDARD")
                     
