@@ -1696,24 +1696,36 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                 all_silhouette_edges |= boundary_edges_found
                 continue  # 处理下一个 island
 
-            # DOUBLE_CAP: 双盖模型的边界环检测（优化版：基于严格侧面区域提取）
+            # DOUBLE_CAP: 双盖模型的边界环检测（V3: 极性分数选轴 + 严格侧面提取）
             if self.select_mode == 'DOUBLE_CAP':
-                # 1. 确定主轴
+                # 1. 确定主轴：使用“极性分数”
+                # 正确的主轴应该让面的法线集中在 dot~0 (Side) 和 dot~1 (Cap)
+                # 错误的轴会让侧面法线分布在 0~1 之间 (cos分布)
                 axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
-                parallel_areas = [0.0, 0.0, 0.0]
+                axis_scores = [0.0, 0.0, 0.0]
+
+                POLARITY_TOLERANCE_SIDE = 0.1  # 视为侧面的 dot 阈值
+                POLARITY_TOLERANCE_CAP = 0.9   # 视为盖面的 dot 阈值
 
                 for face in island_faces:
                     area = face.calc_area()
                     for i, axis in enumerate(axis_vectors):
-                        if abs(face.normal.dot(axis)) > 0.9: # 只有接近平面的才贡献权重，避免干扰
-                            parallel_areas[i] += area
+                        dot = abs(face.normal.dot(axis))
+                        # 如果 dot 落在两极区间，加分
+                        if dot < POLARITY_TOLERANCE_SIDE or dot > POLARITY_TOLERANCE_CAP:
+                            axis_scores[i] += area
+                        else:
+                            # 落在中间模糊区间，不加分（或减分）
+                            pass
 
-                axis_idx_local = max(range(3), key=lambda i: parallel_areas[i])
+                axis_idx_local = max(range(3), key=lambda i: axis_scores[i])
                 axis_vec = axis_vectors[axis_idx_local]
 
+                print(f"[DEBUG DOUBLE_CAP] Axis Scores: X={axis_scores[0]:.2f}, Y={axis_scores[1]:.2f}, Z={axis_scores[2]:.2f}")
+                print(f"[DEBUG DOUBLE_CAP] Selected Axis: {['X', 'Y', 'Z'][axis_idx_local]}")
+
                 # 2. 严格定义 Side Face
-                # 只选择那些真正垂直于主轴的面 (dot 接近 0)
-                # 倒角面的 dot 通常 > 0.2，会被自然排除，从而保证边界落在 Side/Bevel 交界处
+                # 使用非常严格的阈值提取侧面
                 STRICT_SIDE_THRESHOLD = 0.05 
 
                 strict_side_faces = set()
@@ -1722,53 +1734,49 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
                     if dot < STRICT_SIDE_THRESHOLD:
                         strict_side_faces.add(face)
 
-                print(f"[DEBUG DOUBLE_CAP] Axis: {['X', 'Y', 'Z'][axis_idx_local]}, Strict Side Faces: {len(strict_side_faces)}")
+                print(f"[DEBUG DOUBLE_CAP] Strict Side Faces: {len(strict_side_faces)}")
 
                 # 3. 找出 Strict Side Region 的边界边
-                # 边界定义：一条边连接一个 Side Face 和一个 Non-Side Face
+                # 边界定义：一条边连接一个 STRICT SIDE Face 和一个 NON-STRICT SIDE Face (Bevel or Cap)
                 boundary_edges_found = set()
                 for edge in island_edges:
                     if edge.is_boundary:
-                        continue # 忽略开放边界（闭合模型不应有）
+                        continue 
                         
                     linked = [f for f in edge.link_faces if f in island_faces]
                     if len(linked) == 2:
                         f0_is_side = linked[0] in strict_side_faces
                         f1_is_side = linked[1] in strict_side_faces
                         
-                        # XOR: 只有一个是 Side Face，说明是边界
+                        # XOR: 只有一侧是 strict side，说明这是侧面与倒角/盖面的分界线
                         if f0_is_side != f1_is_side:
                             boundary_edges_found.add(edge)
 
-                # 4. 调试：统计环的数量
+                # 4. 调试输出环信息
                 edge_pool = set(boundary_edges_found)
-                cap_loops = []
+                loops_found = []
                 while edge_pool:
-                    seed_edge = next(iter(edge_pool))
-                    edge_pool.remove(seed_edge)
-                    current_loop = {seed_edge}
-                    stack = [seed_edge]
+                    seed = next(iter(edge_pool))
+                    edge_pool.remove(seed)
+                    loop = {seed}
+                    stack = [seed]
                     while stack:
                         e = stack.pop()
                         for v in e.verts:
-                            for linked_edge in v.link_edges:
-                                if linked_edge in edge_pool:
-                                    edge_pool.remove(linked_edge)
-                                    current_loop.add(linked_edge)
-                                    stack.append(linked_edge)
-                    cap_loops.append(current_loop)
+                            for link_e in v.link_edges:
+                                if link_e in edge_pool:
+                                    edge_pool.remove(link_e)
+                                    loop.add(link_e)
+                                    stack.append(link_e)
+                    loops_found.append(loop)
 
-                print(f"[DEBUG DOUBLE_CAP] Found {len(boundary_edges_found)} boundary edges forming {len(cap_loops)} loops")
-                for i, loop in enumerate(cap_loops):
-                     # 计算环的平均高度 (沿主轴)
-                    avg_height = 0.0
-                    count = 0
-                    for edge in loop:
-                        mid = (edge.verts[0].co + edge.verts[1].co) / 2
-                        avg_height += mid[axis_idx_local]
-                        count += 1
-                    if count > 0: avg_height /= count
-                    print(f"  Loop {i}: {len(loop)} edges, Height: {avg_height:.4f}")
+                print(f"[DEBUG DOUBLE_CAP] Found {len(loops_found)} loops")
+                for i, loop in enumerate(loops_found):
+                    center = Vector((0,0,0))
+                    for e in loop:
+                        center += (e.verts[0].co + e.verts[1].co)/2
+                    center /= len(loop)
+                    print(f"  Loop {i}: {len(loop)} edges, Z={center.z:.2f}")
 
                 all_silhouette_edges |= boundary_edges_found
                 continue  # 处理下一个 island
