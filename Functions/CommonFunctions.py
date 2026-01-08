@@ -3336,14 +3336,15 @@ class Mesh:
                                 all_loop_verts.add(e.verts[1])
                         
                         if all_loop_verts:
-                            # 对于 CAPPED 模式，使用 bevel_edges + sharp_edges 作为有效路径
-                            # 这样可以找到从 boundary loop 到 cap boundary 的完整路径
-                            valid_path_edges = bevel_edges | sharp_edges_in_island
+                            # 对于 CAPPED 模式，使用所有 island_edges 作为有效路径
+                            # 因为侧面的边可能是平坦的，既不是 bevel 也不是 sharp
+                            # 但我们仍需要通过这些边来连接洞口和盖子边界
+                            valid_path_edges = island_edges - cap_boundary_edges  # 排除已标记的盖子边界
                             
                             path_edges, path_cost = find_bevel_edge_path(all_loop_verts, cap_boundary_verts, valid_path_edges)
                             
                             print(f"[auto_seam DEBUG] all_loop_verts: {len(all_loop_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
-                            print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)} (bevel: {len(bevel_edges)}, sharp: {len(sharp_edges_in_island)})")
+                            print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)} (island_edges: {len(island_edges)})")
                             print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
                             
                             if path_edges:
