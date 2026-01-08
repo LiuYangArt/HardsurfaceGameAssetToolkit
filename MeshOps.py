@@ -31,6 +31,17 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
     bl_description = "初始化导入的CAD模型fbx，清理孤立顶点，UV初始化\
         需要保持模型水密\
         如果模型的面是分开的请先使用FixCADObj工具修理"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    uv_seam_mode: bpy.props.EnumProperty(
+        name="UV Seam Mode",
+        description="选择自动UV Seam的处理模式",
+        items=[
+            ('STANDARD', "Standard", "标准模式：适用于两端开口的管道/圆柱（在两个 boundary 之间找 seam）"),
+            ('CAPPED', "Capped", "带盖模式：适用于单端封闭的环形模型（用 Side Boundary 分离盖子）"),
+        ],
+        default='STANDARD'
+    )
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -110,7 +121,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
             for edge in mesh.data.edges:  # 从锐边生成UV Seam
                 edge.use_seam = True if edge.use_edge_sharp else False
             
-            Mesh.auto_seam(mesh)
+            Mesh.auto_seam(mesh, mode=self.uv_seam_mode)
 
         Mesh.merge_verts_ops(selected_meshes)
 

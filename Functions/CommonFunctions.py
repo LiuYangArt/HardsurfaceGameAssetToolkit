@@ -2741,8 +2741,60 @@ class Mesh:
             bpy.ops.object.mode_set(mode='EDIT')
 
 
-    def auto_seam(mesh: bpy.types.Object):
-        """Automatically mark seams for closed shapes (Cylinders, Spheres, Tori)"""
+    def find_side_boundary_edges(island_faces: set, island_edges: set, axis_idx: int) -> set:
+        """
+        找到 side faces 和 cap faces 的边界边（用于环形带盖模型）
+        
+        参数：
+            island_faces: 当前 island 的所有面 (set of BMFace)
+            island_edges: 当前 island 的所有边 (set of BMEdge)  
+            axis_idx: 主轴索引 (0=X, 1=Y, 2=Z)
+        
+        返回：
+            set[BMEdge] - side/cap 边界边集合
+        """
+        from mathutils import Vector
+        
+        axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+        axis_vec = axis_vectors[axis_idx]
+        
+        # 阈值：dot < 0.1 才算 side face（近乎垂直于主轴）
+        SIDE_THRESHOLD = 0.1
+        
+        side_faces = set()
+        cap_faces = set()
+        for face in island_faces:
+            dot = abs(face.normal.dot(axis_vec))
+            if dot < SIDE_THRESHOLD:
+                side_faces.add(face)
+            else:
+                cap_faces.add(face)
+        
+        # 找 side/cap 边界边
+        boundary_edges = set()
+        for edge in island_edges:
+            if edge.is_boundary:
+                continue
+            linked = [f for f in edge.link_faces if f in island_faces]
+            if len(linked) == 2:
+                f0_is_side = linked[0] in side_faces
+                f1_is_side = linked[1] in side_faces
+                if f0_is_side != f1_is_side:
+                    boundary_edges.add(edge)
+        
+        return boundary_edges
+
+
+    def auto_seam(mesh: bpy.types.Object, mode: str = 'STANDARD'):
+        """
+        Automatically mark seams for closed shapes
+        
+        参数：
+            mesh: Mesh 对象
+            mode: 'STANDARD' - 标准模式（两端开口的圆柱/管道）
+                  'CAPPED' - 带盖模式（单端封闭的环形模型）
+        """
+        from mathutils import Vector
 
         # Ensure we are in object mode to access data correctly or use bmesh from object
         current_mode = mesh.mode
@@ -3104,9 +3156,53 @@ class Mesh:
 
                 print(f"[auto_seam DEBUG] Island has {len(island)} faces, {len(island_edges)} edges")
                 print(f"[auto_seam DEBUG] Sharp edges: {len(sharp_edges_in_island)}, Bevel edges: {len(bevel_edges)}")
-                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}")
+                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}, Mode: {mode}")
 
-                # 获取外轮廓 loops 的顶点（按主轴排序后的首尾）
+                # ============================================================
+                # CAPPED 模式：先用 Side Boundary 算法处理带盖部分，
+                # 然后也执行 STANDARD 逻辑处理两端开口的部分
+                # ============================================================
+                if mode == 'CAPPED':
+                    # 用 Side Boundary 算法找盖子边界边
+                    cap_boundary_edges = Mesh.find_side_boundary_edges(island_faces, island_edges, axis_idx)
+                    
+                    if cap_boundary_edges:
+                        # 标记盖子边界为 seam
+                        for edge in cap_boundary_edges:
+                            edge.seam = True
+                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges, marked as seam")
+                        
+                        # 获取盖子边界边的顶点作为路径搜索的终点
+                        cap_boundary_verts = set()
+                        for edge in cap_boundary_edges:
+                            cap_boundary_verts.add(edge.verts[0])
+                            cap_boundary_verts.add(edge.verts[1])
+                        
+                        # 从 outer loops 到盖子边界找路径
+                        if outer_loops:
+                            loop1_verts = set(v for idx in outer_loops for e in loops[idx] for v in e.verts)
+                            
+                            path_edges, path_cost = find_bevel_edge_path(loop1_verts, cap_boundary_verts, bevel_edges)
+                            
+                            print(f"[auto_seam DEBUG] outer_verts: {len(loop1_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
+                            print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+                            
+                            if path_edges:
+                                for e in path_edges:
+                                    e.seam = True
+                                print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
+                            else:
+                                print(f"[auto_seam DEBUG] No path found from outer loop to cap boundary!")
+                    else:
+                        print(f"[auto_seam DEBUG] No cap boundary edges found, falling back to STANDARD")
+                    
+                    # CAPPED 模式也执行 STANDARD 逻辑来处理普通的两端开口结构
+                    # 继续往下执行...
+
+                # ============================================================
+                # STANDARD 模式 或 CAPPED 模式的后续处理：
+                # 在两个 outer loops 之间找 bevel path
+                # ============================================================
                 if len(outer_loops) >= 2:
                     outer_loop_indices = sorted(outer_loops, key=lambda i: loop_centers[i]['center'][axis_idx])
                     loop1_verts = set(v for e in loops[outer_loop_indices[0]] for v in e.verts)
@@ -3124,7 +3220,7 @@ class Mesh:
                         print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
                     else:
                         print(f"[auto_seam DEBUG] No path found on bevel edges!")
-                else:
+                elif len(outer_loops) < 2 and mode != 'CAPPED':
                     print(f"[auto_seam DEBUG] Not enough outer loops: {len(outer_loops)}")
 
         bm.to_mesh(mesh.data)
