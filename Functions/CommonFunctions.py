@@ -2833,6 +2833,37 @@ class Mesh:
         bm.faces.ensure_lookup_table()
         bm.verts.ensure_lookup_table()
 
+        # ============================================================
+        # CAPPED 模式预处理：在分 island 之前，对整个 mesh 找 cap boundaries
+        # ============================================================
+        cap_faces = set()  # 存储盖子区域的面
+        global_axis_idx = 2  # 默认 Z 轴
+        
+        if mode == 'CAPPED':
+            all_faces = set(bm.faces)
+            all_edges = set(bm.edges)
+            
+            # 对整个 mesh 调用 find_revolve_cap_boundaries
+            cap_boundary_edges, global_axis_idx = Mesh.find_revolve_cap_boundaries(all_faces, all_edges)
+            
+            print(f"[auto_seam CAPPED] Found {len(cap_boundary_edges)} cap boundary edges on entire mesh")
+            
+            if cap_boundary_edges:
+                # 标记 cap boundary edges 为 seam
+                for edge in cap_boundary_edges:
+                    edge.seam = True
+                
+                # 识别 cap_faces（法线平行于主轴的面）
+                axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
+                axis_vec = axis_vectors[global_axis_idx]
+                CAP_FACE_THRESHOLD = 0.9  # dot > 0.9 算作盖面
+                
+                for face in all_faces:
+                    if abs(face.normal.dot(axis_vec)) > CAP_FACE_THRESHOLD:
+                        cap_faces.add(face)
+                
+                print(f"[auto_seam CAPPED] Identified {len(cap_faces)} cap faces (axis: {['X', 'Y', 'Z'][global_axis_idx]})")
+
         # 1. Identify Islands (connected faces not separated by seams)
         total_faces = set(bm.faces)
         visited_faces = set()
@@ -2860,6 +2891,18 @@ class Mesh:
 
         # 2. Process each island
         for island in islands:
+            # ============================================================
+            # CAPPED 模式：跳过盖子 island（只包含 cap faces 的 island）
+            # ============================================================
+            if mode == 'CAPPED' and cap_faces:
+                # 判断是否是 cap island（大部分面都是 cap faces）
+                cap_face_count = sum(1 for face in island if face in cap_faces)
+                cap_ratio = cap_face_count / len(island) if island else 0
+                
+                if cap_ratio > 0.8:  # 80% 以上是盖面，视为 cap island
+                    print(f"[auto_seam CAPPED] Skipping cap island ({len(island)} faces, {cap_ratio:.1%} cap faces)")
+                    continue
+            
             # Find boundary edges for this island
             boundary_edges = set()
             island_verts = set()
@@ -3305,72 +3348,9 @@ class Mesh:
                 print(f"[auto_seam DEBUG] Outer loops: {outer_loops}, Mode: {mode}")
 
                 # ============================================================
-                # CAPPED 模式：先用 Side Boundary 算法处理带盖部分，
-                # 然后也执行 STANDARD 逻辑处理两端开口的部分
-                # ============================================================
-                if mode == 'CAPPED':
-                    # 用 Revolve Cap 算法找盖子边界边 (V3 极性分数 + 严格侧面)
-                    cap_boundary_edges, precise_axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
-                    
-                    # 更新主轴为更精确的计算结果
-                    axis_idx = precise_axis_idx
-                                        
-                    if cap_boundary_edges:
-                        # 标记盖子边界为 seam
-                        for edge in cap_boundary_edges:
-                            edge.seam = True
-                        print(f"[auto_seam DEBUG] Found {len(cap_boundary_edges)} cap boundary edges, marked as seam")
-                        
-                        # 将盖子边界边按高度分成上下两组
-                        edge_heights = []
-                        for edge in cap_boundary_edges:
-                            mid = (edge.verts[0].co + edge.verts[1].co) / 2
-                            edge_heights.append((edge, mid[axis_idx]))
-                        
-                        if edge_heights:
-                            min_height = min(h for _, h in edge_heights)
-                            max_height = max(h for _, h in edge_heights)
-                            mid_height = (min_height + max_height) / 2
-                            
-                            lower_cap_verts = set()
-                            upper_cap_verts = set()
-                            for edge, h in edge_heights:
-                                if h < mid_height:
-                                    lower_cap_verts.add(edge.verts[0])
-                                    lower_cap_verts.add(edge.verts[1])
-                                else:
-                                    upper_cap_verts.add(edge.verts[0])
-                                    upper_cap_verts.add(edge.verts[1])
-                            
-                            print(f"[auto_seam DEBUG] lower_cap_verts: {len(lower_cap_verts)}, upper_cap_verts: {len(upper_cap_verts)}")
-                            
-                            # 在上方盖子边界和下方盖子边界之间找路径
-                            # 这条路径只会穿过侧面，不会穿过顶部盖子区域
-                            if lower_cap_verts and upper_cap_verts:
-                                valid_path_edges = island_edges
-                                path_edges, path_cost = find_bevel_edge_path(upper_cap_verts, lower_cap_verts, valid_path_edges)
-                                
-                                print(f"[auto_seam DEBUG] Searching path from upper to lower cap boundary")
-                                print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)}")
-                                print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
-                                
-                                if path_edges:
-                                    for e in path_edges:
-                                        e.seam = True
-                                    print(f"[auto_seam DEBUG] Marked {len(path_edges)} path edges as seam")
-                                else:
-                                    print(f"[auto_seam DEBUG] No path found between cap boundaries!")
-                            else:
-                                print(f"[auto_seam DEBUG] Missing upper or lower cap verts!")
-                    else:
-                        print(f"[auto_seam DEBUG] No cap boundary edges found, falling back to STANDARD")
-                    
-                    # CAPPED 模式也执行 STANDARD 逻辑来处理普通的两端开口结构
-                    # 继续往下执行...
-
-                # ============================================================
-                # STANDARD 模式 或 CAPPED 模式的后续处理：
-                # 在两个 outer loops 之间找 bevel path
+                # STANDARD 模式处理：在两个 outer loops 之间找 bevel path
+                # (CAPPED 模式的 cap boundaries 已在预处理阶段完成，
+                #  cap islands 已被跳过，这里只处理 side islands)
                 # ============================================================
                 if len(outer_loops) >= 2:
                     outer_loop_indices = sorted(outer_loops, key=lambda i: loop_centers[i]['center'][axis_idx])
