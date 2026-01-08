@@ -3075,10 +3075,10 @@ class Mesh:
                         for e in path_edges:
                             e.seam = True
 
-            elif num_loops >= 2:
-                # Cylinder-like (Side wall) with potentially multiple holes
-                # We want to connect the two "end" loops.
-                # Strategy: Identify dominant axis by loop distribution, not bounding box.
+            elif num_loops >= 1:
+                # Cylinder-like (Side wall) with one or more boundary loops (holes/openings)
+                # For num_loops == 1: single opening (like a cup or hollow cylinder)
+                # For num_loops >= 2: multiple holes or a tube
 
                 # 1. Calculate Center of each loop first
                 loop_info = []
@@ -3322,13 +3322,18 @@ class Mesh:
                             cap_boundary_verts.add(edge.verts[0])
                             cap_boundary_verts.add(edge.verts[1])
                         
-                        # 从 outer loops 到盖子边界找路径
-                        if outer_loops:
-                            loop1_verts = set(v for idx in outer_loops for e in loops[idx] for v in e.verts)
+                        # 从 boundary loops 到盖子边界找路径
+                        # 即使 outer_loops 为空或只有一个，也使用所有 loops 的顶点
+                        all_loop_verts = set()
+                        for loop in loops:
+                            for e in loop:
+                                all_loop_verts.add(e.verts[0])
+                                all_loop_verts.add(e.verts[1])
+                        
+                        if all_loop_verts:
+                            path_edges, path_cost = find_bevel_edge_path(all_loop_verts, cap_boundary_verts, bevel_edges)
                             
-                            path_edges, path_cost = find_bevel_edge_path(loop1_verts, cap_boundary_verts, bevel_edges)
-                            
-                            print(f"[auto_seam DEBUG] outer_verts: {len(loop1_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
+                            print(f"[auto_seam DEBUG] all_loop_verts: {len(all_loop_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
                             print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
                             
                             if path_edges:
@@ -3336,7 +3341,7 @@ class Mesh:
                                     e.seam = True
                                 print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
                             else:
-                                print(f"[auto_seam DEBUG] No path found from outer loop to cap boundary!")
+                                print(f"[auto_seam DEBUG] No path found from loops to cap boundary!")
                     else:
                         print(f"[auto_seam DEBUG] No cap boundary edges found, falling back to STANDARD")
                     
