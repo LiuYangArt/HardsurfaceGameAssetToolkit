@@ -3338,13 +3338,13 @@ class Mesh:
                         if all_loop_verts:
                             # 对于 CAPPED 模式，使用所有 island_edges 作为有效路径
                             # 因为侧面的边可能是平坦的，既不是 bevel 也不是 sharp
-                            # 但我们仍需要通过这些边来连接洞口和盖子边界
-                            valid_path_edges = island_edges - cap_boundary_edges  # 排除已标记的盖子边界
+                            # 不排除任何边，确保从洞口能到达盖子边界顶点
+                            valid_path_edges = island_edges
                             
                             path_edges, path_cost = find_bevel_edge_path(all_loop_verts, cap_boundary_verts, valid_path_edges)
                             
                             print(f"[auto_seam DEBUG] all_loop_verts: {len(all_loop_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
-                            print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)} (island_edges: {len(island_edges)})")
+                            print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)}")
                             print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
                             
                             if path_edges:
