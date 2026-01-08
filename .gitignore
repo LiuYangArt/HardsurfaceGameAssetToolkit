@@ -12,3 +12,5 @@ memory-bank/*
 versions.bat
 new_version.bat
 *.txt
+*.json
+*.log
