@@ -1752,12 +1752,15 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
 
             # ============================================================
             # SIDE_BOUNDARY 模式：用 boundary loops 的 spread 确定主轴
+            # 用更严格的阈值，使 bevel 过渡面归入 cap，边界更靠近纯侧面
             # ============================================================
             if self.select_mode == 'SIDE_BOUNDARY':
                 axis_vectors = [Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))]
                 axis_vec = axis_vectors[axis_idx]
 
-                SIDE_THRESHOLD = 0.7
+                # 降低阈值：dot < 0.3 才算 side face（近乎垂直于主轴）
+                # 这样 bevel 过渡面会被归类为 cap，边界边更靠近纯侧面
+                SIDE_THRESHOLD = 0.1
 
                 side_faces = set()
                 cap_faces = set()
@@ -1770,6 +1773,7 @@ class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):
 
                 print(f"[DEBUG SIDE_BOUNDARY] Axis from loops spread: {['X', 'Y', 'Z'][axis_idx]}")
                 print(f"[DEBUG SIDE_BOUNDARY] spread X={spread_x:.4f}, Y={spread_y:.4f}, Z={spread_z:.4f}")
+                print(f"[DEBUG SIDE_BOUNDARY] SIDE_THRESHOLD={SIDE_THRESHOLD}")
                 print(f"[DEBUG SIDE_BOUNDARY] Side faces: {len(side_faces)}, Cap faces: {len(cap_faces)}")
 
                 boundary_edges_found = set()
