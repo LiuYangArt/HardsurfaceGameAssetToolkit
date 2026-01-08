@@ -2913,7 +2913,11 @@ class Mesh:
             # Analyze Topology
             num_loops = len(loops)
             
+            print(f"[auto_seam DEBUG] ========== Island Analysis ==========")
+            print(f"[auto_seam DEBUG] Mode: {mode}, num_loops: {num_loops}")
+            
             if num_loops == 0:
+                print(f"[auto_seam DEBUG] Entering num_loops == 0 branch (closed surface)")
                 # Closed Surface (Sphere, Torus) or Double-capped model
                 # Get all island edges and faces for processing
                 island_edges = set()
@@ -3076,6 +3080,7 @@ class Mesh:
                             e.seam = True
 
             elif num_loops >= 1:
+                print(f"[auto_seam DEBUG] Entering num_loops >= 1 branch (has boundary loops)")
                 # Cylinder-like (Side wall) with one or more boundary loops (holes/openings)
                 # For num_loops == 1: single opening (like a cup or hollow cylinder)
                 # For num_loops >= 2: multiple holes or a tube
