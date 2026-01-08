@@ -3331,15 +3331,20 @@ class Mesh:
                                 all_loop_verts.add(e.verts[1])
                         
                         if all_loop_verts:
-                            path_edges, path_cost = find_bevel_edge_path(all_loop_verts, cap_boundary_verts, bevel_edges)
+                            # 对于 CAPPED 模式，使用 bevel_edges + sharp_edges 作为有效路径
+                            # 这样可以找到从 boundary loop 到 cap boundary 的完整路径
+                            valid_path_edges = bevel_edges | sharp_edges_in_island
+                            
+                            path_edges, path_cost = find_bevel_edge_path(all_loop_verts, cap_boundary_verts, valid_path_edges)
                             
                             print(f"[auto_seam DEBUG] all_loop_verts: {len(all_loop_verts)}, cap_boundary_verts: {len(cap_boundary_verts)}")
+                            print(f"[auto_seam DEBUG] valid_path_edges: {len(valid_path_edges)} (bevel: {len(bevel_edges)}, sharp: {len(sharp_edges_in_island)})")
                             print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
                             
                             if path_edges:
                                 for e in path_edges:
                                     e.seam = True
-                                print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
+                                print(f"[auto_seam DEBUG] Marked {len(path_edges)} path edges as seam")
                             else:
                                 print(f"[auto_seam DEBUG] No path found from loops to cap boundary!")
                     else:
