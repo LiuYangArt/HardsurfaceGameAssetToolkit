@@ -45,7 +45,7 @@ from ..utils.mesh_utils import (
     mark_convex_edges, set_edge_bevel_weight_from_sharp, Mesh
 )
 from ..utils.transform_utils import rotate_quaternion, get_selected_rotation_quat, Transform
-from ..utils.import_utils import import_node_group, import_world, import_object, remove_node
+from ..utils.import_utils import import_node_group, import_world, import_object, remove_node, make_transfer_proxy_mesh
 from ..utils.bmesh_utils import BMesh
 from ..utils.viewport_utils import check_screen_area, new_screen_area, viewport_shading_mode, Viewport
 from ..utils.outliner_utils import Outliner
