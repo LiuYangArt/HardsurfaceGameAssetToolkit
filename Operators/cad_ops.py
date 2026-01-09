@@ -9,34 +9,7 @@ CAD 模型处理 Operators
 import bpy
 from ..Const import *
 from ..Functions.CommonFunctions import *
-
-def check_non_solid_meshes(meshes):
-    """
-    检查 mesh 列表中是否存在非水密模型
-
-    Args:
-        meshes: mesh 对象列表
-
-    Returns:
-        包含开放边界的 mesh 列表，如果全部水密则返回 None
-    """
-    bad_mesh_count = 0
-    bad_meshes = []
-
-    for mesh in meshes:
-        check_mesh = Mesh.check_open_bondary(mesh)
-        if check_mesh is True:
-            bad_mesh_count += 1
-            bad_meshes.append(mesh)
-
-    if bad_mesh_count != 0:
-        bad_collection = Collection.create(name=BAD_MESHES_COLLECTION, type="MISC")
-        for mesh in bad_meshes:
-            mesh.users_collection[0].objects.unlink(mesh)
-            bad_collection.objects.link(mesh)
-        return bad_meshes
-    elif bad_meshes == 0:
-        return None
+from ..MeshOps import check_non_solid_meshes
 
 
 class HST_OT_PrepCADMesh(bpy.types.Operator):
