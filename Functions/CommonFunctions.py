@@ -80,124 +80,13 @@ from ..utils.misc_utils import (
 # rename_uv_layers, add_uv_layers, check_uv_layer, has_uv_attribute, scale_uv
 # mark_sharp_edges_by_split_normal, are_normals_different, mark_sharp_edge_by_angle
 # mark_convex_edges
+# mark_sharp_edge_by_angle, mark_convex_edges
+# get_selected_rotation_quat, get_materials, get_object_material
+# get_object_material_slots, get_material_color_texture, get_scene_material
+# find_scene_materials
 
 
-def mark_sharp_edge_by_angle(mesh, sharp_angle=0.08) -> None:
-    """根据角度标记锐边"""
-    bm = bmesh.new()
-    mesh = mesh.data
-    bm.from_mesh(mesh)
-
-    to_mark_sharp = []
-    has_sharp_edge = False
-
-    for edge in bm.edges:  # get sharp edge index by angle
-        if edge.calc_face_angle() >= sharp_angle:
-            to_mark_sharp.append(edge.index)
-
-    for attributes in mesh.attributes:  # add sharp edge attribute
-        if "sharp_edge" in attributes.name:
-            has_sharp_edge = True
-            break
-    # print("has_sharp_edge: " + str(has_sharp_edge))
-
-    if has_sharp_edge is False:  # if no sharp edge attribute, add it
-        mesh.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
-        # print("add sharp edge attribute")
-    for edge in mesh.edges:  # mark sharp edge
-        if edge.index in to_mark_sharp:
-            edge.use_edge_sharp = True
-        else:
-            edge.use_edge_sharp = False
-
-    bm.clear()
-    bm.free()
-
-def mark_convex_edges(mesh)->None:
-    convex_attribute_name="convex_edge"
-    convex_attr=MeshAttributes.add(mesh,attribute_name=convex_attribute_name,data_type="FLOAT",domain="EDGE")
-    bm=BMesh.init(mesh)
-
-    convex_layer=bm.edges.layers.float[convex_attr.name]
-    for edge in bm.edges:  # get sharp edge index by angle
-        if edge.is_convex is True:
-            edge[convex_layer]=1
-        else:
-            edge[convex_layer]=0
-    BMesh.finished(bm,mesh)
-
-def get_selected_rotation_quat() -> Quaternion:
-    """在编辑模式中获取选中元素的位置与旋转"""
-    scene = bpy.context.scene
-    orientation_slots = scene.transform_orientation_slots
-
-    bpy.ops.transform.create_orientation(
-        name="3Points", use_view=False, use=True, overwrite=True
-    )
-    orientation_slots[0].custom_orientation.matrix.copy()
-    custom_matrix = orientation_slots[0].custom_orientation.matrix.copy()
-    bpy.ops.transform.delete_orientation()
-
-    loc, rotation, scale = custom_matrix.to_4x4().decompose()
-    return rotation
-
-
-def get_materials(target_object: bpy.types.Object) -> bpy.types.Material:
-    """获取所选物体的材质列表"""
-
-    materials = []
-    for slot in target_object.material_slots:
-        materials.append(slot.material)
-    return materials
-
-
-def get_object_material(target_object, material_name: str) -> bpy.types.Material:
-    """获取所选物体的材质"""
-
-    material = None
-    if target_object.material_slots is not None:
-        for slot in target_object.material_slots:
-            if slot.material is not None and slot.material.name == material_name:
-                material = slot.material
-                break
-    return material
-
-
-def get_object_material_slots(target_object) -> list:
-    """获取所选物体的材质槽列表"""
-    material_slots = []
-    if target_object.material_slots is not None:
-        for slot in target_object.material_slots:
-            material_slots.append(slot)
-    return material_slots
-
-
-def get_material_color_texture(material) -> bpy.types.Image:
-    """获取材质的颜色纹理"""
-
-    color_texture = None
-    for node in material.node_tree.nodes.node_tree.nodes:
-        if node.type == "TEX_IMAGE":
-            color_texture = node.image
-            break
-    return color_texture
-
-
-def get_scene_material(material_name) -> bpy.types.Material:
-    """获取场景中的材质"""
-
-    material = None
-    for mat in bpy.data.materials:
-        if mat.name == material_name:
-            material = mat
-            break
-    return material
-
-
-def find_scene_materials(material_name) -> bpy.types.Material:
-    """按名称关键字查找场景中的材质"""
-
-    material = None
+def apply_modifiers(mesh) -> bpy.types.Object:
     for mat in bpy.data.materials:
         if material_name in mat.name:
             material.append(mat)
