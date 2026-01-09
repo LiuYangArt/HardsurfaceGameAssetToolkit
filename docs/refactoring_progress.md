@@ -29,16 +29,15 @@
 
 **统计**: 删除约1265行 (-35%)
 
----
-
-## 🔄 进行中
-
 ### Phase 2: CommonFunctions.py 业务逻辑整理
 
-- [ ] 评估 Object 类方法是否可迁移
-- [ ] 评估 Collection 类方法是否可迁移
-- [ ] 清理注释掉的废弃代码
-- [ ] 整理导入语句
+- [x] 删除 Object 类重复定义
+- [x] 删除 Collection 类重复定义
+- [x] 删除 VertexColor/MeshAttributes/Viewport/Outliner/FilePath/Mesh/Modifier 类
+- [x] 清理注释掉的废弃代码
+- [x] 整理导入语句
+
+**统计**: 删除约1870行 (-78%)
 
 ---
 
@@ -74,7 +73,7 @@
 
 | 文件 | 原始行数 | 当前行数 | 变化 |
 |------|----------|----------|------|
-| CommonFunctions.py | 3609 | ~2430 | -35% |
+| CommonFunctions.py | 3609 | ~530 | -85% |
 | BTMFunctions.py | 421 | ~390 | -7% |
 | utils/ | 0 | ~4000 | 19模块 |
 
@@ -82,6 +81,8 @@
 
 ## 📝 备注
 
-- CommonFunctions.py 剩余代码为项目特定业务逻辑，暂不迁移
+- CommonFunctions.py 现在只保留 FBXExport 类和项目特定业务函数
+- 所有工具类（Object, Collection, Mesh 等）已完全迁移至 utils 包
 - utils 包作为兼容层，现有代码无需修改仍可正常工作
 - 新代码建议直接从 utils 模块导入
+
