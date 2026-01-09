@@ -9,7 +9,7 @@ CAD 模型处理 Operators
 import bpy
 from ..Const import *
 from ..Functions.CommonFunctions import *
-from ..MeshOps import check_non_solid_meshes
+from ..utils.mesh_utils import check_non_solid_meshes
 
 
 class HST_OT_PrepCADMesh(bpy.types.Operator):

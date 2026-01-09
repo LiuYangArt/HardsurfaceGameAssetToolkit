@@ -1,29 +1,13 @@
+# -*- coding: utf-8 -*-
+"""
+调试工具 Operators
+=================
+
+包含用于开发调试的 Operators，如边缘选择调试工具。
+"""
+
 import bpy
-from .Const import *
-from .Functions.CommonFunctions import *
-from .Functions.AssetCheckFunctions import *
-from mathutils import Vector
-import math
-
-def check_non_solid_meshes(meshes):
-    bad_mesh_count=0
-    bad_meshes=[]
-
-    for mesh in meshes:
-        check_mesh=Mesh.check_open_bondary(mesh)
-        if check_mesh is True:
-            bad_mesh_count+=1
-            bad_meshes.append(mesh)
-        
-
-    if bad_mesh_count!=0:
-        bad_collection=Collection.create(name=BAD_MESHES_COLLECTION,type="MISC")
-        for mesh in bad_meshes:
-            mesh.users_collection[0].objects.unlink(mesh)
-            bad_collection.objects.link(mesh)
-        return bad_meshes
-    elif bad_meshes ==0:
-        return None
+from ..Functions.CommonFunctions import Mesh
 
 
 class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):

@@ -523,3 +523,37 @@ class Mesh:
                     heapq.heappush(pq, (new_dist, neighbor.index, neighbor))
         
         return []  # 没有找到路径
+
+
+def check_non_solid_meshes(meshes: list) -> list:
+    """
+    检查 mesh 列表中是否存在非水密模型，将问题模型移动到特定 Collection
+    
+    Args:
+        meshes: mesh 对象列表
+    
+    Returns:
+        包含开放边界的 mesh 列表，如果全部水密则返回 None
+    """
+    from .collection_utils import Collection
+    
+    BAD_MESHES_COLLECTION = "_BadMeshes"  # 临时硬编码，应该从 Const 导入
+    
+    bad_mesh_count = 0
+    bad_meshes = []
+
+    for mesh in meshes:
+        check_mesh = Mesh.check_open_bondary(mesh)
+        if check_mesh is True:
+            bad_mesh_count += 1
+            bad_meshes.append(mesh)
+
+    if bad_mesh_count != 0:
+        bad_collection = Collection.create(name=BAD_MESHES_COLLECTION, type="MISC")
+        for mesh in bad_meshes:
+            mesh.users_collection[0].objects.unlink(mesh)
+            bad_collection.objects.link(mesh)
+        return bad_meshes
+    elif bad_meshes == 0:
+        return None
+
