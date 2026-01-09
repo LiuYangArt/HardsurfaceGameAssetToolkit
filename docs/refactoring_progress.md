@@ -39,11 +39,7 @@
 
 **统计**: 删除约1870行 (-78%)
 
----
-
-## 🔄 进行中
-
-### Phase 3: MeshOps.py 拆分
+### Phase 3: MeshOps.py 拆分 ✅
 
 - [x] 分析函数依赖关系
 - [x] 创建 `Operators/` 包结构
@@ -54,14 +50,17 @@
 - [x] 创建 `env_ops.py` (4 Operators)
 - [x] 创建 `collision_ops.py` (3 Operators)
 - [x] 创建 `transform_ops.py` (5 Operators)
-- [ ] 创建 `debug_ops.py` (DebugSilhouetteEdges ~500行)
-- [ ] 更新 MeshOps.py 删除已迁移代码
+- [x] **删除 MeshOps.py 已迁移代码** (2077→530行, -74%)
+- [x] 修复 origin_ops 空列表访问问题
+- [x] 修复 BakeOps BlurVertexColor 误报问题
 
 **统计**: 新增 7 模块 ~1400 行, 28 Operators
 
 ---
 
 ## 📋 待办
+
+### Phase 4: HSTOps.py 拆分
 
 - [ ] 分析函数依赖关系
 - [ ] 创建 `hst_bake_ops.py`
@@ -76,6 +75,10 @@
 - [ ] 统一常量命名为 `UPPER_SNAKE_CASE`
 - [ ] 更新所有引用
 
+### 待处理项
+
+- [ ] 创建 `debug_ops.py` (DebugSilhouetteEdges ~500行)
+
 ---
 
 ## 📊 统计
@@ -84,7 +87,9 @@
 |------|----------|----------|------|
 | CommonFunctions.py | 3609 | ~530 | -85% |
 | BTMFunctions.py | 421 | ~390 | -7% |
+| MeshOps.py | 2077 | ~530 | -74% |
 | utils/ | 0 | ~4000 | 19模块 |
+| Operators/ | 0 | ~1400 | 7模块 |
 
 ---
 
@@ -92,6 +97,6 @@
 
 - CommonFunctions.py 现在只保留 FBXExport 类和项目特定业务函数
 - 所有工具类（Object, Collection, Mesh 等）已完全迁移至 utils 包
+- MeshOps.py 已拆分，28个 Operators 迁移到 `Operators/` 包
 - utils 包作为兼容层，现有代码无需修改仍可正常工作
 - 新代码建议直接从 utils 模块导入
-
