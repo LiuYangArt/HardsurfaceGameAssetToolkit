@@ -84,120 +84,12 @@ from ..utils.misc_utils import (
 # get_selected_rotation_quat, get_materials, get_object_material
 # get_object_material_slots, get_material_color_texture, get_scene_material
 # find_scene_materials
+# check_screen_area, new_screen_area, viewport_shading_mode
+# apply_modifiers, convert_length_by_scene_unit
+# uv_editor_fit_view, uv_unwrap, uv_average_scale
 
 
-def apply_modifiers(mesh) -> bpy.types.Object:
-    for mat in bpy.data.materials:
-        if material_name in mat.name:
-            material.append(mat)
-    return material
-
-
-def check_screen_area(area_type: str) -> bpy.types.Area:
-    """检查是否存在某种类型的screen area"""
-
-    screen_area = None
-    screen = bpy.context.window.screen
-    for area in screen.areas:
-        if area.type == area_type:
-            screen_area = area
-            break
-    return screen_area
-
-
-def new_screen_area(
-    area_type: str, direction: str = "VERTICAL", size=0.5
-) -> bpy.types.Area:
-    """创建新的screen area"""
-
-    area_num = len(bpy.context.window.screen.areas)
-    bpy.ops.screen.area_split(direction=direction, factor=size)
-    new_area = bpy.context.window.screen.areas[area_num]
-    new_area.type = area_type
-    return new_area
-
-
-def viewport_shading_mode(area_type: str, shading_type: str, mode="CONTEXT") -> list:
-    """设置视口渲染模式,mode为CONTEXT时只设置当前viewport，ALL时设置所有同类型viewport，返回viewport area列表"""
-    viewport_spaces = []
-    match mode:
-        case "CONTEXT":
-            viewport = bpy.context.area
-            if viewport.type == area_type:
-                viewport_spaces.append(bpy.context.area.spaces[0])
-        case "ALL":
-            for window in bpy.context.window_manager.windows:
-                for area in window.screen.areas:
-                    if area.type == area_type:
-                        for space in area.spaces:
-                            if space.type == area_type:
-                                viewport_spaces.append(space)
-    print(viewport_spaces)
-
-    for viewport_space in viewport_spaces:
-        viewport_space.shading.type = shading_type
-
-    return viewport_spaces
-
-
-def apply_modifiers(object: bpy.types.Object) -> bpy.types.Object:
-    """应用所有修改器，删除原mesh并替换为新mesh"""
-
-    old_mesh = object.data
-
-    deps_graph = bpy.context.evaluated_depsgraph_get()
-    deps_graph.update()
-    object_evaluated = object.evaluated_get(deps_graph)
-    mesh_evaluated = bpy.data.meshes.new_from_object(
-        object_evaluated, depsgraph=deps_graph
-    )
-
-    object.data = mesh_evaluated
-    for modifier in object.modifiers:
-        object.modifiers.remove(modifier)
-    new_object = object
-
-    old_mesh.name = "Old_" + old_mesh.name
-    old_mesh.user_clear()
-    bpy.data.meshes.remove(old_mesh)
-
-    return new_object
-
-
-def convert_length_by_scene_unit(length: float) -> float:
-    """根据场景单位设置转换长度"""
-    current_scene = bpy.context.object.users_scene[0].name
-    length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
-    match length_unit:
-        case "METERS":
-            new_length = length * 0.001
-        case "CENTIMETERS":
-            new_length = length * 0.01
-        case "MILLIMETERS":
-            new_length = length * 0.1
-
-    return new_length
-
-
-def uv_editor_fit_view(area):
-    """缩放uv视图填充窗口"""
-    context = bpy.context
-    if area.type == "IMAGE_EDITOR":
-        for region in area.regions:
-            if region.type == "WINDOW":
-                with context.temp_override(area=area, region=region):
-                    bpy.ops.image.view_all(fit_view=True)
-    else:
-        print("No Image Editor")
-
-
-def uv_unwrap(target_objects, method="ANGLE_BASED", margin=0.005, correct_aspect=True):
-    """UV展开"""
-
-    bpy.ops.object.select_all(action="DESELECT")
-    for object in target_objects:
-        if object.type == "MESH":
-            object.select_set(True)
+def culculate_td_areas(object, uv_layer_name="UVMap") -> tuple:
 
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
