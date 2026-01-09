@@ -36,6 +36,20 @@ class Addon:
 
 BL_VERSION=Addon.get_blender_version()
 
+# HST 自定义属性名称 (utils 模块使用的别名)
+HST_PROP = "HST_CustomType"
+
+# Collection 颜色标签映射
+COLLECTION_COLORS = {
+    "PROP": "COLOR_04",      # 绿色
+    "DECAL": "COLOR_06",     # 紫色
+    "BAKE_LOW": "COLOR_01",  # 红色
+    "BAKE_HIGH": "COLOR_02", # 橙色
+    "SKM": "COLOR_03",       # 黄色
+    "RIG": "COLOR_05",       # 蓝色
+    "PROXY": "COLOR_07",     # 灰色
+}
+
 # bake groups
 LOW_SUFFIX = "_Low"
 HIGH_SUFFIX = "_High"
