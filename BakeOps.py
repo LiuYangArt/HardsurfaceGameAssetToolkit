@@ -182,7 +182,11 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
             active_color=mesh.data.attributes.active_color
             if active_color:
                 geonode_mod=Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
-                geonode_mod["Socket_2"]=active_color.name
+                if geonode_mod is not None:
+                    geonode_mod["Socket_2"]=active_color.name
+                else:
+                    bad_meshes.append(mesh.name)
+                    continue
             else: #skip when no vertex color
                 bad_meshes.append(mesh.name)
                 continue

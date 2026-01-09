@@ -216,7 +216,7 @@ class HST_OT_AddAssetOrigin(bpy.types.Operator):
         existing_origin_objects = Object.filter_hst_type(
             objects=collection.all_objects, type="ORIGIN", mode="INCLUDE"
         )
-        if existing_origin_objects is not None:
+        if existing_origin_objects is not None and len(existing_origin_objects) > 0:
             existing_origin_objects[0].name = ORIGIN_PREFIX + collection.name
             self.report({"INFO"}, "Asset Origin already exists")
             return {"CANCELLED"}
