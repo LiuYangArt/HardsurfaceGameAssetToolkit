@@ -276,7 +276,7 @@ class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
             )
 
             asset_objs = []
-            if existing_origin_objects is not None:
+            if existing_origin_objects:  # 处理 None 和空列表
                 for obj in collection_objs:
                     if obj not in existing_origin_objects:
                         asset_objs.append(obj)
@@ -285,7 +285,7 @@ class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
 
             pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
 
-            if existing_origin_objects is not None:
+            if existing_origin_objects:  # 处理 None 和空列表
                 new_asset_objs = []
                 for obj in asset_objs:
                     if obj.parent is None:
