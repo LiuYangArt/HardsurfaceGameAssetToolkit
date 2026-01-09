@@ -10,306 +10,72 @@ import json
 
 from mathutils import Vector, Matrix, Quaternion
 from ..Const import *
+
+# ============================================================================
+# 从 utils 包导入工具（渐进式迁移）
+# 这些导入将逐步替换本文件中的本地定义
+# ============================================================================
+from ..utils.ui_utils import message_box, switch_to_eevee
+from ..utils.object_utils import (
+    filter_type, filter_name, clean_user, set_visibility, rename_meshes, Object
+)
+from ..utils.collection_utils import (
+    get_collection, check_collection_exist, Collection
+)
+from ..utils.modifier_utils import (
+    check_modifier_exist, remove_modifier, get_objects_with_modifier, apply_modifiers, Modifier
+)
+from ..utils.vertex_color_utils import (
+    cleanup_color_attributes, add_vertexcolor_attribute, set_active_color_attribute,
+    get_vertex_color_from_obj, vertexcolor_to_vertices, set_object_vertexcolor,
+    get_color_data, VertexColor
+)
+from ..utils.uv_utils import (
+    rename_uv_layers, add_uv_layers, check_uv_layer, has_uv_attribute,
+    scale_uv, uv_unwrap, uv_average_scale, uv_editor_fit_view,
+    culculate_td_areas, get_texel_density, UV
+)
+from ..utils.material_utils import (
+    get_materials, get_object_material, get_object_material_slots,
+    get_material_color_texture, get_scene_material, find_scene_materials,
+    import_material, Material
+)
+from ..utils.mesh_utils import (
+    mark_sharp_edges_by_split_normal, are_normals_different, mark_sharp_edge_by_angle,
+    mark_convex_edges, set_edge_bevel_weight_from_sharp, Mesh
+)
+from ..utils.transform_utils import rotate_quaternion, get_selected_rotation_quat, Transform
+from ..utils.import_utils import import_node_group, import_world, import_object, remove_node
+from ..utils.bmesh_utils import BMesh
+from ..utils.viewport_utils import check_screen_area, new_screen_area, viewport_shading_mode, Viewport
+from ..utils.outliner_utils import Outliner
+from ..utils.mesh_attributes_utils import MeshAttributes
+from ..utils.file_utils import make_dir, normalize_path, copy_to_clip, FilePath
+from ..utils.armature_utils import Armature
+from ..utils.misc_utils import (
+    set_default_scene_units, convert_length_by_scene_unit, text_capitalize,
+    clean_collection_name, rename_alt, find_largest_digit, reset_transform,
+    prep_select_mode, restore_select_mode
+)
+
 """ 通用functions """
 
+# ============================================================================
+# 以下函数已从 utils 包导入，无需本地定义:
+# message_box, switch_to_eevee, rename_meshes, filter_type, filter_name,
+# get_collection, check_collection_exist, clean_user, set_visibility,
+# check_modifier_exist, remove_modifier, get_objects_with_modifier,
+# cleanup_color_attributes, add_vertexcolor_attribute, set_active_color_attribute,
+# get_vertex_color_from_obj, vertexcolor_to_vertices, set_object_vertexcolor,
+# get_color_data, import_node_group, import_world, remove_node
+# ============================================================================
 
-def message_box(text="", title="WARNING", icon="ERROR") -> None:
-    """弹出消息框"""
-
-    def draw(self, context):
-        self.layout.label(text=text)
-
-    bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
-
-def switch_to_eevee()->None:
-    """切换到EEVEE渲染引擎,4.2-4.9切换为EEVEE Next, 5.0+统一为EEVEE"""
-
-    if BL_VERSION >= 5.0:
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
-    elif BL_VERSION >= 4.2:
-        bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-    else:
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
-
-
-def rename_meshes(target_objects, new_name) -> None:
-    """重命名mesh"""
-    for index, object in enumerate(target_objects):
-        if object.type == "MESH":  # 检测对象是否为mesh
-            object.name = new_name + "_" + str(index + 1).zfill(3)
-
-
-def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object:
-    """筛选某种类型的object"""
-    filtered_objects = []
-    type = str.upper(type)
-    if target_objects:
-        for object in target_objects:
-            if object.type == type:
-                filtered_objects.append(object)
-
-    if len(filtered_objects) == 0: 
-        return None
-    else:
-        return filtered_objects
-
-
-def filter_name(
-    target_objects: bpy.types.Object, name: str, type="INCLUDE"
-) -> bpy.types.Object:
-    """筛选某种名称的object, type为INCLUDE时包含，为EXCLUDE时排除"""
-    filtered_objets = []
-    match type:
-        case "INCLUDE":
-            for object in target_objects:
-                if name in object.name:
-                    filtered_objets.append(object)
-        case "EXCLUDE":
-            for object in target_objects:
-                if name not in object.name:
-                    filtered_objets.append(object)
-    return filtered_objets
-
-
-def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
-    """获取所选object所在的collection"""
-    if target_object is None:
-        return None
-
-    target_collection = None
-    collection = target_object.users_collection[0]
-    if collection.name != "Scene Collection":
-        target_collection = collection
-
-    return target_collection
-
-
-def check_collection_exist(collection_name: str) -> bool:
-    """检查collection是否存在"""
-    collection_exist = False
-
-    for collection in bpy.data.collections:
-        if collection.name == collection_name:
-            collection_exist = True
-            break
-    return collection_exist
-
-
-
-def clean_user(target_object: bpy.types.Object) -> None:
-    """如果所选object有多个user，转为single user"""
-    if target_object.users > 1:
-        target_object.data = target_object.data.copy()
-
-
-def set_visibility(target_object: bpy.types.Object, visible=bool) -> bool:
-    """设置object在outliner中的可见性"""
-    if visible is True:
-        target_object.hide_viewport = False
-        target_object.hide_render = False
-    else:
-        target_object.hide_viewport = True
-        target_object.hide_render = True
-    return visible
-
-
-def check_modifier_exist(target_object: bpy.types.Object, modifier_name: str) -> bool:
-    """检查是否存在某个modifier名，返回bool"""
-    modifier_exist = False
-    for modifier in target_object.modifiers:
-        if modifier.name == modifier_name:
-            modifier_exist = True
-            break
-    return modifier_exist
-
-
-def remove_modifier(object, modifier_name: str, has_subobject: bool = False):
-    """删除某个modifier,返回modifier对应的子object"""
-    modifier_objects = []
-    # 有 transfer修改器时
-    for modifier in object.modifiers:
-        if modifier.name == modifier_name:
-            # 如果修改器parent是当前物体并且不为空，把修改器对应的物体添加到删除列表
-            if has_subobject is True and modifier.object is not None:
-                modifier_objects.append(modifier.object)
-            object.modifiers.remove(modifier)
-
-    if len(modifier_objects) > 0:
-        for modifier_object in modifier_objects:
-            if modifier_object.parent.name == object.name:
-                old_mesh = modifier_object.data
-                old_mesh.name = "OldTP_" + old_mesh.name
-                print("remove modifier object: " + modifier_object.name)
-                bpy.data.objects.remove(modifier_object)
-                bpy.data.meshes.remove(old_mesh)
-
-    return
-
-
-def get_objects_with_modifier(
-    target_objects: bpy.types.Object, modifier_name: str
-) -> bpy.types.Object:
-    """获取有某种modifier的object列表，返回objectList"""
-    objects = []
-    for object in target_objects:
-        for modifier in object.modifiers:
-            if modifier is not None and modifier.name == modifier_name:
-                if modifier.object is None:
-                    objects.append(object)
-            else:
-                objects.append(object)
-    return objects
-
-
-def cleanup_color_attributes(target_object: bpy.types.Object) -> bool:
-    """为选中的物体删除所有顶点色属性"""
-    success = False
-
-    if target_object.data.color_attributes is not None:
-        color_attributes = target_object.data.color_attributes
-        for r in range(len(color_attributes) - 1, -1, -1):
-            color_attributes.remove(color_attributes[r])
-        success = True
-    return success
-
-
-def add_vertexcolor_attribute(
-    target_object: bpy.types.Object, vertexcolor_name: str
-) -> bpy.types.Object:
-    """为选中的物体添加顶点色属性，返回顶点色属性
-    注意：Blender 5.0+ 要求 mesh 必须有顶点才能创建 color attribute
-    """
-    color_attribute = None
-    if target_object.type == "MESH":
-        mesh = target_object.data
-        # Blender 5.0+: 空 mesh 无法添加 color attribute
-        if len(mesh.vertices) == 0:
-            print(f"{target_object.name} has no vertices, cannot add color attribute")
-            return None
-        if vertexcolor_name in mesh.color_attributes:
-            color_attribute = mesh.color_attributes.get(vertexcolor_name)
-        else:
-            color_attribute = mesh.color_attributes.new(
-                name=vertexcolor_name,
-                type="BYTE_COLOR",
-                domain="CORNER",
-            )
-    else:
-        print(target_object.name + " is not mesh object")
-    return color_attribute
-
-
-def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
-    """设置顶点色属性为激活状态"""
-    color_attribute = None
-    if target_object.type == "MESH":
-        if vertexcolor_name in target_object.data.color_attributes:
-            color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
-            target_object.data.attributes.active_color = color_attribute
-    #     else:
-    #         print("No vertex color attribute named " + vertexcolor_name)
-    # else:
-    #     print(target_object + " is not mesh object")
-    return color_attribute
-
-def get_vertex_color_from_obj(obj)->list:
-    if obj.type == 'MESH':
-        # 使用第一个 color attribute
-        color_attr = None
-        for attr in obj.data.color_attributes:
-            print(attr.name , attr)
-            if attr.domain in {'POINT', 'CORNER'}:
-                color_attr = obj.data.attributes[attr.name]
-            break
-        if color_attr:
-            color_data = color_attr.data
-            color_list = []
-            for i in color_data:
-                # 支持 COLOR 和 BYTE_COLOR 两种类型
-                if hasattr(i, "color_srgb"):
-                    color_list.append(i.color_srgb)
-                elif hasattr(i, "color"):
-                    color_list.append(i.color)
-                elif hasattr(i, "vertex_colors"):
-                    color_list.append(i.color)
-                else:
-                    color_list.append(None)
-            if color_list:
-                color = [
-                sum(c[i] for c in color_list) / len(color_list)
-                for i in range(len(color_list[0]))
-                ]
-                return color
-        else:
-            return None
-
-def vertexcolor_to_vertices(target_mesh, color_attribute, color):
-    mesh = target_mesh.data
-    bm = bmesh.from_edit_mesh(mesh)
-
-    if color_attribute.domain == "POINT":
-        point_color_attribute = color_attribute
-        point_color_layer = bm.verts.layers.color[point_color_attribute.name]
-        for vert in bm.verts:
-            if vert.select:
-                vert[point_color_layer] = color
-
-    elif color_attribute.domain == "CORNER":
-        corner_color_attribute = color_attribute
-        corner_color_layer = bm.loops.layers.color[corner_color_attribute.name]
-
-        for face in bm.faces:
-            if face.select:
-                for loop in face.loops:
-                    loop[corner_color_layer] = color
-
-    bmesh.update_edit_mesh(mesh)
-
-    # old api
-    # bpy.ops.object.mode_set(mode = 'VERTEX_PAINT')
-    # selected_verts = []
-    # for vert in mesh.vertices:
-    #     if vert.select == True:
-    #         selected_verts.append(vert)
-
-    # for polygon in mesh.polygons:
-    #     for selected_vert in selected_verts:
-    #         for i, index in enumerate(polygon.vertices):
-    #             if selected_vert.index == index:
-    #                 loop_index = polygon.loop_indices[i]
-    #                 mesh.vertex_colors.active.data[loop_index].color = color
-    # bpy.ops.object.mode_set(mode = 'EDIT')
-
-
-def set_object_vertexcolor(target_object, color: tuple, vertexcolor_name: str) -> None:
-    """设置顶点色"""
-    color = tuple(color)
-    current_mode = bpy.context.active_object.mode
-    # print(current_mode)
-    if target_object.type == "MESH":
-        mesh = target_object.data
-        if vertexcolor_name in mesh.color_attributes:
-            color_attribute = mesh.color_attributes.get(vertexcolor_name)
-            if current_mode == "OBJECT":
-                # if vertexcolor_name in mesh.color_attributes:
-                #     color_attribute = mesh.color_attributes.get(vertexcolor_name)
-                color_attribute.data.foreach_set(
-                    "color_srgb", color * len(mesh.loops) * 4
-                )
-                # else:
-                #     print("No vertex color attribute named " + vertexcolor_name)
-            elif current_mode == "EDIT":
-                vertexcolor_to_vertices(target_object, color_attribute, color)
-    #     else:
-    #         print("No vertex color attribute named " + vertexcolor_name)
-
-    # else:
-    #     print(target_object + " is not mesh object")
-
-
-def get_color_data(color):
-    convert_color = [color[0], color[1], color[2], color[3]]
-    return convert_color
+# 以下函数也已从 utils 包导入：
+# clean_user, set_visibility, check_modifier_exist, remove_modifier,
+# get_objects_with_modifier, cleanup_color_attributes, add_vertexcolor_attribute,
+# set_active_color_attribute, get_vertex_color_from_obj, vertexcolor_to_vertices,
+# set_object_vertexcolor, get_color_data
+# make_transfer_proxy_mesh, remove_node, import_node_group, import_world
 
 
 def make_transfer_proxy_mesh(mesh, proxy_prefix, proxy_collection) -> bpy.types.Object:
