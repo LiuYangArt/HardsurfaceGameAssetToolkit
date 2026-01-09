@@ -169,11 +169,7 @@ def filter_collection_by_visibility(type="VISIBLE", filter_instance=False) -> li
             return hidden_collections
 
 
-def reset_transform(target_object: bpy.types.Object) -> None:
-    """重置物体的位置，旋转，缩放"""
-    target_object.location = (0, 0, 0)
-    target_object.rotation_euler = (0, 0, 0)
-    target_object.scale = (1, 1, 1)
+# reset_transform 已从 utils.misc_utils 导入
 
 
 class FBXExport:
