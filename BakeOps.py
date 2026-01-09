@@ -177,24 +177,23 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
         blur_node=import_node_group(PRESET_FILE_PATH, VERTEXCOLORBLUR_NODE) 
         selected_objects=Object.get_selected()
         selected_meshes=filter_type(selected_objects, "MESH")
-        bad_meshes=[]
+        no_color_meshes=[]
+        success_count = 0
         for mesh in selected_meshes:
             active_color=mesh.data.attributes.active_color
             if active_color:
                 geonode_mod=Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
                 if geonode_mod is not None:
                     geonode_mod["Socket_2"]=active_color.name
-                else:
-                    bad_meshes.append(mesh.name)
-                    continue
-            else: #skip when no vertex color
-                bad_meshes.append(mesh.name)
-                continue
+                    success_count += 1
+                # geonode_mod 为 None 时静默跳过（modifier 可能已存在）
+            else: # 只有真正没有顶点色时才报告
+                no_color_meshes.append(mesh.name)
 
-        if len(bad_meshes)>0:
-            self.report({"ERROR"}, f"{len(bad_meshes)} Meshes has no vertex color attribute. {str(bad_meshes)}")
-        else:
-            self.report({"INFO"}, f"{len(selected_meshes)} Meshes got blur vertex color")
+        if len(no_color_meshes) > 0:
+            self.report({"WARNING"}, f"{len(no_color_meshes)} Meshes has no vertex color attribute: {str(no_color_meshes)}")
+        if success_count > 0:
+            self.report({"INFO"}, f"{success_count} Meshes got blur vertex color")
 
         return {"FINISHED"}
 
