@@ -500,35 +500,7 @@ def filter_collection_types(collections):
 
 #     return check_result
 
-
-def prep_select_mode() -> tuple:
-    """存储当前模式,并切换到OBJECT模式. EXAMPLE: store_mode = prep_select_mode()"""
-
-    active_object = bpy.context.active_object
-    if active_object is not None:
-        current_mode = bpy.context.active_object.mode
-    else:
-        current_mode = "OBJECT"
-    selected_objects = bpy.context.selected_objects
-    store_mode = current_mode, active_object, selected_objects
-    if active_object is not None:
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-    return store_mode
-
-
-def restore_select_mode(store_mode) -> None:
-    """恢复之前的模式. EXAMPLE: restore_select_mode(store_mode)"""
-
-    current_mode, active_object, selected_objects = store_mode
-    if selected_objects is not None:
-        bpy.ops.object.select_all(action="DESELECT")
-        for object in selected_objects:
-            object.select_set(True)
-    if active_object is not None:
-        bpy.context.view_layer.objects.active = active_object
-        active_object.select_set(True)
-        bpy.ops.object.mode_set(mode=current_mode)
+# prep_select_mode, restore_select_mode 已从 utils.misc_utils 导入
 
 
 def set_collision_object(target_object, new_name) -> None:
@@ -608,23 +580,7 @@ def check_vertex_color(mesh):
         vertex_color_layer = mesh.data.attributes.active_color
     return vertex_color_layer
 
-
-def make_dir(path):
-    """创建文件夹"""
-    if not os.path.exists(path):
-        os.makedirs(path)
-
-
-def normalize_path(path: str):
-    """规范化路径"""
-    path = str(path)
-    path = path.replace("\\", "/")
-    path = path.replace(" ", "")
-    if path.endswith("/"):
-        path = path[:-1]
-    # if path.startswith("/"):
-    #     path = path[1:]
-    return path
+# make_dir, normalize_path 已从 utils.file_utils 导入
 
 
 def fix_ue_game_path(path: str):
@@ -675,90 +631,9 @@ def read_json_from_file(file_path):
             json_dict = json.load(json_file)
     return json_dict
 
-
-class BMesh:
-    def init(mesh, mode="CONTEXT"):
-        """初始化bmesh"""
-        current_mode = bpy.context.active_object.mode
-        if mode == "CONTEXT":
-            if current_mode == "EDIT":
-                bm = bmesh.from_edit_mesh(mesh.data)
-            else:
-                bm = bmesh.new()
-                bm.from_mesh(mesh.data)
-        elif mode == "OBJECT":
-            bm = bmesh.new()
-            bm.from_mesh(mesh.data)
-        return bm
-
-    def finished(bm, mesh, mode="CONTEXT"):
-        """结束bmesh"""
-        current_mode = bpy.context.active_object.mode
-        if mode == "CONTEXT":
-            if current_mode == "EDIT":
-                bm.update_edit_mesh(mesh.data)
-            else:
-                bm.to_mesh(mesh.data)
-        elif mode == "OBJECT":
-            bm.to_mesh(mesh.data)
-
-        mesh.data.update()
-        bm.clear()
-        bm.free()
-
-
-class Material:
-    def assign_to_mesh(mesh, target_mat) -> bpy.types.Material:
-        """assign material to mesh, return assigned material"""
-        has_mat = False
-        for mat in mesh.data.materials:
-            if mat.name == target_mat.name:
-                has_mat = True
-                assign_mat = mat
-        if not has_mat:
-            assign_mat = mesh.data.materials.append(target_mat)
-        return assign_mat
-
-    def create_mat(mat_name) -> bpy.types.Material:
-        """add material"""
-        has_mat = False
-        new_mat = None
-        for mat in bpy.data.materials:
-            if mat.name == mat_name:
-                has_mat = True
-                new_mat = mat
-                break
-        if not has_mat:
-            bpy.data.materials.new(name=mat_name)
-        return new_mat
-    
-    def remove_duplicated_mats_ops(object):
-        bpy.ops.object.select_all(action="DESELECT")
-        object.select_set(True)
-        bpy.context.view_layer.objects.active=object
-        bpy.ops.object.mode_set(mode="EDIT")
-        # bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.separate(type="MATERIAL")
-        bpy.ops.object.mode_set(mode="OBJECT")
-
-        bpy.ops.object.join()
-
-
-
-
-def rotate_quaternion(quaternion, angle, axis="Z") -> Quaternion:
-    """旋转四元数，输入角度与轴，返回旋转后的四元数，轴为X,Y,Z"""
-    match axis:
-        case "X":
-            axis = (1, 0, 0)
-        case "Y":
-            axis = (0, 1, 0)
-        case "Z":
-            axis = (0, 0, 1)
-
-    angle = angle / 180 * 3.1415926
-    rotation = Quaternion(axis, angle)
-    return quaternion @ rotation
+# BMesh 类已从 utils.bmesh_utils 导入
+# Material 类已从 utils.material_utils 导入
+# rotate_quaternion 已从 utils.transform_utils 导入
 
 
 class Object:
