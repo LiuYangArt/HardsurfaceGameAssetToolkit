@@ -41,18 +41,27 @@
 
 ---
 
-## 📋 待办
+## 🔄 进行中
 
 ### Phase 3: MeshOps.py 拆分
 
-- [ ] 分析函数依赖关系
-- [ ] 创建 `mesh_clean_ops.py`
-- [ ] 创建 `mesh_uv_ops.py`
-- [ ] 创建 `mesh_origin_ops.py`
-- [ ] 创建 `mesh_cad_ops.py`
-- [ ] 更新导入引用
+- [x] 分析函数依赖关系
+- [x] 创建 `Operators/` 包结构
+- [x] 创建 `cad_ops.py` (5 Operators)
+- [x] 创建 `origin_ops.py` (3 Operators)
+- [x] 创建 `collection_ops.py` (5 Operators)
+- [x] 创建 `uv_ops.py` (3 Operators)
+- [x] 创建 `env_ops.py` (4 Operators)
+- [x] 创建 `collision_ops.py` (3 Operators)
+- [x] 创建 `transform_ops.py` (5 Operators)
+- [ ] 创建 `debug_ops.py` (DebugSilhouetteEdges ~500行)
+- [ ] 更新 MeshOps.py 删除已迁移代码
 
-### Phase 4: HSTOps.py 拆分
+**统计**: 新增 7 模块 ~1400 行, 28 Operators
+
+---
+
+## 📋 待办
 
 - [ ] 分析函数依赖关系
 - [ ] 创建 `hst_bake_ops.py`
