@@ -87,45 +87,11 @@ from ..utils.misc_utils import (
 # check_screen_area, new_screen_area, viewport_shading_mode
 # apply_modifiers, convert_length_by_scene_unit
 # uv_editor_fit_view, uv_unwrap, uv_average_scale
+# culculate_td_areas, get_texel_density
 
 
-def culculate_td_areas(object, uv_layer_name="UVMap") -> tuple:
-
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.unwrap(
-        method=method, fill_holes=False, correct_aspect=correct_aspect, margin=margin
-    )
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    return
-
-
-def uv_average_scale(target_objects, uv_layer_name="UVMap"):
-    """UV平均缩放"""
-
-    bpy.ops.object.select_all(action="DESELECT")
-    for object in target_objects:
-        if object.type == "MESH":
-            object.select_set(True)
-            object.data.uv_layers.active = object.data.uv_layers[uv_layer_name]
-
-    store_area_type = bpy.context.screen.areas[0].type
-
-    for area in bpy.context.screen.areas:
-        if area.type == "IMAGE_EDITOR":
-            area.ui_type = "UV"
-            break
-        else:
-            bpy.context.screen.areas[0].type = "IMAGE_EDITOR"
-            bpy.context.screen.areas[0].ui_type = "UV"
-
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.uv.select_all(action="SELECT")
-    bpy.ops.uv.average_islands_scale()
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    bpy.context.screen.areas[0].type = store_area_type
+# 以下是尚未迁移到 utils 的本地函数
+# ============================================================================
 
 
 def culculate_td_areas(mesh, texture_size_x, texture_size_y) -> list:
