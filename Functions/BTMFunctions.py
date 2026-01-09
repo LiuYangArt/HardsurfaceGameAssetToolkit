@@ -8,14 +8,16 @@ import mathutils
 # import bmesh
 import bpy
 
+# 从 CommonFunctions 导入重复的函数，避免代码重复
+from .CommonFunctions import (
+    message_box,
+    get_collection as getCollection,  # 保持原有命名的兼容性
+    clean_user as cleanuser,          # 保持原有命名的兼容性
+    rename_meshes as renamemesh,      # 保持原有命名的兼容性
+    filter_type,
+)
+
 # from ..UIPanel import BTMPropGroup
-
-
-def message_box(text="", title="WARNING", icon="ERROR"):
-    def draw(self, context):
-        self.layout.label(text=text)
-
-    bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 
 
 def checkMeshes(objects):
@@ -52,18 +54,8 @@ def setcollcountname(self, collname):
     return countcollname
 
 
-def getCollection(targetobj: bpy.types.Object):
-    targetcollection = None
 
-    item_collection: bpy.types.Collection
-    for item_collection in bpy.data.collections:
-        item_object: bpy.types.Object
-        for item_object in item_collection.objects:
-            if item_object == targetobj:
-                targetcollection = item_collection
-                break
-
-    return targetcollection
+# getCollection 已从 CommonFunctions 导入，使用别名保持兼容性
 
 
 # 清理模型材质通道仅剩一个
@@ -81,14 +73,8 @@ def cleanmatslot(self, collectionobject):
             print("remove material")
 
 
-def cleanuser(selobj):
-    for obj in selobj:
-        if obj.users > 1:
-            obj.data = obj.data.copy()
 
-        else:
-            # The object is already single user.
-            return
+# cleanuser 已从 CommonFunctions 导入，使用别名保持兼容性
 
 
 def cleanaffix(self, actobj):
@@ -204,11 +190,8 @@ def createmat(self, collname, collobj):
         bpy.data.objects[i.name].active_material = bpy.data.materials[collname]
 
 
-# 重命名模型类型的object
-def renamemesh(self, collobjlist, collname):
-    for i, o in enumerate(collobjlist):
-        if o.type == "MESH":  # 检测对象是否为mesh
-            o.name = collname + "_" + str(i + 1).zfill(2)
+
+# renamemesh 已从 CommonFunctions 导入，使用别名保持兼容性
 
 
 # =========================================================================================
