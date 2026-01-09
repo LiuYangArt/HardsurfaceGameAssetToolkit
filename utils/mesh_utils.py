@@ -121,7 +121,7 @@ def mark_convex_edges(mesh) -> None:
     
     convex_attribute_name = "convex_edge"
     convex_attr = MeshAttributes.add(mesh, attribute_name=convex_attribute_name, data_type="FLOAT", domain="EDGE")
-    bm = BMeshUtils.init(mesh)
+    bm = BMeshUtils.init(mesh, mode="OBJECT")
 
     convex_layer = bm.edges.layers.float[convex_attr.name]
     for edge in bm.edges:
@@ -129,7 +129,7 @@ def mark_convex_edges(mesh) -> None:
             edge[convex_layer] = 1
         else:
             edge[convex_layer] = 0
-    BMeshUtils.finished(bm, mesh)
+    BMeshUtils.finished(bm, mesh, mode="OBJECT")
 
 
 def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
