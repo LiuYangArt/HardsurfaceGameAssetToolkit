@@ -68,8 +68,10 @@ def clean_collection_name(collection_name: str) -> str:
     Returns:
         清理后的名称
     """
-    # 移除常见后缀
-    suffixes = ["_low", "_high", "_LOD0", "_LOD1", "_LOD2"]
+    from ..const import LOW_SUFFIX, HIGH_SUFFIX, LOWB_SUFFIX, HIGHB_SUFFIX
+    
+    # 移除常见后缀（复用 const.py 中定义的常量）
+    suffixes = [LOW_SUFFIX, HIGH_SUFFIX, LOWB_SUFFIX, HIGHB_SUFFIX, "_LOD0", "_LOD1", "_LOD2"]
     result = collection_name
     
     for suffix in suffixes:
