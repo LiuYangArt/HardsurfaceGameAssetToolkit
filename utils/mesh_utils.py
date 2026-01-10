@@ -462,7 +462,7 @@ class Mesh:
             # 对整个 mesh 调用 find_revolve_cap_boundaries
             cap_boundary_edges, global_axis_idx = Mesh.find_revolve_cap_boundaries(all_faces, all_edges)
             
-            print(f"[auto_seam CAPPED] Found {len(cap_boundary_edges)} cap boundary edges on entire mesh")
+
             
             if cap_boundary_edges:
                 # 标记 cap boundary edges 为 seam
@@ -478,7 +478,7 @@ class Mesh:
                     if abs(face.normal.dot(axis_vec)) > CAP_FACE_THRESHOLD:
                         cap_faces.add(face)
                 
-                print(f"[auto_seam CAPPED] Identified {len(cap_faces)} cap faces (axis: {['X', 'Y', 'Z'][global_axis_idx]})")
+
 
         # 1. Identify Islands (connected faces not separated by seams)
         total_faces = set(bm.faces)
@@ -516,7 +516,7 @@ class Mesh:
                 cap_ratio = cap_face_count / len(island) if island else 0
                 
                 if cap_ratio > 0.8:  # 80% 以上是盖面，视为 cap island
-                    print(f"[auto_seam CAPPED] Skipping cap island ({len(island)} faces, {cap_ratio:.1%} cap faces)")
+
                     continue
             
             # Find boundary edges for this island
@@ -572,11 +572,10 @@ class Mesh:
             # Analyze Topology
             num_loops = len(loops)
             
-            print(f"[auto_seam DEBUG] ========== Island Analysis ==========")
-            print(f"[auto_seam DEBUG] Mode: {mode}, num_loops: {num_loops}")
+
             
             if num_loops == 0:
-                print(f"[auto_seam DEBUG] Entering num_loops == 0 branch (closed surface)")
+
                 # Closed Surface (Sphere, Torus) or Double-capped model
                 # Get all island edges and faces for processing
                 island_edges = set()
@@ -611,13 +610,13 @@ class Mesh:
                     # 用 Revolve Cap 算法找盖子边界边
                     cap_boundary_edges, precise_axis_idx = Mesh.find_revolve_cap_boundaries(island_faces, island_edges)
                     
-                    print(f"[auto_seam DEBUG] num_loops=0, CAPPED mode: found {len(cap_boundary_edges)} cap boundary edges")
+
                     
                     if cap_boundary_edges:
                         # 标记盖子边界为 seam
                         for edge in cap_boundary_edges:
                             edge.seam = True
-                        print(f"[auto_seam DEBUG] Marked {len(cap_boundary_edges)} cap boundary edges as seam")
+
                         
                         # 获取边界边的顶点，用于找垂直连接路径
                         cap_boundary_verts = set()
@@ -646,7 +645,7 @@ class Mesh:
                                     upper_verts.add(edge.verts[0])
                                     upper_verts.add(edge.verts[1])
                             
-                            print(f"[auto_seam DEBUG] lower_verts: {len(lower_verts)}, upper_verts: {len(upper_verts)}")
+
                             
                             # 找 bevel edges 用于路径搜索
                             ANGLE_THRESHOLD = 0.98
@@ -706,11 +705,11 @@ class Mesh:
                                 if path_edges:
                                     for e in path_edges:
                                         e.seam = True
-                                    print(f"[auto_seam DEBUG] Marked {len(path_edges)} vertical seam edges")
+
                                 else:
-                                    print(f"[auto_seam DEBUG] No bevel path found between cap boundaries")
+                                    pass
                     else:
-                        print(f"[auto_seam DEBUG] No cap boundary edges found, using default path")
+
                         # Fallback: 使用默认的 shortest path
                         verts_list.sort(key=lambda v: v.co[axis_idx])
                         min_v = verts_list[0]
@@ -738,7 +737,7 @@ class Mesh:
                             e.seam = True
 
             elif num_loops >= 1:
-                print(f"[auto_seam DEBUG] Entering num_loops >= 1 branch (has boundary loops)")
+
                 # Cylinder-like (Side wall) with one or more boundary loops (holes/openings)
                 # For num_loops == 1: single opening (like a cup or hollow cylinder)
                 # For num_loops >= 2: multiple holes or a tube
@@ -957,9 +956,7 @@ class Mesh:
 
                     return [], float('inf')
 
-                print(f"[auto_seam DEBUG] Island has {len(island)} faces, {len(island_edges)} edges")
-                print(f"[auto_seam DEBUG] Sharp edges: {len(sharp_edges_in_island)}, Bevel edges: {len(bevel_edges)}")
-                print(f"[auto_seam DEBUG] Outer loops: {outer_loops}, Mode: {mode}")
+
 
                 # ============================================================
                 # STANDARD 模式处理：在两个 outer loops 之间找 bevel path
@@ -974,17 +971,17 @@ class Mesh:
                     # Dijkstra 搜索
                     path_edges, path_cost = find_bevel_edge_path(loop1_verts, loop2_verts, bevel_edges)
 
-                    print(f"[auto_seam DEBUG] loop1_verts: {len(loop1_verts)}, loop2_verts: {len(loop2_verts)}")
-                    print(f"[auto_seam DEBUG] path found: {len(path_edges)} edges, cost: {path_cost:.4f}")
+
 
                     if path_edges:
                         for e in path_edges:
                             e.seam = True
-                        print(f"[auto_seam DEBUG] Marked {len(path_edges)} bevel edges as seam")
+
                     else:
-                        print(f"[auto_seam DEBUG] No path found on bevel edges!")
+                        pass
+
                 elif len(outer_loops) < 2 and mode != 'CAPPED':
-                    print(f"[auto_seam DEBUG] Not enough outer loops: {len(outer_loops)}")
+                    pass
 
         bm.to_mesh(mesh.data)
         bm.free()
@@ -1017,7 +1014,7 @@ class Mesh:
         # Use override if provided, otherwise compute
         if silhouette_edges_override is not None:
             silhouette_edges = silhouette_edges_override & all_edges
-            print(f"[find_shortest_path DEBUG] Override provided: {len(silhouette_edges_override)}, all_edges: {len(all_edges)}, intersection: {len(silhouette_edges)}")
+
         else:
             # ============================================================
             # Identify Coplanar Regions using flood fill
@@ -1091,11 +1088,11 @@ class Mesh:
         # ============================================================
         # When allow_flat_edges=False, COMPLETELY EXCLUDE flat edges
         valid_edges_for_path = all_edges if allow_flat_edges else silhouette_edges
-        print(f"[find_shortest_path DEBUG] valid_edges_for_path: {len(valid_edges_for_path)}, target_verts: {len(target_verts)}")
+
 
         # Check if start_vert connects to any valid edge
         start_valid_edges = [e for e in start_vert.link_edges if e in valid_edges_for_path]
-        print(f"[find_shortest_path DEBUG] start_vert has {len(start_valid_edges)} valid edges out of {len(start_vert.link_edges)} total")
+
 
         queue = [(0.0, id(start_vert), start_vert, [])]
         visited = {start_vert: 0.0}
