@@ -133,34 +133,17 @@ def uv_unwrap(target_objects, method: str = "ANGLE_BASED", margin: float = 0.005
         margin: 岛间距
         correct_aspect: 是否校正宽高比
     """
-    # 保存当前选择
-    original_selection = bpy.context.selected_objects.copy()
-    original_active = bpy.context.active_object
-    
-    # 取消所有选择
-    bpy.ops.object.select_all(action='DESELECT')
-    
-    for obj in target_objects:
-        if obj.type == 'MESH':
-            obj.select_set(True)
-            bpy.context.view_layer.objects.active = obj
-            
-            # 进入编辑模式
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            
-            # 执行 UV 展开
-            bpy.ops.uv.unwrap(method=method, margin=margin, correct_aspect=correct_aspect)
-            
-            # 返回对象模式
-            bpy.ops.object.mode_set(mode='OBJECT')
-            obj.select_set(False)
-    
-    # 恢复原始选择
-    for obj in original_selection:
-        obj.select_set(True)
-    if original_active:
-        bpy.context.view_layer.objects.active = original_active
+    bpy.ops.object.select_all(action="DESELECT")
+    for object in target_objects:
+        if object.type == "MESH":
+            object.select_set(True)
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.unwrap(
+        method=method, fill_holes=False, correct_aspect=correct_aspect, margin=margin
+    )
+    bpy.ops.object.mode_set(mode="OBJECT")
 
 
 def uv_average_scale(target_objects, uv_layer_name: str = "UVMap"):
