@@ -157,8 +157,6 @@ class HST_PT_BakeTool(bpy.types.Panel):
         box_column.operator(
             "hst.blur_vertexcolor", icon="PROP_OFF"
         )
-        
-
 
 
 class HST_PT_MainPanel(bpy.types.Panel):
@@ -182,11 +180,9 @@ class HST_PT_MainPanel(bpy.types.Panel):
             text="Bevel & Transfer Normal",
             icon="MOD_DATA_TRANSFER",
         )
-        # box_column.separator()
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")
-        # box_column.operator("hst.hstbevelsetparam", text="Modify Bevel Parameters")
 
         box_column.separator()
         box_column.label(text="Vertex Color Bake")
@@ -231,9 +227,6 @@ class HST_PT_MainPanel(bpy.types.Panel):
 
         box_column.separator()
         box_column.operator("hst.add_ue_collision", icon="MESH_ICOSPHERE")
-        
-        # box_column.operator("hst.redo_operator", icon="EMPTY_AXIS")
-        # box_column.operator("hst.add_asset_origin", icon="EMPTY_AXIS")
         box_column.operator("hst.batch_add_asset_origin", icon="OUTLINER_OB_EMPTY")
         box_column.operator("hst.reset_prop_transform_to_origin", icon="FILE_REFRESH")
         box_column.operator("hst.addsnapsocket", icon="OUTLINER_DATA_EMPTY")
@@ -265,10 +258,6 @@ class HST_PT_MainPanel(bpy.types.Panel):
         box_column.prop(
             parameters, "axis_toggle", text="Check UE Front Axis", icon="EMPTY_ARROWS"
         )
-
-        
-
-        
 
 
 class HST_PT_Tools(bpy.types.Panel):
@@ -316,10 +305,7 @@ class HST_PT_Tools(bpy.types.Panel):
         box_column.operator(
             "hst.debug_silhouette_edges", text="Debug Silhouette Edges", icon="EDGESEL"
         )
-        
-        
-        
-        
+
 
 class HST_PT_Export(bpy.types.Panel):
     bl_idname = "HST_PT_Export"

@@ -12,7 +12,7 @@ class Addon:
         for mod in addon_utils.modules():
             if mod.bl_info['name'] == Addon.NAME:
                 filepath = mod.__file__
-                filepath = filepath.split("\__init__.py")[0]
+                filepath = mod.__file__.replace("__init__.py", "")
                 filepath = filepath.replace("\\", "/")
                 break
         if filepath is None:
@@ -27,11 +27,6 @@ class Addon:
             return bl_version_num
     
 #TBD: 自动匹配不同的场景单位设置
-# def get_scene_unit():
-#     current_scene = bpy.context.object.users_scene[0].name
-#     scene_length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
-#     unit_scale = bpy.data.scenes[current_scene].unit_settings.scale_length
-#     return scene_length_unit, unit_scale
                 
 
 BL_VERSION=Addon.get_blender_version()
@@ -130,9 +125,9 @@ AXIS_ARROW = AXIS_OBJECT_PREFIX + "Arrows"
 # asset check
 CHECK_OK = "OK"
 
-#ue connect
-USER_PROFILE_PATH=os.environ['USERPROFILE']
-TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
+# UE Connect
+USER_PROFILE_PATH = os.environ['USERPROFILE']
+TEMP_PATH = os.path.join(USER_PROFILE_PATH, "AppData", "Local", "Temp", "BlenderHST")
 UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
@@ -147,18 +142,13 @@ SPEC_TYPE_NUM=3
 
 
 class Paths:
-    
     """ 文件和路径 """
-    ASSET_DIR = "preset_files"
-    # BLENDER_DIR = Path(resource_path("USER"))
-    # ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
     ADDON_DIR = Addon.get_install_path()
-    PRESETS_DIR = ADDON_DIR / ASSET_DIR
-    # NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
+    PRESETS_DIR = ADDON_DIR / ASSET_DIR  # 复用顶层 ASSET_DIR
     PRESET_FILE = PRESETS_DIR / "Presets.blend"
-    CONFIG_FILE= ADDON_DIR / "prefs.json"
-    OS_USER_DIR=os.environ['USERPROFILE']
-    TEMP_DIR=os.path.join(OS_USER_DIR,"AppData\Local\Temp\BlenderHST\\")
+    CONFIG_FILE = ADDON_DIR / "prefs.json"
+    OS_USER_DIR = os.environ['USERPROFILE']
+    TEMP_DIR = os.path.join(OS_USER_DIR, "AppData", "Local", "Temp", "BlenderHST")
 
 class Names:
     PREVIEW_CAM = "AssetPreviewCamera"
