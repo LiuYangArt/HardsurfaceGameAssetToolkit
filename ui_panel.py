@@ -213,9 +213,6 @@ class HST_PT_MainPanel(bpy.types.Panel):
             "hst.prepcadmesh", text="Prepare CAD Mesh", icon="CHECKMARK"
         )
         box_column.operator(
-            "hst.debug_silhouette_edges", text="Debug Silhouette Edges", icon="EDGESEL"
-        )
-        box_column.operator(
             "hst.fixcadobj", text="Fix CAD Obj", icon="MESH_CUBE"
         )
         uv_mode_row = box_column.row(align=True)
@@ -316,6 +313,9 @@ class HST_PT_Tools(bpy.types.Panel):
 
         box.operator("hst.extractucx", icon="MESH_CUBE")
         box.operator("hst.snap_transform", icon="SNAP_GRID")
+        box_column.operator(
+            "hst.debug_silhouette_edges", text="Debug Silhouette Edges", icon="EDGESEL"
+        )
         
         
         
@@ -384,15 +384,3 @@ class HST_PT_Skeletel(bpy.types.Panel):
         box.operator(
             "hst.select_bone_in_outliner", icon="EMPTY_ARROWS")
         
-        
-        
-        # box.operator(
-        #     "hst.show_bone_weight", icon="EMPTY_ARROWS")
-        
-        # box.operator(
-        #     "hst.skeletel_separator", icon="ARMATURE_DATA"
-        # )
-        # box.operator(
-        #     "hst.isolate_selected_bones", icon="BONE_DATA"
-        # )
-
