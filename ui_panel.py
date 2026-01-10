@@ -9,7 +9,7 @@ from bpy.props import (
     StringProperty,
 )
 from bpy.types import PropertyGroup
-from .Const import *
+from .const import *
 
 
 def axis_check_toggle(self, context):

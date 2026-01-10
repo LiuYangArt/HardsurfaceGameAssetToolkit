@@ -7,7 +7,7 @@ Modifier 操作工具函数
 """
 
 import bpy
-from ..Const import TRIANGULAR_MODIFIER
+from ..const import TRIANGULAR_MODIFIER
 
 
 def check_modifier_exist(target_object: bpy.types.Object, modifier_name: str) -> bool:

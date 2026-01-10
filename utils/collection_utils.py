@@ -7,7 +7,7 @@ Collection 操作工具函数
 """
 
 import bpy
-from ..Const import HST_PROP, COLLECTION_COLORS
+from ..const import HST_PROP, COLLECTION_COLORS
 
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:

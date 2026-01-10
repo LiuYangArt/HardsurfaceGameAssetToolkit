@@ -1,6 +1,6 @@
 import bpy
-from ..Const import *
-from .CommonFunctions import set_active_color_attribute, name_remove_digits, Object
+from ..const import *
+from .common_functions import set_active_color_attribute, name_remove_digits, Object
 
 
 def scene_unit_check():

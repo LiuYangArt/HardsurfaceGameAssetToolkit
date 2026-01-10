@@ -7,10 +7,10 @@
 """
 
 import bpy
-from ..Const import HST_PROP
+from ..const import HST_PROP
 
 
-def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object:
+def filter_type(target_objects: bpy.types.Object, type: str) -> list:
     """
     筛选某种类型的 object
 
@@ -19,7 +19,7 @@ def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object
         type: 对象类型 (MESH, ARMATURE, EMPTY 等)
 
     Returns:
-        筛选后的对象列表，如果没有匹配则返回 None
+        筛选后的对象列表，如果没有匹配则返回空列表
     """
     filtered_objects = []
     type = str.upper(type)
@@ -28,10 +28,7 @@ def filter_type(target_objects: bpy.types.Object, type: str) -> bpy.types.Object
             if object.type == type:
                 filtered_objects.append(object)
 
-    if len(filtered_objects) == 0:
-        return None
-    else:
-        return filtered_objects
+    return filtered_objects
 
 
 def filter_name(

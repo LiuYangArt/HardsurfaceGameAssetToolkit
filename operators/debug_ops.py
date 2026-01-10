@@ -7,7 +7,7 @@
 """
 
 import bpy
-from ..Functions.CommonFunctions import Mesh
+from ..functions.common_functions import Mesh
 
 
 class HST_OT_DebugSilhouetteEdges(bpy.types.Operator):

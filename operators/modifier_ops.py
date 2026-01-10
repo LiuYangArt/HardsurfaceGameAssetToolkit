@@ -7,8 +7,8 @@ Modifier 操作 Operators
 """
 
 import bpy
-from ..Const import *
-from ..Functions.CommonFunctions import *
+from ..const import *
+from ..functions.common_functions import *
 
 
 class HST_OT_ApplyMirrorModifier(bpy.types.Operator):

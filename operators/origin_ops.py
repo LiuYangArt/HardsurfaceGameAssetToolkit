@@ -8,8 +8,8 @@ Origin 和 Socket 管理 Operators
 
 import bpy
 from mathutils import Vector
-from ..Const import *
-from ..Functions.CommonFunctions import *
+from ..const import *
+from ..functions.common_functions import *
 
 
 def find_objs_bb_center(objs) -> Vector:

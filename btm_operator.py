@@ -3,8 +3,8 @@ import subprocess
 import configparser
 from bpy_extras.io_utils import ImportHelper
 
-from .Functions.BTMFunctions import *
-from .Functions.CommonFunctions import *
+from .functions.btm_functions import *
+from .functions.common_functions import *
 
 
 class HST_OT_BTMLow(bpy.types.Operator):

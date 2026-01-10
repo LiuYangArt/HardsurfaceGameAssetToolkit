@@ -7,9 +7,9 @@ Transform 和工具 Operators
 """
 
 import bpy
-from ..Const import *
-from ..Functions.CommonFunctions import *
-from ..Functions.AssetCheckFunctions import *
+from ..const import *
+from ..functions.common_functions import *
+from ..functions.asset_check_functions import *
 
 
 class HST_OT_SnapTransform(bpy.types.Operator):

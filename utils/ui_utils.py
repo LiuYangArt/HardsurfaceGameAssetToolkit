@@ -7,7 +7,7 @@ UI 工具函数
 """
 
 import bpy
-from ..Const import BL_VERSION
+from ..const import BL_VERSION
 
 
 def message_box(text: str = "", title: str = "WARNING", icon: str = "ERROR") -> None:

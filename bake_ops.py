@@ -1,7 +1,7 @@
 import bpy
 
-from .Const import *
-from .Functions.CommonFunctions import *
+from .const import *
+from .functions.common_functions import *
 #TODO: 一键发送到marmoset 进行烘焙，  marmoset中给高模的材质自动开启bevel normal
 
 

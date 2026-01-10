@@ -1,7 +1,7 @@
 import bpy
 import os
-from .Functions.CommonFunctions import *
-from .Const import Names, Paths
+from .functions.common_functions import *
+from .const import Names, Paths
 
 
 class AssetPreview:

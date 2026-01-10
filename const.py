@@ -99,7 +99,7 @@ PATTERN_MATERIAL= MATERIAL_PREFIX + "TilePattern"
 ADDON_NAME = "Hardsurface GameAsset Toolkit"
 
 # ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
+ASSET_DIR = "preset_files"
 
 addon_path= Addon.get_install_path()
 ASSET_PATH = addon_path / ASSET_DIR
@@ -149,7 +149,7 @@ SPEC_TYPE_NUM=3
 class Paths:
     
     """ 文件和路径 """
-    ASSET_DIR = "PresetFiles"
+    ASSET_DIR = "preset_files"
     # BLENDER_DIR = Path(resource_path("USER"))
     # ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
     ADDON_DIR = Addon.get_install_path()

@@ -7,9 +7,9 @@ Wearmask 操作 Operators
 """
 
 import bpy
-from ..Const import *
-from ..Functions.HSTFunctions import *
-from ..Functions.CommonFunctions import *
+from ..const import *
+from ..functions.hst_functions import *
+from ..functions.common_functions import *
 
 
 def prep_wearmask_objects(selected_objects):

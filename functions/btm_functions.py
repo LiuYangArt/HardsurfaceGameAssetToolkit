@@ -9,7 +9,7 @@ import mathutils
 import bpy
 
 # 从 CommonFunctions 导入重复的函数，避免代码重复
-from .CommonFunctions import (
+from .common_functions import (
     message_box,
     get_collection as getCollection,  # 保持原有命名的兼容性
     clean_user as cleanuser,          # 保持原有命名的兼容性

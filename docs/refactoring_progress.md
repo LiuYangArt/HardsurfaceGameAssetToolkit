@@ -82,6 +82,33 @@
 
 **统计**: 修复 10 个函数命名
 
+### Phase 6: 文件/目录命名规范化 ✅
+
+**目录重命名 (4个)**:
+- [x] `Functions/` → `functions/`
+- [x] `Operators/` → `operators/`
+- [x] `PresetFiles/` → `preset_files/`
+- [x] `Addon/` → `addon/`
+
+**functions/ 内文件重命名 (4个)**:
+- [x] `AssetCheckFunctions.py` → `asset_check_functions.py`
+- [x] `BTMFunctions.py` → `btm_functions.py`
+- [x] `CommonFunctions.py` → `common_functions.py`
+- [x] `HSTFunctions.py` → `hst_functions.py`
+
+**根目录文件重命名 (9个)**:
+- [x] `AssetLib.py` → `asset_lib.py`
+- [x] `BakeOps.py` → `bake_ops.py`
+- [x] `BTMOperator.py` → `btm_operator.py`
+- [x] `Const.py` → `const.py`
+- [x] `DecalOps.py` → `decal_ops.py`
+- [x] `Export.py` → `export.py`
+- [x] `Rigging.py` → `rigging.py`
+- [x] `SKMeshes.py` → `sk_meshes.py`
+- [x] `UIPanel.py` → `ui_panel.py`
+
+**统计**: 17个文件/目录重命名，29个文件导入更新
+
 ---
 
 ## 📋 待办
@@ -94,12 +121,12 @@
 
 | 文件 | 原始行数 | 当前行数 | 变化 |
 |------|----------|----------|------|
-| CommonFunctions.py | 3609 | ~530 | -85% |
-| BTMFunctions.py | 421 | ~390 | -7% |
+| common_functions.py | 3609 | ~530 | -85% |
+| btm_functions.py | 421 | ~390 | -7% |
 | MeshOps.py | 2077 | **已删除** | -100% |
 | HSTOps.py | 1047 | **已删除** | -100% |
 | utils/ | 0 | ~4000 | 19模块 |
-| Operators/ | 0 | ~2900 | 13模块 |
+| operators/ | 0 | ~2900 | 13模块 |
 
 ---
 

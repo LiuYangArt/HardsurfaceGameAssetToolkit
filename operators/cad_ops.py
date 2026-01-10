@@ -7,8 +7,8 @@ CAD 模型处理 Operators
 """
 
 import bpy
-from ..Const import *
-from ..Functions.CommonFunctions import *
+from ..const import *
+from ..functions.common_functions import *
 from ..utils.mesh_utils import check_non_solid_meshes
 
 

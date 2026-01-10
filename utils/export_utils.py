@@ -7,7 +7,7 @@
 """
 
 import bpy
-from ..Const import HST_PROP
+from ..const import HST_PROP
 
 
 def filter_static_meshes(collection):

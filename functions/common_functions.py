@@ -9,7 +9,7 @@ import json
 # import mathutils
 
 from mathutils import Vector, Matrix, Quaternion
-from ..Const import *
+from ..const import *
 
 # ============================================================================
 # 从 utils 包导入工具类和函数（兼容层）
