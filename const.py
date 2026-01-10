@@ -12,7 +12,7 @@ class Addon:
         for mod in addon_utils.modules():
             if mod.bl_info['name'] == Addon.NAME:
                 filepath = mod.__file__
-                filepath = filepath.split("\__init__.py")[0]
+                filepath = mod.__file__.replace("__init__.py", "")
                 filepath = filepath.replace("\\", "/")
                 break
         if filepath is None:
@@ -27,14 +27,23 @@ class Addon:
             return bl_version_num
     
 #TBD: 自动匹配不同的场景单位设置
-# def get_scene_unit():
-#     current_scene = bpy.context.object.users_scene[0].name
-#     scene_length_unit = bpy.data.scenes[current_scene].unit_settings.length_unit
-#     unit_scale = bpy.data.scenes[current_scene].unit_settings.scale_length
-#     return scene_length_unit, unit_scale
                 
 
 BL_VERSION=Addon.get_blender_version()
+
+# HST 自定义属性名称 (utils 模块使用的别名)
+HST_PROP = "HST_CustomType"
+
+# Collection 颜色标签映射
+COLLECTION_COLORS = {
+    "PROP": "COLOR_04",      # 绿色
+    "DECAL": "COLOR_06",     # 紫色
+    "BAKE_LOW": "COLOR_01",  # 红色
+    "BAKE_HIGH": "COLOR_02", # 橙色
+    "SKM": "COLOR_03",       # 黄色
+    "RIG": "COLOR_05",       # 蓝色
+    "PROXY": "COLOR_07",     # 灰色
+}
 
 # bake groups
 LOW_SUFFIX = "_Low"
@@ -85,7 +94,7 @@ PATTERN_MATERIAL= MATERIAL_PREFIX + "TilePattern"
 ADDON_NAME = "Hardsurface GameAsset Toolkit"
 
 # ADDON_DIR = "HardsurfaceGameAssetToolkit"
-ASSET_DIR = "PresetFiles"
+ASSET_DIR = "preset_files"
 
 addon_path= Addon.get_install_path()
 ASSET_PATH = addon_path / ASSET_DIR
@@ -116,9 +125,9 @@ AXIS_ARROW = AXIS_OBJECT_PREFIX + "Arrows"
 # asset check
 CHECK_OK = "OK"
 
-#ue connect
-USER_PROFILE_PATH=os.environ['USERPROFILE']
-TEMP_PATH=os.path.join(USER_PROFILE_PATH,"AppData\Local\Temp\BlenderHST\\")
+# UE Connect
+USER_PROFILE_PATH = os.environ['USERPROFILE']
+TEMP_PATH = os.path.join(USER_PROFILE_PATH, "AppData", "Local", "Temp", "BlenderHST")
 UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
@@ -133,18 +142,13 @@ SPEC_TYPE_NUM=3
 
 
 class Paths:
-    
     """ 文件和路径 """
-    ASSET_DIR = "PresetFiles"
-    # BLENDER_DIR = Path(resource_path("USER"))
-    # ADDON_DIR = BLENDER_DIR / "scripts/addons/" / Addon.NAME
     ADDON_DIR = Addon.get_install_path()
-    PRESETS_DIR = ADDON_DIR / ASSET_DIR
-    # NODE_FILE = PRESETS_DIR / "GN_WearMaskVertexColor.blend"
+    PRESETS_DIR = ADDON_DIR / ASSET_DIR  # 复用顶层 ASSET_DIR
     PRESET_FILE = PRESETS_DIR / "Presets.blend"
-    CONFIG_FILE= ADDON_DIR / "prefs.json"
-    OS_USER_DIR=os.environ['USERPROFILE']
-    TEMP_DIR=os.path.join(OS_USER_DIR,"AppData\Local\Temp\BlenderHST\\")
+    CONFIG_FILE = ADDON_DIR / "prefs.json"
+    OS_USER_DIR = os.environ['USERPROFILE']
+    TEMP_DIR = os.path.join(OS_USER_DIR, "AppData", "Local", "Temp", "BlenderHST")
 
 class Names:
     PREVIEW_CAM = "AssetPreviewCamera"

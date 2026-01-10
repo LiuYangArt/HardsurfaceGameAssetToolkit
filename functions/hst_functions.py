@@ -1,6 +1,6 @@
 import bpy
-from ..Const import *
-from .CommonFunctions import *
+from ..const import *
+from .common_functions import *
 
 
 def add_bevel_modifier(mesh, width=0.05, segments=1):

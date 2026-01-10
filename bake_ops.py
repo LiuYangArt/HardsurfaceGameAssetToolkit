@@ -1,15 +1,18 @@
 import bpy
 
-from .Const import *
-from .Functions.CommonFunctions import *
+from .const import *
+from .functions.common_functions import *
 #TODO: 一键发送到marmoset 进行烘焙，  marmoset中给高模的材质自动开启bevel normal
 
 
 def set_bake_collection(collection, type="LOW"):
-    """Set bake collection name and color tag,rename meshes in collection,types:LOW,HIGH"""
-    result = False
+    """Set bake collection name and color tag, rename meshes in collection.
+    
+    Args:
+        collection: Blender Collection 对象
+        type: "LOW" 或 "HIGH"
+    """
     objects = collection.all_objects
-
     collection_name = clean_collection_name(collection.name)
 
     match type:
@@ -18,7 +21,6 @@ def set_bake_collection(collection, type="LOW"):
             Collection.mark_hst_type(collection, "LOW")
             for obj in objects:
                 Object.mark_hst_type(obj, "LOW")
-            
         case "HIGH":
             new_name = collection_name + HIGH_SUFFIX
             Collection.mark_hst_type(collection, "HIGH")
@@ -26,10 +28,26 @@ def set_bake_collection(collection, type="LOW"):
                 Object.mark_hst_type(obj, "HIGH")
 
     collection.name = new_name
-
     rename_prop_meshes(objects)
 
-    return result
+
+def apply_vertex_color_to_mesh(mesh, color, attr_name=BAKECOLOR_ATTR):
+    """
+    为 mesh 应用顶点色，如果没有顶点色层则创建。
+    
+    Args:
+        mesh: Blender Mesh 对象
+        color: 颜色数据
+        attr_name: 顶点色属性名称
+    """
+    vertex_color_layer = check_vertex_color(mesh)
+    if vertex_color_layer:
+        set_active_color_attribute(mesh, vertex_color_layer.name)
+        set_object_vertexcolor(mesh, color, vertex_color_layer.name)
+    else:
+        add_vertexcolor_attribute(mesh, attr_name)
+        set_active_color_attribute(mesh, attr_name)
+        set_object_vertexcolor(mesh, color, attr_name)
 
 
 class HST_OT_SetBakeCollectionLow(bpy.types.Operator):
@@ -102,21 +120,12 @@ class HST_OT_SetObjectVertexColor(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         color = get_color_data(color)
 
-        if len(selected_meshes) == 0:
+        if not selected_meshes:
             message_box("No mesh selected | 未选择Mesh")
             return {"CANCELLED"}
 
-        
         for mesh in selected_meshes:
-            vertex_color_layer=check_vertex_color(mesh)
-            if vertex_color_layer:
-                # print("has vc")
-                set_active_color_attribute(mesh, vertex_color_layer.name)
-                set_object_vertexcolor(mesh, color, vertex_color_layer.name)
-            else:
-                add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
-                set_active_color_attribute(mesh, BAKECOLOR_ATTR)
-                set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
+            apply_vertex_color_to_mesh(mesh, color)
 
         self.report({"INFO"}, "Set vertex color")
         return {"FINISHED"}
@@ -143,19 +152,9 @@ class HST_OT_CopyColorAttributeFromActive(bpy.types.Operator):
             return {"CANCELLED"}
 
         for mesh in selected_meshes:
-            vertex_color_layer=check_vertex_color(mesh)
-            if vertex_color_layer:
-                # print("has vc")
-                set_active_color_attribute(mesh, vertex_color_layer.name)
-                set_object_vertexcolor(mesh, color, vertex_color_layer.name)
-            else:
-                add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
-                set_active_color_attribute(mesh, BAKECOLOR_ATTR)
-                set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
-
+            apply_vertex_color_to_mesh(mesh, color)
 
         self.report({"INFO"}, "Set vertex color")
-
         return {"FINISHED"}
     def invoke(self, context, event):
         selected_objs = context.selected_objects
@@ -173,61 +172,48 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
     bl_label = "HST Blur Vertex Color"
     bl_description = "模糊选中模型的顶点色"
 
+    def invoke(self, context, event):
+        """
+        执行前检查上下文是否满足条件。
+        检查项：1) 是否有选中的 Mesh；2) 选中的 Mesh 是否有 vertex color attribute。
+        """
+        selected_objects = Object.get_selected()
+        selected_meshes = filter_type(selected_objects, "MESH")
+
+        if not selected_meshes:
+            message_box("No mesh selected | 没有选中的Mesh")
+            return {"CANCELLED"}
+
+        # 检查是否至少有一个 mesh 拥有 vertex color attribute
+        meshes_with_color = [m for m in selected_meshes if m.data.attributes.active_color]
+        if not meshes_with_color:
+            message_box("Selected meshes have no vertex color attribute | 选中的Mesh没有顶点色属性")
+            return {"CANCELLED"}
+
+        return self.execute(context)
+
     def execute(self, context):
         blur_node=import_node_group(PRESET_FILE_PATH, VERTEXCOLORBLUR_NODE) 
         selected_objects=Object.get_selected()
         selected_meshes=filter_type(selected_objects, "MESH")
-        bad_meshes=[]
+        no_color_meshes=[]
+        success_count = 0
         for mesh in selected_meshes:
             active_color=mesh.data.attributes.active_color
             if active_color:
                 geonode_mod=Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
-                geonode_mod["Socket_2"]=active_color.name
-            else: #skip when no vertex color
-                bad_meshes.append(mesh.name)
-                continue
+                if geonode_mod is not None:
+                    geonode_mod["Socket_2"]=active_color.name
+                    success_count += 1
+                # geonode_mod 为 None 时静默跳过（modifier 可能已存在）
+            else: # 只有真正没有顶点色时才报告
+                no_color_meshes.append(mesh.name)
 
-        if len(bad_meshes)>0:
-            self.report({"ERROR"}, f"{len(bad_meshes)} Meshes has no vertex color attribute. {str(bad_meshes)}")
-        else:
-            self.report({"INFO"}, f"{len(selected_meshes)} Meshes got blur vertex color")
+        if len(no_color_meshes) > 0:
+            self.report({"WARNING"}, f"{len(no_color_meshes)} Meshes has no vertex color attribute: {str(no_color_meshes)}")
+        if success_count > 0:
+            self.report({"INFO"}, f"{success_count} Meshes got blur vertex color")
 
         return {"FINISHED"}
 
 
-
-
-# class SetVertexColorAlphaOperator(bpy.types.Operator):
-#     bl_idname = "hst.set_vertexcolor_alpha"
-#     bl_label = "Batch Set Object VertexColor Alpha Channel"
-#     bl_description = "设置选中模型的顶点色,顶点色名字为BakeColor\
-#         用于烘焙贴图时的ColorID"
-
-#     def execute(self, context):
-#         parameters = context.scene.hst_params
-#         color = parameters.vertexcolor
-#         selected_objects = bpy.context.selected_objects
-#         selected_meshes = filter_type(selected_objects, "MESH")
-#         color = get_color_data(color)
-
-#         if len(selected_meshes) == 0:
-#             message_box("No mesh selected | 未选择Mesh")
-#             return {"CANCELLED"}
-
-        
-#         for mesh in selected_meshes:
-#             vertex_color_layer=check_vertex_color(mesh)
-#             if vertex_color_layer:
-#                 # print("has vc")
-#                 set_active_color_attribute(mesh, vertex_color_layer.name)
-#                 # set_object_vertexcolor(mesh, color, vertex_color_layer.name)
-#                 VertexColor.set_alpha(mesh=mesh,alpha_value=0.1,vertexcolor_name=vertex_color_layer.name)
-#                 # VertexColor.set_vertexcolor_alpha(mesh, color_mode="BLACK", vertexcolor_name=vertex_color_layer.name)
-#             else:
-#                 add_vertexcolor_attribute(mesh, BAKECOLOR_ATTR)
-#                 set_active_color_attribute(mesh, BAKECOLOR_ATTR)
-#                 VertexColor.set_vertexcolor_alpha(mesh, color_mode="BLACK", vertexcolor_name=BAKECOLOR_ATTR)
-#                 # set_object_vertexcolor(mesh, color, BAKECOLOR_ATTR)
-
-#         self.report({"INFO"}, "Set vertex color")
-#         return {"FINISHED"}

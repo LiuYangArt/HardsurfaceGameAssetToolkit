@@ -1,7 +1,7 @@
 import bpy
-from .Const import *
-from .Functions.CommonFunctions import *
-from .Functions.AssetCheckFunctions import *
+from .const import *
+from .functions.common_functions import *
+from .functions.asset_check_functions import *
 
 GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
 CAT_GROUP_MOD = "CAT_MeshGroup"

@@ -14,3 +14,4 @@ new_version.bat
 *.txt
 *.json
 *.log
+.ruff_cache

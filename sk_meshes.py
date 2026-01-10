@@ -1,9 +1,9 @@
 import bpy
 import bmesh
-from .Functions.CommonFunctions import *
+from .functions.common_functions import *
 
 
-from .Const import *
+from .const import *
 
 
 def get_bone_matrix(armature):

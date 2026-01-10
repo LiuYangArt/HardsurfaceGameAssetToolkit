@@ -1,7 +1,7 @@
 import bpy
-from .Const import *
-from .Functions.HSTFunctions import *
-from .Functions.CommonFunctions import *
+from .const import *
+from .functions.hst_functions import *
+from .functions.common_functions import *
 
 
 class HST_OT_ProjectDecal(bpy.types.Operator):

@@ -14,7 +14,7 @@ import bpy
 from . import auto_load
 
 from bpy.props import PointerProperty
-from .UIPanel import UIParams
+from .ui_panel import UIParams
 
 
 auto_load.init()

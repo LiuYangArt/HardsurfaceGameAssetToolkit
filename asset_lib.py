@@ -1,7 +1,7 @@
 import bpy
 import os
-from .Functions.CommonFunctions import *
-from .Const import Names, Paths
+from .functions.common_functions import *
+from .const import Names, Paths
 
 
 class AssetPreview:
@@ -31,20 +31,7 @@ class AssetPreview:
                 break
         return screen_area
 
-    # def get_asset_library_area():
-    #     screen_area = None
-    #     screen = bpy.context.window.screen
-    #     for area in screen.areas:
 
-    #         if area.type == "FILE_BROWSER" and area.ui_type == "ASSETS":
-    #             print("has asset lib area")
-    #             screen_area = area
-    #             for space in area.spaces:
-    #                 if space.type == "FILE_BROWSER" and space.browse_mode == "ASSETS":
-    #                     print("asset lib space")
-    #                     break
-    #             break
-    #     return screen_area
 
     def asset_library_selection():
         selected_assets = None
@@ -93,15 +80,7 @@ class AssetPreview:
         bpy.context.scene.render.resolution_x = 128
         bpy.context.scene.render.resolution_y = 128
 
-        # bpy.context.scene.eevee.taa_render_samples = 16
-        # bpy.context.scene.eevee.use_gtao = True
-        # bpy.context.scene.eevee.use_ssr = True
-        # bpy.context.scene.eevee.use_ssr_refraction = False
 
-        # bpy.context.SceneEEVEE.taa_render_samples = 16
-        # bpy.context.SceneEEVEE.use_gtao = True
-        # bpy.context.SceneEEVEE.use_ssr = True
-        # bpy.context.SceneEEVEE.use_ssr_refraction = False
         bpy.context.scene.eevee.use_shadows = True
         bpy.context.scene.eevee.use_raytracing = True
 
@@ -150,10 +129,7 @@ class AssetPreview:
         bpy.data.cameras.remove(cam_data, do_unlink=True)
         # print("remove camera")
 
-    # def remove_render(file_path):
-    #     os.remove(file_path)
 
-    # print("remove temp render")
 
 
 class HST_OT_MakeAssetPreview(bpy.types.Operator):
