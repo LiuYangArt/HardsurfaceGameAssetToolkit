@@ -1,7 +1,7 @@
 # 代码重构 Todo List
 
 > Issue #8 - 代码重构  
-> 更新时间: 2026-01-09
+> 更新时间: 2026-01-10
 
 ---
 
@@ -50,23 +50,28 @@
 - [x] 创建 `env_ops.py` (4 Operators)
 - [x] 创建 `collision_ops.py` (3 Operators)
 - [x] 创建 `transform_ops.py` (5 Operators)
-- [x] **删除 MeshOps.py 已迁移代码** (2077→530行, -74%)
+- [x] 创建 `debug_ops.py` (1 Operator, ~500行)
+- [x] **删除 MeshOps.py** (2077→0行, -100%)
 - [x] 修复 origin_ops 空列表访问问题
 - [x] 修复 BakeOps BlurVertexColor 误报问题
 
-**统计**: 新增 7 模块 ~1400 行, 28 Operators
+**统计**: 新增 8 模块 ~1900 行, 29 Operators
+
+### Phase 4: HSTOps.py 拆分 ✅
+
+- [x] 分析函数依赖关系
+- [x] 创建 `bevel_ops.py` (2 Operators)
+- [x] 创建 `wearmask_ops.py` (6 Operators + 1 辅助函数)
+- [x] 创建 `modifier_ops.py` (2 Operators)
+- [x] 创建 `decal_ops.py` (2 Operators)
+- [x] 创建 `attribute_ops.py` (4 Operators)
+- [x] **删除 HSTOps.py** (1047→0行, -100%)
+
+**统计**: 新增 5 模块 ~1000 行, 16 Operators
 
 ---
 
 ## 📋 待办
-
-### Phase 4: HSTOps.py 拆分
-
-- [ ] 分析函数依赖关系
-- [ ] 创建 `hst_bake_ops.py`
-- [ ] 创建 `hst_wearmask_ops.py`
-- [ ] 创建 `hst_asset_ops.py`
-- [ ] 更新导入引用
 
 ### Phase 5: 命名规范化
 
@@ -74,10 +79,6 @@
 - [ ] 统一类命名为 `PascalCase`
 - [ ] 统一常量命名为 `UPPER_SNAKE_CASE`
 - [ ] 更新所有引用
-
-### 待处理项
-
-- [ ] 创建 `debug_ops.py` (DebugSilhouetteEdges ~500行)
 
 ---
 
@@ -88,8 +89,9 @@
 | CommonFunctions.py | 3609 | ~530 | -85% |
 | BTMFunctions.py | 421 | ~390 | -7% |
 | MeshOps.py | 2077 | **已删除** | -100% |
+| HSTOps.py | 1047 | **已删除** | -100% |
 | utils/ | 0 | ~4000 | 19模块 |
-| Operators/ | 0 | ~1900 | 8模块 |
+| Operators/ | 0 | ~2900 | 13模块 |
 
 ---
 
@@ -97,6 +99,7 @@
 
 - CommonFunctions.py 现在只保留 FBXExport 类和项目特定业务函数
 - 所有工具类（Object, Collection, Mesh 等）已完全迁移至 utils 包
-- MeshOps.py 已拆分，28个 Operators 迁移到 `Operators/` 包
+- MeshOps.py 和 HSTOps.py 已完全拆分，45 个 Operators 迁移到 `Operators/` 包
 - utils 包作为兼容层，现有代码无需修改仍可正常工作
 - 新代码建议直接从 utils 模块导入
+
