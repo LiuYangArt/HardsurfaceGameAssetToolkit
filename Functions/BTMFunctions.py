@@ -20,7 +20,7 @@ from .CommonFunctions import (
 # from ..UIPanel import BTMPropGroup
 
 
-def checkMeshes(objects):
+def check_meshes(objects):
     meshes = []
     for object in objects:
         if object.type == "MESH":
@@ -235,7 +235,7 @@ def export_FBX(folder, filename, selected, activecollection):
     )
 
 
-def BTM_Export_Path():
+def btm_export_path():
     btm_export_path = None
     filepath = None
     bakedirpath = None
@@ -282,7 +282,7 @@ def get_preset_path():
     return preset_path
 
 
-def Fix_Path(path):
+def fix_path(path):
     path = "/".join(path.split("\\"))
     return path
 
@@ -290,9 +290,9 @@ def Fix_Path(path):
 def py_build_up(ExportFolderPath):
     marmoset_loader = set_BTM_loader()
     baker_list = create_baker_list()
-    import_path = Fix_Path(BTM_Export_Path())
+    import_path = fix_path(btm_export_path())
     preset_path = get_preset_path()
-    texture_folder = Fix_Path(BTM_Export_Path() + "Tex")
+    texture_folder = fix_path(btm_export_path() + "Tex")
 
     # props = bpy.context.preferences.addons["BTM"].preferences
     # outputTextureFormat = props.toolbag_texture_format
@@ -355,7 +355,7 @@ def btb_run_toolbag():
     toolbag = bpy.context.preferences.addons[
         "HardsurfaceGameAssetToolkit"
     ].preferences.toolbag_app_path
-    folder = BTM_Export_Path()
+    folder = btm_export_path()
     if toolbag:
         if folder:
             py_build_up(folder)

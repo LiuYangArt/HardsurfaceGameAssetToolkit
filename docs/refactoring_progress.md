@@ -71,14 +71,22 @@
 
 ---
 
+## ✅ 已完成
+
+### Phase 5: 命名规范化 ✅
+
+- [x] BTMFunctions.py: `checkMeshes` → `check_meshes`
+- [x] BTMFunctions.py: `BTM_Export_Path` → `btm_export_path`
+- [x] BTMFunctions.py: `Fix_Path` → `fix_path`
+- [x] BTMOperator.py: 7 个函数重命名为 snake_case
+
+**统计**: 修复 10 个函数命名
+
+---
+
 ## 📋 待办
 
-### Phase 5: 命名规范化
-
-- [ ] 统一函数命名为 `snake_case`
-- [ ] 统一类命名为 `PascalCase`
-- [ ] 统一常量命名为 `UPPER_SNAKE_CASE`
-- [ ] 更新所有引用
+(暂无)
 
 ---
 

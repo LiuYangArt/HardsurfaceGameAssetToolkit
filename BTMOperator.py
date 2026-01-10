@@ -61,14 +61,14 @@ class HST_OT_OrganizeCollections(bpy.types.Operator):
     bl_idname = "hst.organize_collections"
     bl_label = "Organize Collections"
 
-    def Fix_Coll_Name(coll):
+    def fix_coll_name(coll):
         fix_coll_name = coll.name.split("_")
         fix_coll_name.pop()
         fix_coll_name.pop()
         fix_coll_name = "_".join(fix_coll_name)
         return fix_coll_name
 
-    def Get_High_Coll_List(colllist):
+    def get_high_coll_list(colllist):
         high_coll_list = []
 
         for coll in colllist:
@@ -76,7 +76,7 @@ class HST_OT_OrganizeCollections(bpy.types.Operator):
                 high_coll_list.append(coll)
         return high_coll_list
 
-    def Get_Low_Coll_List(colllist):
+    def get_low_coll_list(colllist):
         low_coll_list = []
 
         for coll in colllist:
@@ -84,18 +84,18 @@ class HST_OT_OrganizeCollections(bpy.types.Operator):
                 low_coll_list.append(coll)
         return low_coll_list
 
-    def Check_Base_Coll(colllist, high_coll):
+    def check_base_coll(colllist, high_coll):
         coll: bpy.types.Collection
         have_base_coll = 0
         base_coll_list = []
 
         for coll in colllist:
-            if coll.name == OrgaCollOperator.Fix_Coll_Name(high_coll):
+            if coll.name == OrgaCollOperator.fix_coll_name(high_coll):
                 base_coll_list.append(coll)
                 have_base_coll += 1
         return have_base_coll, base_coll_list
 
-    def Clean_Color_Tag(colllist):
+    def clean_color_tag(colllist):
         coll: bpy.types.Collection
         for coll in colllist:
             if "high" or "low" in coll.name:
@@ -107,19 +107,19 @@ class HST_OT_OrganizeCollections(bpy.types.Operator):
         base_coll: bpy.types.Collection
 
         colllist = bpy.data.collections
-        high_coll_list = HST_OT_OrganizeCollections.Get_High_Coll_List(colllist)
-        low_coll_list = HST_OT_OrganizeCollections.Get_Low_Coll_List(colllist)
+        high_coll_list = HST_OT_OrganizeCollections.get_high_coll_list(colllist)
+        low_coll_list = HST_OT_OrganizeCollections.get_low_coll_list(colllist)
 
-        HST_OT_OrganizeCollections.Clean_Color_Tag(colllist)
+        HST_OT_OrganizeCollections.clean_color_tag(colllist)
         for high_coll in high_coll_list:
             for low_coll in low_coll_list:
-                if HST_OT_OrganizeCollections.Fix_Coll_Name(
+                if HST_OT_OrganizeCollections.fix_coll_name(
                     high_coll
-                ) == HST_OT_OrganizeCollections.Fix_Coll_Name(low_coll):
-                    have_base_coll = HST_OT_OrganizeCollections.Check_Base_Coll(
+                ) == HST_OT_OrganizeCollections.fix_coll_name(low_coll):
+                    have_base_coll = HST_OT_OrganizeCollections.check_base_coll(
                         colllist, high_coll
                     )[0]
-                    base_coll_list = HST_OT_OrganizeCollections.Check_Base_Coll(
+                    base_coll_list = HST_OT_OrganizeCollections.check_base_coll(
                         colllist, high_coll
                     )[1]
                     if have_base_coll:
@@ -133,7 +133,7 @@ class HST_OT_OrganizeCollections(bpy.types.Operator):
                             base_coll.color_tag = "COLOR_02"
                     else:
                         basecoll = bpy.data.collections.new(
-                            name=HST_OT_OrganizeCollections.Fix_Coll_Name(high_coll)
+                            name=HST_OT_OrganizeCollections.fix_coll_name(high_coll)
                         )
                         bpy.context.scene.collection.children.link(basecoll)
                         basecoll.children.link(high_coll)
@@ -148,7 +148,7 @@ class HST_OT_ExportFBX(bpy.types.Operator):
     bl_idname = "hst.export_fbx"
     bl_label = "Export FBX"
 
-    def Get_Bakers():
+    def get_bakers():
         coll: bpy.types.Collection
 
         colllist = bpy.data.collections
@@ -158,7 +158,7 @@ class HST_OT_ExportFBX(bpy.types.Operator):
                 base_colllist.append(coll)
         return base_colllist
 
-    def Set_Obj_Active(self, active, objectlist):
+    def set_obj_active(self, active, objectlist):
         obj: bpy.types.Object
 
         for obj in objectlist:
@@ -167,13 +167,13 @@ class HST_OT_ExportFBX(bpy.types.Operator):
     def execute(self, context):
         base_coll: bpy.types.Collection
 
-        get_export_path = BTM_Export_Path()
-        base_colllist = HST_OT_ExportFBX.Get_Bakers()
+        get_export_path = btm_export_path()
+        base_colllist = HST_OT_ExportFBX.get_bakers()
         if bpy.data.is_saved:
             for base_coll in base_colllist:
-                self.Set_Obj_Active(1, base_coll.all_objects)
+                self.set_obj_active(1, base_coll.all_objects)
                 export_FBX(get_export_path, base_coll.name, True, False)
-                self.Set_Obj_Active(0, base_coll.all_objects)
+                self.set_obj_active(0, base_coll.all_objects)
             create_baker_file(base_colllist)
         else:
             message_box(text="Please save blender file")
