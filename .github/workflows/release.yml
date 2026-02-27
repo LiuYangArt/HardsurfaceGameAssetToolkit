@@ -31,6 +31,7 @@ jobs:
             --exclude '.git' \
             --exclude '.gitignore' \
             --exclude '.github' \
+            --exclude 'docs' \
             --exclude '.agent' \
             --exclude '.cursor' \
             --exclude '.clinerules' \
