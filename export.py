@@ -90,20 +90,79 @@ def filter_instance_coll_objs(collections):
                 instance_objects.append(instance_objs[0])
     return instance_objects
 
-def export_instance_collection(target, export_path, file_prefix):
+
+def resolve_export_targets(export_format):
+    """根据导出格式返回后缀和导出器"""
+    if export_format == "GLB":
+        return (
+            ".glb",
+            GLBExport.instance_collection,
+            GLBExport.staticmesh,
+            GLBExport.skeletal,
+        )
+    return (
+        ".fbx",
+        FBXExport.instance_collection,
+        FBXExport.staticmesh,
+        FBXExport.skeletal,
+    )
+
+
+def parse_sorted_collections(sorted_collections):
+    """兼容 Collection.sort_hst_types 的 dict / tuple 两种返回格式"""
+    if isinstance(sorted_collections, dict):
+        bake_collections = sorted_collections.get("bake", [])
+        decal_collections = sorted_collections.get("decal", [])
+        prop_collections = sorted_collections.get("prop", [])
+        sm_collections = sorted_collections.get("sm", [])
+        other_collections = sorted_collections.get("other", [])
+        for coll in other_collections:
+            if coll not in sm_collections:
+                sm_collections.append(coll)
+        skm_collections = sorted_collections.get("skm", [])
+        rig_collections = sorted_collections.get("rig", [])
+        return (
+            bake_collections,
+            decal_collections,
+            prop_collections,
+            sm_collections,
+            skm_collections,
+            rig_collections,
+        )
+
+    (
+        bake_collections,
+        decal_collections,
+        prop_collections,
+        sm_collections,
+        skm_collections,
+        rig_collections,
+    ) = sorted_collections
+    return (
+        bake_collections,
+        decal_collections,
+        prop_collections,
+        sm_collections,
+        skm_collections,
+        rig_collections,
+    )
+
+
+def export_instance_collection(target, export_path, file_prefix, export_format="FBX"):
     """导出实例化的collection"""
     new_name = target.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
     new_name = target.name.removesuffix(GROUPPRO_SUFFIX)
     new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
-    file_path = export_path + new_name + ".fbx"
+    export_ext, instance_exporter, _, _ = resolve_export_targets(export_format)
+    file_path = export_path + new_name + export_ext
     print(f"exporting instance: {target.name} to {file_path}")
-    FBXExport.instance_collection(target, file_path,reset_transform=True)
+    instance_exporter(target, file_path, reset_transform=True)
 
 
 class HST_OT_StaticMeshExport(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
     bl_label = "HST StaticMesh Export UE"
-    bl_description = "根据Collection分组导出Unreal Engine使用的静态模型fbx\
+    bl_description = "根据Collection分组导出Unreal Engine使用的静态模型\
         只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体，不导出“_”开头的Collection\
         在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
 
@@ -114,6 +173,8 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         file_prefix = parameters.file_prefix
+        export_format = parameters.export_format
+        export_ext, _, staticmesh_exporter, skeletal_exporter = resolve_export_targets(export_format)
         export_count = 0
         blend_file_path = (bpy.path.abspath("//"))
         if export_path == "": #未设置保存路径时
@@ -147,7 +208,8 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
         bpy.ops.object.select_all(action="DESELECT")
         
-        #collection类型筛查
+        # collection 类型筛查：兼容旧版 tuple 返回和新版 dict 返回
+        sorted_collections = Collection.sort_hst_types(visible_collections)
         (
             bake_collections,
             decal_collections,
@@ -155,7 +217,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             sm_collections,
             skm_collections,
             rig_collections,
-        ) = Collection.sort_hst_types(visible_collections)
+        ) = parse_sorted_collections(sorted_collections)
 
         #筛查 bake collection， 只要最上层的
         bake_export_collections=[]
@@ -213,9 +275,9 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
 
                 new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
                 new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
-                file_path = export_path + new_name + ".fbx"
+                file_path = export_path + new_name + export_ext
                 print(f"exporting {collection.name} to {file_path}")
-                FBXExport.staticmesh(collection, file_path)
+                staticmesh_exporter(collection, file_path)
                 export_count += 1
 
 
@@ -231,18 +293,18 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                 for mesh in collection.objects:
                     new_name = mesh.name.removeprefix(Const.STATICMESH_PREFIX)
                     new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
-                    file_path = export_path + new_name + ".fbx"
+                    file_path = export_path + new_name + export_ext
                     skm_count += 1
-                    FBXExport.staticmesh(mesh, file_path,reset_transform=True)
+                    staticmesh_exporter(mesh, file_path,reset_transform=True)
                     # mesh.select_set(True)
         if len(rig_collections) > 0:
             for collection in rig_collections:
                 # for armature in collection.objects:
                 new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
                 new_name = Const.SKELETAL_MESH_PREFIX + new_name
-                file_path = export_path + new_name + ".fbx"
+                file_path = export_path + new_name + export_ext
                 use_armature_as_root = parameters.use_armature_as_root
-                FBXExport.skeletal(collection, file_path, use_armature_as_root)
+                skeletal_exporter(collection, file_path, use_armature_as_root)
 
         restore_select_mode(store_mode)
 
@@ -253,7 +315,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         )
         self.report(
             {"INFO"},
-            f"{export_count} Meshes exported to {export_path}",
+            f"{export_count} Meshes exported to {export_path} ({export_format})",
         )
         return {"FINISHED"}
 

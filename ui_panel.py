@@ -92,15 +92,25 @@ class UIParams(PropertyGroup):
 
     export_path: StringProperty(
         name="Export Path",
-        description="fbx导出的路径",
+        description="导出文件的路径",
         default="",
         maxlen=1024,
         subtype="DIR_PATH",
     )
 
+    export_format: EnumProperty(
+        name="Export Format",
+        description="导出格式，默认FBX",
+        items=[
+            ("FBX", "FBX", "导出为FBX格式"),
+            ("GLB", "GLB", "导出为GLB格式"),
+        ],
+        default="FBX",
+    )
+
     file_prefix: StringProperty(
         name="File Prefix",
-        description="文件名前缀，例如AAA，则导出的文件名是SM_AAACollectionName.fbx",
+        description="文件名前缀，例如AAA，则导出的文件名是SM_AAACollectionName",
         default="",
         maxlen=24,
     )
@@ -323,9 +333,10 @@ class HST_PT_Export(bpy.types.Panel):
 
 
         box_column.operator(
-            "hst.staticmeshexport", text="Export StaticMesh FBX", icon="EXPORT"
+            "hst.staticmeshexport", text="Export StaticMesh", icon="EXPORT"
         )
         box_column.prop(parameters, "export_path", text="Path")
+        box_column.prop(parameters, "export_format", text="Format")
         box_column.prop(parameters, "file_prefix", text="Prefix")
         box_column.prop(parameters, "use_armature_as_root")
         box_column.operator(

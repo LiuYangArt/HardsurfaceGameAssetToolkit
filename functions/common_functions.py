@@ -354,6 +354,133 @@ class FBXExport:
         set_default_scene_units()
 
 
+class GLBExport:
+    """
+    GLB 导出工具类
+
+    与 FBXExport 保持一致的调用方式，尽量复用相同导出前后处理流程。
+    """
+
+    @staticmethod
+    def _export_selected(file_path: str):
+        """导出当前选中对象为 GLB"""
+        bpy.ops.export_scene.gltf(
+            filepath=file_path,
+            export_format="GLB",
+            use_selection=True,
+            export_apply=True,
+            export_animations=False,
+        )
+
+    def instance_collection(target, file_path: str, reset_transform=False):
+        """导出 Instance Collection 为 GLB"""
+        bpy.ops.object.select_all(action="DESELECT")
+
+        obj_transform = {}
+        if target.type == "EMPTY":
+            target.select_set(True)  # for use_selection=True
+            if reset_transform is True:
+                obj_transform[target] = target.matrix_world.copy()
+                target.location = (0, 0, 0)
+                target.rotation_euler = (0, 0, 0)
+                target.rotation_quaternion = Quaternion((1, 0, 0, 0))
+
+        GLBExport._export_selected(file_path)
+
+        if reset_transform is True:
+            for obj in obj_transform:
+                obj.matrix_world = obj_transform[obj]
+
+    def staticmesh(target, file_path: str, reset_transform=False):
+        """导出 StaticMesh GLB"""
+        bpy.ops.object.select_all(action="DESELECT")
+        export_objects = []
+        hidden_objects = []
+
+        if isinstance(target, bpy.types.Collection):
+            collection_type = Object.read_custom_property(target, Const.CUSTOM_TYPE)
+
+            if target.all_objects is None:
+                return
+
+            for obj in target.objects:
+                if obj.hide_get() is True:
+                    hidden_objects.append(obj)
+                    obj.hide_set(False)
+
+            for obj in target.objects:
+                if obj not in export_objects:
+                    export_objects.append(obj)
+
+            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or collection_type == Const.TYPE_BAKE_HIGH_COLLECTION:
+                for obj in target.all_objects:
+                    if obj not in export_objects:
+                        export_objects.append(obj)
+
+        elif target.type == "MESH":
+            export_objects.append(target)
+            if target.hide_get() is True:
+                hidden_objects.append(target)
+                target.hide_set(False)
+
+        obj_transform = {}
+
+        for obj in export_objects:
+            obj.hide_set(False)
+            obj.select_set(True)
+            if obj.type == "MESH":
+                Modifier.add_triangulate(obj)
+
+            if reset_transform is True:
+                obj_transform[obj] = obj.matrix_world.copy()
+                obj.location = (0, 0, 0)
+                obj.rotation_euler = (0, 0, 0)
+                obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
+
+        GLBExport._export_selected(file_path)
+
+        for obj in hidden_objects:
+            obj.hide_set(True)
+
+        if reset_transform is True:
+            for obj in obj_transform:
+                obj.matrix_world = obj_transform[obj]
+
+    def skeletal(target, file_path: str, armature_as_root=False):
+        """导出骨骼 GLB（armature_as_root 参数保留用于兼容调用）"""
+        _ = armature_as_root
+        bpy.ops.object.select_all(action="DESELECT")
+        hide_objects = []
+        export_objects = []
+
+        if isinstance(target, bpy.types.Collection):
+            for obj in target.all_objects:
+                if obj.hide_get() is True:
+                    hide_objects.append(obj)
+                if obj.type == "MESH" or obj.type == "ARMATURE":
+                    export_objects.append(obj)
+        elif target.type == "MESH":
+            if target.hide_get() is True:
+                hide_objects.append(target)
+            export_objects.append(target)
+
+        obj_transform = {}
+        for obj in export_objects:
+            obj.hide_set(False)
+            obj.select_set(True)
+            obj_transform[obj] = obj.matrix_world.copy()
+            obj.location = (0, 0, 0)
+            obj.rotation_euler = (0, 0, 0)
+            obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
+
+        GLBExport._export_selected(file_path)
+
+        for obj in hide_objects:
+            obj.hide_set(True)
+        for obj in obj_transform:
+            obj.matrix_world = obj_transform[obj]
+
+
 def filter_collections_selection(target_objects):
     """筛选所选物体所在的 collection"""
     filtered_collections = []
