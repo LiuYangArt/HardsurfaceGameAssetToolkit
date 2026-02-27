@@ -23,7 +23,7 @@ class HST_OT_SetUECollision(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -115,7 +115,7 @@ class HST_OT_FixDuplicatedMaterial(bpy.types.Operator):
     def execute(self, context):
         selected_objects = Object.get_selected()
         selected_meshes = filter_type(selected_objects, "MESH")
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"

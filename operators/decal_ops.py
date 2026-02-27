@@ -51,7 +51,7 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
 
     def execute(self, context):
         target_collections = Collection.get_selected()
-        if target_collections is None:
+        if not target_collections:
             self.report(
                 {"ERROR"},
                 "No collection selected | \n" + "没有选中的Collection",

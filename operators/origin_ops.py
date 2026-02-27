@@ -114,7 +114,7 @@ class HST_OT_AddSnapSocket(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         parameters = context.scene.hst_params
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -262,7 +262,7 @@ class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
         prop_collections = Collection.filter_hst_type(
             collections=bpy.data.collections, type="PROP", mode="INCLUDE"
         )
-        if prop_collections is None:
+        if not prop_collections:
             self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
             return {"CANCELLED"}
 
@@ -334,7 +334,7 @@ class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
         prop_collections = Collection.filter_hst_type(
             collections=bpy.data.collections, type="PROP", mode="INCLUDE"
         )
-        if prop_collections is None:
+        if not prop_collections:
             self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
             return {"CANCELLED"}
 

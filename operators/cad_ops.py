@@ -41,7 +41,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
         if bad_collection is not None and len(bad_collection.all_objects) == 0:
             bpy.data.collections.remove(bad_collection)
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -124,7 +124,7 @@ class HST_OT_CleanVertex(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
@@ -161,7 +161,7 @@ class HST_OT_FixCADObj(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"

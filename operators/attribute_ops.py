@@ -20,7 +20,7 @@ class HST_OT_MarkTintObject(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
@@ -65,7 +65,7 @@ class HST_OT_MarkAdditionalAttribute(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         selected_meshes = filter_type(selected_objects, "MESH")
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
@@ -114,7 +114,7 @@ class HST_OT_MarkNormalType(bpy.types.Operator):
         normal_type = parameters.normal_type / NORMAL_TYPE_NUM
         print(normal_type)
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"
@@ -149,7 +149,7 @@ class HST_OT_MarkSpecType(bpy.types.Operator):
         spec_type = parameters.spec_type / SPEC_TYPE_NUM
         print(spec_type)
 
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry | \n"

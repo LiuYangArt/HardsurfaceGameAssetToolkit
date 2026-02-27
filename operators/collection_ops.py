@@ -20,7 +20,7 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
     def execute(self, context):
         selected_collections = Collection.get_selected()
 
-        if selected_collections is None:
+        if not selected_collections:
             self.report(
                 {"ERROR"},
                 "No selected collection, please select collections and retry\n"
@@ -69,7 +69,7 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
         selected_objects = bpy.context.selected_objects
         selected_collections = Collection.get_selected()
 
-        if selected_collections is None:
+        if not selected_collections:
             self.report(
                 {"ERROR"},
                 "No selected collection, please select collections and retry\n"
@@ -112,15 +112,16 @@ class HST_OT_IsolateCollectionsAlt(bpy.types.Operator):
         is_local_view = Viewport.is_local_view()
         selected_collections = Collection.get_selected()
         selected_objects = Object.get_selected()
-        
-        if selected_collections is None:
-            if selected_objects is None:
-                if is_local_view:
-                    self.report({"INFO"}, "Exit local view")
-                    bpy.ops.view3d.localview(frame_selected=False)
-                else:
-                    self.report({"INFO"}, "nothing selected, please select object and retry")
-                    return {"CANCELLED"}
+
+        # Blender 5.0 下 Collection.get_selected() 在无选中时返回空列表，
+        # 这里统一按“未选中”处理，确保可以正常退出 local view。
+        if not selected_collections and not selected_objects:
+            if is_local_view:
+                self.report({"INFO"}, "Exit local view")
+                bpy.ops.view3d.localview(frame_selected=False)
+            else:
+                self.report({"INFO"}, "nothing selected, please select object and retry")
+                return {"CANCELLED"}
         else:
             store_mode = prep_select_mode()
             if selected_collections:
@@ -168,7 +169,7 @@ class HST_OT_BreakLinkFromLibrary(bpy.types.Operator):
         selected_meshes = filter_type(selected_objects, "MESH")
         count = 0
         unlinked_meshes = []
-        if selected_meshes is None:
+        if not selected_meshes:
             self.report({"INFO"}, "No meshes selected, please select mesh and retry")
             return {'CANCELLED'}
         else:
