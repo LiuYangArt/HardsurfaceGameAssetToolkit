@@ -52,7 +52,8 @@ from ..utils.mesh_attributes_utils import MeshAttributes
 from ..utils.file_utils import make_dir, normalize_path, copy_to_clip, FilePath
 from ..utils.armature_utils import Armature
 from ..utils.misc_utils import (
-    set_default_scene_units, convert_length_by_scene_unit, text_capitalize,
+    set_default_scene_units, capture_scene_unit_settings, restore_scene_unit_settings,
+    convert_length_by_scene_unit, text_capitalize,
     clean_collection_name, rename_alt, find_largest_digit, reset_transform,
     prep_select_mode, restore_select_mode
 )
@@ -274,6 +275,7 @@ class FBXExport:
 
     def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 FBX"""
+        original_unit_settings = capture_scene_unit_settings()
         bpy.context.scene.unit_settings.system = "METRIC"
         bpy.context.scene.unit_settings.scale_length = 0.01
         bpy.context.scene.unit_settings.length_unit = "METERS"
@@ -351,7 +353,7 @@ class FBXExport:
                 obj.name = armature_names[obj]
                 Armature.ops_scale_bones(obj, (0.01, 0.01, 0.01))
 
-        set_default_scene_units()
+        restore_scene_unit_settings(original_unit_settings)
 
 
 class GLBExport:

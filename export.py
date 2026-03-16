@@ -205,7 +205,6 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         # print(f"visible_colls: {visible_collections}")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
-        bpy.ops.hst.setsceneunits()  # 设置场景单位为厘米
         bpy.ops.object.select_all(action="DESELECT")
         
         # collection 类型筛查：兼容旧版 tuple 返回和新版 dict 返回

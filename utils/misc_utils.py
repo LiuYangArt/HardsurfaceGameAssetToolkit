@@ -19,6 +19,31 @@ def set_default_scene_units():
     scene.unit_settings.length_unit = 'CENTIMETERS'
 
 
+def capture_scene_unit_settings() -> dict:
+    """
+    保存当前场景单位设置，便于在临时修改后恢复。
+    """
+    scene = bpy.context.scene
+    return {
+        "system": scene.unit_settings.system,
+        "scale_length": scene.unit_settings.scale_length,
+        "length_unit": scene.unit_settings.length_unit,
+    }
+
+
+def restore_scene_unit_settings(unit_settings: dict) -> None:
+    """
+    恢复场景单位设置。
+    """
+    if not unit_settings:
+        return
+
+    scene = bpy.context.scene
+    scene.unit_settings.system = unit_settings["system"]
+    scene.unit_settings.scale_length = unit_settings["scale_length"]
+    scene.unit_settings.length_unit = unit_settings["length_unit"]
+
+
 def convert_length_by_scene_unit(length: float) -> float:
     """
     根据场景单位设置转换长度
