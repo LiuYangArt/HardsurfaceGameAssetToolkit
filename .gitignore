@@ -15,3 +15,5 @@ new_version.bat
 *.json
 *.log
 .ruff_cache
+task_plan.md
+notes.md
