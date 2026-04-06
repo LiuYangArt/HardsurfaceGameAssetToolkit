@@ -308,6 +308,11 @@ class HST_PT_Tools(bpy.types.Panel):
         box.operator("hst.mark_spec_type", icon="NODE_TEXTURE")
         box.prop(parameters, "spec_type", text="Spec Type")
         box.operator("hst.projectdecal", icon="MOD_SHRINKWRAP")
+        box.operator(
+            "hst.split_trimsheet_alpha_rects",
+            text="Split Alpha Rects",
+            icon="MOD_UVPROJECT",
+        )
         box.operator("hst.marksharp", icon="SHARPCURVE")
 
         box.operator("hst.extractucx", icon="MESH_CUBE")
