@@ -7,11 +7,19 @@
 """
 
 from array import array
+from collections import OrderedDict
+import os
 
 import bpy
 
 RunSpan = tuple[int, int, int]
 RegionBounds = dict[str, int]
+ImageCacheStamp = tuple[object, ...]
+
+_ALPHA_IMAGE_CACHE_MAX = 2
+_ALPHA_THRESHOLD_CACHE_MAX = 8
+_ALPHA_IMAGE_CACHE: OrderedDict[ImageCacheStamp, dict] = OrderedDict()
+_ALPHA_THRESHOLD_CACHE: OrderedDict[tuple[ImageCacheStamp, float], dict] = OrderedDict()
 
 
 def _collect_upstream_image_nodes(node, visited, image_nodes) -> None:
@@ -70,8 +78,26 @@ def get_linked_image_texture_node(material: bpy.types.Material):
     return image_nodes[0]
 
 
-def read_image_alpha(image: bpy.types.Image) -> tuple[int, int, int, array]:
-    """读取图片像素 buffer，供 alpha 分析使用。"""
+def _touch_cache_entry(cache: OrderedDict, key):
+    """读取缓存项并刷新 LRU 顺序。"""
+    entry = cache.get(key)
+    if entry is None:
+        return None
+
+    cache.move_to_end(key)
+    return entry
+
+
+def _store_cache_entry(cache: OrderedDict, key, value, max_size: int) -> None:
+    """写入缓存并按 LRU 限制容量。"""
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > max_size:
+        cache.popitem(last=False)
+
+
+def _get_image_size_and_channels(image: bpy.types.Image) -> tuple[int, int, int]:
+    """校验图像尺寸和通道数。"""
     if image is None:
         raise ValueError("Image texture node has no image datablock")
 
@@ -81,11 +107,105 @@ def read_image_alpha(image: bpy.types.Image) -> tuple[int, int, int, array]:
         raise ValueError("Image has invalid size")
     if channels < 4:
         raise ValueError("Image must contain an alpha channel")
+    return width, height, channels
+
+
+def _resolve_image_cache_path(image: bpy.types.Image) -> str:
+    """尽量解析出稳定的图像绝对路径。"""
+    image_path = getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")
+    if not image_path:
+        return ""
+
+    bpy_path = getattr(bpy, "path", None)
+    if bpy_path is not None and hasattr(bpy_path, "abspath"):
+        try:
+            image_path = bpy_path.abspath(image_path)
+        except Exception:
+            pass
+
+    return os.path.normcase(os.path.normpath(image_path))
+
+
+def _build_image_cache_stamp(
+    image: bpy.types.Image,
+    width: int,
+    height: int,
+    channels: int,
+) -> ImageCacheStamp | None:
+    """构造图像内容缓存键。dirty 图像不走缓存，避免内存编辑时失效不准。"""
+    if bool(getattr(image, "is_dirty", False)):
+        return None
+
+    image_pointer = image.as_pointer() if hasattr(image, "as_pointer") else id(image)
+    image_path = _resolve_image_cache_path(image)
+    packed_file = bool(getattr(image, "packed_file", None))
+
+    if image_path and not packed_file:
+        try:
+            stat = os.stat(image_path)
+            source_stamp = (image_path, stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            source_stamp = (image_path, None, None)
+    else:
+        source_stamp = (
+            image_path,
+            packed_file,
+            getattr(image, "source", ""),
+            getattr(image, "name_full", getattr(image, "name", "")),
+        )
+
+    return (image_pointer, width, height, channels, source_stamp)
+
+
+def _get_image_cache_context(
+    image: bpy.types.Image,
+) -> tuple[int, int, int, ImageCacheStamp | None]:
+    """返回图像尺寸、通道和缓存戳。"""
+    width, height, channels = _get_image_size_and_channels(image)
+    cache_stamp = _build_image_cache_stamp(image, width, height, channels)
+    return width, height, channels, cache_stamp
+
+
+def read_image_alpha(
+    image: bpy.types.Image,
+) -> tuple[int, int, array, int, ImageCacheStamp | None]:
+    """读取并提取 alpha 通道。"""
+    width, height, channels, cache_stamp = _get_image_cache_context(image)
 
     pixel_count = width * height
     pixels = array("f", [0.0]) * (pixel_count * channels)
     image.pixels.foreach_get(pixels)
-    return width, height, channels, pixels
+    alpha_values = pixels[3::channels]
+    transparent_pixel_count = sum(1 for alpha in alpha_values if alpha < 0.999)
+    return width, height, alpha_values, transparent_pixel_count, cache_stamp
+
+
+def _get_alpha_data(image: bpy.types.Image) -> dict:
+    """读取或复用图像 alpha 数据。"""
+    width, height, channels, cache_stamp = _get_image_cache_context(image)
+
+    if cache_stamp is not None:
+        cached = _touch_cache_entry(_ALPHA_IMAGE_CACHE, cache_stamp)
+        if cached is not None:
+            return cached
+
+    width, height, alpha_values, transparent_pixel_count, cache_stamp = read_image_alpha(image)
+    alpha_data = {
+        "width": width,
+        "height": height,
+        "alpha_values": alpha_values,
+        "transparent_pixel_count": transparent_pixel_count,
+        "cache_stamp": cache_stamp,
+    }
+    if cache_stamp is not None:
+        _store_cache_entry(
+            _ALPHA_IMAGE_CACHE,
+            cache_stamp,
+            alpha_data,
+            _ALPHA_IMAGE_CACHE_MAX,
+        )
+
+    return alpha_data
 
 
 def _find_root(parents: list[int], index: int) -> int:
@@ -163,27 +283,22 @@ def _extend_region(
 
 
 def _build_row_runs(
-    pixels: array,
+    alpha_values: array,
     width: int,
     height: int,
-    channels: int,
     alpha_threshold: float,
-) -> tuple[list[list[tuple[int, int, int]]], int, bool]:
+) -> tuple[list[list[RunSpan]], bool]:
     """按行提取实体像素 run，避免逐像素 BFS。"""
     row_runs: list[list[RunSpan]] = []
-    transparent_pixel_count = 0
     found_solid = False
 
     for y in range(height):
         runs: list[RunSpan] = []
-        row_base = y * width * channels
+        row_base = y * width
         x = 0
 
         while x < width:
-            alpha = pixels[row_base + x * channels + 3]
-            if alpha < 0.999:
-                transparent_pixel_count += 1
-
+            alpha = alpha_values[row_base + x]
             if alpha <= alpha_threshold:
                 x += 1
                 continue
@@ -194,9 +309,7 @@ def _build_row_runs(
             x += 1
 
             while x < width:
-                alpha = pixels[row_base + x * channels + 3]
-                if alpha < 0.999:
-                    transparent_pixel_count += 1
+                alpha = alpha_values[row_base + x]
                 if alpha <= alpha_threshold:
                     break
 
@@ -210,17 +323,11 @@ def _build_row_runs(
 
         row_runs.append(runs)
 
-    return row_runs, transparent_pixel_count, found_solid
+    return row_runs, found_solid
 
 
-def _extract_regions_from_row_runs(
-    row_runs: list[list[RunSpan]],
-    min_region_pixels: int,
-    padding_pixels: int,
-    width: int,
-    height: int,
-) -> tuple[list[RegionBounds], int]:
-    """基于每行 run 计算 8 连通域包围盒。"""
+def _extract_region_bounds_from_row_runs(row_runs: list[list[RunSpan]]) -> list[RegionBounds]:
+    """基于每行 run 计算 8 连通域原始包围盒。"""
     parents: list[int] = []
     region_stats: list[RegionBounds] = []
     previous_runs: list[RunSpan] = []
@@ -278,11 +385,78 @@ def _extract_regions_from_row_runs(
 
         previous_runs = current_runs
 
-    ignored_small_regions = 0
-    regions = []
+    region_bounds = []
     for region_index, region in enumerate(region_stats):
         if _find_root(parents, region_index) != region_index:
             continue
+
+        region_bounds.append(dict(region))
+
+    return region_bounds
+
+
+def _get_threshold_cache_key(cache_stamp: ImageCacheStamp | None, alpha_threshold: float):
+    """把阈值归一化后作为缓存键的一部分。"""
+    if cache_stamp is None:
+        return None
+    return cache_stamp, round(float(alpha_threshold), 6)
+
+
+def _get_prepared_alpha_regions(image: bpy.types.Image, alpha_threshold: float) -> dict:
+    """准备阈值相关的基础连通域，供多次参数调整复用。"""
+    alpha_data = _get_alpha_data(image)
+    transparent_pixel_count = alpha_data["transparent_pixel_count"]
+    if transparent_pixel_count == 0:
+        raise ValueError("Image alpha is fully opaque")
+
+    threshold_cache_key = _get_threshold_cache_key(
+        alpha_data["cache_stamp"],
+        alpha_threshold,
+    )
+    if threshold_cache_key is not None:
+        cached = _touch_cache_entry(_ALPHA_THRESHOLD_CACHE, threshold_cache_key)
+        if cached is not None:
+            return cached
+
+    row_runs, found_solid = _build_row_runs(
+        alpha_values=alpha_data["alpha_values"],
+        width=alpha_data["width"],
+        height=alpha_data["height"],
+        alpha_threshold=alpha_threshold,
+    )
+    if not found_solid:
+        raise ValueError("No alpha region is above the current threshold")
+
+    prepared = {
+        "width": alpha_data["width"],
+        "height": alpha_data["height"],
+        "transparent_pixel_count": transparent_pixel_count,
+        "region_bounds": _extract_region_bounds_from_row_runs(row_runs),
+    }
+    if threshold_cache_key is not None:
+        _store_cache_entry(
+            _ALPHA_THRESHOLD_CACHE,
+            threshold_cache_key,
+            prepared,
+            _ALPHA_THRESHOLD_CACHE_MAX,
+        )
+
+    return prepared
+
+
+def _finalize_regions(
+    region_bounds: list[RegionBounds],
+    min_region_pixels: int,
+    padding_pixels: int,
+    merge_gap_pixels: int,
+    width: int,
+    height: int,
+) -> tuple[list[RegionBounds], int]:
+    """把基础连通域转换为当前参数下的输出矩形。"""
+    ignored_small_regions = 0
+    regions = []
+
+    for region in region_bounds:
         if region["pixel_count"] < min_region_pixels:
             ignored_small_regions += 1
             continue
@@ -297,6 +471,8 @@ def _extract_regions_from_row_runs(
             }
         )
 
+    regions = merge_nearby_regions(regions, merge_gap_pixels=merge_gap_pixels)
+    regions.sort(key=lambda region: (-region["max_y"], region["min_x"]))
     return regions, ignored_small_regions
 
 
@@ -312,41 +488,27 @@ def find_alpha_regions(
 
     返回值中的 min/max 坐标均为像素索引，且 max 为包含边界。
     """
-    width, height, channels, pixels = read_image_alpha(image)
+    prepared = _get_prepared_alpha_regions(image, alpha_threshold)
     padding_pixels = max(0, int(padding_pixels))
     min_region_pixels = max(1, int(min_region_pixels))
     merge_gap_pixels = max(0, int(merge_gap_pixels))
 
-    row_runs, transparent_pixel_count, found_solid = _build_row_runs(
-        pixels=pixels,
-        width=width,
-        height=height,
-        channels=channels,
-        alpha_threshold=alpha_threshold,
-    )
-
-    if transparent_pixel_count == 0:
-        raise ValueError("Image alpha is fully opaque")
-    if not found_solid:
-        raise ValueError("No alpha region is above the current threshold")
-
-    regions, ignored_small_regions = _extract_regions_from_row_runs(
-        row_runs=row_runs,
+    regions, ignored_small_regions = _finalize_regions(
+        region_bounds=prepared["region_bounds"],
         min_region_pixels=min_region_pixels,
         padding_pixels=padding_pixels,
-        width=width,
-        height=height,
+        merge_gap_pixels=merge_gap_pixels,
+        width=prepared["width"],
+        height=prepared["height"],
     )
-    regions = merge_nearby_regions(regions, merge_gap_pixels=merge_gap_pixels)
-    regions.sort(key=lambda region: (-region["max_y"], region["min_x"]))
 
     return {
         "image": image,
-        "width": width,
-        "height": height,
+        "width": prepared["width"],
+        "height": prepared["height"],
         "regions": regions,
         "ignored_small_regions": ignored_small_regions,
-        "transparent_pixel_count": transparent_pixel_count,
+        "transparent_pixel_count": prepared["transparent_pixel_count"],
     }
 
 

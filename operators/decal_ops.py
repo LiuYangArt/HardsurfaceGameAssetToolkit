@@ -345,6 +345,7 @@ def _create_rect_object(
     mesh_data = bpy.data.meshes.new(object_name)
     mesh_data.from_pydata(local_vertices, [], [(0, 1, 2, 3)])
     mesh_data.update()
+    mesh_data[HST_PROP] = "DECAL"
 
     if target_material is not None:
         mesh_data.materials.append(target_material)
@@ -556,7 +557,7 @@ class HST_OT_SplitTrimsheetAlphaRects(bpy.types.Operator):
 
         created_objects = []
         for index, region in enumerate(regions, start=1):
-            object_name = f"{source_object.name}_decal_{str(index).zfill(3)}"
+            object_name = f"{source_object.name}_Decal_{str(index).zfill(3)}"
             rect_object = _create_rect_object(
                 source_object=source_object,
                 output_collection=output_collection,
