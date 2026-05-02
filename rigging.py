@@ -1,5 +1,6 @@
 import bpy
 import re
+from math import ceil, isfinite
 
 from mathutils import Vector
 
@@ -443,6 +444,48 @@ class HST_OT_SetSocketBoneForUE(bpy.types.Operator):
         return {"FINISHED"}
 
 
+
+
+class HST_OT_SetPlaybackEndToActionLength(bpy.types.Operator):
+    bl_idname = "hst.set_playback_end_to_action_length"
+    bl_label = "Match Playback End To Action"
+    bl_description = "根据当前动画 Action 的最后关键帧，设置播放结束帧"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        active_object = context.active_object
+        if active_object is None or active_object.animation_data is None:
+            return False
+        return active_object.animation_data.action is not None
+
+    def invoke(self, context, event):
+        action = context.active_object.animation_data.action
+        if action is None:
+            self.report({'WARNING'}, "当前激活对象没有可用的 Action")
+            return {'CANCELLED'}
+        return self.execute(context)
+
+    def execute(self, context):
+        active_object = context.active_object
+        animation_data = active_object.animation_data
+        action = animation_data.action if animation_data else None
+
+        if action is None:
+            self.report({'WARNING'}, "当前激活对象没有可用的 Action")
+            return {'CANCELLED'}
+
+        curve_frame_range = action.curve_frame_range
+        last_keyframe = curve_frame_range[1]
+
+        if not isfinite(last_keyframe):
+            self.report({'WARNING'}, "当前 Action 的关键帧范围无效")
+            return {'CANCELLED'}
+
+        end_frame = max(1, ceil(last_keyframe))
+        context.scene.frame_end = end_frame
+        self.report({'INFO'}, f"已将播放结束帧设置为 {end_frame}（Action: {action.name}）")
+        return {"FINISHED"}
 
 class HST_OT_SelectBoneInOutliner(bpy.types.Operator):
     bl_idname = "hst.select_bone_in_outliner"

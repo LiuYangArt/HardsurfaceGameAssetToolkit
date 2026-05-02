@@ -377,6 +377,8 @@ class HST_PT_Skeletel(bpy.types.Panel):
         box.operator(
             "hst.quickweight", icon="MOD_VERTEX_WEIGHT")
         box.operator(
+            "hst.set_playback_end_to_action_length", icon="TIME")
+        box.operator(
             "hst.rename_bones", icon="SORTALPHA")
         box.operator(
             "hst.rename_tree_bones", icon="SORTSIZE")
