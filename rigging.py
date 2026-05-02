@@ -373,68 +373,72 @@ class HST_OT_SetSocketBoneForUE(bpy.types.Operator):
         name="Socket Type",
         description="Socket 类型",
         items=[
-            ('ATTACH', "Attach", "Attach Component"),
-            ('SPAWN', "SPAWN", "Spawn Actor")
+            ('ATTACH', "Attach Component", "UE attach socket: -Y forward, Z up"),
+            ('SPAWN', "Projectile / FX Socket", "UE projectile socket: X forward, Z up"),
 
         ],
         default="ATTACH",)
-    
-    def execute(self, context):
+
+    def _get_selected_socket_bones(self, context):
         armature = context.active_object
         if not armature or armature.type != 'ARMATURE':
             self.report({'WARNING'}, "Active object is not an Armature.")
-            return {'CANCELLED'}
+            return None, None
 
         if armature.mode != 'EDIT':
             self.report({'WARNING'}, "Please run this operator in Edit Mode.")
-            return {'CANCELLED'}
+            return None, None
 
         selected_bones = context.selected_editable_bones
         if not selected_bones:
             self.report({'WARNING'}, "No bones selected in Edit Mode.")
+            return None, None
+
+        return armature, selected_bones
+
+    def invoke(self, context, event):
+        armature, selected_bones = self._get_selected_socket_bones(context)
+        if armature is None or selected_bones is None:
             return {'CANCELLED'}
 
-        # Define target axes in world space
-        # UE's X-forward, Z-up corresponds to Blender's Y-forward, Z-up
-        world_y = Vector((0.0, 1.0, 0.0))
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+
+        box_column.label(text="Socket Type For UE")
+        box_column.prop(self, "socket_type", expand=True)
+
+    def execute(self, context):
+        armature, selected_bones = self._get_selected_socket_bones(context)
+        if armature is None or selected_bones is None:
+            return {'CANCELLED'}
+
+        # “向前”统一指 Blender 世界空间 -Y。
+        # Attach socket 需要本地 -Y 朝前，因此骨骼主轴 +Y 设为世界 +Y。
+        # Projectile / FX socket 需要本地 X 朝前，且本地 Z 朝上，
+        # 因此骨骼主轴 +Y 设为世界 +X，再用 align_roll 把本地 Z 对齐到世界 +Z。
+        world_pos_y = Vector((0.0, 1.0, 0.0))
+        world_pos_x = Vector((1.0, 0.0, 0.0))
+        world_pos_z = Vector((0.0, 0.0, 1.0))
 
         for bone in selected_bones:
-            # 1. Rename bone if necessary
             if not bone.name.lower().startswith("socket_"):
                 bone.name = f"SOCKET_{bone.name}"
 
-            # 2. Re-orient the bone
-            # Keep the bone's head position, but change its orientation and length
             bone_length = bone.length
             head_pos = bone.head.copy()
             bone.display_type = 'STICK'
 
-
             if self.socket_type == 'ATTACH':
-                # ATTACH: Bone Y-axis (primary) aligns with World Y (UE Forward)
-                # Bone Z-axis aligns with World Z (UE Up)
-                bone.tail = head_pos + world_y * bone_length
-                bone.roll = 0.0
+                bone.tail = head_pos + world_pos_y * bone_length
             elif self.socket_type == 'SPAWN':
-                # SPAWN: Bone X-axis aligns with World Y (UE Forward)
-                # Bone Z-axis aligns with World Z (UE Up)
-                # This means the bone's primary axis (Y) must align with World -X
-                bone_direction = Vector((-1.0, 0.0, 0.0))
-                bone.tail = head_pos + bone_direction * bone_length
-                bone.roll = 0.0
-            
-            # Recalculate bone matrix after changes
-            armature.data.update_tag()
-            bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.ops.object.mode_set(mode='EDIT')
+                bone.tail = head_pos + world_pos_x * bone_length
 
+            bone.align_roll(world_pos_z)
 
-        # 3. Set armature display for socket visibility
-        # Switch to object mode to apply display settings
-        # bpy.ops.object.mode_set(mode='OBJECT')
-        # set_blender_armature_display(armature, display_type='STICK')
-        # armature.data.show_names = True
-        
         self.report({'INFO'}, f"Processed {len(selected_bones)} bones as {self.socket_type} sockets.")
         return {"FINISHED"}
 
