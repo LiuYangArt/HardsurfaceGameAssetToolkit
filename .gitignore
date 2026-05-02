@@ -3,7 +3,7 @@ __pycache__/**
 **.blend1
 makerelease.bat
 _backup/**
-.clinerules/*
+.clinerules/*n
 .cursor/*
 memory-bank/*
 *.code-workspace

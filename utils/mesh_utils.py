@@ -12,6 +12,17 @@ import math
 import heapq
 from mathutils import Vector
 
+from ..const import (
+    CURVATURE_CONCAVE_ACCUM_RAW_ATTR,
+    CURVATURE_CONCAVE_RAW_ATTR,
+    CURVATURE_CONVEX_ACCUM_RAW_ATTR,
+    CURVATURE_CONVEX_RAW_ATTR,
+    CURVATURE_MAGNITUDE_ACCUM_RAW_ATTR,
+    CURVATURE_MAGNITUDE_RAW_ATTR,
+    CURVATURE_SIGNED_ACCUM_RAW_ATTR,
+    CURVATURE_SIGNED_RAW_ATTR,
+)
+
 
 def mark_sharp_edges_by_split_normal(obj) -> None:
     """
@@ -73,6 +84,61 @@ def are_normals_different(normal_a, normal_b, threshold_angle_degrees: float = 5
     return dot_product < threshold_cosine
 
 
+def get_sharp_edge_indices_by_split_normal(obj) -> set[int]:
+    """Collect sharp edge indices from split normals without mutating shading."""
+    bm = bmesh.new()
+    mesh = obj.data
+    bm.from_mesh(mesh)
+
+    bm.edges.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    loops = mesh.loops
+
+    split_edge_indices = set()
+
+    for vert in bm.verts:
+        for edge in vert.link_edges:
+            loops_for_vert_and_edge = []
+            for face in edge.link_faces:
+                for loop in face.loops:
+                    if loop.vert == vert:
+                        loops_for_vert_and_edge.append(loop)
+            if len(loops_for_vert_and_edge) != 2:
+                continue
+
+            loop1, loop2 = loops_for_vert_and_edge
+            normal1 = loops[loop1.index].normal
+            normal2 = loops[loop2.index].normal
+
+            if are_normals_different(normal1, normal2):
+                split_edge_indices.add(edge.index)
+
+    bm.free()
+    return split_edge_indices
+
+
+def get_sharp_edge_indices_by_angle(mesh, sharp_angle: float = 0.08) -> set[int]:
+    """Collect sharp edge indices by face angle without writing edge flags."""
+    bm = bmesh.new()
+    mesh_data = mesh.data
+    bm.from_mesh(mesh_data)
+    bm.edges.ensure_lookup_table()
+
+    sharp_edge_indices = set()
+    for edge in bm.edges:
+        if len(edge.link_faces) != 2:
+            continue
+        try:
+            if edge.calc_face_angle() >= sharp_angle:
+                sharp_edge_indices.add(edge.index)
+        except ValueError:
+            continue
+
+    bm.free()
+    return sharp_edge_indices
+
+
 def mark_sharp_edge_by_angle(mesh, sharp_angle: float = 0.08) -> None:
     """
     根据角度标记锐边
@@ -81,16 +147,9 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle: float = 0.08) -> None:
         mesh: 目标 mesh 对象
         sharp_angle: 锐边角度阈值（弧度）
     """
-    bm = bmesh.new()
     mesh_data = mesh.data
-    bm.from_mesh(mesh_data)
-
-    to_mark_sharp = []
+    to_mark_sharp = get_sharp_edge_indices_by_angle(mesh, sharp_angle=sharp_angle)
     has_sharp_edge = False
-
-    for edge in bm.edges:
-        if edge.calc_face_angle() >= sharp_angle:
-            to_mark_sharp.append(edge.index)
 
     for attributes in mesh_data.attributes:
         if "sharp_edge" in attributes.name:
@@ -99,15 +158,9 @@ def mark_sharp_edge_by_angle(mesh, sharp_angle: float = 0.08) -> None:
 
     if has_sharp_edge is False:
         mesh_data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
-    
-    for edge in mesh_data.edges:
-        if edge.index in to_mark_sharp:
-            edge.use_edge_sharp = True
-        else:
-            edge.use_edge_sharp = False
 
-    bm.clear()
-    bm.free()
+    for edge in mesh_data.edges:
+        edge.use_edge_sharp = edge.index in to_mark_sharp
 
 
 def mark_convex_edges(mesh) -> None:
@@ -157,6 +210,8 @@ def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
     return has_sharp
 
 
+
+
 class Mesh:
     """Mesh 几何操作工具类"""
 
@@ -185,6 +240,268 @@ class Mesh:
         
         bm.free()
         return check_result
+
+    @staticmethod
+    def _angle_between_vectors_radians(vector_a: Vector, vector_b: Vector) -> float:
+        """计算两个向量之间的夹角（弧度）"""
+        if vector_a.length < 1e-8 or vector_b.length < 1e-8:
+            return 0.0
+
+        dot = max(-1.0, min(1.0, vector_a.normalized().dot(vector_b.normalized())))
+        return math.acos(dot)
+
+    @staticmethod
+    def _get_face_loop_for_vertex(face, vert_index: int):
+        """在 face 中查找指定顶点对应的 loop。"""
+        for loop in face.loops:
+            if loop.vert.index == vert_index:
+                return loop
+        return None
+
+    @staticmethod
+    def _build_corner_signal_adjacency(bm, loop_count: int):
+        """构建用于 corner signal 累积的邻接图。"""
+        adjacency = [set() for _ in range(loop_count)]
+
+        for face in bm.faces:
+            loops = list(face.loops)
+            loop_total = len(loops)
+            for loop_index, loop in enumerate(loops):
+                current = loop.index
+                prev_loop = loops[(loop_index - 1) % loop_total].index
+                next_loop = loops[(loop_index + 1) % loop_total].index
+                adjacency[current].add(prev_loop)
+                adjacency[current].add(next_loop)
+
+        for edge in bm.edges:
+            if len(edge.link_faces) != 2:
+                continue
+
+            for vert in edge.verts:
+                edge_loops = []
+                for face in edge.link_faces:
+                    loop = Mesh._get_face_loop_for_vertex(face, vert.index)
+                    if loop is not None:
+                        edge_loops.append(loop.index)
+
+                if len(edge_loops) == 2:
+                    loop_a, loop_b = edge_loops
+                    adjacency[loop_a].add(loop_b)
+                    adjacency[loop_b].add(loop_a)
+
+        return adjacency
+
+    @staticmethod
+    def _accumulate_corner_channel(values, adjacency, max_depth: int = 3):
+        """Blur a corner signal over the local adjacency graph to approximate bevel-area coverage."""
+        loop_count = len(values)
+        accumulated = [0.0] * loop_count
+        decay_by_depth = {
+            0: 1.0,
+            1: 0.75,
+            2: 0.5,
+            3: 0.3,
+        }
+        fallback_decay = decay_by_depth[max(decay_by_depth)]
+
+        for target_index in range(loop_count):
+            visited = {target_index}
+            frontier = {target_index}
+            total = 0.0
+            weight_total = 0.0
+
+            for depth in range(0, max_depth + 1):
+                if not frontier:
+                    break
+
+                depth_weight = decay_by_depth.get(depth, fallback_decay)
+                for loop_index in frontier:
+                    total += values[loop_index] * depth_weight
+                    weight_total += depth_weight
+
+                next_frontier = set()
+                for loop_index in frontier:
+                    for neighbor_index in adjacency[loop_index]:
+                        if neighbor_index in visited:
+                            continue
+                        visited.add(neighbor_index)
+                        next_frontier.add(neighbor_index)
+
+                frontier = next_frontier
+
+            if weight_total > 1e-8:
+                accumulated[target_index] = total / weight_total
+
+        return accumulated
+
+    @staticmethod
+    def mark_curvature_corner_attributes(mesh: bpy.types.Object) -> dict:
+        """
+        为 mesh 生成 CORNER 域的 raw curvature signal attributes。
+
+        原始信号使用 split/custom normals 的 corner normal 差值作为强度，
+        并使用 edge 的凸凹方向作为 signed curvature 的正负号来源。
+
+        Args:
+            mesh: 目标 mesh 对象
+
+        Returns:
+            dict: 统计信息
+        """
+        from .mesh_attributes_utils import MeshAttributes
+
+        stats = {
+            "mesh_name": getattr(mesh, "name", "Unknown"),
+            "corners": 0,
+            "edge_samples": 0,
+            "nonzero_corners": 0,
+            "convex_corners": 0,
+            "concave_corners": 0,
+            "max_magnitude": 0.0,
+            "nonzero_accum_corners": 0,
+            "max_accum_magnitude": 0.0,
+        }
+
+        if mesh.type != "MESH":
+            return stats
+
+        mesh_data = mesh.data
+        loop_count = len(mesh_data.loops)
+        stats["corners"] = loop_count
+
+        MeshAttributes.ensure_float_corner_attributes(
+            mesh,
+            [
+                CURVATURE_SIGNED_RAW_ATTR,
+                CURVATURE_MAGNITUDE_RAW_ATTR,
+                CURVATURE_CONVEX_RAW_ATTR,
+                CURVATURE_CONCAVE_RAW_ATTR,
+                CURVATURE_SIGNED_ACCUM_RAW_ATTR,
+                CURVATURE_MAGNITUDE_ACCUM_RAW_ATTR,
+                CURVATURE_CONVEX_ACCUM_RAW_ATTR,
+                CURVATURE_CONCAVE_ACCUM_RAW_ATTR,
+            ],
+            default_value=0.0,
+        )
+
+        if loop_count == 0 or len(mesh_data.polygons) == 0:
+            return stats
+
+        if hasattr(mesh_data, "calc_normals_split"):
+            try:
+                mesh_data.calc_normals_split()
+            except Exception:
+                pass
+
+        positive_sums = [0.0] * loop_count
+        negative_sums = [0.0] * loop_count
+        weight_sums = [0.0] * loop_count
+
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(mesh_data)
+            bm.faces.ensure_lookup_table()
+            bm.edges.ensure_lookup_table()
+            adjacency = Mesh._build_corner_signal_adjacency(bm, loop_count)
+
+            for edge in bm.edges:
+                if len(edge.link_faces) != 2:
+                    continue
+
+                try:
+                    signed_face_angle = edge.calc_face_angle_signed()
+                except ValueError:
+                    continue
+
+                sign = 0.0
+                if signed_face_angle > 1e-6 or edge.is_convex:
+                    sign = 1.0
+                elif signed_face_angle < -1e-6:
+                    sign = -1.0
+                else:
+                    continue
+
+                edge_weight = max(edge.calc_length(), 1e-8)
+                face_a, face_b = edge.link_faces
+
+                for vert in edge.verts:
+                    loop_a = Mesh._get_face_loop_for_vertex(face_a, vert.index)
+                    loop_b = Mesh._get_face_loop_for_vertex(face_b, vert.index)
+                    if loop_a is None or loop_b is None:
+                        continue
+
+                    normal_a = Vector(mesh_data.loops[loop_a.index].normal)
+                    normal_b = Vector(mesh_data.loops[loop_b.index].normal)
+                    normal_angle = Mesh._angle_between_vectors_radians(normal_a, normal_b)
+                    if normal_angle <= 1e-8:
+                        continue
+
+                    contribution = normal_angle * edge_weight
+                    target_values = positive_sums if sign > 0.0 else negative_sums
+
+                    for loop_index in (loop_a.index, loop_b.index):
+                        target_values[loop_index] += contribution
+                        weight_sums[loop_index] += edge_weight
+
+                    stats["edge_samples"] += 1
+
+            signed_values = [0.0] * loop_count
+            magnitude_values = [0.0] * loop_count
+            convex_values = [0.0] * loop_count
+            concave_values = [0.0] * loop_count
+
+            for loop_index, weight_sum in enumerate(weight_sums):
+                if weight_sum <= 1e-8:
+                    continue
+
+                convex_value = positive_sums[loop_index] / weight_sum
+                concave_value = negative_sums[loop_index] / weight_sum
+                signed_value = convex_value - concave_value
+                magnitude_value = convex_value + concave_value
+
+                signed_values[loop_index] = signed_value
+                magnitude_values[loop_index] = magnitude_value
+                convex_values[loop_index] = convex_value
+                concave_values[loop_index] = concave_value
+
+                if magnitude_value > 1e-8:
+                    stats["nonzero_corners"] += 1
+                    stats["max_magnitude"] = max(stats["max_magnitude"], magnitude_value)
+                if convex_value > 1e-8:
+                    stats["convex_corners"] += 1
+                if concave_value > 1e-8:
+                    stats["concave_corners"] += 1
+
+            convex_accum_values = Mesh._accumulate_corner_channel(convex_values, adjacency, max_depth=3)
+            concave_accum_values = Mesh._accumulate_corner_channel(concave_values, adjacency, max_depth=3)
+            signed_accum_values = [0.0] * loop_count
+            magnitude_accum_values = [0.0] * loop_count
+
+            for loop_index in range(loop_count):
+                signed_accum_value = convex_accum_values[loop_index] - concave_accum_values[loop_index]
+                magnitude_accum_value = convex_accum_values[loop_index] + concave_accum_values[loop_index]
+                signed_accum_values[loop_index] = signed_accum_value
+                magnitude_accum_values[loop_index] = magnitude_accum_value
+
+                if magnitude_accum_value > 1e-8:
+                    stats["nonzero_accum_corners"] += 1
+                    stats["max_accum_magnitude"] = max(
+                        stats["max_accum_magnitude"],
+                        magnitude_accum_value,
+                    )
+
+            MeshAttributes.write_values(mesh, CURVATURE_SIGNED_RAW_ATTR, signed_values)
+            MeshAttributes.write_values(mesh, CURVATURE_MAGNITUDE_RAW_ATTR, magnitude_values)
+            MeshAttributes.write_values(mesh, CURVATURE_CONVEX_RAW_ATTR, convex_values)
+            MeshAttributes.write_values(mesh, CURVATURE_CONCAVE_RAW_ATTR, concave_values)
+            MeshAttributes.write_values(mesh, CURVATURE_SIGNED_ACCUM_RAW_ATTR, signed_accum_values)
+            MeshAttributes.write_values(mesh, CURVATURE_MAGNITUDE_ACCUM_RAW_ATTR, magnitude_accum_values)
+            MeshAttributes.write_values(mesh, CURVATURE_CONVEX_ACCUM_RAW_ATTR, convex_accum_values)
+            MeshAttributes.write_values(mesh, CURVATURE_CONCAVE_ACCUM_RAW_ATTR, concave_accum_values)
+        finally:
+            bm.free()
+        return stats
+
 
     @staticmethod
     def clean_lonely_verts(mesh: bpy.types.Object):
@@ -1167,4 +1484,7 @@ def check_non_solid_meshes(meshes: list) -> list:
         return bad_meshes
     elif bad_meshes == 0:
         return None
+
+
+
 

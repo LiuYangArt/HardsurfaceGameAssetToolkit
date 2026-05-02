@@ -221,6 +221,9 @@ class HST_PT_MainPanel(bpy.types.Panel):
         box_column.operator(
             "hst.fixcadobj", text="Fix CAD Obj", icon="MESH_CUBE"
         )
+        box_column.operator(
+            "hst.mark_curvature_raw", text="Mark Curvature Raw", icon="MOD_SMOOTH"
+        )
         uv_mode_row = box_column.row(align=True)
         uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
