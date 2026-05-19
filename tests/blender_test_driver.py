@@ -92,48 +92,48 @@ def make_collection(name: str):
     return collection
 
 
+def ensure_object_in_collection(obj, collection):
+    """确保对象只链接到指定 Collection。
+
+    Args:
+        obj: 目标 Blender Object。
+        collection: 目标 Blender Collection。
+    """
+    if collection in obj.users_collection:
+        return obj
+
+    for existing in list(obj.users_collection):
+        existing.objects.unlink(obj)
+    collection.objects.link(obj)
+    return obj
+
+
 def make_test_mesh(name: str, collection, location=(0.0, 0.0, 0.0)):
     bpy.ops.mesh.primitive_cube_add(location=location)
     obj = bpy.context.active_object
     obj.name = name
-    if collection not in obj.users_collection:
-        for existing in list(obj.users_collection):
-            existing.objects.unlink(obj)
-        collection.objects.link(obj)
-    return obj
+    return ensure_object_in_collection(obj, collection)
 
 
 def make_plane(name: str, collection, location=(0.0, 0.0, 0.0)):
     bpy.ops.mesh.primitive_plane_add(location=location)
     obj = bpy.context.active_object
     obj.name = name
-    if collection not in obj.users_collection:
-        for existing in list(obj.users_collection):
-            existing.objects.unlink(obj)
-        collection.objects.link(obj)
-    return obj
+    return ensure_object_in_collection(obj, collection)
 
 
 def make_empty(name: str, collection, location=(0.0, 0.0, 0.0)):
     bpy.ops.object.empty_add(type='PLAIN_AXES', location=location)
     obj = bpy.context.active_object
     obj.name = name
-    if collection not in obj.users_collection:
-        for existing in list(obj.users_collection):
-            existing.objects.unlink(obj)
-        collection.objects.link(obj)
-    return obj
+    return ensure_object_in_collection(obj, collection)
 
 
 def make_armature(name: str, collection):
     bpy.ops.object.armature_add()
     armature = bpy.context.active_object
     armature.name = name
-    if collection not in armature.users_collection:
-        for existing in list(armature.users_collection):
-            existing.objects.unlink(armature)
-        collection.objects.link(armature)
-    return armature
+    return ensure_object_in_collection(armature, collection)
 
 
 def select_vertices_in_edit_mode(obj):
