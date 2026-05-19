@@ -64,3 +64,7 @@ python .\tools\run_blender_tests.py
 - bake collection / export / decal / rigging smoke tests
 - headless 导出产物断言
 - GitHub Actions 中的 Blender smoke job
+## 规范
+
+- 测试新增/维护规范：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/TESTING_POLICY.md`
+- 以后新功能、修 bug、Blender 升级兼容，默认按该规范补 smoke/regression 测试。

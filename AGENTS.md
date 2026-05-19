@@ -48,5 +48,13 @@
 - 统一入口命令：`python .\tools\run_blender_tests.py`
 - 若需要读取最近一次结果，查看：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/artifacts/results.json`
 
+## 测试规范
+- 测试规范文档：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/TESTING_POLICY.md`
+- 测试说明文档：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/README.md`
+- 新增功能、修 bug、做 Blender 升级兼容时，默认按 `tests/TESTING_POLICY.md` 补 smoke test 或 regression test。
+- 已修过的 bug 默认补回归；可 headless 的新 operator 默认补 smoke test。
+- 新增测试统一放到：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/blender_test_driver.py`
+- 功能改动若影响核心流程，完成前默认跑：`python .\tools\run_blender_tests.py`
+
 ## 验证
 - 完成修改前，优先运行最小必要的验证命令；无法验证时明确说明原因。
