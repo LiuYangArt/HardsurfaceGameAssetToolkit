@@ -41,5 +41,12 @@
 - 除非用户明确要求，或该工具在执行前必须先确认/输入参数，否则不要使用 `invoke_props_dialog`、`invoke_props_popup`、`invoke_confirm` 这类阻塞式交互。
 - 如果项目内已有对应的 scene/global 参数同步模式，新增参数时应优先沿用，不要单独发明另一套交互或存储方式。
 
+
+## Agent 调用入口
+- 本项目内置回归测试 skill：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/agent-skills/hst-blender-regression/SKILL.md`
+- 当用户提到“回归测试 / Blender 升级检查 / 哪些功能坏了 / smoke test / headless 测试”时，优先使用该 skill。
+- 统一入口命令：`python .\tools\run_blender_tests.py`
+- 若需要读取最近一次结果，查看：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/artifacts/results.json`
+
 ## 验证
 - 完成修改前，优先运行最小必要的验证命令；无法验证时明确说明原因。

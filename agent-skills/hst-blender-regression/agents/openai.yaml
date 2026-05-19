@@ -1,0 +1,3 @@
+display_name: HST Blender Regression
+short_description: Run headless Blender regression tests for this addon.
+default_prompt: Run the HardsurfaceGameAssetToolkit Blender regression suite, summarize pass/fail by test case, and point out which feature areas broke.

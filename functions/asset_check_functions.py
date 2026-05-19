@@ -126,7 +126,7 @@ def check_prop_object(object):
     print("checking " + object.name + " in " + prop_collection.name + " for export")
     object_type=Object.get_hst_type(object)
     if object.type == "MESH":
-        if not object_type==Const.TYPE_UCX:
+        if object_type != "UCX":
             result = check_prop_staticmesh(object)
         else:
             result = check_UCX(object)
@@ -142,7 +142,7 @@ def check_prop_object(object):
 def check_prop_staticmesh(object):
     if object.type == "MESH":
         object_type=Object.get_hst_type(object)
-        if object_type==Const.TYPE_STATIC_MESH:
+        if object_type == "STATICMESH":
             vertex_color_check = False
             material_check = False
             uv0_check = False
@@ -232,9 +232,9 @@ def check_snap_socket(object):
     object_type=Object.get_hst_type(object)
     if object.type == "EMPTY":
         match object_type:
-            case Const.TYPE_SOCKET:
+            case "SOCKET":
                 result = CHECK_OK
-            case Const.TYPE_ORIGIN:
+            case "ORIGIN":
                 result = CHECK_OK
     # if object.type == "EMPTY":
     #     if object.name.startswith(SOCKET_PREFIX):

@@ -66,7 +66,7 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
         if len(collections) > 0:
             for collection in collections:
                 collection_type = Collection.get_hst_type(collection)
-                if collection_type == Const.TYPE_DECAL_COLLECTION:
+                if collection_type == "DECAL":
                     self.report(
                         {"ERROR"},
                         "Selected collections has decal collection, operation stop\n"

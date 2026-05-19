@@ -102,6 +102,26 @@ def rename_meshes(target_objects, new_name: str) -> None:
             object.name = new_name + "_" + str(index + 1).zfill(3)
 
 
+def normalize_object_hst_type(type_value: str):
+    """统一 Object 类型标记，兼容旧版本枚举。"""
+    if type_value is None:
+        return None
+
+    legacy_map = {
+        "StaticMesh": "STATICMESH",
+        "SkeletalMesh": "SKELETALMESH",
+        "Skeletal": "SKELETAL",
+        "Proxy": "PROXY",
+        "Decal": "DECAL",
+        "Socket": "SOCKET",
+        "Asset_Origin": "ORIGIN",
+        "Placeholder": "PLACEHOLDER",
+        "BakeLow": "BAKE_LOW",
+        "BakeHigh": "BAKE_HIGH",
+    }
+    return legacy_map.get(type_value, type_value)
+
+
 class Object:
     """对象操作工具类"""
 
@@ -156,7 +176,7 @@ class Object:
     @staticmethod
     def get_hst_type(object: bpy.types.Object):
         """获取对象的 HST 类型"""
-        return object.get(HST_PROP)
+        return normalize_object_hst_type(object.get(HST_PROP))
 
     @staticmethod
     def mark_hst_type(object: bpy.types.Object, type: str):
@@ -171,8 +191,10 @@ class Object:
             object: 目标对象
             type: 类型标识
         """
+        type = normalize_object_hst_type(type)
+
         # 如果已有类型标记且相同，跳过
-        if HST_PROP in object.keys() and object[HST_PROP] == type:
+        if HST_PROP in object.keys() and normalize_object_hst_type(object[HST_PROP]) == type:
             return
         
         object[HST_PROP] = type
@@ -228,11 +250,11 @@ class Object:
         match mode:
             case "INCLUDE":
                 for obj in objects:
-                    if obj.get(HST_PROP) == type:
+                    if normalize_object_hst_type(obj.get(HST_PROP)) == normalize_object_hst_type(type):
                         filtered_objects.append(obj)
             case "EXCLUDE":
                 for obj in objects:
-                    if obj.get(HST_PROP) != type:
+                    if normalize_object_hst_type(obj.get(HST_PROP)) != normalize_object_hst_type(type):
                         filtered_objects.append(obj)
         return filtered_objects
 
@@ -247,7 +269,7 @@ class Object:
             "OTHER": [],
         }
         for obj in objects:
-            obj_type = obj.get(HST_PROP)
+            obj_type = normalize_object_hst_type(obj.get(HST_PROP))
             if obj_type in sorted_objects:
                 sorted_objects[obj_type].append(obj)
             else:

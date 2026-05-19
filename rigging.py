@@ -10,11 +10,14 @@ def setup_ue_rig_scene():
     scene.unit_settings.system = 'METRIC'
     scene.unit_settings.length_unit = 'CENTIMETERS'
     scene.unit_settings.scale_length = 1
-    # bpy.context.space_data.clip_start = 1
-    # bpy.context.space_data.clip_end = 10000
-    bpy.context.space_data.shading.color_type = 'OBJECT'
-    bpy.context.space_data.shading.light = 'MATCAP'
-    bpy.context.space_data.overlay.show_text = True
+
+    space_data = getattr(bpy.context, "space_data", None)
+    if space_data is not None:
+        if hasattr(space_data, "shading"):
+            space_data.shading.color_type = 'OBJECT'
+            space_data.shading.light = 'MATCAP'
+        if hasattr(space_data, "overlay"):
+            space_data.overlay.show_text = True
 
 
 def set_ue_armature_display(object):

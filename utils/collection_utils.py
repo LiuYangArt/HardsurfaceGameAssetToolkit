@@ -50,6 +50,23 @@ def check_collection_exist(collection_name: str) -> bool:
     return collection_exist
 
 
+def normalize_collection_hst_type(type_value: str):
+    """统一 Collection 类型标记，兼容旧版本枚举。"""
+    if type_value is None:
+        return None
+
+    legacy_map = {
+        "Prop_Collection": "PROP",
+        "Decal_Collection": "DECAL",
+        "BakeLow_Collection": "BAKE_LOW",
+        "BakeHigh_Collection": "BAKE_HIGH",
+        "SKM_Collection": "SKM",
+        "Rig_Collection": "RIG",
+        "Proxy_Collection": "PROXY",
+    }
+    return legacy_map.get(type_value, type_value)
+
+
 class Collection:
     """Collection 操作工具类"""
 
@@ -105,6 +122,7 @@ class Collection:
             collection: 目标 Collection
             type: 类型标识
         """
+        type = normalize_collection_hst_type(type)
         collection[HST_PROP] = type
 
         # 根据类型设置颜色标签
@@ -157,7 +175,7 @@ class Collection:
         Returns:
             类型标识
         """
-        return collection.get(HST_PROP)
+        return normalize_collection_hst_type(collection.get(HST_PROP))
 
     @staticmethod
     def filter_hst_type(collections, type: str, mode: str = "INCLUDE"):
@@ -179,11 +197,11 @@ class Collection:
         match mode:
             case "INCLUDE":
                 for coll in collections:
-                    if coll.get(HST_PROP) == type:
+                    if normalize_collection_hst_type(coll.get(HST_PROP)) == normalize_collection_hst_type(type):
                         filtered_collections.append(coll)
             case "EXCLUDE":
                 for coll in collections:
-                    if coll.get(HST_PROP) != type:
+                    if normalize_collection_hst_type(coll.get(HST_PROP)) != normalize_collection_hst_type(type):
                         filtered_collections.append(coll)
         return filtered_collections
 
@@ -209,7 +227,7 @@ class Collection:
         }
         
         for coll in collections:
-            coll_type = coll.get(HST_PROP)
+            coll_type = normalize_collection_hst_type(coll.get(HST_PROP))
             if coll_type == "BAKE_LOW" or coll_type == "BAKE_HIGH":
                 sorted_collections["bake"].append(coll)
             elif coll_type == "DECAL":
@@ -256,7 +274,7 @@ class Collection:
         parent = Collection.find_parent(collection)
         if parent is None:
             return None
-        if parent.get(HST_PROP) == type:
+        if normalize_collection_hst_type(parent.get(HST_PROP)) == normalize_collection_hst_type(type):
             return parent
         return Collection.find_parent_recur_by_type(parent, type)
 

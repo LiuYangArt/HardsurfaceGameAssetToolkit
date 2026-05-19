@@ -81,7 +81,7 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
             # check selected collection's state:
             collection_type = Collection.get_hst_type(collection)
             parent_collection = Collection.find_parent_recur_by_type(
-                collection, type=Const.TYPE_PROP_COLLECTION
+                collection, type="PROP"
             )
             if parent_collection:
                 origin_objects = Object.filter_hst_type(
@@ -109,13 +109,13 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
                         )
                         return {"CANCELLED"}
 
-                case Const.TYPE_DECAL_COLLECTION:
+                case "DECAL":
                     if parent_collection:
                         current_state = "decal_collection"
                     else:
                         current_state = "root_decal_collection"
                         continue
-                case Const.TYPE_PROP_COLLECTION:
+                case "PROP":
                     if parent_collection:
                         self.report(
                             {"ERROR"},
@@ -126,7 +126,7 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
                         if collection.children:
                             for child_collection in collection.children:
                                 child_type = Collection.get_hst_type(child_collection)
-                                if child_type == Const.TYPE_DECAL_COLLECTION:
+                                if child_type == "DECAL":
                                     current_state = "prop_collection"
                         else:
                             current_state = "prop_collection_raw"
@@ -142,7 +142,7 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
                     if parent_collection.children:
                         for child_collection in parent_collection.children:
                             child_type = Collection.get_hst_type(child_collection)
-                            if child_type == Const.TYPE_DECAL_COLLECTION:
+                            if child_type == "DECAL":
                                 decal_collection = child_collection
                                 break
                     decal_meshes = Object.filter_hst_type(
@@ -185,7 +185,7 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
                     and exist_collection is not decal_collection
                 ):
                     file_c_parent = Collection.find_parent_recur_by_type(
-                        exist_collection, type=Const.TYPE_PROP_COLLECTION
+                        exist_collection, type="PROP"
                     )
                     if file_c_parent:  # 有parent 时根据parent命名
                         exist_collection.name = file_c_parent.name + DECAL_SUFFIX

@@ -18,17 +18,17 @@ def set_bake_collection(collection, type="LOW"):
     match type:
         case "LOW":
             new_name = collection_name + LOW_SUFFIX
-            Collection.mark_hst_type(collection, "LOW")
-            for obj in objects:
-                Object.mark_hst_type(obj, "LOW")
+            Collection.mark_hst_type(collection, "BAKE_LOW")
         case "HIGH":
             new_name = collection_name + HIGH_SUFFIX
-            Collection.mark_hst_type(collection, "HIGH")
-            for obj in objects:
-                Object.mark_hst_type(obj, "HIGH")
+            Collection.mark_hst_type(collection, "BAKE_HIGH")
 
     collection.name = new_name
     rename_prop_meshes(objects)
+
+    if type == "HIGH":
+        for obj in objects:
+            Object.mark_hst_type(obj, "HIGH")
 
 
 def apply_vertex_color_to_mesh(mesh, color, attr_name=BAKECOLOR_ATTR):

@@ -1,0 +1,625 @@
+# -*- coding: utf-8 -*-
+"""Blender-side regression test driver."""
+
+import importlib.util
+import inspect
+import json
+import os
+import sys
+import traceback
+from pathlib import Path
+
+import bpy
+import bmesh
+
+
+REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
+ARTIFACT_DIR = Path(os.environ["HST_TEST_ARTIFACT_DIR"])
+RESULTS_PATH = Path(os.environ["HST_TEST_RESULTS"])
+PACKAGE_NAME = "hst_test_addon"
+
+
+class TestFailure(AssertionError):
+    pass
+
+
+class TestCaseResult:
+    def __init__(self, name: str):
+        self.name = name
+        self.status = "passed"
+        self.details = []
+        self.error = None
+
+    def add_detail(self, message: str):
+        self.details.append(message)
+
+    def fail(self, error: Exception):
+        self.status = "failed"
+        self.error = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "status": self.status,
+            "details": self.details,
+            "error": self.error,
+        }
+
+
+class TestContext:
+    def __init__(self, addon_module):
+        self.addon = addon_module
+        self.const = addon_module.const
+        self.results = []
+
+    def run_case(self, name, callback):
+        result = TestCaseResult(name)
+        try:
+            reset_scene()
+            callback(self, result)
+        except Exception as error:
+            result.fail(error)
+        self.results.append(result)
+
+
+def load_addon_module():
+    init_path = REPO_ROOT / "__init__.py"
+    spec = importlib.util.spec_from_file_location(
+        PACKAGE_NAME,
+        init_path,
+        submodule_search_locations=[str(REPO_ROOT)],
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[PACKAGE_NAME] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def reset_scene():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = bpy.context.scene
+    scene.render.engine = "BLENDER_EEVEE"
+
+
+def ensure(condition: bool, message: str):
+    if not condition:
+        raise TestFailure(message)
+
+
+def make_collection(name: str):
+    collection = bpy.data.collections.new(name)
+    bpy.context.scene.collection.children.link(collection)
+    return collection
+
+
+def make_test_mesh(name: str, collection, location=(0.0, 0.0, 0.0)):
+    bpy.ops.mesh.primitive_cube_add(location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    if collection not in obj.users_collection:
+        for existing in list(obj.users_collection):
+            existing.objects.unlink(obj)
+        collection.objects.link(obj)
+    return obj
+
+
+def make_plane(name: str, collection, location=(0.0, 0.0, 0.0)):
+    bpy.ops.mesh.primitive_plane_add(location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    if collection not in obj.users_collection:
+        for existing in list(obj.users_collection):
+            existing.objects.unlink(obj)
+        collection.objects.link(obj)
+    return obj
+
+
+def make_empty(name: str, collection, location=(0.0, 0.0, 0.0)):
+    bpy.ops.object.empty_add(type='PLAIN_AXES', location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    if collection not in obj.users_collection:
+        for existing in list(obj.users_collection):
+            existing.objects.unlink(obj)
+        collection.objects.link(obj)
+    return obj
+
+
+def make_armature(name: str, collection):
+    bpy.ops.object.armature_add()
+    armature = bpy.context.active_object
+    armature.name = name
+    if collection not in armature.users_collection:
+        for existing in list(armature.users_collection):
+            existing.objects.unlink(armature)
+        collection.objects.link(armature)
+    return armature
+
+
+def select_vertices_in_edit_mode(obj):
+    bpy.ops.object.mode_set(mode="EDIT")
+    bm = bmesh.from_edit_mesh(obj.data)
+    for vert in bm.verts:
+        vert.select = True
+    bmesh.update_edit_mesh(obj.data)
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def select_objects(active_obj, selected_objects):
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in selected_objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = active_obj
+
+
+def collect_hst_operator_idnames(test_context: TestContext):
+    operator_idnames = set()
+    for module in test_context.addon.auto_load.modules:
+        for value in module.__dict__.values():
+            if inspect.isclass(value) and issubclass(value, bpy.types.Operator):
+                bl_idname = getattr(value, "bl_idname", "")
+                if bl_idname.startswith("hst."):
+                    operator_idnames.add(bl_idname)
+    return sorted(operator_idnames)
+
+
+def test_addon_registers(test_context: TestContext, result: TestCaseResult):
+    ensure(hasattr(bpy.types.Scene, "hst_params"), "Scene.hst_params was not registered")
+
+    operator_idnames = collect_hst_operator_idnames(test_context)
+    missing = []
+    for operator_idname in operator_idnames:
+        _, operator_name = operator_idname.split(".", 1)
+        if not hasattr(bpy.ops.hst, operator_name):
+            missing.append(operator_idname)
+
+    ensure(not missing, f"Missing registered operators: {missing}")
+    ensure(hasattr(bpy.ops.hst, "hst_addtransvertcolorproxy"), "Proxy operator missing")
+    ensure(hasattr(bpy.ops.hst, "hst_bakeproxyvertcolrao"), "AO bake operator missing")
+    result.add_detail(f"Blender version: {bpy.app.version_string}")
+    result.add_detail(f"Registered hst operators: {len(operator_idnames)}")
+
+
+def test_transfer_proxy_reuse(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("ProxyReuseCase")
+    obj = make_test_mesh("ProxyMesh", collection)
+    select_objects(obj, [obj])
+
+    first = bpy.ops.hst.hst_addtransvertcolorproxy()
+    ensure("FINISHED" in first, "First proxy build did not finish")
+    second = bpy.ops.hst.hst_addtransvertcolorproxy()
+    ensure("FINISHED" in second, "Second proxy build did not finish")
+
+    proxy_collections = [c for c in bpy.data.collections if c.name == const.TRANSFER_PROXY_COLLECTION]
+    ensure(len(proxy_collections) == 1, f"Expected 1 proxy collection, got {len(proxy_collections)}")
+
+    proxy_objects = [o for o in bpy.data.objects if o.name.startswith(const.TRANSFERPROXY_PREFIX)]
+    ensure(len(proxy_objects) == 1, f"Expected 1 proxy object, got {len(proxy_objects)}")
+    ensure(".00" not in proxy_objects[0].name and ".001" not in proxy_objects[0].name, "Proxy object got duplicate suffix")
+    result.add_detail(f"Proxy object: {proxy_objects[0].name}")
+
+
+def test_project_decal_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("DecalCase")
+    target = make_plane("DecalTarget", collection, location=(0.0, 0.0, 0.0))
+    decal = make_plane("DecalMesh", collection, location=(0.0, 0.0, 0.2))
+    test_context.addon.utils.object_utils.Object.mark_hst_type(decal, "DECAL")
+
+    select_objects(target, [target, decal])
+    op_result = bpy.ops.hst.projectdecal()
+    ensure("FINISHED" in op_result, "Project Decal operator did not finish")
+    ensure(decal.modifiers.get(const.SUBD_MODIFIER) is not None, "Decal missing subdivision modifier")
+    shrinkwrap = decal.modifiers.get(const.SHRINKWRAP_MODIFIER)
+    ensure(shrinkwrap is not None, "Decal missing shrinkwrap modifier")
+    ensure(shrinkwrap.target == target, "Shrinkwrap target does not match active object")
+    result.add_detail(f"Decal modifiers: {list(decal.modifiers.keys())}")
+
+
+def test_quickweight_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("QuickWeightCase")
+    armature = make_armature("WeightRig", collection)
+    mesh = make_test_mesh("WeightMesh", collection)
+
+    select_objects(armature, [armature])
+    bpy.ops.object.mode_set(mode="EDIT")
+    active_bone = armature.data.edit_bones[0]
+    active_bone.name = "root"
+    bpy.ops.object.mode_set(mode="POSE")
+
+    bpy.ops.object.mode_set(mode="OBJECT")
+    select_objects(armature, [armature, mesh])
+    bpy.ops.object.mode_set(mode="POSE")
+    pose_bone = armature.pose.bones.get("root")
+    ensure(pose_bone is not None, "Pose bone root not found")
+    armature.data.bones.active = armature.data.bones[pose_bone.name]
+
+    op_result = bpy.ops.hst.quickweight(mode='ALL_VERTS')
+    ensure("FINISHED" in op_result, "QuickWeight operator did not finish")
+
+    armature_modifier = None
+    for modifier in mesh.modifiers:
+        if modifier.type == 'ARMATURE' and modifier.object == armature:
+            armature_modifier = modifier
+            break
+    ensure(armature_modifier is not None, "Mesh missing armature modifier after QuickWeight")
+
+    vertex_group = mesh.vertex_groups.get("root")
+    ensure(vertex_group is not None, "Vertex group for active bone was not created")
+    ensure(len(mesh.data.vertices) > 0, "Weight test mesh has no vertices")
+    weight = vertex_group.weight(0)
+    ensure(abs(weight - 1.0) < 1e-6, f"Unexpected vertex weight: {weight}")
+    result.add_detail(f"Mesh vertex groups: {[group.name for group in mesh.vertex_groups]}")
+
+
+def test_ao_bake_operator_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("AOBakeCase")
+    obj = make_test_mesh("AOBakeMesh", collection)
+    select_objects(obj, [obj])
+
+    bpy.ops.hst.hstbeveltransfernormal(bevel_width=0.2, bevel_segments=2)
+    bake_result = bpy.ops.hst.hst_bakeproxyvertcolrao()
+    ensure("FINISHED" in bake_result, "AO bake operator did not finish")
+
+    transfer_modifier = obj.modifiers.get(const.COLOR_TRANSFER_MODIFIER)
+    ensure(transfer_modifier is not None, "Color transfer modifier missing after AO bake")
+    proxy_obj = transfer_modifier.object
+    ensure(proxy_obj is not None, "AO bake proxy target missing")
+    ensure(const.WEARMASK_ATTR in proxy_obj.data.color_attributes, "AO proxy missing WearMask attribute")
+    ensure(obj.data.attributes.default_color_name == const.WEARMASK_ATTR, "Source mesh default color attribute not set")
+    ensure(proxy_obj.data.attributes.default_color_name == const.WEARMASK_ATTR, "Proxy default color attribute not set")
+
+    result.add_detail(f"AO proxy target: {proxy_obj.name}")
+    result.add_detail(f"Proxy color attributes: {list(proxy_obj.data.color_attributes.keys())}")
+
+
+def test_wearmask_proxy_topology_matches_transfer_target(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("AOTopologyCase")
+    obj = make_test_mesh("AOMesh", collection)
+    select_objects(obj, [obj])
+
+    bpy.ops.hst.hstbeveltransfernormal(bevel_width=0.2, bevel_segments=2)
+    bevel_modifier = obj.modifiers.get(const.BEVEL_MODIFIER)
+    ensure(bevel_modifier is not None, "Bevel modifier was not added")
+
+    base_vertex_count = len(obj.data.vertices)
+    base_poly_count = len(obj.data.polygons)
+
+    build_result = bpy.ops.hst.hst_addtransvertcolorproxy()
+    ensure("FINISHED" in build_result, "Proxy build did not finish")
+
+    transfer_modifier = obj.modifiers.get(const.COLOR_TRANSFER_MODIFIER)
+    ensure(transfer_modifier is not None, "Color transfer modifier missing")
+    proxy_obj = transfer_modifier.object
+    ensure(proxy_obj is not None, "Color transfer modifier target missing")
+    ensure(proxy_obj.name.startswith(const.TRANSFERPROXY_PREFIX), "Transfer target is not proxy mesh")
+
+    proxy_vertex_count = len(proxy_obj.data.vertices)
+    proxy_poly_count = len(proxy_obj.data.polygons)
+    ensure(proxy_vertex_count > base_vertex_count, "Proxy mesh did not capture bevel topology")
+    ensure(proxy_poly_count > base_poly_count, "Proxy mesh polygons did not increase after bevel")
+    ensure(const.WEARMASK_ATTR in proxy_obj.data.color_attributes, "Proxy missing WearMask color attribute")
+    ensure(const.WEARMASK_ATTR in obj.data.color_attributes, "Source mesh missing WearMask color attribute")
+
+    result.add_detail(f"Base vertices/polys: {base_vertex_count}/{base_poly_count}")
+    result.add_detail(f"Proxy vertices/polys: {proxy_vertex_count}/{proxy_poly_count}")
+
+
+def test_set_bake_collection_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("BakeCollectionCase")
+    obj = make_test_mesh("BakeMesh", collection)
+    select_objects(obj, [obj])
+
+    low_result = bpy.ops.hst.setbakecollectionlow()
+    ensure("FINISHED" in low_result, "Set bake collection low did not finish")
+    ensure(collection.get(const.HST_PROP) == "BAKE_LOW", f"Unexpected collection type: {collection.get(const.HST_PROP)}")
+    ensure(collection.name.endswith(const.LOW_SUFFIX), f"Low collection suffix missing: {collection.name}")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(obj) == "STATICMESH", "Low mesh type was not set to STATICMESH")
+
+    high_result = bpy.ops.hst.setbakecollectionhigh()
+    ensure("FINISHED" in high_result, "Set bake collection high did not finish")
+    ensure(collection.get(const.HST_PROP) == "BAKE_HIGH", f"Unexpected high collection type: {collection.get(const.HST_PROP)}")
+    ensure(collection.name.endswith(const.HIGH_SUFFIX), f"High collection suffix missing: {collection.name}")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(obj) == "HIGH", "High mesh type was not set to HIGH")
+    result.add_detail(f"Bake collection final name: {collection.name}")
+
+
+
+def test_vertex_color_set_and_copy_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("VertexColorCase")
+    source = make_test_mesh("SourceColorMesh", collection)
+    target = make_test_mesh("TargetColorMesh", collection, location=(2.0, 0.0, 0.0))
+
+    params = bpy.context.scene.hst_params
+    params.vertexcolor = (0.2, 0.4, 0.6, 1.0)
+
+    select_objects(source, [source])
+    set_result = bpy.ops.hst.setobjectvertexcolor()
+    ensure("FINISHED" in set_result, "Set object vertex color did not finish")
+    ensure(const.BAKECOLOR_ATTR in source.data.color_attributes, "Source bake color attribute missing")
+
+    select_objects(source, [source, target])
+    copy_result = bpy.ops.hst.copy_vertex_color_from_active()
+    ensure("FINISHED" in copy_result, "Copy vertex color from active did not finish")
+    ensure(const.BAKECOLOR_ATTR in target.data.color_attributes, "Target bake color attribute missing")
+
+    source_attr = source.data.color_attributes[const.BAKECOLOR_ATTR]
+    target_attr = target.data.color_attributes[const.BAKECOLOR_ATTR]
+    source_color = tuple(round(v, 4) for v in source_attr.data[0].color)
+    target_color = tuple(round(v, 4) for v in target_attr.data[0].color)
+    ensure(source_color == target_color, f"Copied color mismatch: {source_color} != {target_color}")
+    result.add_detail(f"Copied bake color: {source_color}")
+
+
+
+def test_collision_and_extract_ucx_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("CollisionCase")
+    static_mesh = make_test_mesh("CollisionBase", collection)
+    static_mesh_name = static_mesh.name
+    ucx_mesh = make_test_mesh("CollisionProxy", collection, location=(2.0, 0.0, 0.0))
+
+    select_objects(ucx_mesh, [ucx_mesh])
+    set_result = bpy.ops.hst.add_ue_collision()
+    ensure("FINISHED" in set_result, "Set UE collision did not finish")
+    ensure(ucx_mesh.name.startswith("UCX_"), f"UCX rename failed: {ucx_mesh.name}")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(ucx_mesh) == "UCX", "UCX type not applied")
+
+    extract_result = bpy.ops.hst.extractucx()
+    ensure("FINISHED" in extract_result, "Extract UCX did not finish")
+    ensure(static_mesh_name not in bpy.data.objects, "Static mesh should be removed by extract UCX")
+    ensure(ucx_mesh.name.startswith("U_"), f"Extracted UCX rename failed: {ucx_mesh.name}")
+    result.add_detail(f"Extracted UCX object: {ucx_mesh.name}")
+
+
+
+def test_modifier_ops_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("ModifierCase")
+    obj = make_test_mesh("ModifierMesh", collection)
+    select_objects(obj, [obj])
+
+    op_result = bpy.ops.hst.hstbevelmods(bevel_width=0.15, bevel_segments=2)
+    ensure("FINISHED" in op_result, "Batch bevel modifiers did not finish")
+    ensure(obj.modifiers.get(const.BEVEL_MODIFIER) is not None, "Bevel modifier missing")
+    ensure(obj.modifiers.get(const.WEIGHTEDNORMAL_MODIFIER) is not None, "Weighted normal modifier missing")
+    ensure(obj.modifiers.get(const.TRIANGULAR_MODIFIER) is not None, "Triangulate modifier missing")
+    result.add_detail(f"Modifier stack: {list(obj.modifiers.keys())}")
+
+
+def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("ExportCaseFBX")
+    make_test_mesh("ExportMeshFBX", collection)
+
+    export_dir = ARTIFACT_DIR / "exports" / "fbx"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport()
+    ensure("FINISHED" in op_result, "StaticMesh FBX export operator did not finish")
+
+    export_file = export_dir / f"SM_{collection.name}.fbx"
+    ensure(export_file.exists(), f"Expected FBX export not found: {export_file}")
+    ensure(export_file.stat().st_size > 0, "Exported FBX file is empty")
+    result.add_detail(f"FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
+
+
+def test_staticmeshexport_glb_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("ExportCaseGLB")
+    make_test_mesh("ExportMeshGLB", collection)
+
+    export_dir = ARTIFACT_DIR / "exports" / "glb"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "GLB"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport()
+    ensure("FINISHED" in op_result, "StaticMesh GLB export operator did not finish")
+
+    export_file = export_dir / f"SM_{collection.name}.glb"
+    ensure(export_file.exists(), f"Expected GLB export not found: {export_file}")
+    ensure(export_file.stat().st_size > 0, "Exported GLB file is empty")
+    result.add_detail(f"GLB export: {export_file.name} ({export_file.stat().st_size} bytes)")
+
+
+def test_rename_bones_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("RenameBonesCase")
+    armature = make_armature("RenameRig", collection)
+
+    select_objects(armature, [armature])
+    bpy.ops.object.mode_set(mode="EDIT")
+    root_bone = armature.data.edit_bones[0]
+    root_bone.name = "Root.001"
+    child_bone = armature.data.edit_bones.new("Spine.012")
+    child_bone.head = (0.0, 0.0, 1.0)
+    child_bone.tail = (0.0, 0.0, 2.0)
+    child_bone.parent = root_bone
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    select_objects(armature, [armature])
+    op_result = bpy.ops.hst.rename_bones()
+    ensure("FINISHED" in op_result, "Rename Bones operator did not finish")
+
+    bone_names = {bone.name for bone in armature.data.bones}
+    ensure("root_01" in bone_names, f"Renamed root bone not found: {bone_names}")
+    ensure("spine_12" in bone_names, f"Renamed child bone not found: {bone_names}")
+    result.add_detail(f"Renamed bones: {sorted(bone_names)}")
+
+
+def test_cleanup_ue_skm_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("CleanupUESKMCase")
+    skeleton_root = make_empty("SK_Root", collection)
+    skeleton_root.scale = (0.01, 0.01, 0.01)
+    armature = make_armature("UE_Armature", collection)
+    mesh = make_test_mesh("UE_Mesh", collection)
+    armature.parent = skeleton_root
+    mesh.parent = skeleton_root
+    root_name = skeleton_root.name
+
+    select_objects(skeleton_root, [skeleton_root])
+    op_result = bpy.ops.hst.cleanup_ue_skm()
+    ensure("FINISHED" in op_result, "Cleanup UE SKM operator did not finish")
+
+    ensure(root_name not in bpy.data.objects, "UE skeleton root empty was not removed")
+    ensure(armature.parent is None, "Armature parent was not cleared")
+    ensure(mesh.parent is None, "Mesh parent was not cleared")
+    ensure(armature.data.display_type == 'WIRE', "Armature display type was not updated")
+    ensure(armature.show_in_front is True, "Armature was not set to in-front display")
+    ensure(armature.data.show_axes is True, "Armature axes display was not enabled")
+    ensure(bpy.context.scene.unit_settings.length_unit == 'CENTIMETERS', "Scene unit was not set for UE rig cleanup")
+    result.add_detail(f"Cleanup kept objects: {[obj.name for obj in collection.objects]}")
+
+
+def test_origin_and_transform_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("OriginCase")
+    mesh_a = make_test_mesh("OriginMeshA", collection, location=(1.0, 1.0, 0.0))
+    mesh_b = make_test_mesh("OriginMeshB", collection, location=(3.0, 1.0, 0.0))
+
+    select_objects(mesh_a, [mesh_a, mesh_b])
+    add_origin_result = bpy.ops.hst.add_asset_origin('INVOKE_DEFAULT')
+    ensure("FINISHED" in add_origin_result, "Add asset origin did not finish")
+
+    origin_objects = test_context.addon.utils.object_utils.Object.filter_hst_type(collection.all_objects, "ORIGIN", mode="INCLUDE")
+    ensure(len(origin_objects) == 1, f"Expected 1 origin object, got {len(origin_objects)}")
+    origin = origin_objects[0]
+    ensure(mesh_a.parent == origin and mesh_b.parent == origin, "Meshes were not parented to asset origin")
+
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(collection, "PROP")
+    mesh_a.location = (0.13, 0.27, 0.41)
+    mesh_a.rotation_euler = (0.3, 0.0, 0.8)
+    mesh_a.scale = (1.13, 0.87, 1.22)
+    select_objects(mesh_a, [mesh_a])
+
+    snap_result = bpy.ops.hst.snap_transform(
+        snap_location_toggle=True,
+        snap_rotation_toggle=True,
+        snap_scale_toggle=True,
+        snap_grid='5',
+        snap_rotation_step='45',
+        snap_scale_step='0.125',
+    )
+    ensure("FINISHED" in snap_result, "Snap transform did not finish")
+    ensure(abs(mesh_a.location.x - 0.15) < 1e-6, f"Unexpected snapped X location: {mesh_a.location.x}")
+    ensure(abs(mesh_a.location.y - 0.25) < 1e-6, f"Unexpected snapped Y location: {mesh_a.location.y}")
+    ensure(abs(mesh_a.scale.x - 1.125) < 1e-6, f"Unexpected snapped X scale: {mesh_a.scale.x}")
+
+    reset_result = bpy.ops.hst.reset_prop_transform_to_origin()
+    ensure("FINISHED" in reset_result, "Reset prop transform to origin did not finish")
+    ensure(mesh_a.parent == origin, "Mesh parent changed after reset to origin")
+    result.add_detail(f"Origin object: {origin.name}")
+    result.add_detail(f"Snapped location: {tuple(round(v, 4) for v in mesh_a.location)}")
+
+
+
+def test_collection_markers_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    prop_collection = make_collection("PropMarkerCase")
+    prop_obj = make_test_mesh("PropMesh", prop_collection)
+    select_objects(prop_obj, [prop_obj])
+
+    prop_result = bpy.ops.hst.markpropcollection()
+    ensure("FINISHED" in prop_result, "Mark prop collection did not finish")
+    ensure(prop_collection.get(const.HST_PROP) == "PROP", f"Unexpected prop collection type: {prop_collection.get(const.HST_PROP)}")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(prop_obj) == "STATICMESH", "Prop mesh type missing after mark prop")
+
+    decal_collection = make_collection("DecalMarkerCase")
+    target = make_plane("DecalMarkerTarget", decal_collection)
+    decal = make_plane("DecalMarkerMesh", decal_collection, location=(0.0, 0.0, 0.1))
+    material = bpy.data.materials.new(name="Decal_Test")
+    decal.data.materials.append(material)
+    select_objects(decal, [target, decal])
+
+    decal_result = bpy.ops.hst.markdecalcollection()
+    ensure("FINISHED" in decal_result, "Mark decal collection did not finish")
+    ensure(decal_collection.get(const.HST_PROP) == "DECAL", f"Unexpected decal collection type: {decal_collection.get(const.HST_PROP)}")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(decal) == "DECAL", "Decal mesh type missing after mark decal")
+    result.add_detail(f"Prop/decal collections: {prop_collection.name}, {decal_collection.name}")
+
+
+
+def test_bake_collection_export_fbx_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("BakeExportCase")
+    obj = make_test_mesh("BakeExportMesh", collection)
+    select_objects(obj, [obj])
+    bake_result = bpy.ops.hst.setbakecollectionlow()
+    ensure("FINISHED" in bake_result, "Set bake collection low for export did not finish")
+
+    export_dir = ARTIFACT_DIR / "exports" / "bake_fbx"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    export_result = bpy.ops.hst.staticmeshexport()
+    ensure("FINISHED" in export_result, "Bake collection FBX export did not finish")
+
+    export_file = export_dir / f"SM_{collection.name}.fbx"
+    ensure(export_file.exists(), f"Expected bake FBX export not found: {export_file}")
+    ensure(export_file.stat().st_size > 0, "Exported bake FBX file is empty")
+    result.add_detail(f"Bake FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
+
+
+def main():
+    addon_module = load_addon_module()
+    addon_module.register()
+
+    context = TestContext(addon_module)
+    context.run_case("addon_registers", test_addon_registers)
+    context.run_case("transfer_proxy_reuse", test_transfer_proxy_reuse)
+    context.run_case("project_decal_smoke", test_project_decal_smoke)
+    context.run_case("quickweight_smoke", test_quickweight_smoke)
+    context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
+    context.run_case("vertex_color_set_and_copy_smoke", test_vertex_color_set_and_copy_smoke)
+    context.run_case("collision_and_extract_ucx_smoke", test_collision_and_extract_ucx_smoke)
+    context.run_case("modifier_ops_smoke", test_modifier_ops_smoke)
+    context.run_case("ao_bake_operator_smoke", test_ao_bake_operator_smoke)
+    context.run_case("wearmask_proxy_topology_matches_transfer_target", test_wearmask_proxy_topology_matches_transfer_target)
+    context.run_case("origin_and_transform_smoke", test_origin_and_transform_smoke)
+    context.run_case("collection_markers_smoke", test_collection_markers_smoke)
+    context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
+    context.run_case("bake_collection_export_fbx_smoke", test_bake_collection_export_fbx_smoke)
+    context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
+    context.run_case("rename_bones_smoke", test_rename_bones_smoke)
+    context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)
+
+    summary = {
+        "blender_version": bpy.app.version_string,
+        "repo_root": str(REPO_ROOT),
+        "artifact_dir": str(ARTIFACT_DIR),
+        "results": [result.to_dict() for result in context.results],
+    }
+    RESULTS_PATH.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    failed = [result for result in context.results if result.status != "passed"]
+    print("\n=== HST Blender Regression Summary ===")
+    for result in context.results:
+        print(f"[{result.status.upper()}] {result.name}")
+        for detail in result.details:
+            print(f"  - {detail}")
+        if result.error:
+            print(result.error)
+
+    try:
+        addon_module.unregister()
+    except Exception:
+        traceback.print_exc()
+
+    if failed:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

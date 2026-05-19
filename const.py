@@ -1,5 +1,4 @@
 import bpy
-import addon_utils
 from pathlib import Path
 import os
 # from mathutils import Matrix
@@ -8,17 +7,10 @@ class Addon:
     NAME = "Hardsurface GameAsset Toolkit"
 
     def get_install_path():
-        filepath = None
-        for mod in addon_utils.modules():
-            if mod.bl_info['name'] == Addon.NAME:
-                filepath = mod.__file__
-                filepath = mod.__file__.replace("__init__.py", "")
-                filepath = filepath.replace("\\", "/")
-                break
-        if filepath is None:
-            raise RuntimeError(f"未找到名为 {Addon.NAME} 的插件模块")
-        filepath = Path(filepath)
-        return filepath
+        env_override = os.environ.get("HST_ADDON_ROOT")
+        if env_override:
+            return Path(env_override)
+        return Path(__file__).resolve().parent
     
     def get_blender_version()->float:
             blver=bpy.app.version

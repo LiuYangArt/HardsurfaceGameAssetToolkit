@@ -12,6 +12,7 @@ __all__ = (
 )
 
 blender_version = bpy.app.version
+SKIP_MODULE_ROOTS = {"tests", "tools"}
 
 modules = None
 ordered_classes = None
@@ -56,12 +57,18 @@ def iter_submodules(path, package_name):
 
 def iter_submodule_names(path, root=""):
     for _, module_name, is_package in pkgutil.iter_modules([str(path)]):
+        full_name = root + module_name
+        root_name = full_name.split(".", 1)[0]
+        if root_name in SKIP_MODULE_ROOTS:
+            continue
+
         if is_package:
             sub_path = path / module_name
-            sub_root = root + module_name + "."
+            sub_root = full_name + "."
             yield from iter_submodule_names(sub_path, sub_root)
         else:
-            yield root + module_name
+            yield full_name
+
 
 
 # Find classes to register

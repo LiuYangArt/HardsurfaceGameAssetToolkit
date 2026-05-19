@@ -111,7 +111,7 @@ class HST_OT_ResetPropTransformToOrigin(bpy.types.Operator):
         origin_count = 0
         for collection in selected_collection:
             collection_type = Collection.get_hst_type(collection)
-            if collection_type == Const.TYPE_PROP_COLLECTION:
+            if collection_type == "PROP":
                 prop_collections.append(collection)
         if len(prop_collections) == 0:
             self.report({"ERROR"}, "No prop collections selected, please select prop collections and retry")

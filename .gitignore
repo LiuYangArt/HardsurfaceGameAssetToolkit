@@ -17,3 +17,5 @@ new_version.bat
 .ruff_cache
 task_plan.md
 notes.md
+# 测试产物
+tests/artifacts/**

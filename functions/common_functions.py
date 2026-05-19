@@ -214,7 +214,7 @@ class FBXExport:
                     export_objects.append(object)
             
             # 对 Bake Collection 进行处理
-            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or collection_type == Const.TYPE_BAKE_HIGH_COLLECTION:
+            if collection_type in {Const.TYPE_BAKE_LOW_COLLECTION, Const.TYPE_BAKE_HIGH_COLLECTION, "BAKE_LOW", "BAKE_HIGH"}:
                 for object in target.all_objects:
                     if object not in export_objects:
                         export_objects.append(object)
@@ -414,7 +414,7 @@ class GLBExport:
                 if obj not in export_objects:
                     export_objects.append(obj)
 
-            if collection_type == Const.TYPE_BAKE_LOW_COLLECTION or collection_type == Const.TYPE_BAKE_HIGH_COLLECTION:
+            if collection_type in {Const.TYPE_BAKE_LOW_COLLECTION, Const.TYPE_BAKE_HIGH_COLLECTION, "BAKE_LOW", "BAKE_HIGH"}:
                 for obj in target.all_objects:
                     if obj not in export_objects:
                         export_objects.append(obj)
