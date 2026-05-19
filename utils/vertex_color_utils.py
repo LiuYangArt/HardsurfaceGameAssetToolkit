@@ -81,6 +81,7 @@ def set_active_color_attribute(target_object, vertexcolor_name: str) -> None:
         if vertexcolor_name in target_object.data.color_attributes:
             color_attribute = target_object.data.color_attributes.get(vertexcolor_name)
             target_object.data.attributes.active_color = color_attribute
+            target_object.data.attributes.default_color_name = color_attribute.name
     return color_attribute
 
 

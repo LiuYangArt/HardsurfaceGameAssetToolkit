@@ -99,10 +99,15 @@ def add_weightednormal_modifier(mesh):
     weightpmod.weight = 100
 
 
-def add_color_transfer_modifier(mesh):
+def add_color_transfer_modifier(mesh, proxy_object=None):
     """添加DataTransfer Modifier传递顶点色"""
 
-    proxy_object = bpy.data.objects[TRANSFERPROXY_PREFIX + mesh.name]
+    if proxy_object is None:
+        proxy_object = bpy.data.objects.get(TRANSFERPROXY_PREFIX + mesh.name)
+
+    if proxy_object is None:
+        raise ValueError(f"Missing transfer proxy object for {mesh.name}")
+
     check_modifier = False
 
     for modifier in mesh.modifiers:  # 检查是否有modifier

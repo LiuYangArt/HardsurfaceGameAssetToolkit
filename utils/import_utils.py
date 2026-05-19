@@ -147,7 +147,7 @@ def import_object(file_path, object_name: str):
 
 def make_transfer_proxy_mesh(mesh, proxy_prefix: str, proxy_collection) -> bpy.types.Object:
     """
-    建立传递模型
+    建立传递模型。
 
     Args:
         mesh: 源 mesh 对象
@@ -158,28 +158,27 @@ def make_transfer_proxy_mesh(mesh, proxy_prefix: str, proxy_collection) -> bpy.t
         创建的代理 mesh 对象
     """
     from .object_utils import Object
-    from .modifier_utils import apply_modifiers
-    
-    # 检查是否存在传递模型
-    proxy_mesh_exist = False
-    proxy_mesh = None
-    
-    for obj in proxy_collection.all_objects:
-        if obj.name == proxy_prefix + mesh.name:
-            proxy_mesh_exist = True
-            proxy_mesh = obj
-            break
 
-    if proxy_mesh_exist is False:
-        proxy_mesh = mesh.copy()
-        proxy_mesh.data = mesh.data.copy()
-        proxy_mesh.name = proxy_prefix + mesh.name
-        proxy_mesh.parent = mesh
-        proxy_collection.objects.link(proxy_mesh)
-        proxy_mesh.hide_render = True
-        Object.mark_hst_type(proxy_mesh, "PROXY")
+    proxy_name = proxy_prefix + mesh.name
+    proxy_mesh = bpy.data.objects.get(proxy_name)
 
-        proxy_mesh = apply_modifiers(proxy_mesh)
+    if proxy_mesh is not None:
+        old_mesh_data = proxy_mesh.data
+        bpy.data.objects.remove(proxy_mesh)
+        if old_mesh_data is not None and old_mesh_data.users == 0:
+            bpy.data.meshes.remove(old_mesh_data)
+
+    deps_graph = bpy.context.evaluated_depsgraph_get()
+    deps_graph.update()
+    mesh_evaluated = bpy.data.meshes.new_from_object(
+        mesh.evaluated_get(deps_graph), depsgraph=deps_graph
+    )
+
+    proxy_mesh = bpy.data.objects.new(proxy_name, mesh_evaluated)
+    proxy_mesh.parent = mesh
+    proxy_collection.objects.link(proxy_mesh)
+    proxy_mesh.hide_render = True
+    Object.mark_hst_type(proxy_mesh, "PROXY")
 
     proxy_mesh.hide_viewport = True
     proxy_mesh.hide_render = True

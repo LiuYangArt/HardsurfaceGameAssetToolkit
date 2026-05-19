@@ -122,17 +122,25 @@ class Collection:
             collection.color_tag = color_map[type]
 
     @staticmethod
-    def create(name: str, type: str = "PROP") -> bpy.types.Collection:
+    def create(name: str, type: str = "PROP", reuse_existing: bool = False) -> bpy.types.Collection:
         """
         创建 Collection
 
         Args:
             name: Collection 名称
             type: 类型标识 (PROP, DECAL, BAKE_LOW, BAKE_HIGH, SKM, RIG, PROXY)
+            reuse_existing: 若同名 Collection 已存在，是否直接复用
 
         Returns:
-            新创建的 Collection
+            新创建或复用的 Collection
         """
+        if reuse_existing and name in bpy.data.collections:
+            existing_collection = bpy.data.collections[name]
+            if bpy.context.scene.collection.children.get(existing_collection.name) is None:
+                bpy.context.scene.collection.children.link(existing_collection)
+            Collection.mark_hst_type(existing_collection, type)
+            return existing_collection
+
         new_collection = bpy.data.collections.new(name)
         bpy.context.scene.collection.children.link(new_collection)
         Collection.mark_hst_type(new_collection, type)

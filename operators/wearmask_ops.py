@@ -31,7 +31,9 @@ def prep_wearmask_objects(selected_objects):
     print(PRESET_FILE_PATH)
     import_node_group(PRESET_FILE_PATH, WEARMASK_NODE)  # 导入wearmask nodegroup
     proxy_object_list = []
-    proxy_collection = Collection.create(TRANSFER_PROXY_COLLECTION, type="PROXY")
+    proxy_collection = Collection.create(
+        TRANSFER_PROXY_COLLECTION, type="PROXY", reuse_existing=True
+    )
     set_visibility(proxy_collection, True)
     for mesh in selected_meshes:
         Transform.apply(mesh, location=True, rotation=True, scale=True)
@@ -47,7 +49,7 @@ def prep_wearmask_objects(selected_objects):
             mesh, TRANSFERPROXY_PREFIX, proxy_collection
         )
         proxy_object_list.append(proxy_mesh)
-        add_color_transfer_modifier(mesh)
+        add_color_transfer_modifier(mesh, proxy_mesh)
         add_gn_wearmask_modifier(mesh)
         add_triangulate_modifier(mesh)
         mesh.hide_render = True
@@ -194,6 +196,18 @@ class HST_OT_BakeProxyVertexColorAO(bpy.types.Operator):
         for proxy_bake_object in bake_list:
             set_visibility(proxy_bake_object, True)
             proxy_bake_object.select_set(True)
+
+        if len(bake_list) == 0:
+            self.report(
+                {"ERROR"},
+                "No valid proxy mesh found for AO bake | 没有可用于AO烘焙的代理模型",
+            )
+            bpy.context.scene.render.engine = current_render_engine
+            return {"CANCELLED"}
+
+        bpy.context.view_layer.objects.active = bake_list[0]
+        for proxy_bake_object in bake_list:
+            set_active_color_attribute(proxy_bake_object, WEARMASK_ATTR)
 
         # 烘焙AO到顶点色
         bpy.ops.object.bake(type="AO", target="VERTEX_COLORS")
