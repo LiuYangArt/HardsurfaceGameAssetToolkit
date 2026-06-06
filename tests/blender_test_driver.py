@@ -115,6 +115,33 @@ def make_test_mesh(name: str, collection, location=(0.0, 0.0, 0.0)):
     return ensure_object_in_collection(obj, collection)
 
 
+def make_edge_network(name: str, collection, vertices, edges):
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, edges, [])
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    return obj
+
+
+def ensure_edge_float_attribute(obj, attribute_name: str, default_value: float = 1.0):
+    attribute = obj.data.attributes.get(attribute_name)
+    if attribute is None:
+        attribute = obj.data.attributes.new(attribute_name, type="FLOAT", domain="EDGE")
+    for edge in obj.data.edges:
+        attribute.data[edge.index].value = default_value
+    return attribute
+
+
+def add_weight_bevel_modifier(obj, const, width: float = 0.1, attribute_name: str = "bevel_weight_edge"):
+    bevel_modifier = obj.modifiers.new(name=const.BEVEL_MODIFIER, type="BEVEL")
+    bevel_modifier.limit_method = "WEIGHT"
+    bevel_modifier.edge_weight = attribute_name
+    bevel_modifier.width = width
+    bevel_modifier.offset_type = "WIDTH"
+    return bevel_modifier
+
+
 def make_plane(name: str, collection, location=(0.0, 0.0, 0.0)):
     bpy.ops.mesh.primitive_plane_add(location=location)
     obj = bpy.context.active_object
@@ -375,6 +402,99 @@ def test_collision_and_extract_ucx_smoke(test_context: TestContext, result: Test
     ensure(ucx_mesh.name.startswith("U_"), f"Extracted UCX rename failed: {ucx_mesh.name}")
     result.add_detail(f"Extracted UCX object: {ucx_mesh.name}")
 
+
+
+def test_safe_bevel_weight_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("SafeBevelWeightCase")
+    obj = make_edge_network(
+        "SafeBevelWeightMesh",
+        collection,
+        [(0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (1.05, 0.0, 0.0)],
+        [(0, 1), (1, 2)],
+    )
+    ensure_edge_float_attribute(obj, "bevel_weight_edge", default_value=1.0)
+    add_weight_bevel_modifier(obj, const, width=0.1)
+    select_objects(obj, [obj])
+
+    op_result = bpy.ops.hst.safe_bevel_weight(falloff_steps=0)
+    ensure("FINISHED" in op_result, "Safe Bevel Weight operator did not finish")
+
+    weights = obj.data.attributes["bevel_weight_edge"].data
+    ensure(weights[0].value < 1.0, f"Expected short edge weight to be reduced, got {weights[0].value}")
+    ensure(abs(weights[1].value - 1.0) < 1e-6, f"Unexpected change on non-risk edge: {weights[1].value}")
+    result.add_detail(f"Safe bevel weights: {[round(item.value, 4) for item in weights]}")
+
+
+def test_safe_bevel_weight_selected_only_regression(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("SafeBevelWeightSelectedOnlyCase")
+    obj = make_edge_network(
+        "SafeBevelWeightSelectedOnlyMesh",
+        collection,
+        [
+            (0.0, 0.0, 0.0),
+            (0.05, 0.0, 0.0),
+            (1.05, 0.0, 0.0),
+            (2.05, 0.0, 0.0),
+            (2.10, 0.0, 0.0),
+        ],
+        [(0, 1), (1, 2), (2, 3), (3, 4)],
+    )
+    ensure_edge_float_attribute(obj, "bevel_weight_edge", default_value=1.0)
+    add_weight_bevel_modifier(obj, const, width=0.1)
+    for edge in obj.data.edges:
+        edge.select = False
+    obj.data.edges[0].select = True
+    select_objects(obj, [obj])
+
+    op_result = bpy.ops.hst.safe_bevel_weight(selected_only=True, falloff_steps=0)
+    ensure("FINISHED" in op_result, "Safe Bevel Weight selected-only operator did not finish")
+
+    weights = obj.data.attributes["bevel_weight_edge"].data
+    ensure(weights[0].value < 1.0, f"Expected selected short edge weight to be reduced, got {weights[0].value}")
+    ensure(abs(weights[3].value - 1.0) < 1e-6, f"Unselected short edge should stay unchanged, got {weights[3].value}")
+    result.add_detail(f"Selected-only weights: {[round(item.value, 4) for item in weights]}")
+
+
+def test_safe_bevel_weight_preserves_lower_user_weight_regression(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("SafeBevelWeightPreserveCase")
+    obj = make_edge_network(
+        "SafeBevelWeightPreserveMesh",
+        collection,
+        [(0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (1.05, 0.0, 0.0)],
+        [(0, 1), (1, 2)],
+    )
+    weights = ensure_edge_float_attribute(obj, "bevel_weight_edge", default_value=1.0)
+    weights.data[0].value = 0.1
+    add_weight_bevel_modifier(obj, const, width=0.1)
+    select_objects(obj, [obj])
+
+    op_result = bpy.ops.hst.safe_bevel_weight(falloff_steps=0, min_weight=0.2, aggressiveness=0.6)
+    ensure("FINISHED" in op_result, "Safe Bevel Weight preserve-lower-weight operator did not finish")
+
+    final_weight = obj.data.attributes["bevel_weight_edge"].data[0].value
+    ensure(abs(final_weight - 0.1) < 1e-6, f"Expected user lower weight to be preserved, got {final_weight}")
+    result.add_detail(f"Preserved lower weight: {round(final_weight, 4)}")
+
+
+def test_safe_bevel_weight_missing_modifier_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("SafeBevelWeightMissingModifierCase")
+    obj = make_edge_network(
+        "SafeBevelWeightMissingModifierMesh",
+        collection,
+        [(0.0, 0.0, 0.0), (0.05, 0.0, 0.0), (1.05, 0.0, 0.0)],
+        [(0, 1), (1, 2)],
+    )
+    ensure_edge_float_attribute(obj, "bevel_weight_edge", default_value=1.0)
+    select_objects(obj, [obj])
+
+    op_result = bpy.ops.hst.safe_bevel_weight()
+    ensure("FINISHED" in op_result, "Safe Bevel Weight missing-modifier case did not finish")
+    ensure(obj.modifiers.get(const.BEVEL_MODIFIER) is None, "Operator should not create missing bevel modifier")
+    result.add_detail("Missing modifier object was skipped without creating HSTBevel")
 
 
 def test_modifier_ops_smoke(test_context: TestContext, result: TestCaseResult):
@@ -657,6 +777,10 @@ def main():
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
     context.run_case("vertex_color_set_and_copy_smoke", test_vertex_color_set_and_copy_smoke)
     context.run_case("collision_and_extract_ucx_smoke", test_collision_and_extract_ucx_smoke)
+    context.run_case("safe_bevel_weight_smoke", test_safe_bevel_weight_smoke)
+    context.run_case("safe_bevel_weight_selected_only_regression", test_safe_bevel_weight_selected_only_regression)
+    context.run_case("safe_bevel_weight_preserves_lower_user_weight_regression", test_safe_bevel_weight_preserves_lower_user_weight_regression)
+    context.run_case("safe_bevel_weight_missing_modifier_smoke", test_safe_bevel_weight_missing_modifier_smoke)
     context.run_case("modifier_ops_smoke", test_modifier_ops_smoke)
     context.run_case("ao_bake_operator_smoke", test_ao_bake_operator_smoke)
     context.run_case("wearmask_proxy_topology_matches_transfer_target", test_wearmask_proxy_topology_matches_transfer_target)

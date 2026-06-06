@@ -10,6 +10,7 @@ import bpy
 from ..const import *
 from ..functions.hst_functions import *
 from ..functions.common_functions import *
+from ..utils.mesh_utils import apply_safe_bevel_weight
 
 
 class HST_OT_BevelTransferNormal(bpy.types.Operator):
@@ -106,6 +107,112 @@ class HST_OT_BevelTransferNormal(bpy.types.Operator):
         box_column.label(text="Set Bevel Parameters")
         box_column.prop(self, "bevel_width")
         box_column.prop(self, "bevel_segments")
+
+
+class HST_OT_SafeBevelWeight(bpy.types.Operator):
+    """局部降低危险 corner 附近的 bevel weight，减少 Bevel 破面风险"""
+    bl_idname = "hst.safe_bevel_weight"
+    bl_label = "Safe Bevel Weight"
+    bl_description = "降低高风险 corner 附近的 bevel weight，减少局部 bevel 破面"
+    bl_options = {"REGISTER", "UNDO"}
+
+    selected_only: bpy.props.BoolProperty(name="Selected Only", default=False)
+    min_weight: bpy.props.FloatProperty(name="Min Weight", default=0.2, min=0.0, max=1.0)
+    aggressiveness: bpy.props.FloatProperty(name="Aggressiveness", default=0.6, min=0.0, max=1.0)
+    falloff_steps: bpy.props.IntProperty(name="Falloff Steps", default=1, min=0, max=5)
+    short_edge_ratio: bpy.props.FloatProperty(name="Short Edge Ratio", default=2.2, min=0.5, max=10.0)
+    sharp_angle_degrees: bpy.props.FloatProperty(name="Sharp Angle", default=35.0, min=1.0, max=120.0)
+    corner_edge_count: bpy.props.IntProperty(name="Corner Edge Count", default=3, min=2, max=8)
+    preserve_user_lower_weight: bpy.props.BoolProperty(name="Preserve Lower User Weight", default=True)
+
+    def invoke(self, context, event):
+        selected_objects = bpy.context.selected_objects
+        if len(selected_objects) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected object, please select objects and retry | \n"
+                + "没有选中的Object，请选中物体后重试",
+            )
+            return {"CANCELLED"}
+
+        selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
+        if len(selected_meshes) == 0:
+            self.report(
+                {"ERROR"},
+                "No selected mesh object, please select mesh objects and retry | \n"
+                + "没有选中Mesh物体，请选中Mesh物体后重试",
+            )
+            return {"CANCELLED"}
+
+        return self.execute(context)
+
+    def execute(self, context):
+        selected_objects = bpy.context.selected_objects
+        selected_meshes = filter_type(selected_objects, "MESH")
+        selected_meshes = filter_name(selected_meshes, UCX_PREFIX, "EXCLUDE")
+
+        processed_objects = 0
+        skipped_objects = 0
+        adjusted_edge_count = 0
+        non_weight_modifier_objects = 0
+        no_selection_objects = 0
+
+        for mesh in selected_meshes:
+            bevel_modifier = mesh.modifiers.get(BEVEL_MODIFIER)
+            if bevel_modifier is None:
+                skipped_objects += 1
+                continue
+
+            attribute_name = bevel_modifier.edge_weight or "bevel_weight_edge"
+            result = apply_safe_bevel_weight(
+                mesh,
+                bevel_width=bevel_modifier.width,
+                attribute_name=attribute_name,
+                selected_only=self.selected_only,
+                min_weight=self.min_weight,
+                aggressiveness=self.aggressiveness,
+                falloff_steps=self.falloff_steps,
+                short_edge_ratio=self.short_edge_ratio,
+                sharp_angle_degrees=self.sharp_angle_degrees,
+                corner_edge_count=self.corner_edge_count,
+                preserve_user_lower_weight=self.preserve_user_lower_weight,
+            )
+
+            if result["status"] == "no_selected_edges":
+                no_selection_objects += 1
+                continue
+
+            processed_objects += 1
+            adjusted_edge_count += result["adjusted_edge_count"]
+            if bevel_modifier.limit_method != "WEIGHT":
+                non_weight_modifier_objects += 1
+
+        message = (
+            f"Safe Bevel Weight: processed {processed_objects} objects, "
+            f"adjusted {adjusted_edge_count} edges, skipped {skipped_objects} objects"
+        )
+        if self.selected_only and no_selection_objects > 0:
+            message += f", no selection on {no_selection_objects} objects"
+        if non_weight_modifier_objects > 0:
+            message += f", {non_weight_modifier_objects} modifiers not in WEIGHT mode"
+
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+
+        box_column.prop(self, "selected_only")
+        box_column.prop(self, "min_weight")
+        box_column.prop(self, "aggressiveness")
+        box_column.prop(self, "falloff_steps")
+        box_column.prop(self, "short_edge_ratio")
+        box_column.prop(self, "sharp_angle_degrees")
+        box_column.prop(self, "corner_edge_count")
+        box_column.prop(self, "preserve_user_lower_weight")
 
 
 class HST_OT_BatchBevel(bpy.types.Operator):

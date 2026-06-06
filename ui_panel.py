@@ -190,6 +190,11 @@ class HST_PT_MainPanel(bpy.types.Panel):
             text="Bevel & Transfer Normal",
             icon="MOD_DATA_TRANSFER",
         )
+        box_column.operator(
+            "hst.safe_bevel_weight",
+            text="Safe Bevel Weight",
+            icon="EDGESEL",
+        )
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")

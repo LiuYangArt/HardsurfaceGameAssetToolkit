@@ -186,12 +186,15 @@ def mark_convex_edges(mesh) -> None:
     BMeshUtils.finished(bm, mesh, mode="OBJECT")
 
 
-def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
+def set_edge_bevel_weight_from_sharp(
+    target_object: bpy.types.Object, attribute_name: str = "bevel_weight_edge"
+) -> bool:
     """
     根据边缘是否为 sharp 设置 bevel 权重
 
     Args:
         target_object: 目标对象
+        attribute_name: 要写入的 Edge Float attribute 名称
 
     Returns:
         是否有 sharp 边
@@ -199,9 +202,9 @@ def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
     has_sharp: bool = False
     if "sharp_edge" in target_object.data.attributes:
         has_sharp = True
-        if "bevel_weight_edge" not in target_object.data.attributes:
+        if attribute_name not in target_object.data.attributes:
             bevel_weight_attr = target_object.data.attributes.new(
-                "bevel_weight_edge", "FLOAT", "EDGE"
+                attribute_name, "FLOAT", "EDGE"
             )
             for index, edge in enumerate(target_object.data.edges):
                 bevel_weight_attr.data[index].value = (
@@ -210,6 +213,262 @@ def set_edge_bevel_weight_from_sharp(target_object: bpy.types.Object) -> bool:
     return has_sharp
 
 
+def _clamp01(value: float) -> float:
+    """
+    将浮点值限制到 0-1 范围内
+
+    Args:
+        value: 输入值
+
+    Returns:
+        限制后的值
+    """
+    return max(0.0, min(1.0, value))
+
+
+def _collect_selected_mesh_edge_indices(target_object: bpy.types.Object) -> set[int]:
+    """
+    读取对象当前选中的 Edge 索引
+
+    Args:
+        target_object: 目标对象
+
+    Returns:
+        选中的 Edge 索引集合
+    """
+    if target_object.mode == "EDIT":
+        target_object.update_from_editmode()
+
+    selected_edge_indices = {
+        edge.index for edge in target_object.data.edges if edge.select
+    }
+
+    if any(polygon.select for polygon in target_object.data.polygons):
+        edge_key_to_index = {edge.key: edge.index for edge in target_object.data.edges}
+        for polygon in target_object.data.polygons:
+            if polygon.select:
+                for edge_key in polygon.edge_keys:
+                    selected_edge_indices.add(edge_key_to_index[edge_key])
+
+    return selected_edge_indices
+
+
+def _build_bevel_edge_adjacency(bm: bmesh.types.BMesh, candidate_indices: set[int]) -> dict[int, set[int]]:
+    """
+    基于共享 Vertex 构建 bevel Edge 邻接表
+
+    Args:
+        bm: 目标 BMesh
+        candidate_indices: 候选 bevel Edge 索引集合
+
+    Returns:
+        Edge 索引到相邻 Edge 索引集合的映射
+    """
+    adjacency = {edge_index: set() for edge_index in candidate_indices}
+    for edge_index in candidate_indices:
+        edge = bm.edges[edge_index]
+        for vert in edge.verts:
+            for linked_edge in vert.link_edges:
+                linked_index = linked_edge.index
+                if linked_index != edge_index and linked_index in candidate_indices:
+                    adjacency[edge_index].add(linked_index)
+    return adjacency
+
+
+def _expand_edge_indices_with_falloff(
+    seed_edge_indices: set[int],
+    adjacency: dict[int, set[int]],
+    max_steps: int,
+) -> set[int]:
+    """
+    按 bevel Edge 邻接关系扩散 Edge 范围
+
+    Args:
+        seed_edge_indices: 起始 Edge 集合
+        adjacency: Edge 邻接表
+        max_steps: 最大扩散圈数
+
+    Returns:
+        扩散后的 Edge 集合
+    """
+    if not seed_edge_indices:
+        return set()
+
+    visited = set(seed_edge_indices)
+    frontier = set(seed_edge_indices)
+    for _ in range(max_steps):
+        next_frontier = set()
+        for edge_index in frontier:
+            next_frontier.update(adjacency.get(edge_index, set()))
+        next_frontier -= visited
+        if not next_frontier:
+            break
+        visited.update(next_frontier)
+        frontier = next_frontier
+    return visited
+
+
+def apply_safe_bevel_weight(
+    target_object: bpy.types.Object,
+    bevel_width: float,
+    attribute_name: str = "bevel_weight_edge",
+    selected_only: bool = False,
+    min_weight: float = 0.2,
+    aggressiveness: float = 0.6,
+    falloff_steps: int = 1,
+    short_edge_ratio: float = 2.2,
+    sharp_angle_degrees: float = 35.0,
+    corner_edge_count: int = 3,
+    preserve_user_lower_weight: bool = True,
+) -> dict[str, object]:
+    """
+    根据局部拓扑风险降低 bevel Edge 权重
+
+    Args:
+        target_object: 目标对象
+        bevel_width: 当前 Bevel Modifier 的 width
+        attribute_name: bevel weight 使用的 Edge Float attribute 名称
+        selected_only: 是否只处理当前选区附近
+        min_weight: 自动降权下限
+        aggressiveness: 风险转权重时的强度
+        falloff_steps: 风险向外扩散的圈数
+        short_edge_ratio: 短边风险阈值系数
+        sharp_angle_degrees: 尖角风险阈值（度）
+        corner_edge_count: 多边交汇风险阈值
+        preserve_user_lower_weight: 是否保留用户已手动设置的更低权重
+
+    Returns:
+        处理统计结果
+    """
+    mesh_data = target_object.data
+    has_sharp = set_edge_bevel_weight_from_sharp(target_object, attribute_name=attribute_name)
+    weight_attr = mesh_data.attributes.get(attribute_name)
+
+    if weight_attr is None:
+        return {
+            "status": "missing_attribute",
+            "has_sharp": has_sharp,
+            "candidate_edge_count": 0,
+            "adjusted_edge_count": 0,
+            "risky_edge_count": 0,
+        }
+
+    candidate_edge_indices = {
+        edge.index
+        for edge in mesh_data.edges
+        if weight_attr.data[edge.index].value > 0.0
+    }
+    if not candidate_edge_indices:
+        return {
+            "status": "no_candidate_edges",
+            "has_sharp": has_sharp,
+            "candidate_edge_count": 0,
+            "adjusted_edge_count": 0,
+            "risky_edge_count": 0,
+        }
+
+    bm = bmesh.new()
+    bm.from_mesh(mesh_data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+
+    adjacency = _build_bevel_edge_adjacency(bm, candidate_edge_indices)
+    processing_edge_indices = set(candidate_edge_indices)
+    selected_seed_indices: set[int] = set()
+
+    if selected_only:
+        selected_seed_indices = _collect_selected_mesh_edge_indices(target_object) & candidate_edge_indices
+        if not selected_seed_indices:
+            bm.free()
+            return {
+                "status": "no_selected_edges",
+                "has_sharp": has_sharp,
+                "candidate_edge_count": len(candidate_edge_indices),
+                "adjusted_edge_count": 0,
+                "risky_edge_count": 0,
+            }
+        processing_edge_indices = _expand_edge_indices_with_falloff(
+            selected_seed_indices, adjacency, max(0, falloff_steps)
+        )
+
+    sharp_angle_radians = math.radians(sharp_angle_degrees)
+    short_edge_threshold = max(0.0, bevel_width * short_edge_ratio)
+    base_risks: dict[int, float] = {}
+
+    for edge_index in processing_edge_indices:
+        edge = bm.edges[edge_index]
+        short_risk = 0.0
+        if short_edge_threshold > 1e-8:
+            short_risk = _clamp01(1.0 - (edge.calc_length() / short_edge_threshold))
+
+        junction_risk = 0.0
+        angle_risk = 0.0
+        for vert in edge.verts:
+            linked_candidate_edges = [
+                linked_edge
+                for linked_edge in vert.link_edges
+                if linked_edge.index in candidate_edge_indices
+            ]
+            if len(linked_candidate_edges) >= corner_edge_count:
+                junction_risk = max(
+                    junction_risk,
+                    _clamp01((len(linked_candidate_edges) - corner_edge_count + 1) / 3.0),
+                )
+
+            current_vector = (edge.other_vert(vert).co - vert.co)
+            for linked_edge in linked_candidate_edges:
+                if linked_edge.index == edge_index:
+                    continue
+                linked_vector = linked_edge.other_vert(vert).co - vert.co
+                angle = Mesh._angle_between_vectors_radians(current_vector, linked_vector)
+                if angle < sharp_angle_radians and sharp_angle_radians > 1e-8:
+                    angle_risk = max(angle_risk, _clamp01(1.0 - (angle / sharp_angle_radians)))
+
+        risk_score = max(short_risk, junction_risk, angle_risk)
+        if risk_score > 0.0:
+            base_risks[edge_index] = risk_score
+
+    final_risks = dict(base_risks)
+    if falloff_steps > 0 and base_risks:
+        for source_edge_index, source_risk in base_risks.items():
+            frontier = {source_edge_index}
+            visited = {source_edge_index}
+            for step in range(1, falloff_steps + 1):
+                next_frontier = set()
+                for edge_index in frontier:
+                    next_frontier.update(adjacency.get(edge_index, set()))
+                next_frontier &= processing_edge_indices
+                next_frontier -= visited
+                if not next_frontier:
+                    break
+
+                propagated_risk = source_risk * (1.0 - (step / (falloff_steps + 1)))
+                for edge_index in next_frontier:
+                    final_risks[edge_index] = max(final_risks.get(edge_index, 0.0), propagated_risk)
+                visited.update(next_frontier)
+                frontier = next_frontier
+
+    adjusted_edge_count = 0
+    for edge_index, risk_score in final_risks.items():
+        old_weight = weight_attr.data[edge_index].value
+        safe_weight = max(min_weight, 1.0 - (risk_score * aggressiveness))
+        new_weight = min(old_weight, safe_weight) if preserve_user_lower_weight else safe_weight
+        new_weight = _clamp01(new_weight)
+        if abs(new_weight - old_weight) > 1e-6:
+            weight_attr.data[edge_index].value = new_weight
+            adjusted_edge_count += 1
+
+    mesh_data.update()
+    bm.free()
+    return {
+        "status": "processed",
+        "has_sharp": has_sharp,
+        "candidate_edge_count": len(candidate_edge_indices),
+        "selected_seed_count": len(selected_seed_indices),
+        "processed_edge_count": len(processing_edge_indices),
+        "risky_edge_count": len(final_risks),
+        "adjusted_edge_count": adjusted_edge_count,
+    }
 
 
 class Mesh:
