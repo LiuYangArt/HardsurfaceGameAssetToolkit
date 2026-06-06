@@ -19,6 +19,8 @@
 - asset origin / snap transform / reset to origin smoke test
 - prop / decal collection 标记 smoke test
 - static mesh FBX export smoke test
+- current Scene only FBX export regression test
+- CAT MeshGroup instance FBX export regression test
 - bake collection FBX export smoke test
 - static mesh GLB export smoke test
 - rename bones smoke test

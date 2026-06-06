@@ -391,6 +391,17 @@ def test_modifier_ops_smoke(test_context: TestContext, result: TestCaseResult):
     result.add_detail(f"Modifier stack: {list(obj.modifiers.keys())}")
 
 
+def make_cat_meshgroup_instance(name: str, source_collection, location=(0.0, 0.0, 0.0)):
+    bpy.ops.mesh.primitive_cube_add(location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    obj.data.name = name + "Mesh"
+    modifier = obj.modifiers.new(name="CAT_MeshGroup", type="NODES")
+    modifier["Socket_2"] = source_collection
+    modifier["Socket_3"] = False
+    return obj
+
+
 def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseResult):
     collection = make_collection("ExportCaseFBX")
     make_test_mesh("ExportMeshFBX", collection)
@@ -410,6 +421,68 @@ def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseR
     ensure(export_file.exists(), f"Expected FBX export not found: {export_file}")
     ensure(export_file.stat().st_size > 0, "Exported FBX file is empty")
     result.add_detail(f"FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
+
+
+def test_staticmeshexport_current_scene_only_fbx(test_context: TestContext, result: TestCaseResult):
+    current_collection = make_collection("CurrentSceneExportCase")
+    make_test_mesh("CurrentSceneExportMesh", current_collection)
+
+    other_scene = bpy.data.scenes.new("OtherExportScene")
+    other_collection = bpy.data.collections.new("OtherSceneExportCase")
+    other_scene.collection.children.link(other_collection)
+    make_test_mesh("OtherSceneExportMesh", other_collection)
+
+    export_dir = ARTIFACT_DIR / "exports" / "current_scene_only_fbx"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport()
+    ensure("FINISHED" in op_result, "Current Scene only FBX export did not finish")
+
+    current_export_file = export_dir / "SM_CurrentSceneExportCase.fbx"
+    other_export_file = export_dir / "SM_OtherSceneExportCase.fbx"
+    ensure(current_export_file.exists(), f"Expected current Scene export not found: {current_export_file}")
+    ensure(current_export_file.stat().st_size > 0, "Current Scene FBX file is empty")
+    ensure(not other_export_file.exists(), "Collection from another Scene was exported")
+    result.add_detail(f"Current Scene only export: {current_export_file.name}")
+
+
+def test_staticmeshexport_cat_meshgroup_instance_fbx(test_context: TestContext, result: TestCaseResult):
+    source_collection = bpy.data.collections.new("CatMeshGroupSource")
+    make_test_mesh("CatMeshGroupSourceMesh", source_collection)
+
+    instance = make_cat_meshgroup_instance("inst_CatMeshGroup", source_collection, location=(5.0, 2.0, 1.0))
+    duplicate_instance = make_cat_meshgroup_instance("inst_CatMeshGroupDuplicate", source_collection, location=(9.0, 0.0, 0.0))
+    original_matrix = instance.matrix_world.copy()
+    duplicate_matrix = duplicate_instance.matrix_world.copy()
+    modifier = instance.modifiers["CAT_MeshGroup"]
+
+    export_dir = ARTIFACT_DIR / "exports" / "cat_meshgroup_fbx"
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport()
+    ensure("FINISHED" in op_result, "CAT MeshGroup instance FBX export did not finish")
+
+    export_file = export_dir / "SM_CatMeshGroup.fbx"
+    duplicate_file = export_dir / "SM_CatMeshGroupDuplicate.fbx"
+    prefixed_file = export_dir / "SM_inst_CatMeshGroup.fbx"
+    ensure(export_file.exists(), f"Expected CAT MeshGroup FBX export not found: {export_file}")
+    ensure(export_file.stat().st_size > 0, "Exported CAT MeshGroup FBX file is empty")
+    ensure(not duplicate_file.exists(), "Duplicate source Collection instance was exported")
+    ensure(not prefixed_file.exists(), "inst_ prefix was kept in exported filename")
+    ensure(instance.matrix_world == original_matrix, "CAT MeshGroup instance transform was not restored")
+    ensure(duplicate_instance.matrix_world == duplicate_matrix, "Duplicate CAT MeshGroup instance transform changed")
+    ensure(modifier["Socket_3"] == False, "CAT MeshGroup Realize socket was not restored")
+    result.add_detail(f"CAT MeshGroup FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
 def test_staticmeshexport_glb_smoke(test_context: TestContext, result: TestCaseResult):
@@ -590,6 +663,8 @@ def main():
     context.run_case("origin_and_transform_smoke", test_origin_and_transform_smoke)
     context.run_case("collection_markers_smoke", test_collection_markers_smoke)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
+    context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
+    context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
     context.run_case("bake_collection_export_fbx_smoke", test_bake_collection_export_fbx_smoke)
     context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)

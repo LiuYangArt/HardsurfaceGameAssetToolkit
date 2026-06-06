@@ -5,6 +5,10 @@ from .functions.asset_check_functions import *
 
 GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
 CAT_GROUP_MOD = "CAT_MeshGroup"
+CAT_MESH_GROUP_NODE = "MeshGroup"
+CAT_MESH_GROUP_SOURCE_SOCKET = "Socket_2"
+CAT_MESH_GROUP_REALIZE_SOCKET = "Socket_3"
+CAT_INSTANCE_PREFIX = "inst_"
 GPRO_MOD = "GPro_Instance"
 
 
@@ -78,6 +82,28 @@ def filter_visible_objects(objects):
         if obj.visible_get():
             visible_objects.append(obj)
     return visible_objects
+
+
+# 收集当前 Scene Collection 树中的所有 Collection。
+# 参数:
+#     root_collection: 当前 Scene 的根 Collection。
+def collect_scene_collections(root_collection):
+    collections = [root_collection]
+    for child_collection in root_collection.children:
+        collections.extend(collect_scene_collections(child_collection))
+    return collections
+
+
+# 筛选当前 Scene 中可见的 Collection。
+# 参数:
+#     scene: 当前导出使用的 Blender Scene。
+def filter_visible_scene_collections(scene):
+    scene_collections = collect_scene_collections(scene.collection)
+    return [
+        collection
+        for collection in filter_collection_by_visibility(type="VISIBLE")
+        if collection in scene_collections
+    ]
 
 def filter_instance_coll_objs(collections):
     """筛选Instance Collection对应的场景中的instance"""
@@ -159,6 +185,157 @@ def export_instance_collection(target, export_path, file_prefix, export_format="
     instance_exporter(target, file_path, reset_transform=True)
 
 
+# 查找 Geometry Nodes modifier interface 中指定名称的 socket identifier。
+# 参数:
+#     modifier: Blender Nodes Modifier，待读取的 Geometry Nodes modifier。
+#     socket_name: socket 在 node group interface 中显示的名称。
+#     socket_type: 可选的 socket 类型，例如 NodeSocketCollection。
+def find_modifier_socket_identifier(modifier, socket_name, socket_type=None):
+    if not modifier.node_group:
+        return None
+
+    for item in modifier.node_group.interface.items_tree:
+        if not hasattr(item, "bl_socket_idname") or item.name != socket_name:
+            continue
+        if socket_type and item.bl_socket_idname != socket_type:
+            continue
+        return item.identifier
+    return None
+
+
+# 读取 CAT Mesh Group instance 的 source Collection。
+# 参数:
+#     instance_object: 可能带 CAT_MeshGroup Geometry Nodes modifier 的 Object。
+def get_cat_meshgroup_source_collection(instance_object):
+    if instance_object.type != "MESH":
+        return None, None
+
+    for modifier in instance_object.modifiers:
+        if modifier.type != "NODES":
+            continue
+        if modifier.name != CAT_GROUP_MOD and (
+            not modifier.node_group or modifier.node_group.name != CAT_MESH_GROUP_NODE
+        ):
+            continue
+
+        socket_identifier = CAT_MESH_GROUP_SOURCE_SOCKET
+        if socket_identifier not in modifier:
+            socket_identifier = find_modifier_socket_identifier(
+                modifier,
+                "Instanced Collection",
+                "NodeSocketCollection",
+            )
+        if not socket_identifier or socket_identifier not in modifier:
+            continue
+
+        source_collection = modifier[socket_identifier]
+        if isinstance(source_collection, bpy.types.Collection):
+            return modifier, source_collection
+
+    return None, None
+
+
+# 收集可导出的 CAT Mesh Group instance，并按 source Collection 去重。
+# 参数:
+#     objects: 候选 Object 列表，通常来自当前文件内可见 Object。
+def collect_cat_meshgroup_export_targets(objects):
+    export_targets = []
+    exported_source_collections = set()
+
+    for obj in objects:
+        modifier, source_collection = get_cat_meshgroup_source_collection(obj)
+        if modifier is None or source_collection is None:
+            continue
+
+        source_key = source_collection.as_pointer()
+        if source_key in exported_source_collections:
+            continue
+
+        exported_source_collections.add(source_key)
+        export_targets.append((obj, modifier, source_collection))
+
+    return export_targets
+
+
+# 判断 Collection 是否属于指定 root Collection 的树。
+# 参数:
+#     collection: 待检查的 Collection。
+#     root_collection: source Collection 树的根节点。
+def collection_is_in_tree(collection, root_collection):
+    if collection == root_collection:
+        return True
+    for child_collection in root_collection.children:
+        if collection_is_in_tree(collection, child_collection):
+            return True
+    return False
+
+
+# 生成 CAT Mesh Group instance 的 StaticMesh 导出名。
+# 参数:
+#     instance_object: 当前导出的 Mesh Group instance Object。
+#     source_collection: instance 引用的 source Collection，用于名称兜底。
+def make_cat_meshgroup_export_name(instance_object, source_collection):
+    export_name = instance_object.name
+    if export_name.lower().startswith(CAT_INSTANCE_PREFIX):
+        export_name = export_name[len(CAT_INSTANCE_PREFIX):]
+    if len(export_name) > 4 and export_name[-4] == "." and export_name[-3:].isdigit():
+        export_name = export_name[:-4]
+    if not export_name:
+        export_name = source_collection.name
+    return export_name
+
+
+# 临时打开 CAT Mesh Group 的 Realize 输出，导出后恢复原值。
+# 参数:
+#     modifier: CAT Mesh Group Geometry Nodes modifier。
+def enable_cat_meshgroup_realize(modifier):
+    socket_identifier = CAT_MESH_GROUP_REALIZE_SOCKET
+    if socket_identifier not in modifier:
+        socket_identifier = find_modifier_socket_identifier(modifier, "Realize")
+    if not socket_identifier or socket_identifier not in modifier:
+        return None, None
+
+    original_value = modifier[socket_identifier]
+    modifier[socket_identifier] = True
+    return socket_identifier, original_value
+
+
+# 将 CAT Mesh Group instance 临时移动到世界原点并导出为 StaticMesh。
+# 参数:
+#     instance_object: 当前导出的 Mesh Group instance Object。
+#     modifier: instance 上的 CAT Mesh Group Geometry Nodes modifier。
+#     source_collection: instance 引用的 source Collection。
+#     export_path: 导出目录，必须以 / 结尾。
+#     file_prefix: 用户配置的导出名前缀。
+#     export_format: 当前导出格式配置。
+def export_cat_meshgroup_instance(
+    instance_object,
+    modifier,
+    source_collection,
+    export_path,
+    file_prefix,
+    export_format="FBX",
+):
+    export_name = make_cat_meshgroup_export_name(instance_object, source_collection)
+    export_ext, _, staticmesh_exporter, _ = resolve_export_targets(export_format)
+    file_path = export_path + Const.STATICMESH_PREFIX + file_prefix + export_name + export_ext
+    original_matrix = instance_object.matrix_world.copy()
+    realize_identifier, original_realize = enable_cat_meshgroup_realize(modifier)
+
+    try:
+        export_matrix = original_matrix.copy()
+        export_matrix.translation = (0.0, 0.0, 0.0)
+        instance_object.matrix_world = export_matrix
+        bpy.context.view_layer.update()
+        print(f"exporting CAT MeshGroup instance: {instance_object.name} to {file_path}")
+        staticmesh_exporter(instance_object, file_path)
+    finally:
+        instance_object.matrix_world = original_matrix
+        if realize_identifier is not None:
+            modifier[realize_identifier] = original_realize
+        bpy.context.view_layer.update()
+
+
 class HST_OT_StaticMeshExport(bpy.types.Operator):
     bl_idname = "hst.staticmeshexport"
     bl_label = "HST StaticMesh Export UE"
@@ -169,7 +346,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
 #TODO: 增加对GPro Instance的支持， 增加对MeshGroupInstance的支持
 
     def execute(self, context):
-        all_objects = bpy.data.objects #blender文件内的所有物体
+        scene_objects = context.scene.objects #只导出当前 Scene 内的物体
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         file_prefix = parameters.file_prefix
@@ -194,14 +371,14 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             export_path = export_path + "/"
         make_dir(export_path) #建立目标路径
 
-        visible_objects= filter_visible_objects(all_objects) #筛选可见的物体
+        visible_objects= filter_visible_objects(scene_objects) #筛选当前 Scene 中可见的物体
         instance_collections = filter_instance_collection(visible_objects) #筛选实例化的collection
+        meshgroup_export_targets = collect_cat_meshgroup_export_targets(visible_objects)
 
         add_instance_collection_to_scene(instance_collections) #添加实例化的collection到场景中
 
         # print(f"instance colls: {instance_collections}")
-        
-        visible_collections = filter_collection_by_visibility(type="VISIBLE") #筛选可见的collection
+        visible_collections = filter_visible_scene_collections(context.scene)
         # print(f"visible_colls: {visible_collections}")
         # selected_objects = bpy.context.selected_objects
         store_mode = prep_select_mode()
@@ -228,10 +405,22 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         target_collections = (
             bake_export_collections + decal_collections + prop_collections + sm_collections
         )
+        meshgroup_source_collections = {
+            source_collection
+            for _, _, source_collection in meshgroup_export_targets
+        }
+        target_collections = [
+            collection
+            for collection in target_collections
+            if not any(
+                collection_is_in_tree(collection, source_collection)
+                for source_collection in meshgroup_source_collections
+            )
+        ]
 
         if len(skm_collections) == 0:
             if len(rig_collections) == 0:
-                if len(target_collections) == 0:
+                if len(target_collections) == 0 and len(meshgroup_export_targets) == 0:
                     restore_select_mode(store_mode)
                     remove_instance_collection_from_scene(instance_collections)
                     self.report(
@@ -283,6 +472,17 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             if len(origin_transform)>0: #reset origin transform
                 for origin_obj in origin_transform:
                     origin_obj.matrix_world=origin_transform[origin_obj]
+
+        for instance_object, modifier, source_collection in meshgroup_export_targets:
+            export_cat_meshgroup_instance(
+                instance_object,
+                modifier,
+                source_collection,
+                export_path,
+                file_prefix,
+                export_format,
+            )
+            export_count += 1
 
         skm_count=0
         if len(skm_collections) > 0:
