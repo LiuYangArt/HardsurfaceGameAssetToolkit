@@ -8,6 +8,7 @@ Collection 操作工具函数
 
 import bpy
 from ..const import HST_PROP, COLLECTION_COLORS
+from .outliner_utils import Outliner
 
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
@@ -93,15 +94,24 @@ class Collection:
     @staticmethod
     def get_selected():
         """
-        获取选中对象所在的 Collection 列表
+        获取 Outliner 选中的 Collection，或从选中对象反推 Collection
 
         Returns:
             Collection 列表
         """
+        outliner_collections = Outliner.get_selected_collections()
+        if outliner_collections:
+            return outliner_collections
+
         selected_objects = bpy.context.selected_objects
         collections = []
         
         if not selected_objects:
+            active_layer_collection = bpy.context.view_layer.active_layer_collection
+            if active_layer_collection is not None:
+                active_collection = active_layer_collection.collection
+                if active_collection != bpy.context.scene.collection:
+                    return [active_collection]
             return collections
             
         for obj in selected_objects:

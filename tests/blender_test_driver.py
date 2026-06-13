@@ -741,6 +741,30 @@ def test_collection_markers_smoke(test_context: TestContext, result: TestCaseRes
 
 
 
+
+def test_collection_get_selected_outliner_precedence(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    outliner_collection = make_collection("OutlinerPropMarkerCase")
+    viewport_collection = make_collection("ViewportMarkerCase")
+    outliner_obj = make_test_mesh("OutlinerPropMesh", outliner_collection)
+    viewport_obj = make_test_mesh("ViewportPropMesh", viewport_collection)
+    select_objects(viewport_obj, [])
+
+    collection_utils = test_context.addon.utils.collection_utils
+    collection_utils.Collection.active(outliner_collection)
+    selected_collections = collection_utils.Collection.get_selected()
+    ensure(selected_collections == [outliner_collection], "Active Outliner collection was not selected")
+
+    prop_result = bpy.ops.hst.markpropcollection()
+    ensure("FINISHED" in prop_result, "Mark prop collection from Outliner did not finish")
+    ensure(outliner_collection.get(const.HST_PROP) == "PROP", "Outliner collection was not marked as PROP")
+    ensure(viewport_collection.get(const.HST_PROP) is None, "Unselected collection was marked unexpectedly")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(outliner_obj) == "STATICMESH", "Outliner collection mesh type missing")
+
+    result.add_detail(f"Outliner-selected collection: {outliner_collection.name}")
+
+
+
 def test_bake_collection_export_fbx_smoke(test_context: TestContext, result: TestCaseResult):
     collection = make_collection("BakeExportCase")
     obj = make_test_mesh("BakeExportMesh", collection)
@@ -786,6 +810,7 @@ def main():
     context.run_case("wearmask_proxy_topology_matches_transfer_target", test_wearmask_proxy_topology_matches_transfer_target)
     context.run_case("origin_and_transform_smoke", test_origin_and_transform_smoke)
     context.run_case("collection_markers_smoke", test_collection_markers_smoke)
+    context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)

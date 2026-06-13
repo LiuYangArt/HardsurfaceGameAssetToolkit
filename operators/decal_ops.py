@@ -27,7 +27,7 @@ class HST_OT_ActiveCollection(bpy.types.Operator):
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
         outliner_coll = Outliner.get_selected_collections()
-        if outliner_coll is None:
+        if not outliner_coll:
             if len(selected_objects) == 0:
                 self.report(
                     {"ERROR"},

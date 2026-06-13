@@ -66,7 +66,6 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
     bl_description = "设置所选为Prop Collection"
 
     def execute(self, context):
-        selected_objects = bpy.context.selected_objects
         selected_collections = Collection.get_selected()
 
         if not selected_collections:
@@ -84,7 +83,12 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
             prop_collection.name = new_name
             Collection.mark_hst_type(prop_collection, "PROP")
             prop_collection.hide_render = True
-        rename_prop_meshes(selected_objects)
+
+        rename_targets = []
+        for prop_collection in selected_collections:
+            rename_targets.extend(prop_collection.all_objects)
+        if rename_targets:
+            rename_prop_meshes(rename_targets)
 
         self.report({"INFO"}, str(len(selected_collections)) + " Prop collection marked")
         return {"FINISHED"}

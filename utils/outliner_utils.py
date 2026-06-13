@@ -13,6 +13,31 @@ class Outliner:
     """Outliner 操作工具类"""
 
     @staticmethod
+    def _get_selected_ids(id_type) -> list:
+        """
+        获取 Outliner 中指定 ID 类型的选中项
+
+        Args:
+            id_type: 需要筛选的 bpy.types.ID 子类型
+
+        Returns:
+            选中的 ID 列表
+        """
+        screen = bpy.context.screen
+        if screen is None:
+            return []
+
+        for area in screen.areas:
+            if area.type != "OUTLINER":
+                continue
+
+            with bpy.context.temp_override(area=area):
+                context_selected_ids = getattr(bpy.context, "selected_ids", [])
+                return [item for item in context_selected_ids if isinstance(item, id_type)]
+
+        return []
+
+    @staticmethod
     def get_selected_object_ids() -> list:
         """
         获取在 Outliner 中选中的对象 ID 列表
@@ -20,18 +45,7 @@ class Outliner:
         Returns:
             对象 ID 列表
         """
-        selected_ids = []
-        
-        # 遍历所有区域查找 Outliner
-        for area in bpy.context.screen.areas:
-            if area.type == 'OUTLINER':
-                with bpy.context.temp_override(area=area):
-                    for obj in bpy.context.selected_ids:
-                        if isinstance(obj, bpy.types.Object):
-                            selected_ids.append(obj)
-                break
-        
-        return selected_ids
+        return Outliner._get_selected_ids(bpy.types.Object)
 
     @staticmethod
     def get_selected_collection_ids() -> list:
@@ -41,18 +55,7 @@ class Outliner:
         Returns:
             Collection ID 列表
         """
-        selected_ids = []
-        
-        # 遍历所有区域查找 Outliner
-        for area in bpy.context.screen.areas:
-            if area.type == 'OUTLINER':
-                with bpy.context.temp_override(area=area):
-                    for obj in bpy.context.selected_ids:
-                        if isinstance(obj, bpy.types.Collection):
-                            selected_ids.append(obj)
-                break
-        
-        return selected_ids
+        return Outliner._get_selected_ids(bpy.types.Collection)
 
     @staticmethod
     def get_selected_objects() -> list:
