@@ -7,6 +7,7 @@ _backup/**
 .cursor/*
 memory-bank/*
 *.code-workspace
+*SFConflict*
 
 # 版本管理器临时文件
 versions.bat

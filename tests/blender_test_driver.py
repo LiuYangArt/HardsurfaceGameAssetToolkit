@@ -227,6 +227,36 @@ def test_transfer_proxy_reuse(test_context: TestContext, result: TestCaseResult)
     result.add_detail(f"Proxy object: {proxy_objects[0].name}")
 
 
+def test_bevel_transfer_normal_collection_reuse(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    collection = make_collection("BevelTransferReuseCase")
+    obj = make_test_mesh("BevelTransferMesh", collection)
+    select_objects(obj, [obj])
+
+    for run_index in range(2):
+        bevel_result = bpy.ops.hst.hstbeveltransfernormal(
+            bevel_width=0.2,
+            bevel_segments=2,
+        )
+        ensure(
+            "FINISHED" in bevel_result,
+            f"Bevel transfer normal run {run_index + 1} did not finish",
+        )
+
+    transfer_collections = [
+        collection for collection in bpy.data.collections
+        if collection.name == const.TRANSFER_COLLECTION
+        or collection.name.startswith(const.TRANSFER_COLLECTION + ".")
+    ]
+    ensure(len(transfer_collections) == 1, f"Expected 1 transfer collection, got {len(transfer_collections)}")
+
+    transfer_objects = [obj for obj in bpy.data.objects if obj.name.startswith(const.TRANSFER_MESH_PREFIX)]
+    ensure(len(transfer_objects) == 1, f"Expected 1 transfer object, got {len(transfer_objects)}")
+    ensure(".00" not in transfer_objects[0].name, "Transfer object got duplicate suffix")
+    result.add_detail(f"Transfer collection: {transfer_collections[0].name}")
+    result.add_detail(f"Transfer object: {transfer_objects[0].name}")
+
+
 def test_project_decal_smoke(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
     collection = make_collection("DecalCase")
@@ -741,7 +771,6 @@ def test_collection_markers_smoke(test_context: TestContext, result: TestCaseRes
 
 
 
-
 def test_collection_get_selected_outliner_precedence(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
     outliner_collection = make_collection("OutlinerPropMarkerCase")
@@ -796,6 +825,7 @@ def main():
     context = TestContext(addon_module)
     context.run_case("addon_registers", test_addon_registers)
     context.run_case("transfer_proxy_reuse", test_transfer_proxy_reuse)
+    context.run_case("bevel_transfer_normal_collection_reuse", test_bevel_transfer_normal_collection_reuse)
     context.run_case("project_decal_smoke", test_project_decal_smoke)
     context.run_case("quickweight_smoke", test_quickweight_smoke)
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)

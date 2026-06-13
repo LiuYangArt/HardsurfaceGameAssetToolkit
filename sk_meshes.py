@@ -462,7 +462,7 @@ class HST_OT_FixSplitMesh(bpy.types.Operator):
             )
             return {"CANCELLED"}
         
-        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
+        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY", reuse_existing=True)
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:

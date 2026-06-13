@@ -73,7 +73,7 @@ class HST_OT_BevelTransferNormal(bpy.types.Operator):
         bevel_width = b_width
 
         rename_prop_meshes(selected_objects)
-        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY")
+        transfer_collection = Collection.create(TRANSFER_COLLECTION, type="PROXY", reuse_existing=True)
         set_visibility(transfer_collection, True)
         transfer_object_list = []
         for mesh in selected_meshes:
