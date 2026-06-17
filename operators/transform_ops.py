@@ -10,6 +10,7 @@ import bpy
 from ..const import *
 from ..functions.common_functions import *
 from ..functions.asset_check_functions import *
+from ..utils.misc_utils import set_default_scene_units
 
 
 class HST_OT_SnapTransform(bpy.types.Operator):

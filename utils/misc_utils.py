@@ -15,7 +15,7 @@ def set_default_scene_units():
     """
     scene = bpy.context.scene
     scene.unit_settings.system = 'METRIC'
-    scene.unit_settings.scale_length = 0.01
+    scene.unit_settings.scale_length = 1.0
     scene.unit_settings.length_unit = 'CENTIMETERS'
 
 

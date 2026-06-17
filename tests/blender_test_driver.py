@@ -771,6 +771,23 @@ def test_collection_markers_smoke(test_context: TestContext, result: TestCaseRes
 
 
 
+def test_prepare_cad_mesh_sets_ue_centimeter_units(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("PrepareCADUnitsCase")
+    obj = make_test_mesh("PrepareCADUnitsMesh", collection)
+    scene_units = bpy.context.scene.unit_settings
+    scene_units.system = "METRIC"
+    scene_units.length_unit = "METERS"
+    scene_units.scale_length = 0.01
+
+    select_objects(obj, [obj])
+    prep_result = bpy.ops.hst.prepcadmesh()
+    ensure("FINISHED" in prep_result, "Prepare CAD Mesh did not finish")
+    ensure(scene_units.system == "METRIC", f"Unexpected unit system: {scene_units.system}")
+    ensure(scene_units.length_unit == "CENTIMETERS", f"Unexpected length unit: {scene_units.length_unit}")
+    ensure(abs(scene_units.scale_length - 1.0) < 1e-6, f"Unexpected unit scale: {scene_units.scale_length}")
+    result.add_detail(f"Scene units: {scene_units.system}, {scene_units.length_unit}, scale={scene_units.scale_length}")
+
+
 def test_collection_get_selected_outliner_precedence(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
     outliner_collection = make_collection("OutlinerPropMarkerCase")
@@ -844,6 +861,7 @@ def main():
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
+    context.run_case("prepare_cad_mesh_sets_ue_centimeter_units", test_prepare_cad_mesh_sets_ue_centimeter_units)
     context.run_case("bake_collection_export_fbx_smoke", test_bake_collection_export_fbx_smoke)
     context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)

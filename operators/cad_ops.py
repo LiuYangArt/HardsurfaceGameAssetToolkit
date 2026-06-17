@@ -10,6 +10,7 @@ import bpy
 from ..const import *
 from ..functions.common_functions import *
 from ..utils.mesh_utils import check_non_solid_meshes
+from ..utils.misc_utils import set_default_scene_units
 
 
 class HST_OT_PrepCADMesh(bpy.types.Operator):

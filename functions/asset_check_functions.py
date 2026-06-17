@@ -5,10 +5,11 @@ from .common_functions import set_active_color_attribute, name_remove_digits, Ob
 
 def scene_unit_check():
     scene_settings = bpy.context.scene.unit_settings
-    if scene_settings.length_unit != "CENTIMETERS" or scene_settings.system != "METRIC":
-        return False
-    else:
-        return True
+    return (
+        scene_settings.length_unit == "CENTIMETERS"
+        and scene_settings.system == "METRIC"
+        and abs(scene_settings.scale_length - 1.0) <= 1e-6
+    )
 
 
 def show_reusult(result_input):
