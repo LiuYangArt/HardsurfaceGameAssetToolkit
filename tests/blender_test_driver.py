@@ -811,6 +811,17 @@ def test_collection_get_selected_outliner_precedence(test_context: TestContext, 
 
 
 
+def test_isolate_collections_ignores_active_collection_without_object_selection_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("IsolateActiveCollectionCase")
+    obj = make_test_mesh("IsolateActiveCollectionMesh", collection)
+    select_objects(obj, [])
+    test_context.addon.utils.collection_utils.Collection.active(collection)
+
+    isolate_result = bpy.ops.hst.isolate_collections_alt()
+    ensure("CANCELLED" in isolate_result, "Isolate Collections treated active collection as an explicit selection")
+    result.add_detail(f"Active collection without selected object was ignored: {collection.name}")
+
+
 def test_bake_collection_export_fbx_smoke(test_context: TestContext, result: TestCaseResult):
     collection = make_collection("BakeExportCase")
     obj = make_test_mesh("BakeExportMesh", collection)
@@ -858,6 +869,7 @@ def main():
     context.run_case("origin_and_transform_smoke", test_origin_and_transform_smoke)
     context.run_case("collection_markers_smoke", test_collection_markers_smoke)
     context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
+    context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)

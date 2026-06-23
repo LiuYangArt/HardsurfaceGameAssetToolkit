@@ -18,6 +18,7 @@
 - wearmask AO proxy 拓扑回归（确保 proxy 捕获 bevel 后几何，并被 Data Transfer 正确引用）
 - asset origin / snap transform / reset to origin smoke test
 - prop / decal collection 标记 smoke test
+- isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
 - current Scene only FBX export regression test
 - CAT MeshGroup instance FBX export regression test
