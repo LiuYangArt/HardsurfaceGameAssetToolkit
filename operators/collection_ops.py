@@ -114,12 +114,11 @@ class HST_OT_IsolateCollectionsAlt(bpy.types.Operator):
 
     def execute(self, context):
         is_local_view = Viewport.is_local_view()
-        selected_collections = Collection.get_selected()
         selected_objects = Object.get_selected()
+        outliner_collections = Outliner.get_selected_collections()
 
-        # Blender 5.0 下 Collection.get_selected() 在无选中时返回空列表，
-        # 这里统一按“未选中”处理，确保可以正常退出 local view。
-        if not selected_collections and not selected_objects:
+        # Collection.get_selected() 会在空 object 时回退到 active collection；这里必须只认显式选择。
+        if not outliner_collections and not selected_objects:
             if is_local_view:
                 self.report({"INFO"}, "Exit local view")
                 bpy.ops.view3d.localview(frame_selected=False)
@@ -127,6 +126,7 @@ class HST_OT_IsolateCollectionsAlt(bpy.types.Operator):
                 self.report({"INFO"}, "nothing selected, please select object and retry")
                 return {"CANCELLED"}
         else:
+            selected_collections = outliner_collections or Collection.get_selected()
             store_mode = prep_select_mode()
             if selected_collections:
                 for collection in selected_collections:
