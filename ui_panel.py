@@ -129,6 +129,51 @@ class UIParams(PropertyGroup):
         default=True,
     )
 
+    marmoset_output_bits: IntProperty(
+        name="Bits",
+        description="Marmoset bake output bit depth",
+        default=16,
+        min=8,
+        max=32,
+    )
+
+    marmoset_output_samples: IntProperty(
+        name="Samples",
+        description="Marmoset bake samples",
+        default=64,
+        min=1,
+        max=1024,
+    )
+
+    marmoset_bevel_width_mm: FloatProperty(
+        name="Bevel mm",
+        description="Toolbag Bevel shader width in millimeters",
+        default=1.0,
+        min=0.0,
+        max=100.0,
+    )
+
+    marmoset_bevel_samples: IntProperty(
+        name="Bevel Samples",
+        description="Toolbag Bevel shader samples",
+        default=16,
+        min=1,
+        max=128,
+    )
+
+    marmoset_vertex_color_mask_channel: EnumProperty(
+        name="VC Mask",
+        description="Toolbag Bevel shader vertex color mask channel",
+        items=[
+            ("NONE", "None", "Disable vertex color mask"),
+            ("R", "R", "Use red channel"),
+            ("G", "G", "Use green channel"),
+            ("B", "B", "Use blue channel"),
+            ("A", "A", "Use alpha channel"),
+        ],
+        default="R",
+    )
+
 
 class HST_PT_BakeTool(bpy.types.Panel):
     bl_idname = "HST_PT_BakeTool"
@@ -167,6 +212,18 @@ class HST_PT_BakeTool(bpy.types.Panel):
         box_column.operator(
             "hst.blur_vertexcolor", icon="PROP_OFF"
         )
+        box_column.separator()
+        box_column.label(text="Marmoset")
+        box_column.operator("hst.send_bake_to_marmoset", icon="EXPORT")
+        marmoset_size_row = box_column.row(align=True)
+        marmoset_size_row.prop(context.scene.hst_params, "texture_size", text="Tex")
+        marmoset_size_row.prop(context.scene.hst_params, "marmoset_output_bits", text="Bits")
+        marmoset_sample_row = box_column.row(align=True)
+        marmoset_sample_row.prop(context.scene.hst_params, "marmoset_output_samples", text="Samples")
+        marmoset_sample_row.prop(context.scene.hst_params, "marmoset_vertex_color_mask_channel", text="Mask")
+        marmoset_bevel_row = box_column.row(align=True)
+        marmoset_bevel_row.prop(context.scene.hst_params, "marmoset_bevel_width_mm", text="Bevel mm")
+        marmoset_bevel_row.prop(context.scene.hst_params, "marmoset_bevel_samples", text="Bevel Samples")
 
 
 class HST_PT_MainPanel(bpy.types.Panel):

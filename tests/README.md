@@ -23,6 +23,7 @@
 - current Scene only FBX export regression test
 - CAT MeshGroup instance FBX export regression test
 - bake collection FBX export smoke test
+- Marmoset Toolbag 5 bake scene bridge pairing / loader generation smoke test
 - static mesh GLB export smoke test
 - rename bones smoke test
 - cleanup UE SKM smoke test

@@ -33,6 +33,7 @@ __all__ = [
     'armature_utils',
     'import_utils',
     'export_utils',
+    'marmoset_bake_utils',
     'mesh_utils',
     'misc_utils',
 ]

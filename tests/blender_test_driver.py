@@ -846,6 +846,67 @@ def test_bake_collection_export_fbx_smoke(test_context: TestContext, result: Tes
     result.add_detail(f"Bake FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
+
+def test_marmoset_bake_pairing_smoke(test_context: TestContext, result: TestCaseResult):
+    low_collection = make_collection("a_low")
+    high_collection = make_collection("a_high")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(low_collection, "BAKE_LOW")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(high_collection, "BAKE_HIGH")
+
+    pairs = test_context.addon.utils.marmoset_bake_utils.collect_marmoset_bake_pairs(bpy.context.scene)
+    ensure(len(pairs) == 1, f"Expected one Marmoset bake pair, got {len(pairs)}")
+    ensure(pairs[0].base_name == "a", f"Unexpected bake base name: {pairs[0].base_name}")
+    ensure(pairs[0].low_collection == low_collection, "Low collection pairing mismatch")
+    ensure(pairs[0].high_collection == high_collection, "High collection pairing mismatch")
+    result.add_detail("Matched a_low with a_high")
+
+
+def test_marmoset_bake_pairing_missing_side_regression(test_context: TestContext, result: TestCaseResult):
+    low_collection = make_collection("missing_high_low")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(low_collection, "BAKE_LOW")
+
+    try:
+        test_context.addon.utils.marmoset_bake_utils.collect_marmoset_bake_pairs(bpy.context.scene)
+    except ValueError as error:
+        ensure("Missing high collection for: missing_high" in str(error), f"Unexpected error: {error}")
+        result.add_detail(str(error))
+        return
+    raise TestFailure("Missing high collection did not raise ValueError")
+
+
+def test_marmoset_loader_generation_smoke(test_context: TestContext, result: TestCaseResult):
+    low_collection = make_collection("asset_low")
+    high_collection = make_collection("asset_high")
+    low_obj = make_test_mesh("asset_low_mesh", low_collection)
+    high_obj = make_test_mesh("asset_high_mesh", high_collection, location=(2.0, 0.0, 0.0))
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(low_collection, "BAKE_LOW")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(high_collection, "BAKE_HIGH")
+
+    pairs = test_context.addon.utils.marmoset_bake_utils.collect_marmoset_bake_pairs(bpy.context.scene)
+    bake_root = ARTIFACT_DIR / "marmoset_bridge"
+    paths = test_context.addon.utils.marmoset_bake_utils.make_marmoset_bake_paths("", str(bake_root))
+    groups = test_context.addon.utils.marmoset_bake_utils.export_marmoset_bake_fbx(pairs, paths)
+    script_text = test_context.addon.utils.marmoset_bake_utils.build_marmoset_loader_script(
+        groups=groups,
+        scene_path=paths.scene_path,
+        texture_size=int(bpy.context.scene.hst_params.texture_size),
+        output_bits=16,
+        output_samples=64,
+        bevel_width_mm=1.25,
+        bevel_samples=16,
+        vertex_color_mask=1,
+    )
+    test_context.addon.utils.marmoset_bake_utils.write_loader_script(paths.loader_path, script_text)
+
+    ensure((paths.fbx_dir / "asset_low.fbx").exists(), "Low FBX was not exported")
+    ensure((paths.fbx_dir / "asset_high.fbx").exists(), "High FBX was not exported")
+    ensure(paths.loader_path.exists(), "Marmoset loader script was not written")
+    ensure('"Vertex Color Mask", CONFIG["vertex_color_mask"]' in script_text, "Loader missing vertex color mask setup")
+    ensure('"Bevel Width (mm)", CONFIG["bevel_width_mm"]' in script_text, "Loader missing bevel width setup")
+    ensure('"output_bits": 16' in script_text, "Loader missing output bit depth")
+    ensure('baker.importModel(group_config["low_fbx"])' in script_text, "Loader must use Baker quick loader")
+    ensure(low_obj.name in bpy.data.objects and high_obj.name in bpy.data.objects, "Source objects should remain in Blender scene")
+    result.add_detail(f"Loader: {paths.loader_path}")
 def main():
     addon_module = load_addon_module()
     addon_module.register()
@@ -875,6 +936,9 @@ def main():
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
     context.run_case("prepare_cad_mesh_sets_ue_centimeter_units", test_prepare_cad_mesh_sets_ue_centimeter_units)
     context.run_case("bake_collection_export_fbx_smoke", test_bake_collection_export_fbx_smoke)
+    context.run_case("marmoset_bake_pairing_smoke", test_marmoset_bake_pairing_smoke)
+    context.run_case("marmoset_bake_pairing_missing_side_regression", test_marmoset_bake_pairing_missing_side_regression)
+    context.run_case("marmoset_loader_generation_smoke", test_marmoset_loader_generation_smoke)
     context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)
     context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)

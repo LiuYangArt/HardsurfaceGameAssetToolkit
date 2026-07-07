@@ -135,6 +135,7 @@ class FBXExport:
                 use_triangles=False,
                 axis_forward='-Y',
                 axis_up='Z',
+                colors_type='LINEAR',
             )
         
         # 恢复选择
@@ -182,6 +183,7 @@ class FBXExport:
                 use_triangles=False,
                 axis_forward='-Y',
                 axis_up='Z',
+                colors_type='LINEAR',
             )
         
         # 恢复选择
