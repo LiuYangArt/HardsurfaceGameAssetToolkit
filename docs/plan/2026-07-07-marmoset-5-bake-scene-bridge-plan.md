@@ -21,11 +21,21 @@
   - `set_bake_collection(collection, type="LOW")`
   - `HST_OT_SetBakeCollectionLow`
   - `HST_OT_SetBakeCollectionHigh`
+  - 标记实际写在 collection 的自定义属性上（见 `mark_hst_type`）。
+- 读取已标记 collection 的实际 API：`utils/collection_utils.py`
+  - `Collection.mark_hst_type(collection, type)`：写标记。
+  - `Collection.get_hst_type(collection)`：读单个 collection 类型。
+  - `Collection.filter_hst_type(collections, "BAKE_LOW"/"BAKE_HIGH")`：**筛选 low / high collection 用这个，不要自己重写属性读取。**
+  - `Collection.sort_hst_types()`：类型排序（参考）。
 - Bake Prep UI：`ui_panel.py` 的 `HST_PT_BakeTool.draw()`。
-- Collection 类型排序：`utils/collection_utils.py` 的 `Collection.sort_hst_types()`。
+  - draw 内通过 `parameters = context.scene.hst_params` 拿参数；新按钮加在这里。
+- Scene 参数（PropertyGroup）：`ui_panel.py` 的 `class UIParams(PropertyGroup)`，注册在 `__init__.py` 的 `bpy.types.Scene.hst_params`。
+  - **新增的 Marmoset scene 参数都加到 `UIParams` 里**，通过 `context.scene.hst_params.<name>` 访问。
+  - 注意 `texture_size` 是 **字符串 EnumProperty**（值形如 `"2048"`），loader 里需要 `int(...)` 转换。
 - 旧 Marmoset / BTM 代码：`functions/btm_functions.py`、`btm_operator.py`。
   - 有可参考思路，但实现较旧，且当前项目没有真正注册 `toolbag_app_path` preference。
 - 导出工具：`utils/export_utils.py` 的 `FBXExport`，可复用或参考。
+  - **重要警告**：`FBXExport.staticmesh()` 当前调用 `bpy.ops.export_scene.fbx` 时**没有显式传 `colors_type`**，不能保证保留 vertex color（本功能的 bevel mask 强依赖 vertex color）。复用时必须新增/传 `colors_type='LINEAR'`（或 `'SRGB'`）并在测试里断言导出的 FBX 含 vertex color，或另写一个专用导出路径。
 
 ## 3. 外部依据
 
@@ -74,14 +84,16 @@
 4. 导出 FBX：
    - 输出目录：`<blend>/Bake/Marmoset/Models/`。
    - 每组建议导出一个 FBX：`<base>_bake.fbx`，其中包含对应 low/high mesh。
-   - 保留 vertex color。
+   - **必须保留 vertex color**：`export_scene.fbx` 需显式传 `colors_type='LINEAR'`；见第 2 节对 `FBXExport.staticmesh()` 的警告。导出后测试断言 mesh 含 color attribute。
 5. 生成 loader：`<blend>/Bake/Marmoset/hst_marmoset_loader.py`。
 6. 启动 Toolbag：`<toolbag_exe> <loader.py>`。
+   - 用 `subprocess.Popen` 非阻塞启动，不要阻塞 Blender UI。
+   - 启动前校验 `toolbag_exe` 存在，`Popen` 失败（`FileNotFoundError` / `OSError`）要 `self.report({'ERROR'}, ...)` 并返回 `{'CANCELLED'}`，不得静默吞掉（见第 10 节非目标）。
 7. Loader 内：
    - 新建 scene。
    - 创建 `mset.BakerObject()`。
    - 设置输出路径：`<blend>/Bake/Marmoset/Textures/<base>` 或统一 textures 目录。
-   - 设置分辨率、bit depth、samples。
+   - 设置分辨率、bit depth、samples。注意 `texture_size` 来自 `hst_params` 是字符串（如 `"2048"`），loader 里用 `int(...)` 转 `outputWidth/outputHeight`。
    - 对每组调用 `baker.addGroup(base)`。
    - 导入 FBX，并把 `_low` / `_high` 物体分配到 group 的 low/high 子节点。
    - 保存 scene：`<blend>/Bake/Marmoset/<blend_name>_bake.tbscene`。
@@ -177,11 +189,11 @@ Bake Prep 面板新增：
 ## 9. 实现顺序
 
 1. 加 `preferences.py`，注册 Toolbag 路径。
-2. 加配对/manifest 纯函数和测试。
+2. 加配对纯函数和测试（base key 计算、low/high 配对、校验）。不做 manifest JSON，参数直接内嵌 loader（见第 6 节）。
 3. 加 FBX 导出和 loader 生成，不启动 Toolbag。
 4. 加 operator 和 Bake Prep UI 按钮。
 5. 加启动 Toolbag 逻辑。
-6. 做 Toolbag material bevel API 探针。
+6. Toolbag material bevel API 探针**已完成**（见第 6 节 artifacts），本步跳过；如字段名对不上再补探针。
 7. 接入 high material bevel 设置。
 8. 跑回归测试，写必要 postmortem。
 
