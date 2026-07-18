@@ -29,6 +29,17 @@ RESULT_KEYS = (
     "deleted_original_face_count",
     "deleted_groove_face_count",
     "boundary_edge_count_after",
+    "non_manifold_edge_count_after",
+    "zero_area_face_count",
+    "regular_region_count",
+    "junction_region_count",
+    "regular_patch_face_count",
+    "junction_patch_face_count",
+    "rail_chain_count",
+    "bridge_attempt_count",
+    "bridge_failure_messages",
+    "bridge_face_counts",
+    "remaining_boundary_loop_count",
     "error_code",
     "error_message",
 )
@@ -63,7 +74,7 @@ source_hash = (
     tuple(tuple(edge.vertices) for edge in source.data.edges),
     tuple(tuple(polygon.vertices) for polygon in source.data.polygons),
 )
-for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOUNDARY", "REGULAR_PATCHED"):
+for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOUNDARY", "REGULAR_PATCHED", "PATCHED"):
     source.hide_set(False)
     try:
         result = utils.build_pipe_chamfer(
@@ -110,6 +121,9 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
                 boolean_modifiers[0].solver if boolean_modifiers else None
             )
         emit(stage, {"status": "finished", "result": compact_result})
+        save_path = os.environ.get("HST_PIPE_PROBE_SAVE")
+        if stage == "PATCHED" and save_path:
+            bpy.ops.wm.save_as_mainfile(filepath=save_path)
     except utils.PipeChamferError as error:
         emit(stage, {"status": "failed", "result": {key: error.stats.get(key) for key in RESULT_KEYS if key in error.stats}})
     except Exception as error:

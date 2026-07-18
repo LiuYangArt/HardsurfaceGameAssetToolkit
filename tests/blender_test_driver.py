@@ -1189,6 +1189,45 @@ def test_experimental_pipe_chamfer_open_boundary_preserves_original_faces(test_c
     )
 
 
+def test_experimental_pipe_chamfer_bridge_then_fill_smoke(test_context: TestContext, result: TestCaseResult):
+    """验证 Bridge Edge Loops 后 Fill 剩余洞能生成 watertight Mesh。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    bm = bmesh.new()
+    rail_a = [bm.verts.new((0.0, 0.0, z)) for z in (0.0, 0.5, 1.0)]
+    rail_b = [bm.verts.new((1.0, 0.0, z)) for z in (0.0, 0.5, 1.0)]
+    rail_a_edges = [bm.edges.new((rail_a[index], rail_a[index + 1])) for index in range(2)]
+    rail_b_edges = [bm.edges.new((rail_b[index], rail_b[index + 1])) for index in range(2)]
+    bridge = bmesh.ops.bridge_loops(
+        bm,
+        edges=rail_a_edges + rail_b_edges,
+        use_pairs=False,
+        use_cyclic=False,
+    )
+    ensure(len(bridge.get("faces", [])) == 2, "Bridge Edge Loops did not create the strip")
+    boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+    boundary_loops = test_context.addon.utils.experimental_pipe_chamfer_utils._ordered_edge_chains(
+        boundary_edges
+    )
+    ensure(len(boundary_loops) == 1 and boundary_loops[0]["is_cyclic"], "Bridge did not leave one Fill hole")
+    fill = bmesh.ops.contextual_create(
+        bm,
+        geom=boundary_loops[0]["edges"],
+        mat_nr=0,
+        use_smooth=False,
+    )
+    ensure(fill.get("faces"), "Fill did not close the remaining hole")
+    ensure(
+        all(len(edge.link_faces) == 2 for edge in bm.edges),
+        "Bridge→Fill result is not watertight",
+    )
+    bm.free()
+    result.add_detail("Bridge Edge Loops + Fill produced a watertight strip")
+
+
 def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
     """验证 terminal face 端延长 radius，曲面连续端不延长。
 
@@ -1324,6 +1363,7 @@ def main():
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
+    context.run_case("experimental_pipe_chamfer_bridge_then_fill_smoke", test_experimental_pipe_chamfer_bridge_then_fill_smoke)
     context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)

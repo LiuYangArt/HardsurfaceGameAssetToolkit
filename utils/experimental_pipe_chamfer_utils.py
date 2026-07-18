@@ -17,6 +17,7 @@ OUTPUT_TAG = "hst_experimental_pipe_chamfer_output"
 PIPE_ID_TAG = "hst_pipe_id"
 DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
 ORIGINAL_FACE_ATTRIBUTE = "hst_pipe_original_face"
+SOURCE_PATCH_ID_ATTRIBUTE = "hst_pipe_source_patch_id"
 MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
 BASE_MATERIAL_NAME = "HST_PipeChamfer_Base"
 SUPPORTED_STAGES = {
@@ -209,6 +210,20 @@ def _surface_patch_map(bm, sharp_edges):
                     stack.append(neighbor)
         patch_index += 1
     return face_patch, patch_index
+
+
+# 返回 source 每个 Face 所属的 Surface Patch ID，顺序与 polygon index 一致。
+# source_object: 输入 Mesh Object。
+def _source_face_patch_ids(source_object):
+    bm = bmesh.new()
+    bm.from_mesh(source_object.data)
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    sharp_edges = {bm.edges[index] for index in _sharp_edge_indices(source_object)}
+    face_patch, _ = _surface_patch_map(bm, sharp_edges)
+    patch_ids = [face_patch[bm.faces[index]] for index in range(len(bm.faces))]
+    bm.free()
+    return patch_ids
 
 
 # 判定 Sharp Edge 的 convex/concave 类型；只要求相邻 Edge 使用一致的稳定符号。
@@ -572,7 +587,12 @@ def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
 # pipes: 独立 Pipe Objects；source_object/stats: 输出上下文。
 def _build_cutter_set(pipes, source_object, stats):
     spatial_pairs = set()
-    trees = [BVHTree.FromObject(pipe, bpy.context.evaluated_depsgraph_get()) for pipe in pipes]
+    trees = []
+    for pipe in pipes:
+        bm = bmesh.new()
+        bm.from_mesh(pipe.data)
+        trees.append(BVHTree.FromBMesh(bm))
+        bm.free()
     for index_a, tree_a in enumerate(trees):
         for index_b in range(index_a + 1, len(trees)):
             if tree_a.overlap(trees[index_b]):
@@ -601,9 +621,9 @@ def _add_difference_modifier(output, cutter_collection):
     return modifier
 
 
-# 在 Boolean Apply 前给 source-derived Faces 写入 FACE Boolean attribute。
-# output: source duplicate；Boolean 会把该 attribute 传播到被切分的原表面。
-def _mark_original_faces(output):
+# 在 Boolean Apply 前写入原面标记与 Surface Patch ID provenance。
+# output: source duplicate；source_patch_ids: polygon index 对应的 Patch ID。
+def _mark_original_faces(output, source_patch_ids):
     attribute = output.data.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
     if attribute is not None:
         output.data.attributes.remove(attribute)
@@ -614,12 +634,22 @@ def _mark_original_faces(output):
     )
     for item in attribute.data:
         item.value = True
+    patch_id_attribute = output.data.attributes.get(SOURCE_PATCH_ID_ATTRIBUTE)
+    if patch_id_attribute is not None:
+        output.data.attributes.remove(patch_id_attribute)
+    patch_id_attribute = output.data.attributes.new(
+        SOURCE_PATCH_ID_ATTRIBUTE,
+        type="INT",
+        domain="FACE",
+    )
+    for polygon in output.data.polygons:
+        patch_id_attribute.data[polygon.index].value = source_patch_ids[polygon.index]
 
 
 # 为后续自动开口/补面阶段应用 Difference，并用 material marker 保留 cutter Face 线索。
-# output: source duplicate；cutter_collection: 独立 Pipe 集合；返回 marker slot index。
-def _apply_difference(output, cutter_collection):
-    _mark_original_faces(output)
+# output: source duplicate；cutter_collection: 独立 Pipe 集合；source_patch_ids: 原面 Patch IDs。
+def _apply_difference(output, cutter_collection, source_patch_ids):
+    _mark_original_faces(output, source_patch_ids)
     base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
     if len(output.data.materials) == 0:
         output.data.materials.append(base_material)
@@ -837,11 +867,250 @@ def _triangulate_junction_loop(bm, loop):
     return new_faces
 
 
+# 把一组 degree-2/degree-1 Boundary Edges 拆成有序的 open/cyclic edge chains。
+# edges: 同一 Pipe、同一 source Surface Patch 上的 Boundary Edges；返回 chain records。
+def _ordered_edge_chains(edges):
+    remaining = set(edges)
+    chains = []
+    while remaining:
+        seed = min(remaining, key=lambda edge: edge.index)
+        component = {seed}
+        stack = [seed]
+        remaining.remove(seed)
+        while stack:
+            edge = stack.pop()
+            for vertex in edge.verts:
+                for neighbor in vertex.link_edges:
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        component.add(neighbor)
+                        stack.append(neighbor)
+        adjacency = {}
+        for edge in component:
+            for vertex in edge.verts:
+                adjacency.setdefault(vertex, []).append(edge)
+        endpoints = sorted(
+            (vertex for vertex, linked in adjacency.items() if len(linked) == 1),
+            key=lambda vertex: vertex.index,
+        )
+        cyclic = not endpoints and all(len(linked) == 2 for linked in adjacency.values())
+        if not cyclic and len(endpoints) != 2:
+            continue
+        start = endpoints[0] if endpoints else min(adjacency, key=lambda vertex: vertex.index)
+        ordered_edges = []
+        ordered_vertices = [start]
+        current = start
+        previous = None
+        while len(ordered_edges) < len(component):
+            next_edge = next(
+                (
+                    edge
+                    for edge in sorted(adjacency[current], key=lambda item: item.index)
+                    if edge is not previous and edge not in ordered_edges
+                ),
+                None,
+            )
+            if next_edge is None:
+                break
+            ordered_edges.append(next_edge)
+            current = next_edge.other_vert(current)
+            previous = next_edge
+            if current is start:
+                break
+            ordered_vertices.append(current)
+        if len(ordered_edges) == len(component):
+            chains.append(
+                {
+                    "edges": ordered_edges,
+                    "vertices": ordered_vertices,
+                    "is_cyclic": cyclic,
+                }
+            )
+    return chains
+
+
+# 以 Pipe BVH 最近距离给 Boundary Edge 分配唯一 Pipe；Pipe overlap 区域保持未分配供最后 Fill。
+# edge: open Boundary Edge；pipe_trees: 每根独立 Pipe 的 BVH；radius: Pipe 半径。
+def _boundary_edge_pipe_owner(edge, pipe_trees, radius):
+    center = (edge.verts[0].co + edge.verts[1].co) * 0.5
+    distances = []
+    for pipe_id, tree in enumerate(pipe_trees):
+        nearest = tree.find_nearest(center)
+        if nearest is not None and nearest[3] is not None:
+            distances.append((nearest[3], pipe_id))
+    if not distances:
+        return None
+    distances.sort()
+    minimum_distance = distances[0][0]
+    surface_tolerance = max(radius * 0.12, 1.0e-6)
+    owner_tolerance = max(radius * 0.025, 1.0e-7)
+    if minimum_distance > surface_tolerance:
+        return None
+    owners = [pipe_id for distance, pipe_id in distances if distance <= minimum_distance + owner_tolerance]
+    return owners[0] if len(owners) == 1 else None
+
+
+# 为同一 Pipe 的两个 source Surface Patch 收集连续 Boundary rail chains。
+# bm/groups/pipe_trees/radius: 当前补面上下文；返回 pipe_id -> patch_id -> chains。
+def _pipe_boundary_rails(bm, groups, pipe_trees, radius):
+    patch_layer = bm.faces.layers.int.get(SOURCE_PATCH_ID_ATTRIBUTE)
+    if patch_layer is None:
+        return {}
+    group_by_pipe = {group["pipe_id"]: group for group in groups}
+    edges_by_key = {}
+    for edge in bm.edges:
+        if len(edge.link_faces) != 1:
+            continue
+        pipe_id = _boundary_edge_pipe_owner(edge, pipe_trees, radius)
+        if pipe_id is None or pipe_id not in group_by_pipe:
+            continue
+        patch_id = edge.link_faces[0][patch_layer]
+        if patch_id not in group_by_pipe[pipe_id]["patch_pair"]:
+            continue
+        edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
+    rails = {}
+    for (pipe_id, patch_id), edges in edges_by_key.items():
+        rails.setdefault(pipe_id, {})[patch_id] = _ordered_edge_chains(edges)
+    return rails
+
+
+# 计算两个 open/cyclic rail chains 的配对成本；成本主要取端点距离和中心距离。
+# chain_a/chain_b: 同一 Pipe 两侧的候选 rail chain；返回可排序 score。
+def _rail_pair_score(chain_a, chain_b):
+    vertices_a = chain_a["vertices"]
+    vertices_b = chain_b["vertices"]
+    center_a = sum((vertex.co for vertex in vertices_a), Vector()) / len(vertices_a)
+    center_b = sum((vertex.co for vertex in vertices_b), Vector()) / len(vertices_b)
+    count_ratio = max(len(vertices_a), len(vertices_b)) / min(len(vertices_a), len(vertices_b))
+    if chain_a["is_cyclic"] or chain_b["is_cyclic"]:
+        endpoint_cost = (center_a - center_b).length
+    else:
+        direct = (
+            (vertices_a[0].co - vertices_b[0].co).length
+            + (vertices_a[-1].co - vertices_b[-1].co).length
+        ) * 0.5
+        reversed_cost = (
+            (vertices_a[0].co - vertices_b[-1].co).length
+            + (vertices_a[-1].co - vertices_b[0].co).length
+        ) * 0.5
+        endpoint_cost = min(direct, reversed_cost)
+    return endpoint_cost + (center_a - center_b).length * 0.25 + (count_ratio - 1.0)
+
+
+# 模拟手工流程：同一 Pipe 两侧 rail 执行 Bridge Edge Loops，之后 Fill 剩余闭合洞。
+# bm/loops: 删除槽面后的 BoundaryGraph；groups/pipe_trees/radius: rail ownership 上下文；stats: 统计。
+def _bridge_then_fill(bm, loops, groups, pipe_trees, radius, stats):
+    del loops
+    regular_faces = []
+    junction_faces = []
+    bridge_count = 0
+    stats["bridge_attempt_count"] = 0
+    stats["bridge_failure_messages"] = []
+    stats["bridge_face_counts"] = []
+    rails = _pipe_boundary_rails(bm, groups, pipe_trees, radius)
+    stats["rail_chain_count"] = sum(
+        len(chains)
+        for patch_rails in rails.values()
+        for chains in patch_rails.values()
+    )
+    for group in groups:
+        pipe_id = group["pipe_id"]
+        patch_a, patch_b = group["patch_pair"]
+        if patch_a == patch_b:
+            continue
+        chains_a = rails.get(pipe_id, {}).get(patch_a, [])
+        chains_b = rails.get(pipe_id, {}).get(patch_b, [])
+        candidates = []
+        for index_a, chain_a in enumerate(chains_a):
+            for index_b, chain_b in enumerate(chains_b):
+                score = _rail_pair_score(chain_a, chain_b)
+                candidates.append((score, index_a, index_b))
+        paired_a = set()
+        paired_b = set()
+        for _, index_a, index_b in sorted(candidates):
+            if index_a in paired_a or index_b in paired_b:
+                continue
+            chain_a = chains_a[index_a]
+            chain_b = chains_b[index_b]
+            if chain_a is chain_b:
+                continue
+            stats["bridge_attempt_count"] += 1
+            try:
+                result = bmesh.ops.bridge_loops(
+                    bm,
+                    edges=chain_a["edges"] + chain_b["edges"],
+                    use_pairs=False,
+                    use_cyclic=False,
+                )
+            except (ValueError, RuntimeError) as error:
+                stats["bridge_failure_messages"].append(
+                    f"pipe={pipe_id}, a={len(chain_a['edges'])}, b={len(chain_b['edges'])}: {error}"
+                )
+                continue
+            faces = list(result.get("faces", []))
+            stats["bridge_face_counts"].append(len(faces))
+            if not faces:
+                continue
+            regular_faces.extend(faces)
+            paired_a.add(index_a)
+            paired_b.add(index_b)
+            bridge_count += 1
+            stats["regular_region_count"] = bridge_count
+            stats["regular_patch_face_count"] = len(regular_faces)
+
+    remaining_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+    remaining_loops = _ordered_edge_chains(remaining_edges)
+    stats["remaining_boundary_loop_count"] = len(remaining_loops)
+    for loop in remaining_loops:
+        if not loop["is_cyclic"]:
+            _fail("junction_patch_invalid", "Bridge 后留下了无法 Fill 的开放边链", stats)
+        try:
+            result = bmesh.ops.contextual_create(
+                bm,
+                geom=loop["edges"],
+                mat_nr=0,
+                use_smooth=False,
+            )
+        except (ValueError, RuntimeError) as error:
+            _fail("junction_patch_invalid", str(error), stats)
+        faces = list(result.get("faces", []))
+        if not faces:
+            _fail(
+                "junction_patch_invalid",
+                f"Fill produced no Faces for {len(loop['edges'])}-Edge hole",
+                stats,
+            )
+        junction_faces.extend(faces)
+
+    stats["regular_region_count"] = bridge_count
+    stats["junction_region_count"] = len(remaining_loops)
+    stats["strip_port_count"] = bridge_count * 2
+    stats["regular_patch_face_count"] = len(regular_faces)
+    stats["junction_patch_face_count"] = len(junction_faces)
+    return regular_faces, junction_faces
+
+
 # 对 BoundaryGraph 做 Regular/Junction 分区并 patch；复杂 overlap 宁可稳定失败也不伪成功。
-# bm/loops: open boundary；groups: Pipe Groups；junction_count: 拓扑+空间 junction 数；stats: 统计。
-def _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage):
+# bm/loops: open boundary；groups/pipe_trees/radius: Pipe 上下文；junction_count/stats/debug_stage: 阶段信息。
+def _patch_boundaries(bm, loops, groups, pipe_trees, radius, junction_count, stats, debug_stage):
     if not loops:
         _fail("ambiguous_boundary", "Difference produced no open boundary loops", stats)
+    if debug_stage == "PATCHED":
+        regular_faces, junction_faces = _bridge_then_fill(
+            bm,
+            loops,
+            groups,
+            pipe_trees,
+            radius,
+            stats,
+        )
+        bmesh.ops.dissolve_degenerate(
+            bm,
+            dist=max(radius * 1.0e-6, 1.0e-9),
+            edges=list(bm.edges),
+        )
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        return regular_faces, junction_faces
     regular_faces = []
     junction_faces = []
     if junction_count == 0 and len(groups) == 1 and len(loops) == 2:
@@ -959,7 +1228,7 @@ def build_pipe_chamfer(
         stats["status"] = "finished"
         return stats
 
-    cutter_collection, _pipe_trees = _build_cutter_set(pipes, source_object, stats)
+    cutter_collection, pipe_trees = _build_cutter_set(pipes, source_object, stats)
     if debug_stage == "CUTTER_UNION":
         _hide_source_object(source_object, stats)
         stats["status"] = "finished"
@@ -979,7 +1248,11 @@ def build_pipe_chamfer(
         _activate_object(output)
         return stats
 
-    marker_index = _apply_difference(output, cutter_collection)
+    marker_index = _apply_difference(
+        output,
+        cutter_collection,
+        _source_face_patch_ids(source_object),
+    )
     cutter_face_indices = _groove_face_indices(output, stats)
     stats["cutter_face_count"] = len(cutter_face_indices)
     if not cutter_face_indices:
@@ -999,7 +1272,16 @@ def build_pipe_chamfer(
         stats["status"] = "finished"
     else:
         junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
-        _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage)
+        _patch_boundaries(
+            bm,
+            loops,
+            groups,
+            pipe_trees,
+            radius,
+            junction_count,
+            stats,
+            debug_stage,
+        )
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
         stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
         stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
