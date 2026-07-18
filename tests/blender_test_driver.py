@@ -1148,6 +1148,47 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     result.add_detail("BOOLEAN_CUT kept one editable Exact Collection Boolean Modifier")
 
 
+def test_experimental_pipe_chamfer_open_boundary_preserves_original_faces(test_context: TestContext, result: TestCaseResult):
+    """验证 Apply 后只删除 Boolean 新生成的槽面，不删除原模型表面。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("OpenBoundaryPreservationCase")
+    source = make_test_mesh("OpenBoundaryPreservationSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=0.08,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="OPEN_BOUNDARY",
+        keep_debug_objects=True,
+    )
+    output = bpy.data.objects.get(stats["output_object_name"])
+    ensure(output is not None, "OPEN_BOUNDARY output is missing")
+    ensure(
+        stats["preserved_original_face_count"] >= stats["source_face_count_before_boolean"],
+        f"OPEN_BOUNDARY lost all descendants of an original Face: {stats}",
+    )
+    ensure(
+        stats["deleted_original_face_count"] == 0,
+        f"OPEN_BOUNDARY deleted original Faces: {stats}",
+    )
+    ensure(
+        stats["deleted_groove_face_count"] > 0,
+        "OPEN_BOUNDARY did not delete any generated groove Faces",
+    )
+    result.add_detail(
+        f"Preserved {stats['preserved_original_face_count']} original Faces; "
+        f"deleted {stats['deleted_groove_face_count']} groove Faces"
+    )
+
+
 def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
     """验证 terminal face 端延长 radius，曲面连续端不延长。
 
@@ -1282,6 +1323,7 @@ def main():
     context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
+    context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
     context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)

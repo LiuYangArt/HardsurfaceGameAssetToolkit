@@ -36,6 +36,7 @@
 - 仅显式选择后续自动开口/补面 debug stage 时才 Apply Difference；禁止逐 Pipe Difference。
 - Material provenance 只作 probe；BVH 按各 Pipe 几何分类 owner。
 - 若 Collection Boolean 没产生 cutter Faces，报告 source、Pipe 数、overlap pairs 和各 Pipe 风险。
+- Apply 前给原 Faces 写入 Boolean provenance attribute；Apply 后仅删除未继承该标记的槽面，BVH 不再参与删除决策。
 
 ### Task 3：Terminal Face 端点延长
 

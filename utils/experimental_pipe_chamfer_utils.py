@@ -16,6 +16,7 @@ CUTTER_COLLECTION_SUFFIX = "_PipeCutters_TEST"
 OUTPUT_TAG = "hst_experimental_pipe_chamfer_output"
 PIPE_ID_TAG = "hst_pipe_id"
 DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
+ORIGINAL_FACE_ATTRIBUTE = "hst_pipe_original_face"
 MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
 BASE_MATERIAL_NAME = "HST_PipeChamfer_Base"
 SUPPORTED_STAGES = {
@@ -77,6 +78,10 @@ def _base_stats(
         "pipe_endpoint_classifications": [],
         "cutter_face_count": 0,
         "ambiguous_face_count": 0,
+        "preserved_original_face_count": 0,
+        "source_face_count_before_boolean": 0,
+        "deleted_original_face_count": 0,
+        "deleted_groove_face_count": 0,
         "regular_region_count": 0,
         "junction_region_count": 0,
         "strip_port_count": 0,
@@ -596,9 +601,25 @@ def _add_difference_modifier(output, cutter_collection):
     return modifier
 
 
+# 在 Boolean Apply 前给 source-derived Faces 写入 FACE Boolean attribute。
+# output: source duplicate；Boolean 会把该 attribute 传播到被切分的原表面。
+def _mark_original_faces(output):
+    attribute = output.data.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    if attribute is not None:
+        output.data.attributes.remove(attribute)
+    attribute = output.data.attributes.new(
+        ORIGINAL_FACE_ATTRIBUTE,
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    for item in attribute.data:
+        item.value = True
+
+
 # 为后续自动开口/补面阶段应用 Difference，并用 material marker 保留 cutter Face 线索。
 # output: source duplicate；cutter_collection: 独立 Pipe 集合；返回 marker slot index。
 def _apply_difference(output, cutter_collection):
+    _mark_original_faces(output)
     base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
     if len(output.data.materials) == 0:
         output.data.materials.append(base_material)
@@ -636,6 +657,34 @@ def _classify_cutter_faces(output, marker_index, pipe_trees, radius):
         if material_marked or owners:
             owner_sets[polygon.index] = owners
     return owner_sets, ambiguous
+
+
+# 按 Boolean 传播的 original-face attribute 区分槽面与原表面。
+# output: Apply 后 Mesh；stats: 结构化统计；返回应删除的 groove Face indices。
+def _groove_face_indices(output, stats):
+    attribute = output.data.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    if attribute is None or attribute.domain != "FACE":
+        _fail(
+            "original_face_provenance_missing",
+            "Boolean 后未找到原面标记，无法安全删除槽面",
+            stats,
+        )
+    original_faces = {
+        polygon.index
+        for polygon in output.data.polygons
+        if bool(attribute.data[polygon.index].value)
+    }
+    groove_faces = {
+        polygon.index
+        for polygon in output.data.polygons
+        if polygon.index not in original_faces
+    }
+    stats["preserved_original_face_count"] = len(original_faces)
+    stats["deleted_original_face_count"] = 0
+    stats["deleted_groove_face_count"] = len(groove_faces)
+    if not groove_faces:
+        _fail("boolean_no_cutter_faces", "Boolean 后没有识别到 Pipe 生成的槽面", stats)
+    return sorted(groove_faces)
 
 
 # 删除 cutter Faces 并把 BoundaryGraph 的连通边界环提取为有序 BMVert 序列。
@@ -910,7 +959,7 @@ def build_pipe_chamfer(
         stats["status"] = "finished"
         return stats
 
-    cutter_collection, pipe_trees = _build_cutter_set(pipes, source_object, stats)
+    cutter_collection, _pipe_trees = _build_cutter_set(pipes, source_object, stats)
     if debug_stage == "CUTTER_UNION":
         _hide_source_object(source_object, stats)
         stats["status"] = "finished"
@@ -920,6 +969,7 @@ def build_pipe_chamfer(
     _hide_source_object(source_object, stats)
     output[DEBUG_STAGE_TAG] = debug_stage
     stats["output_object_name"] = output.name
+    stats["source_face_count_before_boolean"] = len(output.data.polygons)
     if debug_stage == "BOOLEAN_CUT":
         _add_difference_modifier(output, cutter_collection)
         stats["warnings"].append(
@@ -930,10 +980,8 @@ def build_pipe_chamfer(
         return stats
 
     marker_index = _apply_difference(output, cutter_collection)
-    owner_sets, ambiguous_faces = _classify_cutter_faces(output, marker_index, pipe_trees, radius)
-    cutter_face_indices = sorted(owner_sets)
+    cutter_face_indices = _groove_face_indices(output, stats)
     stats["cutter_face_count"] = len(cutter_face_indices)
-    stats["ambiguous_face_count"] = len(ambiguous_faces)
     if not cutter_face_indices:
         _fail(
             "boolean_no_cutter_faces",
@@ -944,8 +992,6 @@ def build_pipe_chamfer(
             ),
             stats,
         )
-    if debug_stage in {"OPEN_BOUNDARY", "REGULAR_PATCHED", "PATCHED"} and ambiguous_faces:
-        _fail("ambiguous_provenance", f"Could not classify cutter Faces: {ambiguous_faces}", stats)
     bm, loops = _open_boundary(output, cutter_face_indices, stats)
     stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
     if debug_stage == "OPEN_BOUNDARY":

@@ -31,11 +31,13 @@
 - 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
 - two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
 - 未 Apply 的 Cutter Collection Boolean Preview smoke test
+- Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
+> 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
 > `PATCHED` 仅在 BoundaryGraph 可稳定分类时完成；当前 cube closed-loop probe 会返回 `ambiguous_boundary`，不会用旧 Bevel 结果伪装成功。two-pipe junction 的 Regular/Junction patch 仍是待继续验证的 Stop/Go 项。
 
 ## Experimental Pipe Chamfer API Probe
