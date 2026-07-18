@@ -120,6 +120,28 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
             compact_result["boolean_solver"] = (
                 boolean_modifiers[0].solver if boolean_modifiers else None
             )
+        if stage == "PATCHED":
+            output = bpy.data.objects.get(result.get("output_object_name"))
+            chamfer_attribute = (
+                output.data.attributes.get("hst_pipe_chamfer")
+                if output is not None
+                else None
+            )
+            marked_faces = [
+                polygon
+                for polygon in output.data.polygons
+                if chamfer_attribute is not None
+                and chamfer_attribute.data[polygon.index].value
+            ] if output is not None else []
+            compact_result["chamfer_face_count"] = len(marked_faces)
+            compact_result["chamfer_ngon_count"] = sum(
+                len(polygon.vertices) > 3
+                for polygon in marked_faces
+            )
+            compact_result["normal_transfer_modifier_count"] = sum(
+                modifier.type == "DATA_TRANSFER"
+                for modifier in output.modifiers
+            ) if output is not None else 0
         emit(stage, {"status": "finished", "result": compact_result})
         save_path = os.environ.get("HST_PIPE_PROBE_SAVE")
         if stage == "PATCHED" and save_path:

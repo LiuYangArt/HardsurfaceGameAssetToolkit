@@ -1228,6 +1228,46 @@ def test_experimental_pipe_chamfer_bridge_then_fill_smoke(test_context: TestCont
     result.add_detail("Bridge Edge Loops + Fill produced a watertight strip")
 
 
+def test_experimental_pipe_chamfer_postprocess_smoke(test_context: TestContext, result: TestCaseResult):
+    """验证 PATCHED 后处理会 dissolve 共面三角、标记 chamfer Faces，并传递原 Mesh 法线。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("PipeChamferPostprocessCase")
+    source = make_test_mesh("PipeChamferPostprocessSource", collection)
+    mark_all_edges_sharp(source)
+    operator_result = run_pipe_chamfer_operator(source, "PATCHED", radius=0.08)
+    ensure("FINISHED" in operator_result, "PATCHED postprocess did not finish")
+    output = bpy.data.objects.get("PipeChamferPostprocessSource_PipeChamfer_TEST")
+    ensure(output is not None, "PATCHED postprocess output is missing")
+
+    chamfer_attribute = output.data.attributes.get("hst_pipe_chamfer")
+    ensure(chamfer_attribute is not None, "PATCHED output is missing hst_pipe_chamfer")
+    ensure(chamfer_attribute.domain == "FACE", "hst_pipe_chamfer must use FACE domain")
+    chamfer_faces = [
+        polygon
+        for polygon in output.data.polygons
+        if chamfer_attribute.data[polygon.index].value
+    ]
+    ensure(chamfer_faces, "hst_pipe_chamfer did not mark any Faces")
+    ensure(
+        any(len(polygon.vertices) > 3 for polygon in chamfer_faces),
+        "Dissolve did not produce any chamfer n-gon",
+    )
+
+    normal_modifiers = [modifier for modifier in output.modifiers if modifier.type == "DATA_TRANSFER"]
+    ensure(len(normal_modifiers) == 1, "PATCHED output must have one normal Data Transfer modifier")
+    normal_modifier = normal_modifiers[0]
+    ensure(normal_modifier.object is source, "Normal transfer source must be the original Mesh")
+    ensure(normal_modifier.data_types_loops == {"CUSTOM_NORMAL"}, "Normal transfer must target custom normals")
+    ensure(normal_modifier.loop_mapping == "POLYINTERP_LNORPROJ", "Normal transfer mapping changed")
+    result.add_detail(
+        f"Marked chamfer Faces: {len(chamfer_faces)}; normal modifier: {normal_modifier.name}"
+    )
+
+
 def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
     """验证 terminal face 端延长 radius，曲面连续端不延长。
 
@@ -1364,6 +1404,7 @@ def main():
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
     context.run_case("experimental_pipe_chamfer_bridge_then_fill_smoke", test_experimental_pipe_chamfer_bridge_then_fill_smoke)
+    context.run_case("experimental_pipe_chamfer_postprocess_smoke", test_experimental_pipe_chamfer_postprocess_smoke)
     context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)

@@ -33,6 +33,7 @@
 - 未 Apply 的 Cutter Collection Boolean Preview smoke test
 - Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
 - Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
+- PATCHED 后 dissolve 为 chamfer n-gon、FACE attribute 标记与原 Mesh custom normal transfer smoke test
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 
@@ -40,6 +41,7 @@
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
 > `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
+> PATCHED 后会 dissolve chamfer 内部共面 Edge，写入 FACE Boolean attribute `hst_pipe_chamfer`，并用 `POLYINTERP_LNORPROJ` Data Transfer 从隐藏的原 Mesh 传递 custom normals。
 
 ## Experimental Pipe Chamfer API Probe
 

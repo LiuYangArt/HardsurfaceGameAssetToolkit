@@ -18,6 +18,8 @@ PIPE_ID_TAG = "hst_pipe_id"
 DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
 ORIGINAL_FACE_ATTRIBUTE = "hst_pipe_original_face"
 SOURCE_PATCH_ID_ATTRIBUTE = "hst_pipe_source_patch_id"
+CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"
+NORMAL_TRANSFER_MODIFIER = "HST Pipe Chamfer Normal Transfer"
 MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
 BASE_MATERIAL_NAME = "HST_PipeChamfer_Base"
 SUPPORTED_STAGES = {
@@ -1085,8 +1087,6 @@ def _bridge_then_fill(bm, loops, groups, pipe_trees, radius, stats):
     stats["regular_region_count"] = bridge_count
     stats["junction_region_count"] = len(remaining_loops)
     stats["strip_port_count"] = bridge_count * 2
-    stats["regular_patch_face_count"] = len(regular_faces)
-    stats["junction_patch_face_count"] = len(junction_faces)
     return regular_faces, junction_faces
 
 
@@ -1104,13 +1104,16 @@ def _patch_boundaries(bm, loops, groups, pipe_trees, radius, junction_count, sta
             radius,
             stats,
         )
-        bmesh.ops.dissolve_degenerate(
+        chamfer_faces = _dissolve_chamfer_faces(
             bm,
-            dist=max(radius * 1.0e-6, 1.0e-9),
-            edges=list(bm.edges),
+            regular_faces + junction_faces,
+            radius,
         )
+        stats["_chamfer_faces"] = chamfer_faces
+        stats["regular_patch_face_count"] = len(chamfer_faces)
+        stats["junction_patch_face_count"] = 0
         bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
-        return regular_faces, junction_faces
+        return list(chamfer_faces), []
     regular_faces = []
     junction_faces = []
     if junction_count == 0 and len(groups) == 1 and len(loops) == 2:
@@ -1143,6 +1146,67 @@ def _remove_marker_material(output, marker_index):
     for polygon in output.data.polygons:
         if polygon.material_index > marker_index:
             polygon.material_index -= 1
+
+
+# 将补面结果中的共面内部 Edge dissolve 为 n-gon，并返回仍然有效的 chamfer Faces。
+# bm: 已完成 Bridge/Fill 的 BMesh；chamfer_faces: 本轮生成的 Faces；radius: 几何容差尺度。
+def _dissolve_chamfer_faces(bm, chamfer_faces, radius):
+    chamfer_faces = {face for face in chamfer_faces if face.is_valid}
+    dissolve_edges = [
+        edge
+        for edge in bm.edges
+        if len(edge.link_faces) == 2
+        and all(face in chamfer_faces for face in edge.link_faces)
+        and edge.calc_face_angle(0.0) <= math.radians(0.1)
+    ]
+    if dissolve_edges:
+        bmesh.ops.dissolve_limit(
+            bm,
+            angle_limit=math.radians(0.1),
+            use_dissolve_boundaries=False,
+            verts=list({vertex for edge in dissolve_edges for vertex in edge.verts}),
+            edges=dissolve_edges,
+            delimit={"NORMAL"},
+        )
+    bmesh.ops.dissolve_degenerate(
+        bm,
+        dist=max(radius * 1.0e-6, 1.0e-9),
+        edges=list(bm.edges),
+    )
+    original_layer = bm.faces.layers.int.get(ORIGINAL_FACE_ATTRIBUTE)
+    if original_layer is None:
+        return {face for face in bm.faces if face.is_valid and face in chamfer_faces}
+    return {face for face in bm.faces if not bool(face[original_layer])}
+
+
+# 在最终 Mesh 上创建 FACE Boolean attribute，标记自动补出的 chamfer 区域。
+# output: 最终输出 Object；chamfer_face_indices: BMesh 写回后对应的 polygon indices。
+def _mark_chamfer_attribute(output, chamfer_face_indices):
+    attribute = output.data.attributes.get(CHAMFER_FACE_ATTRIBUTE)
+    if attribute is not None:
+        output.data.attributes.remove(attribute)
+    attribute = output.data.attributes.new(
+        CHAMFER_FACE_ATTRIBUTE,
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    marked_indices = set(chamfer_face_indices)
+    for polygon in output.data.polygons:
+        attribute.data[polygon.index].value = polygon.index in marked_indices
+    return attribute
+
+
+# 按 Bevel & Transfer Normal 的既有方式从 source 传递 custom normals，修正输出 shading。
+# output: PATCHED 输出；source_object: 原始 Mesh。
+def _add_source_normal_transfer(output, source_object):
+    modifier = output.modifiers.get(NORMAL_TRANSFER_MODIFIER)
+    if modifier is None:
+        modifier = output.modifiers.new(NORMAL_TRANSFER_MODIFIER, type="DATA_TRANSFER")
+    modifier.object = source_object
+    modifier.use_loop_data = True
+    modifier.data_types_loops = {"CUSTOM_NORMAL"}
+    modifier.loop_mapping = "POLYINTERP_LNORPROJ"
+    return modifier
 
 
 # 构建 Sharp FeatureGraph、多独立 Pipe、Collection Difference、Regular/Junction Patch。
@@ -1292,10 +1356,21 @@ def build_pipe_chamfer(
         ):
             bm.free()
             _fail("result_not_manifold", "PATCHED result failed topology validation", stats)
+        bm.faces.ensure_lookup_table()
+        chamfer_face_indices = [
+            face.index
+            for face in stats.pop("_chamfer_faces", [])
+            if face.is_valid
+        ]
         bm.to_mesh(output.data)
         bm.free()
         output.data.update()
         _remove_marker_material(output, marker_index)
+        if debug_stage == "PATCHED":
+            _mark_chamfer_attribute(output, chamfer_face_indices)
+            _add_source_normal_transfer(output, source_object)
+            stats["chamfer_face_count"] = len(chamfer_face_indices)
+            stats["normal_transfer_modifier"] = NORMAL_TRANSFER_MODIFIER
         stats["status"] = "finished"
 
     if not keep_debug_objects and debug_stage not in {"PIPES", "CUTTER_UNION"}:
