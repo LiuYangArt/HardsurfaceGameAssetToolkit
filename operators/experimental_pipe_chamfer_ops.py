@@ -32,7 +32,7 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
         items=(
             ("FEATURE_GRAPH", "Feature Graph", "Show Sharp groups and junction nodes"),
             ("PIPES", "Pipes", "Show every independent Pipe"),
-            ("CUTTER_UNION", "Cutter Union", "Show the Exact Union cutter"),
+            ("CUTTER_UNION", "Cutter Set", "Show all independent Pipe cutters"),
             ("BOOLEAN_CUT", "Boolean Cut", "Show cutter-derived Faces"),
             ("OPEN_BOUNDARY", "Open Boundary", "Delete cutter Faces and show BoundaryGraph"),
             ("REGULAR_PATCHED", "Regular Patched", "Patch regular strips and leave junction holes"),

@@ -1021,6 +1021,25 @@ def test_sharp_feature_graph_object_smoke(test_context: TestContext, result: Tes
     result.add_detail("12 Sharp Edges -> 12 Pipe Groups; 8 topology junctions")
 
 
+def test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression(test_context: TestContext, result: TestCaseResult):
+    """验证尚未生成 artifact 的早期失败不会隐藏 source Mesh。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("EarlyFailureVisibilityCase")
+    source = make_test_mesh("EarlyFailureVisibilitySource", collection)
+    try:
+        run_pipe_chamfer_operator(source, "PATCHED")
+    except RuntimeError as error:
+        ensure("no_sharp_edges" in str(error), f"Unexpected early failure: {error}")
+    else:
+        raise TestFailure("Mesh without Sharp Edges unexpectedly finished")
+    ensure(not source.hide_get(), "Early failure hid the only source Mesh")
+    result.add_detail("Early no_sharp_edges failure kept source visible")
+
+
 def test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression(test_context: TestContext, result: TestCaseResult):
     """验证 PIPES 由独立 Mesh sweep 生成且 source 不变，不存在 Bevel modifier。
 
@@ -1040,6 +1059,7 @@ def test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression(test_contex
     source_hash = mesh_topology_hash(source)
     operator_result = run_pipe_chamfer_operator(source, "PIPES")
     ensure("FINISHED" in operator_result, "PIPES did not finish")
+    ensure(source.hide_get(), "PIPES did not hide the source Mesh")
     pipes = [obj for obj in bpy.data.objects if obj.get("hst_pipe_id") is not None]
     ensure(len(pipes) >= 2, f"Expected independent Pipes, got {len(pipes)}")
     ensure(all(modifier.type != "BEVEL" for obj in bpy.data.objects for modifier in obj.modifiers), "Experimental result contains a Bevel modifier")
@@ -1086,11 +1106,12 @@ def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(tes
     else:
         raise TestFailure("Unresolved two-Pipe junction reported REGULAR_PATCHED success")
     ensure(mesh_topology_hash(source) == source_hash, "Rejected two-Pipe junction changed source Mesh")
+    ensure(source.hide_get(), "Failed junction with debug artifacts did not hide the source Mesh")
     result.add_detail("Unresolved junction failed closed without Bevel fallback")
 
 
 def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 closed Pipe 的 Exact Union/Difference provenance 与 source-preserved 行为。
+    """验证 independent Pipe Cutter Collection 的 Exact Difference 与清理行为。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
@@ -1102,13 +1123,71 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     source_hash = mesh_topology_hash(source)
     operator_result = run_pipe_chamfer_operator(source, "BOOLEAN_CUT", radius=0.08)
     ensure("FINISHED" in operator_result, "BOOLEAN_CUT did not finish")
+    ensure(source.hide_get(), "BOOLEAN_CUT did not hide the source Mesh")
     output = bpy.data.objects.get("UnionDifferenceSource_PipeChamfer_TEST")
     marker = bpy.data.materials.get("HST_PipeChamfer_Marker")
     ensure(output is not None and marker in output.data.materials[:], "BOOLEAN_CUT marker provenance missing")
+    output_face_count = len(output.data.polygons)
     marker_index = list(output.data.materials).index(marker)
     ensure(any(face.material_index == marker_index for face in output.data.polygons), "No cutter-derived Faces were marked")
+    ensure(bpy.data.objects.get("UnionDifferenceSource_PipeUnion_TEST") is None, "Collection Difference created a union Mesh")
+    cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
+    ensure(cutter_collection is not None, "Collection Difference cutter set is missing")
+    ensure(len(cutter_collection.objects) == 1, "Cutter set does not contain the independent Pipe")
     ensure(mesh_topology_hash(source) == source_hash, "BOOLEAN_CUT changed source Mesh")
-    result.add_detail(f"Boolean output Faces: {len(output.data.polygons)}")
+
+    source.hide_set(False)
+    repeated_result = run_pipe_chamfer_operator(source, "BOOLEAN_CUT", radius=0.08)
+    ensure("FINISHED" in repeated_result, "Repeated BOOLEAN_CUT did not finish")
+    cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
+    ensure(cutter_collection is not None, "Repeated run lost the Cutter Collection")
+    ensure(len(cutter_collection.objects) == 1, "Repeated run leaked or duplicated Pipe cutters")
+
+    source.hide_set(False)
+    cleanup_result = run_pipe_chamfer_operator(
+        source,
+        "BOOLEAN_CUT",
+        radius=0.08,
+        keep_debug_objects=False,
+    )
+    ensure("FINISHED" in cleanup_result, "BOOLEAN_CUT cleanup run did not finish")
+    ensure(
+        bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST") is None,
+        "keep_debug_objects=False left the Cutter Collection behind",
+    )
+    ensure(
+        not any(obj.get("hst_pipe_chamfer_pipe") for obj in bpy.data.objects),
+        "keep_debug_objects=False left Pipe cutter objects behind",
+    )
+    ensure(mesh_topology_hash(source) == source_hash, "Repeated BOOLEAN_CUT changed source Mesh")
+    result.add_detail(f"Boolean output Faces: {output_face_count}; repeated run and cleanup passed")
+
+
+def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
+    """验证 open Pipe 只在 topology junction 端延长，并受相邻 segment 长度约束。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("EndpointExtensionCase")
+    source = make_test_mesh("EndpointExtensionSource", collection)
+    top_edges = cube_top_loop_edge_indices(source)
+    branch_edge = next(
+        edge.index
+        for edge in source.data.edges
+        if edge.index not in top_edges and any(source.data.vertices[index].co.z > 0.0 for index in edge.vertices)
+    )
+    mark_edge_indices_sharp(source, top_edges + [branch_edge])
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(source, 10.0, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
+    open_group = next(group for group in groups if not group["is_cyclic"])
+    extensions = utils._pipe_endpoint_extensions(open_group, 10.0)
+    segment_length = (open_group["points"][1] - open_group["points"][0]).length
+    ensure(min(extensions) <= 1.0e-4, f"Degree-1 endpoint was overextended: {extensions}")
+    ensure(max(extensions) <= segment_length * 0.45 + 1.0e-6, f"Junction extension exceeded local segment clamp: {extensions}")
+    result.add_detail(f"Endpoint extensions: {extensions}")
 
 
 def test_grouping_curved_chain_regression(test_context: TestContext, result: TestCaseResult):
@@ -1185,9 +1264,11 @@ def main():
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)
     context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)
     context.run_case("sharp_feature_graph_object_smoke", test_sharp_feature_graph_object_smoke)
+    context.run_case("experimental_pipe_chamfer_early_failure_keeps_source_visible_regression", test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression)
     context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
+    context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)
 

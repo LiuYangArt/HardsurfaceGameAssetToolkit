@@ -30,18 +30,19 @@
 - experimental Pipe Chamfer 的 Object-only Sharp FeatureGraph smoke test
 - 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
 - two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
-- Exact Union / Difference 与 cutter Face provenance smoke test
+- Cutter Collection Exact Difference 与 cutter Face provenance smoke test
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
+> 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 一次执行 Exact Difference。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > `PATCHED` 仅在 BoundaryGraph 可稳定分类时完成；当前 cube closed-loop probe 会返回 `ambiguous_boundary`，不会用旧 Bevel 结果伪装成功。two-pipe junction 的 Regular/Junction patch 仍是待继续验证的 Stop/Go 项。
 
 ## Experimental Pipe Chamfer API Probe
 
 - Blender 5.1.2 实测 artifact：`tests/artifacts/experimental_pipe_chamfer_probe.json`
-- cyclic POLY Curve + bevel 生成 closed manifold Pipe；`bevel_resolution=2` 时当前试件为 8 个截面点。
-- Boolean `solver=EXACT` 与 `material_mode=TRANSFER` 可用；marker material 能传入 cutter-derived Faces。
+- Pipe 由显式 Mesh sweep 生成 closed manifold cutter；当前实现不会调用 Blender Curve bevel、Mesh bevel 或 Bevel modifier。
+- Boolean `solver=EXACT`、`operand_type=COLLECTION` 与 `material_mode=TRANSFER` 可用；marker material 能传入 cutter-derived Faces。
 - 删除 marker Faces 后可由 marker/non-marker 邻接边稳定得到 trim boundaries。
 - 本机未安装 `ctx7` CLI，因此本轮 Blender API 结论以真实 background probe 为证据。
 

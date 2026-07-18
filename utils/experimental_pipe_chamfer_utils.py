@@ -12,6 +12,7 @@ from mathutils.bvhtree import BVHTree
 
 
 COLLECTION_NAME = "HST_Experimental_PipeChamfer"
+CUTTER_COLLECTION_SUFFIX = "_PipeCutters_TEST"
 OUTPUT_TAG = "hst_experimental_pipe_chamfer_output"
 PIPE_ID_TAG = "hst_pipe_id"
 DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
@@ -67,7 +68,12 @@ def _base_stats(
         "closed_pipe_count": 0,
         "topology_junction_count": 0,
         "spatial_junction_count": 0,
+        # 兼容旧 redo/诊断数据；Cutter Set 路径不再生成 Union Mesh。
         "union_face_count": 0,
+        "cutter_set_object_count": 0,
+        "cutter_collection_name": None,
+        "pipe_overlap_pairs": [],
+        "pipe_endpoint_extensions": [],
         "cutter_face_count": 0,
         "ambiguous_face_count": 0,
         "regular_region_count": 0,
@@ -87,6 +93,7 @@ def _base_stats(
         "feature_groups": [],
         "junction_vertex_indices": [],
         "debug_object_names": [],
+        "source_hidden": False,
         "warnings": [],
     }
 
@@ -116,6 +123,9 @@ def _remove_previous_result(source_object):
     for obj in list(bpy.data.objects):
         if obj.get(OUTPUT_TAG) == source_object.name:
             bpy.data.objects.remove(obj, do_unlink=True)
+    cutter_collection = bpy.data.collections.get(f"{source_object.name}{CUTTER_COLLECTION_SUFFIX}")
+    if cutter_collection is not None:
+        bpy.data.collections.remove(cutter_collection)
 
 
 # 在不共享 Mesh Data 的前提下复制 source，后续只修改 duplicate。
@@ -136,6 +146,13 @@ def _activate_object(obj):
     obj.hide_set(False)
     obj.select_set(True)
     bpy.context.view_layer.objects.active = obj
+
+
+# 隐藏 source 并记录状态；只在已经生成可观察 artifact 后调用。
+# source_object: 原始 Mesh Object；stats: 当前机器统计。
+def _hide_source_object(source_object, stats):
+    source_object.hide_set(True)
+    stats["source_hidden"] = True
 
 
 # 返回 Mesh 的 boundary、non-manifold 和 zero-area 风险计数。
@@ -330,6 +347,8 @@ def _build_feature_graph(
             "is_cyclic": cyclic,
             "patch_pair": metadata[first_edge]["patch_pair"],
             "convexity": metadata[first_edge]["convexity"],
+            "start_feature_degree": len(vertex_edges[ordered_vertices[0]]),
+            "end_feature_degree": len(vertex_edges[ordered_vertices[0]]) if cyclic else len(vertex_edges[ordered_vertices[-1]]),
         }
         groups.append(group)
     groups.sort(key=lambda group: min(group["edge_indices"]))
@@ -381,17 +400,39 @@ def _parallel_transport_frames(tangents, cyclic):
     return frames
 
 
+# 按端点 topology degree 与局部 segment length 计算 open Pipe 延长量。
+# group: Pipe Group；radius: Pipe 半径；返回 start/end extension。
+def _pipe_endpoint_extensions(group, radius):
+    if group["is_cyclic"]:
+        return (0.0, 0.0)
+    points = group["points"]
+    start_segment_length = (points[1] - points[0]).length
+    end_segment_length = (points[-1] - points[-2]).length
+    numeric_tolerance = min(radius * 0.02, 1.0e-4)
+
+    def extension_for_degree(degree, segment_length):
+        if degree <= 1:
+            return numeric_tolerance
+        desired_overlap = radius * 1.25 + 1.0e-4
+        return min(desired_overlap, segment_length * 0.45)
+
+    return (
+        extension_for_degree(group["start_feature_degree"], start_segment_length),
+        extension_for_degree(group["end_feature_degree"], end_segment_length),
+    )
+
+
 # 直接生成一根 closed manifold Pipe Mesh，不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
 # source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
 def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
     points = [point.copy() for point in group["points"]]
     cyclic = group["is_cyclic"]
+    start_extension, end_extension = _pipe_endpoint_extensions(group, radius)
     if not cyclic:
         start_tangent = (points[1] - points[0]).normalized()
         end_tangent = (points[-1] - points[-2]).normalized()
-        extension = radius * 1.25 + 1.0e-4
-        points[0] -= start_tangent * extension
-        points[-1] += end_tangent * extension
+        points[0] -= start_tangent * start_extension
+        points[-1] += end_tangent * end_extension
     tangents = []
     for index, point in enumerate(points):
         if cyclic:
@@ -456,58 +497,38 @@ def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
     pipe.matrix_world = source_object.matrix_world.copy()
     pipe[OUTPUT_TAG] = source_object.name
     pipe[PIPE_ID_TAG] = group["pipe_id"]
+    pipe["hst_pipe_start_extension"] = start_extension
+    pipe["hst_pipe_end_extension"] = end_extension
     pipe[DEBUG_STAGE_TAG] = "PIPES"
     collection.objects.link(pipe)
     return pipe
 
 
-# 使用 Blender Exact Boolean 合并两个 Pipe Object；结果写回 accumulator。
-# accumulator: 累积 union Object；operand: 下一根 Pipe。
-def _apply_union(accumulator, operand):
-    modifier = accumulator.modifiers.new("HST Pipe Exact Union", type="BOOLEAN")
-    modifier.operation = "UNION"
-    modifier.solver = "EXACT"
-    modifier.object = operand
-    _activate_object(accumulator)
-    bpy.ops.object.modifier_apply(modifier=modifier.name)
-
-
-# 合并全部独立 Pipes，同时用 BVH overlap 为空间 Junction 提供初始统计。
-# pipes: 独立 Pipe Objects；source_object/collection/stats: 输出上下文。
-def _union_pipes(pipes, source_object, collection, stats):
+# 创建独立 Pipe cutter set，并用 BVH overlap 为空间 Junction 提供初始统计。
+# pipes: 独立 Pipe Objects；source_object/stats: 输出上下文。
+def _build_cutter_set(pipes, source_object, stats):
     spatial_pairs = set()
     trees = [BVHTree.FromObject(pipe, bpy.context.evaluated_depsgraph_get()) for pipe in pipes]
     for index_a, tree_a in enumerate(trees):
         for index_b in range(index_a + 1, len(trees)):
             if tree_a.overlap(trees[index_b]):
                 spatial_pairs.add((index_a, index_b))
-    topology_pairs = set()
-    for index_a, pipe_a in enumerate(pipes):
-        pipe_id_a = int(pipe_a[PIPE_ID_TAG])
-        for index_b in range(index_a + 1, len(pipes)):
-            pipe_id_b = int(pipes[index_b][PIPE_ID_TAG])
-            if (pipe_id_a, pipe_id_b) in spatial_pairs or (pipe_id_b, pipe_id_a) in spatial_pairs:
-                topology_pairs.add((index_a, index_b))
-    stats["spatial_junction_count"] = len(spatial_pairs | topology_pairs)
-    union = pipes[0].copy()
-    union.data = pipes[0].data.copy()
-    union.name = f"{source_object.name}_PipeUnion_TEST"
-    union[OUTPUT_TAG] = source_object.name
-    union[DEBUG_STAGE_TAG] = "CUTTER_UNION"
-    collection.objects.link(union)
-    for pipe in pipes[1:]:
-        _apply_union(union, pipe)
-    union.data.update()
-    risks = _mesh_risk_counts(union)
-    stats["union_face_count"] = len(union.data.polygons)
-    if risks["non_manifold"] or risks["zero_area"]:
-        _fail("union_not_manifold", "Exact Union cutter is not a closed manifold Mesh", stats)
-    return union, trees
+    cutter_collection = bpy.data.collections.new(f"{source_object.name}{CUTTER_COLLECTION_SUFFIX}")
+    bpy.context.scene.collection.children.link(cutter_collection)
+    for pipe in pipes:
+        for existing_collection in list(pipe.users_collection):
+            existing_collection.objects.unlink(pipe)
+        cutter_collection.objects.link(pipe)
+    stats["spatial_junction_count"] = len(spatial_pairs)
+    stats["pipe_overlap_pairs"] = [list(pair) for pair in sorted(spatial_pairs)]
+    stats["cutter_set_object_count"] = len(pipes)
+    stats["cutter_collection_name"] = cutter_collection.name
+    return cutter_collection, trees
 
 
-# 给 cutter-derived Faces 使用唯一 material marker，并执行 source - union cutter。
-# output: source duplicate；union: union cutter；返回 marker slot index。
-def _apply_difference(output, union):
+# 给 cutter-derived Faces 使用唯一 material marker，并用 cutter Collection 一次 Difference。
+# output: source duplicate；cutter_collection: 独立 Pipe 集合；返回 marker slot index。
+def _apply_difference(output, cutter_collection):
     base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
     if len(output.data.materials) == 0:
         output.data.materials.append(base_material)
@@ -515,15 +536,17 @@ def _apply_difference(output, union):
     marker.diffuse_color = (1.0, 0.02, 0.02, 1.0)
     output.data.materials.append(marker)
     marker_index = len(output.data.materials) - 1
-    union.data.materials.clear()
-    union.data.materials.append(marker)
-    for polygon in union.data.polygons:
-        polygon.material_index = 0
+    for pipe in cutter_collection.objects:
+        pipe.data.materials.clear()
+        pipe.data.materials.append(marker)
+        for polygon in pipe.data.polygons:
+            polygon.material_index = 0
     modifier = output.modifiers.new("HST Pipe Exact Difference", type="BOOLEAN")
     modifier.operation = "DIFFERENCE"
     modifier.solver = "EXACT"
     modifier.material_mode = "TRANSFER"
-    modifier.object = union
+    modifier.operand_type = "COLLECTION"
+    modifier.collection = cutter_collection
     _activate_object(output)
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     return marker_index
@@ -531,19 +554,13 @@ def _apply_difference(output, union):
 
 # 用 marker 与 Pipe BVH 双重证据分类 cutter-derived Faces；ambiguous 时不进入 PATCHED。
 # output: Difference 结果；marker_index: material provenance；pipe_trees: 原始 Pipe BVH。
-def _classify_cutter_faces(output, marker_index, union_tree, pipe_trees, radius):
+def _classify_cutter_faces(output, marker_index, pipe_trees, radius):
     owner_sets = {}
     ambiguous = []
     tolerance = max(radius * 0.35, max(output.dimensions) * 2.0e-5 + 1.0e-6)
     for polygon in output.data.polygons:
         material_marked = polygon.material_index == marker_index
         center = output.matrix_world @ polygon.center
-        union_nearest = union_tree.find_nearest(center)
-        on_union = (
-            union_nearest is not None
-            and union_nearest[3] is not None
-            and union_nearest[3] <= tolerance
-        )
         owners = set()
         for pipe_id, tree in enumerate(pipe_trees):
             nearest = tree.find_nearest(center)
@@ -551,7 +568,7 @@ def _classify_cutter_faces(output, marker_index, union_tree, pipe_trees, radius)
                 owners.add(pipe_id)
         if material_marked and not owners:
             ambiguous.append(polygon.index)
-        if material_marked or on_union or owners:
+        if material_marked or owners:
             owner_sets[polygon.index] = owners
     return owner_sets, ambiguous
 
@@ -794,37 +811,51 @@ def build_pipe_chamfer(
         for group in groups
     ]
     stats["debug_object_names"] = [pipe.name for pipe in pipes]
+    stats["pipe_endpoint_extensions"] = [
+        {
+            "pipe_id": int(pipe[PIPE_ID_TAG]),
+            "start": float(pipe["hst_pipe_start_extension"]),
+            "end": float(pipe["hst_pipe_end_extension"]),
+        }
+        for pipe in pipes
+    ]
     for pipe in pipes:
         risks = _mesh_risk_counts(pipe)
         if risks["non_manifold"] or risks["zero_area"]:
             _fail("pipe_not_manifold", f"Generated Pipe is invalid: {pipe.name}", stats)
         pipe.display_type = "WIRE"
     if debug_stage == "PIPES":
+        _hide_source_object(source_object, stats)
         if not keep_debug_objects:
             stats["warnings"].append("PIPES stage forces debug Pipe objects to remain visible")
         stats["status"] = "finished"
         return stats
 
-    union, pipe_trees = _union_pipes(pipes, source_object, collection, stats)
-    stats["debug_object_names"].append(union.name)
-    union.display_type = "WIRE"
+    cutter_collection, pipe_trees = _build_cutter_set(pipes, source_object, stats)
     if debug_stage == "CUTTER_UNION":
+        _hide_source_object(source_object, stats)
         stats["status"] = "finished"
         return stats
 
     output = _duplicate_source(source_object, collection)
+    _hide_source_object(source_object, stats)
     output[DEBUG_STAGE_TAG] = debug_stage
     stats["output_object_name"] = output.name
-    marker_index = _apply_difference(output, union)
-    union_tree = BVHTree.FromObject(union, bpy.context.evaluated_depsgraph_get())
-    owner_sets, ambiguous_faces = _classify_cutter_faces(
-        output, marker_index, union_tree, pipe_trees, radius
-    )
+    marker_index = _apply_difference(output, cutter_collection)
+    owner_sets, ambiguous_faces = _classify_cutter_faces(output, marker_index, pipe_trees, radius)
     cutter_face_indices = sorted(owner_sets)
     stats["cutter_face_count"] = len(cutter_face_indices)
     stats["ambiguous_face_count"] = len(ambiguous_faces)
     if not cutter_face_indices:
-        _fail("boolean_no_cutter_faces", "Exact Difference produced no cutter-derived Faces", stats)
+        _fail(
+            "boolean_no_cutter_faces",
+            (
+                "Exact Collection Difference produced no cutter-derived Faces: "
+                f"pipes={stats['cutter_set_object_count']}, "
+                f"overlap_pairs={len(stats['pipe_overlap_pairs'])}"
+            ),
+            stats,
+        )
     if debug_stage in {"OPEN_BOUNDARY", "REGULAR_PATCHED", "PATCHED"} and ambiguous_faces:
         _fail("ambiguous_provenance", f"Could not classify cutter Faces: {ambiguous_faces}", stats)
     if debug_stage == "BOOLEAN_CUT":
@@ -855,9 +886,11 @@ def build_pipe_chamfer(
             stats["status"] = "finished"
 
     if not keep_debug_objects and debug_stage not in {"PIPES", "CUTTER_UNION"}:
-        for debug_object in [*pipes, union]:
+        for debug_object in pipes:
             if debug_object.name in bpy.data.objects:
                 bpy.data.objects.remove(debug_object, do_unlink=True)
+        if cutter_collection.name in bpy.data.collections:
+            bpy.data.collections.remove(cutter_collection)
         stats["debug_object_names"] = []
     _activate_object(output)
     return stats
