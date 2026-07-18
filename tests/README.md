@@ -27,6 +27,21 @@
 - static mesh GLB export smoke test
 - rename bones smoke test
 - cleanup UE SKM smoke test
+- experimental Pipe Chamfer 的 PIPE_ONLY / BOOLEAN_CUT / RECONSTRUCT headless smoke test
+- experimental Pipe Chamfer 的开放 chain、junction 拒绝与 source-preserved regression test
+- 不同半径圆柱比例参照试件下，selected cylinder rim 的 BOOLEAN_CUT marker 观测（首版 operator 仍只消费显式 selected loop）
+- Object Mode 自动处理全部 Sharp/Seam feature edges，并按 surface patch pair 拆分开放/闭合 maximal chains
+- 无 Material slot 时的 Boolean marker index 回归
+
+> 当前自动模式使用一次 Blender Bevel 处理全部安全 manifold feature edges；patch-pair chain 用于统计和诊断。Junction corner 仍由 Blender Bevel 求解，boundary/non-manifold feature edge 会跳过并在结果 JSON 中报告。原 Pipe Boolean 保留为 Selected Loop 实验模式。
+
+## Experimental Pipe Chamfer API Probe
+
+- Blender 5.1.2 实测 artifact：`tests/artifacts/experimental_pipe_chamfer_probe.json`
+- cyclic POLY Curve + bevel 生成 closed manifold Pipe；`bevel_resolution=2` 时当前试件为 8 个截面点。
+- Boolean `solver=EXACT` 与 `material_mode=TRANSFER` 可用；marker material 能传入 cutter-derived Faces。
+- 删除 marker Faces 后可由 marker/non-marker 邻接边稳定得到 trim boundaries。
+- 本机未安装 `ctx7` CLI，因此本轮 Blender API 结论以真实 background probe 为证据。
 
 ## 运行方式
 

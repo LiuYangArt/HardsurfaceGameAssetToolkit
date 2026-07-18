@@ -252,6 +252,11 @@ class HST_PT_MainPanel(bpy.types.Panel):
             text="Safe Bevel Weight",
             icon="EDGESEL",
         )
+        box_column.operator(
+            "hst.experimental_pipe_chamfer",
+            text="Feature Chamfer (Sharp/Seam)",
+            icon="MOD_BEVEL",
+        )
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")

@@ -1,0 +1,3 @@
+[mcp_servers.blender]
+command = "uv"
+args = ["--directory", 'F:\CodeProjects\BlenderAddons\concept_tools\.codex\mcp\blender_mcp\mcp', "run", "blender-mcp"]
