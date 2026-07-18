@@ -38,7 +38,7 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
             ("REGULAR_PATCHED", "Regular Patched", "Patch regular strips and leave junction holes"),
             ("PATCHED", "Patched", "Patch regular strips and junctions"),
         ),
-        default="BOOLEAN_CUT",
+        default="PATCHED",
     )
     keep_debug_objects: bpy.props.BoolProperty(name="Keep Debug Objects", default=False)
     source_object_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})

@@ -254,6 +254,11 @@ def test_addon_registers(test_context: TestContext, result: TestCaseResult):
             missing.append(operator_idname)
 
     ensure(not missing, f"Missing registered operators: {missing}")
+    pipe_chamfer_operator = bpy.ops.hst.experimental_pipe_chamfer.get_rna_type()
+    ensure(
+        pipe_chamfer_operator.properties["debug_stage"].default == "PATCHED",
+        "Experimental Pipe Chamfer must default to PATCHED",
+    )
     ensure(hasattr(bpy.ops.hst, "hst_addtransvertcolorproxy"), "Proxy operator missing")
     ensure(hasattr(bpy.ops.hst, "hst_bakeproxyvertcolrao"), "AO bake operator missing")
     result.add_detail(f"Blender version: {bpy.app.version_string}")
