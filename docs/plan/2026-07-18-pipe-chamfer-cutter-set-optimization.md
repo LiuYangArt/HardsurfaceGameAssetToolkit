@@ -5,7 +5,7 @@
 当前实验已经能完成 Sharp FeatureGraph、独立 Pipe、部分 Boolean Cut，但暴露出三类真实问题：
 
 1. 显式 Pipe Union 采用逐根 Exact Union；复杂交叉会累积碎面并产生 `union_not_manifold`。
-2. open Pipe 固定延长 `1.25 × radius`；密集 Feature、薄壁或凹槽中可能碰到无关 Surface/Pipe。
+2. open Pipe 的端点延长在密集 Feature、薄壁或凹槽中可能碰到无关 Surface/Pipe。
 3. Cube 等多 Pipe junction 在 Cut 后还缺 Regular Strip / Junction Patch 的稳定分区，必须继续 fail-closed，不能用 Bevel 掩盖。
 
 ## 方向判断
@@ -32,29 +32,32 @@
 ### Task 2：Collection Exact Difference
 
 - Boolean Modifier 使用 `operand_type = COLLECTION` 和 `collection = cutter_collection`。
-- 一次应用 Difference，禁止逐 Pipe Difference。
+- 默认 `Boolean Preview` 不 Apply Modifier；用户可直接调整 Blender Boolean 参数。
+- 仅显式选择后续自动开口/补面 debug stage 时才 Apply Difference；禁止逐 Pipe Difference。
 - Material provenance 只作 probe；BVH 按各 Pipe 几何分类 owner。
 - 若 Collection Boolean 没产生 cutter Faces，报告 source、Pipe 数、overlap pairs 和各 Pipe 风险。
 
-### Task 3：端点延长约束
+### Task 3：端点零延长
 
-- 不再对所有 open Pipe 端点盲目固定延长。
-- 拓扑 junction 端保留最小 overlap 延长；真正 degree-1 endpoint 不延长或仅给数值 tolerance。
-- 延长上限受相邻 Edge 长度约束，避免超过局部 Feature 尺寸。
+- 所有 open Pipe 两端 extension 固定为 `0`。
+- Pipe 严格停在原 Sharp Edge 起点和终点，不添加数值 tolerance。
 - 记录每根 Pipe 两端的 extension length，供 debug 和后续 clearance solver 使用。
-- 本轮先实现 topology-aware + segment-length clamp；复杂 Surface clearance 作为后续实验，不伪称已完成。
+- 若真实 CAD 模型后续出现漏切，再基于具体证据设计最小 tolerance，不预先延长。
 
 ### Task 4：诊断与交互
 
 - 失败时保留独立 Pipe debug objects，并给出 `pipe_id`、extension、overlap pair 统计。
 - 已生成 artifact 后隐藏 source；无 artifact 的早期失败保持 source 可见。
 - `union_not_manifold` 从主流程移除；单根 `pipe_not_manifold` 仍为硬失败。
+- `Boolean Preview` 默认保留未 Apply 的 Boolean Modifier 与 Cutter Collection，允许手动调整 solver 参数。
+- 自动补面无法处理多个倒角交汇时，UI 使用“切割已完成，但拐角开口尚不能自动补齐”的直白说明。
 
 ### Task 5：验证
 
-- Headless 回归：多 Pipe Collection Difference 不需要 Union Mesh。
+- Headless 回归：多 Pipe Boolean Preview 不需要 Union Mesh，也不 Apply Modifier。
 - 回归：独立 Pipe 均 closed manifold；source 不变并在有 artifact 时隐藏。
-- 回归：degree-1 endpoint 不发生长延伸；junction endpoint 延长受相邻段长度限制。
+- 回归：所有 open Pipe endpoint extension 都严格为 `0`。
+- 回归：Boolean Preview 的 output Mesh data 不变，并保留一个可编辑的 Exact Collection Boolean Modifier。
 - 用户文件：`C:/Users/LiuYang/Desktop/pipe-chamfer/pipe-chamfer-test.blend`。
 - 分阶段记录 FEATURE_GRAPH / PIPES / CUTTER_SET / BOOLEAN_CUT 统计。
 - 完整运行 `python .\tools\run_blender_tests.py`。

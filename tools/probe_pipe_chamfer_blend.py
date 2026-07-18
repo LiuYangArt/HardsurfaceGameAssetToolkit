@@ -79,7 +79,25 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
         )
         if current_hash != source_hash:
             raise RuntimeError(f"Source Mesh changed during {stage}")
-        emit(stage, {"status": "finished", "result": {key: result.get(key) for key in RESULT_KEYS if key in result}})
+        compact_result = {key: result.get(key) for key in RESULT_KEYS if key in result}
+        compact_result["nonzero_pipe_extension_count"] = sum(
+            1
+            for extension in result.get("pipe_endpoint_extensions", [])
+            if extension["start"] != 0.0 or extension["end"] != 0.0
+        )
+        if stage == "BOOLEAN_CUT":
+            output = bpy.data.objects.get(result.get("output_object_name"))
+            boolean_modifiers = (
+                [modifier for modifier in output.modifiers if modifier.type == "BOOLEAN"]
+                if output is not None
+                else []
+            )
+            compact_result["boolean_modifier_count"] = len(boolean_modifiers)
+            compact_result["boolean_modifier_applied"] = len(boolean_modifiers) == 0
+            compact_result["boolean_solver"] = (
+                boolean_modifiers[0].solver if boolean_modifiers else None
+            )
+        emit(stage, {"status": "finished", "result": compact_result})
     except utils.PipeChamferError as error:
         emit(stage, {"status": "failed", "result": {key: error.stats.get(key) for key in RESULT_KEYS if key in error.stats}})
     except Exception as error:

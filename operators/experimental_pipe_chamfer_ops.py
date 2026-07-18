@@ -33,12 +33,12 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
             ("FEATURE_GRAPH", "Feature Graph", "Show Sharp groups and junction nodes"),
             ("PIPES", "Pipes", "Show every independent Pipe"),
             ("CUTTER_UNION", "Cutter Set", "Show all independent Pipe cutters"),
-            ("BOOLEAN_CUT", "Boolean Cut", "Show cutter-derived Faces"),
+            ("BOOLEAN_CUT", "Boolean Preview", "Keep an editable, unapplied Boolean Modifier"),
             ("OPEN_BOUNDARY", "Open Boundary", "Delete cutter Faces and show BoundaryGraph"),
             ("REGULAR_PATCHED", "Regular Patched", "Patch regular strips and leave junction holes"),
             ("PATCHED", "Patched", "Patch regular strips and junctions"),
         ),
-        default="PATCHED",
+        default="BOOLEAN_CUT",
     )
     keep_debug_objects: bpy.props.BoolProperty(name="Keep Debug Objects", default=False)
     source_object_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
@@ -75,7 +75,7 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
             )
         except PipeChamferError as error:
             print(RESULT_PREFIX + json.dumps(error.stats, ensure_ascii=False, separators=(",", ":")))
-            self.report({"ERROR"}, f"{error.error_code}: {error}")
+            self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         except Exception as error:
             raise RuntimeError(

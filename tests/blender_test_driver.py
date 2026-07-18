@@ -1033,7 +1033,10 @@ def test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression
     try:
         run_pipe_chamfer_operator(source, "PATCHED")
     except RuntimeError as error:
-        ensure("no_sharp_edges" in str(error), f"Unexpected early failure: {error}")
+        ensure(
+            "no explicit sharp_edge" in str(error),
+            f"Unexpected early failure: {error}",
+        )
     else:
         raise TestFailure("Mesh without Sharp Edges unexpectedly finished")
     ensure(not source.hide_get(), "Early failure hid the only source Mesh")
@@ -1093,14 +1096,9 @@ def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(tes
         run_pipe_chamfer_operator(source, "REGULAR_PATCHED", radius=0.08, keep_debug_objects=True)
     except RuntimeError as error:
         ensure(
-            any(
-                error_code in str(error)
-                for error_code in (
-                    "junction_region_unresolved",
-                    "ambiguous_boundary",
-                    "boolean_no_cutter_faces",
-                )
-            ),
+            "多个倒角在拐角处相交" in str(error)
+            or "ambiguous_boundary" in str(error)
+            or "boolean_no_cutter_faces" in str(error),
             f"Unexpected two-Pipe junction failure: {error}",
         )
     else:
@@ -1111,7 +1109,7 @@ def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(tes
 
 
 def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 independent Pipe Cutter Collection 的 Exact Difference 与清理行为。
+    """验证 BOOLEAN_CUT 保留可手动调整的 Exact Boolean Modifier。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
@@ -1125,11 +1123,14 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     ensure("FINISHED" in operator_result, "BOOLEAN_CUT did not finish")
     ensure(source.hide_get(), "BOOLEAN_CUT did not hide the source Mesh")
     output = bpy.data.objects.get("UnionDifferenceSource_PipeChamfer_TEST")
-    marker = bpy.data.materials.get("HST_PipeChamfer_Marker")
-    ensure(output is not None and marker in output.data.materials[:], "BOOLEAN_CUT marker provenance missing")
-    output_face_count = len(output.data.polygons)
-    marker_index = list(output.data.materials).index(marker)
-    ensure(any(face.material_index == marker_index for face in output.data.polygons), "No cutter-derived Faces were marked")
+    ensure(output is not None, "BOOLEAN_CUT preview object is missing")
+    ensure(mesh_topology_hash(output) == source_hash, "BOOLEAN_CUT preview destructively changed output Mesh")
+    boolean_modifiers = [modifier for modifier in output.modifiers if modifier.type == "BOOLEAN"]
+    ensure(len(boolean_modifiers) == 1, "BOOLEAN_CUT did not leave exactly one Boolean Modifier")
+    boolean_modifier = boolean_modifiers[0]
+    ensure(boolean_modifier.operation == "DIFFERENCE", "Boolean preview is not Difference")
+    ensure(boolean_modifier.solver == "EXACT", "Boolean preview does not default to Exact")
+    ensure(boolean_modifier.operand_type == "COLLECTION", "Boolean preview does not use Cutter Collection")
     ensure(bpy.data.objects.get("UnionDifferenceSource_PipeUnion_TEST") is None, "Collection Difference created a union Mesh")
     cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
     ensure(cutter_collection is not None, "Collection Difference cutter set is missing")
@@ -1143,28 +1144,12 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     ensure(cutter_collection is not None, "Repeated run lost the Cutter Collection")
     ensure(len(cutter_collection.objects) == 1, "Repeated run leaked or duplicated Pipe cutters")
 
-    source.hide_set(False)
-    cleanup_result = run_pipe_chamfer_operator(
-        source,
-        "BOOLEAN_CUT",
-        radius=0.08,
-        keep_debug_objects=False,
-    )
-    ensure("FINISHED" in cleanup_result, "BOOLEAN_CUT cleanup run did not finish")
-    ensure(
-        bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST") is None,
-        "keep_debug_objects=False left the Cutter Collection behind",
-    )
-    ensure(
-        not any(obj.get("hst_pipe_chamfer_pipe") for obj in bpy.data.objects),
-        "keep_debug_objects=False left Pipe cutter objects behind",
-    )
     ensure(mesh_topology_hash(source) == source_hash, "Repeated BOOLEAN_CUT changed source Mesh")
-    result.add_detail(f"Boolean output Faces: {output_face_count}; repeated run and cleanup passed")
+    result.add_detail("BOOLEAN_CUT kept one editable Exact Collection Boolean Modifier")
 
 
 def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
-    """验证 open Pipe 只在 topology junction 端延长，并受相邻 segment 长度约束。
+    """验证所有 open Pipe 端点都严格停在原 Sharp Edge 端点。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
@@ -1184,9 +1169,7 @@ def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: T
     groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
     open_group = next(group for group in groups if not group["is_cyclic"])
     extensions = utils._pipe_endpoint_extensions(open_group, 10.0)
-    segment_length = (open_group["points"][1] - open_group["points"][0]).length
-    ensure(min(extensions) <= 1.0e-4, f"Degree-1 endpoint was overextended: {extensions}")
-    ensure(max(extensions) <= segment_length * 0.45 + 1.0e-6, f"Junction extension exceeded local segment clamp: {extensions}")
+    ensure(extensions == (0.0, 0.0), f"Open Pipe endpoints were extended: {extensions}")
     result.add_detail(f"Endpoint extensions: {extensions}")
 
 

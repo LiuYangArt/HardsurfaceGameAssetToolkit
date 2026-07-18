@@ -400,26 +400,10 @@ def _parallel_transport_frames(tangents, cyclic):
     return frames
 
 
-# 按端点 topology degree 与局部 segment length 计算 open Pipe 延长量。
-# group: Pipe Group；radius: Pipe 半径；返回 start/end extension。
+# 返回 Pipe 两端延长量；当前 CAD-style cutter 严格停在原 Sharp Edge 端点。
+# group: Pipe Group；radius: Pipe 半径（保留接口兼容）；返回 start/end extension。
 def _pipe_endpoint_extensions(group, radius):
-    if group["is_cyclic"]:
-        return (0.0, 0.0)
-    points = group["points"]
-    start_segment_length = (points[1] - points[0]).length
-    end_segment_length = (points[-1] - points[-2]).length
-    numeric_tolerance = min(radius * 0.02, 1.0e-4)
-
-    def extension_for_degree(degree, segment_length):
-        if degree <= 1:
-            return numeric_tolerance
-        desired_overlap = radius * 1.25 + 1.0e-4
-        return min(desired_overlap, segment_length * 0.45)
-
-    return (
-        extension_for_degree(group["start_feature_degree"], start_segment_length),
-        extension_for_degree(group["end_feature_degree"], end_segment_length),
-    )
+    return (0.0, 0.0)
 
 
 # 直接生成一根 closed manifold Pipe Mesh，不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
@@ -526,7 +510,18 @@ def _build_cutter_set(pipes, source_object, stats):
     return cutter_collection, trees
 
 
-# 给 cutter-derived Faces 使用唯一 material marker，并用 cutter Collection 一次 Difference。
+# 添加可手动调整的 Cutter Collection Boolean Modifier，不 Apply、不改写 Mesh data。
+# output: source duplicate；cutter_collection: 独立 Pipe 集合；返回 Boolean Modifier。
+def _add_difference_modifier(output, cutter_collection):
+    modifier = output.modifiers.new("HST Pipe Exact Difference", type="BOOLEAN")
+    modifier.operation = "DIFFERENCE"
+    modifier.solver = "EXACT"
+    modifier.operand_type = "COLLECTION"
+    modifier.collection = cutter_collection
+    return modifier
+
+
+# 为后续自动开口/补面阶段应用 Difference，并用 material marker 保留 cutter Face 线索。
 # output: source duplicate；cutter_collection: 独立 Pipe 集合；返回 marker slot index。
 def _apply_difference(output, cutter_collection):
     base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
@@ -541,12 +536,7 @@ def _apply_difference(output, cutter_collection):
         pipe.data.materials.append(marker)
         for polygon in pipe.data.polygons:
             polygon.material_index = 0
-    modifier = output.modifiers.new("HST Pipe Exact Difference", type="BOOLEAN")
-    modifier.operation = "DIFFERENCE"
-    modifier.solver = "EXACT"
-    modifier.material_mode = "TRANSFER"
-    modifier.operand_type = "COLLECTION"
-    modifier.collection = cutter_collection
+    modifier = _add_difference_modifier(output, cutter_collection)
     _activate_object(output)
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     return marker_index
@@ -741,7 +731,10 @@ def _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage):
         stats["strip_port_count"] = max(0, 2 * len(groups))
         _fail(
             "junction_region_unresolved",
-            "Regular/Junction ownership split is not stable for this multi-Pipe BoundaryGraph",
+            (
+                "Pipe 已完成切割，但多个倒角在拐角处相交，当前还无法自动连接并补齐这些开口；"
+                "请先检查 Boolean Preview"
+            ),
             stats,
         )
     bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
@@ -759,7 +752,7 @@ def _remove_marker_material(output, marker_index):
             polygon.material_index -= 1
 
 
-# 构建 Sharp FeatureGraph、多独立 Pipe、Exact Union/Difference、Regular/Junction Patch。
+# 构建 Sharp FeatureGraph、多独立 Pipe、Collection Difference、Regular/Junction Patch。
 # 参数与 Operator interface 一一对应；返回 handoff 规定的机器可读 dict。
 def build_pipe_chamfer(
     source_object,
@@ -841,6 +834,15 @@ def build_pipe_chamfer(
     _hide_source_object(source_object, stats)
     output[DEBUG_STAGE_TAG] = debug_stage
     stats["output_object_name"] = output.name
+    if debug_stage == "BOOLEAN_CUT":
+        _add_difference_modifier(output, cutter_collection)
+        stats["warnings"].append(
+            "Boolean Modifier is left unapplied so its settings can be adjusted manually"
+        )
+        stats["status"] = "finished"
+        _activate_object(output)
+        return stats
+
     marker_index = _apply_difference(output, cutter_collection)
     owner_sets, ambiguous_faces = _classify_cutter_faces(output, marker_index, pipe_trees, radius)
     cutter_face_indices = sorted(owner_sets)
@@ -858,32 +860,29 @@ def build_pipe_chamfer(
         )
     if debug_stage in {"OPEN_BOUNDARY", "REGULAR_PATCHED", "PATCHED"} and ambiguous_faces:
         _fail("ambiguous_provenance", f"Could not classify cutter Faces: {ambiguous_faces}", stats)
-    if debug_stage == "BOOLEAN_CUT":
+    bm, loops = _open_boundary(output, cutter_face_indices, stats)
+    stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    if debug_stage == "OPEN_BOUNDARY":
+        bm.free()
         stats["status"] = "finished"
     else:
-        bm, loops = _open_boundary(output, cutter_face_indices, stats)
+        junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
+        _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage)
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-        if debug_stage == "OPEN_BOUNDARY":
+        stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
+        stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
+        if debug_stage == "PATCHED" and (
+            stats["boundary_edge_count_after"]
+            or stats["non_manifold_edge_count_after"]
+            or stats["zero_area_face_count"]
+        ):
             bm.free()
-            stats["status"] = "finished"
-        else:
-            junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
-            _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage)
-            stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-            stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-            stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
-            if debug_stage == "PATCHED" and (
-                stats["boundary_edge_count_after"]
-                or stats["non_manifold_edge_count_after"]
-                or stats["zero_area_face_count"]
-            ):
-                bm.free()
-                _fail("result_not_manifold", "PATCHED result failed topology validation", stats)
-            bm.to_mesh(output.data)
-            bm.free()
-            output.data.update()
-            _remove_marker_material(output, marker_index)
-            stats["status"] = "finished"
+            _fail("result_not_manifold", "PATCHED result failed topology validation", stats)
+        bm.to_mesh(output.data)
+        bm.free()
+        output.data.update()
+        _remove_marker_material(output, marker_index)
+        stats["status"] = "finished"
 
     if not keep_debug_objects and debug_stage not in {"PIPES", "CUTTER_UNION"}:
         for debug_object in pipes:
