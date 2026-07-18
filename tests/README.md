@@ -32,6 +32,7 @@
 - two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
 - 未 Apply 的 Cutter Collection Boolean Preview smoke test
 - Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
+- 清理上一轮 Boolean Preview 后首次 OPEN_BOUNDARY 即成功的 dependency-graph 同步回归
 - Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
 - PATCHED 后 dissolve 为 chamfer n-gon、FACE attribute 标记与原 Mesh custom normal transfer smoke test
 - tessellated curved chain 不被固定角度切碎的 grouping 回归

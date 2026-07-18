@@ -1189,6 +1189,28 @@ def test_experimental_pipe_chamfer_open_boundary_preserves_original_faces(test_c
     )
 
 
+def test_experimental_pipe_chamfer_first_run_after_preview_regression(test_context: TestContext, result: TestCaseResult):
+    """验证清理上一轮 preview 后，第一次 OPEN_BOUNDARY 就能识别并删除槽面。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("PipeChamferFirstRunCase")
+    source = make_test_mesh("PipeChamferFirstRunSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    preview_result = run_pipe_chamfer_operator(source, "BOOLEAN_CUT", radius=0.08)
+    ensure("FINISHED" in preview_result, "BOOLEAN_CUT preview did not finish")
+    ensure(source.hide_get(), "BOOLEAN_CUT preview did not hide source")
+
+    open_result = run_pipe_chamfer_operator(source, "OPEN_BOUNDARY", radius=0.08)
+    ensure("FINISHED" in open_result, "First OPEN_BOUNDARY run after preview failed")
+    output = bpy.data.objects.get("PipeChamferFirstRunSource_PipeChamfer_TEST")
+    ensure(output is not None, "First OPEN_BOUNDARY output is missing")
+    ensure(not output.modifiers, "First OPEN_BOUNDARY left an unapplied modifier")
+    result.add_detail("First OPEN_BOUNDARY run succeeded immediately after preview cleanup")
+
+
 def test_experimental_pipe_chamfer_bridge_then_fill_smoke(test_context: TestContext, result: TestCaseResult):
     """验证 Bridge Edge Loops 后 Fill 剩余洞能生成 watertight Mesh。
 
@@ -1403,6 +1425,7 @@ def main():
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
+    context.run_case("experimental_pipe_chamfer_first_run_after_preview_regression", test_experimental_pipe_chamfer_first_run_after_preview_regression)
     context.run_case("experimental_pipe_chamfer_bridge_then_fill_smoke", test_experimental_pipe_chamfer_bridge_then_fill_smoke)
     context.run_case("experimental_pipe_chamfer_postprocess_smoke", test_experimental_pipe_chamfer_postprocess_smoke)
     context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)

@@ -129,12 +129,14 @@ def _get_collection():
 # 清理同一 source 上一轮生成的对象，使 Adjust Last Operation 可重复执行。
 # source_object: 当前输入 Mesh Object。
 def _remove_previous_result(source_object):
+    source_object.hide_set(False)
     for obj in list(bpy.data.objects):
         if obj.get(OUTPUT_TAG) == source_object.name:
             bpy.data.objects.remove(obj, do_unlink=True)
     cutter_collection = bpy.data.collections.get(f"{source_object.name}{CUTTER_COLLECTION_SUFFIX}")
     if cutter_collection is not None:
         bpy.data.collections.remove(cutter_collection)
+    bpy.context.view_layer.update()
 
 
 # 在不共享 Mesh Data 的前提下复制 source，后续只修改 duplicate。
@@ -605,6 +607,7 @@ def _build_cutter_set(pipes, source_object, stats):
         for existing_collection in list(pipe.users_collection):
             existing_collection.objects.unlink(pipe)
         cutter_collection.objects.link(pipe)
+    bpy.context.view_layer.update()
     stats["spatial_junction_count"] = len(spatial_pairs)
     stats["pipe_overlap_pairs"] = [list(pair) for pair in sorted(spatial_pairs)]
     stats["cutter_set_object_count"] = len(pipes)
@@ -666,6 +669,7 @@ def _apply_difference(output, cutter_collection, source_patch_ids):
             polygon.material_index = 0
     modifier = _add_difference_modifier(output, cutter_collection)
     _activate_object(output)
+    bpy.context.view_layer.update()
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     return marker_index
 
