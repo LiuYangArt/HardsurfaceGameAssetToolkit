@@ -74,6 +74,7 @@ def _base_stats(
         "cutter_collection_name": None,
         "pipe_overlap_pairs": [],
         "pipe_endpoint_extensions": [],
+        "pipe_endpoint_classifications": [],
         "cutter_face_count": 0,
         "ambiguous_face_count": 0,
         "regular_region_count": 0,
@@ -400,10 +401,81 @@ def _parallel_transport_frames(tangents, cyclic):
     return frames
 
 
-# 返回 Pipe 两端延长量；当前 CAD-style cutter 严格停在原 Sharp Edge 端点。
-# group: Pipe Group；radius: Pipe 半径（保留接口兼容）；返回 start/end extension。
-def _pipe_endpoint_extensions(group, radius):
-    return (0.0, 0.0)
+# 判断 Pipe 端点是否存在近似垂直于轴线的 terminal face。
+# bm: source BMesh；group: Pipe Group；endpoint: start/end；返回分类与候选 Face。
+def _classify_pipe_endpoint(bm, group, endpoint):
+    if group["is_cyclic"]:
+        return "CYCLIC", None
+    endpoint_index = 0 if endpoint == "start" else -1
+    neighbor_index = 1 if endpoint == "start" else -2
+    edge_index = group["edge_indices"][0 if endpoint == "start" else -1]
+    vertex = bm.verts[group["vertex_indices"][endpoint_index]]
+    outward = (group["points"][endpoint_index] - group["points"][neighbor_index]).normalized()
+    pipe_side_faces = set(bm.edges[edge_index].link_faces)
+    candidates = [
+        face
+        for face in vertex.link_faces
+        if face not in pipe_side_faces and face.normal.dot(outward) >= math.cos(math.radians(15.0))
+    ]
+    if len(candidates) == 1:
+        return "TERMINAL_FACE", candidates[0]
+    if not candidates:
+        return "SURFACE_CONTINUATION", None
+    return "AMBIGUOUS", None
+
+
+# 按 terminal face 分类返回 Pipe 两端延长量，并把分类写入 group 供诊断。
+# source_object: source Mesh；group: Pipe Group；radius: Pipe 半径；返回 start/end extension。
+def _pipe_endpoint_extensions(source_object, group, radius):
+    if group["is_cyclic"]:
+        group["start_endpoint_class"] = "CYCLIC"
+        group["end_endpoint_class"] = "CYCLIC"
+        return (0.0, 0.0)
+    bm = bmesh.new()
+    bm.from_mesh(source_object.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    start_class, start_face = _classify_pipe_endpoint(bm, group, "start")
+    end_class, end_face = _classify_pipe_endpoint(bm, group, "end")
+    group["start_endpoint_class"] = start_class
+    group["end_endpoint_class"] = end_class
+    group["start_terminal_face_index"] = start_face.index if start_face is not None else None
+    group["end_terminal_face_index"] = end_face.index if end_face is not None else None
+    bm.free()
+    return (
+        radius if start_class == "TERMINAL_FACE" else 0.0,
+        radius if end_class == "TERMINAL_FACE" else 0.0,
+    )
+
+
+# 一次性为全部 Pipe Group 分类端点，并保存延长量供 Mesh 构建与诊断复用。
+# source_object: source Mesh；groups: 全部 Pipe Groups；radius: Pipe 半径。
+def _classify_pipe_endpoints(source_object, groups, radius):
+    bm = bmesh.new()
+    bm.from_mesh(source_object.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    for group in groups:
+        if group["is_cyclic"]:
+            endpoint_results = (("CYCLIC", None), ("CYCLIC", None))
+        else:
+            endpoint_results = (
+                _classify_pipe_endpoint(bm, group, "start"),
+                _classify_pipe_endpoint(bm, group, "end"),
+            )
+        for endpoint, (endpoint_class, terminal_face) in zip(
+            ("start", "end"), endpoint_results
+        ):
+            group[f"{endpoint}_endpoint_class"] = endpoint_class
+            group[f"{endpoint}_terminal_face_index"] = (
+                terminal_face.index if terminal_face is not None else None
+            )
+            group[f"{endpoint}_extension"] = (
+                radius if endpoint_class == "TERMINAL_FACE" else 0.0
+            )
+    bm.free()
 
 
 # 直接生成一根 closed manifold Pipe Mesh，不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
@@ -411,7 +483,8 @@ def _pipe_endpoint_extensions(group, radius):
 def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
     points = [point.copy() for point in group["points"]]
     cyclic = group["is_cyclic"]
-    start_extension, end_extension = _pipe_endpoint_extensions(group, radius)
+    start_extension = group.get("start_extension", 0.0)
+    end_extension = group.get("end_extension", 0.0)
     if not cyclic:
         start_tangent = (points[1] - points[0]).normalized()
         end_tangent = (points[-1] - points[-2]).normalized()
@@ -483,6 +556,8 @@ def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
     pipe[PIPE_ID_TAG] = group["pipe_id"]
     pipe["hst_pipe_start_extension"] = start_extension
     pipe["hst_pipe_end_extension"] = end_extension
+    pipe["hst_pipe_start_endpoint_class"] = group.get("start_endpoint_class", "CYCLIC")
+    pipe["hst_pipe_end_endpoint_class"] = group.get("end_endpoint_class", "CYCLIC")
     pipe[DEBUG_STAGE_TAG] = "PIPES"
     collection.objects.link(pipe)
     return pipe
@@ -793,6 +868,7 @@ def build_pipe_chamfer(
         chain_turn_spike_ratio,
         stats,
     )
+    _classify_pipe_endpoints(source_object, groups, radius)
     _remove_previous_result(source_object)
     collection = _get_collection()
     if debug_stage == "FEATURE_GRAPH":
@@ -811,6 +887,16 @@ def build_pipe_chamfer(
             "end": float(pipe["hst_pipe_end_extension"]),
         }
         for pipe in pipes
+    ]
+    stats["pipe_endpoint_classifications"] = [
+        {
+            "pipe_id": group["pipe_id"],
+            "start": group.get("start_endpoint_class", "CYCLIC"),
+            "end": group.get("end_endpoint_class", "CYCLIC"),
+            "start_terminal_face_index": group.get("start_terminal_face_index"),
+            "end_terminal_face_index": group.get("end_terminal_face_index"),
+        }
+        for group in groups
     ]
     for pipe in pipes:
         risks = _mesh_risk_counts(pipe)

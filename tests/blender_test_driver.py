@@ -1149,7 +1149,7 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
 
 
 def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: TestContext, result: TestCaseResult):
-    """验证所有 open Pipe 端点都严格停在原 Sharp Edge 端点。
+    """验证 terminal face 端延长 radius，曲面连续端不延长。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
@@ -1157,20 +1157,51 @@ def test_experimental_pipe_chamfer_endpoint_extension_regression(test_context: T
     """
     collection = make_collection("EndpointExtensionCase")
     source = make_test_mesh("EndpointExtensionSource", collection)
-    top_edges = cube_top_loop_edge_indices(source)
-    branch_edge = next(
-        edge.index
+    vertical_edge = next(
+        edge
         for edge in source.data.edges
-        if edge.index not in top_edges and any(source.data.vertices[index].co.z > 0.0 for index in edge.vertices)
+        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
     )
-    mark_edge_indices_sharp(source, top_edges + [branch_edge])
+    mark_edge_indices_sharp(source, [vertical_edge.index])
     utils = test_context.addon.utils.experimental_pipe_chamfer_utils
-    stats = utils._base_stats(source, 10.0, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    stats = utils._base_stats(source, 0.25, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
     groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
-    open_group = next(group for group in groups if not group["is_cyclic"])
-    extensions = utils._pipe_endpoint_extensions(open_group, 10.0)
-    ensure(extensions == (0.0, 0.0), f"Open Pipe endpoints were extended: {extensions}")
-    result.add_detail(f"Endpoint extensions: {extensions}")
+    terminal_group = groups[0]
+    terminal_extensions = utils._pipe_endpoint_extensions(source, terminal_group, 0.25)
+    ensure(
+        terminal_extensions == (0.25, 0.25),
+        f"Cube terminal Faces were not extended by radius: {terminal_extensions}",
+    )
+
+    continuation_source = make_test_mesh("SurfaceContinuationSource", collection)
+    continuation_edge = next(
+        edge
+        for edge in continuation_source.data.edges
+        if abs(
+            continuation_source.data.vertices[edge.vertices[0]].co.z
+            - continuation_source.data.vertices[edge.vertices[1]].co.z
+        )
+        > 1.5
+    )
+    mark_edge_indices_sharp(continuation_source, [continuation_edge.index])
+    continuation_stats = utils._base_stats(
+        continuation_source, 0.25, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH"
+    )
+    continuation_groups = utils._build_feature_graph(
+        continuation_source, 35.0, 3.0, continuation_stats
+    )
+    for face in continuation_source.data.polygons:
+        face.flip()
+    continuation_extensions = utils._pipe_endpoint_extensions(
+        continuation_source, continuation_groups[0], 0.25
+    )
+    ensure(
+        continuation_extensions == (0.0, 0.0),
+        f"Surface continuation was extended: {continuation_extensions}",
+    )
+    result.add_detail(
+        f"Terminal extensions: {terminal_extensions}; continuation: {continuation_extensions}"
+    )
 
 
 def test_grouping_curved_chain_regression(test_context: TestContext, result: TestCaseResult):

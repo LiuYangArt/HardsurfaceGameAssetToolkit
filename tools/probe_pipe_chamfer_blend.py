@@ -80,11 +80,19 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
         if current_hash != source_hash:
             raise RuntimeError(f"Source Mesh changed during {stage}")
         compact_result = {key: result.get(key) for key in RESULT_KEYS if key in result}
-        compact_result["nonzero_pipe_extension_count"] = sum(
+        compact_result["extended_endpoint_count"] = sum(
             1
             for extension in result.get("pipe_endpoint_extensions", [])
-            if extension["start"] != 0.0 or extension["end"] != 0.0
+            for endpoint in ("start", "end")
+            if extension[endpoint] != 0.0
         )
+        compact_result["endpoint_class_counts"] = {}
+        for classification in result.get("pipe_endpoint_classifications", []):
+            for endpoint in ("start", "end"):
+                endpoint_class = classification[endpoint]
+                compact_result["endpoint_class_counts"][endpoint_class] = (
+                    compact_result["endpoint_class_counts"].get(endpoint_class, 0) + 1
+                )
         if stage == "BOOLEAN_CUT":
             output = bpy.data.objects.get(result.get("output_object_name"))
             boolean_modifiers = (

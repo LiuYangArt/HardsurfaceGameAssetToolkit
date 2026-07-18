@@ -37,12 +37,12 @@
 - Material provenance 只作 probe；BVH 按各 Pipe 几何分类 owner。
 - 若 Collection Boolean 没产生 cutter Faces，报告 source、Pipe 数、overlap pairs 和各 Pipe 风险。
 
-### Task 3：端点零延长
+### Task 3：Terminal Face 端点延长
 
-- 所有 open Pipe 两端 extension 固定为 `0`。
-- Pipe 严格停在原 Sharp Edge 起点和终点，不添加数值 tolerance。
+- 若端点存在法线与 Pipe 外延方向近似一致的 terminal face，延长 `1 × radius`。
+- surface continuation、cyclic 或 ambiguous 端点不延长。
 - 记录每根 Pipe 两端的 extension length，供 debug 和后续 clearance solver 使用。
-- 若真实 CAD 模型后续出现漏切，再基于具体证据设计最小 tolerance，不预先延长。
+- 记录 `TERMINAL_FACE / SURFACE_CONTINUATION / AMBIGUOUS / CYCLIC` 分类与 terminal face index。
 
 ### Task 4：诊断与交互
 
@@ -56,7 +56,7 @@
 
 - Headless 回归：多 Pipe Boolean Preview 不需要 Union Mesh，也不 Apply Modifier。
 - 回归：独立 Pipe 均 closed manifold；source 不变并在有 artifact 时隐藏。
-- 回归：所有 open Pipe endpoint extension 都严格为 `0`。
+- 回归：terminal face 端延长 `radius`，surface continuation 端不延长。
 - 回归：Boolean Preview 的 output Mesh data 不变，并保留一个可编辑的 Exact Collection Boolean Modifier。
 - 用户文件：`C:/Users/LiuYang/Desktop/pipe-chamfer/pipe-chamfer-test.blend`。
 - 分阶段记录 FEATURE_GRAPH / PIPES / CUTTER_SET / BOOLEAN_CUT 统计。
