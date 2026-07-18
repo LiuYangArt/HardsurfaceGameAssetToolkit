@@ -27,13 +27,15 @@
 - static mesh GLB export smoke test
 - rename bones smoke test
 - cleanup UE SKM smoke test
-- experimental Pipe Chamfer 的 PIPE_ONLY / BOOLEAN_CUT / RECONSTRUCT headless smoke test
-- experimental Pipe Chamfer 的开放 chain、junction 拒绝与 source-preserved regression test
-- 不同半径圆柱比例参照试件下，selected cylinder rim 的 BOOLEAN_CUT marker 观测（首版 operator 仍只消费显式 selected loop）
-- Object Mode 自动处理全部 Sharp/Seam feature edges，并按 surface patch pair 拆分开放/闭合 maximal chains
-- 无 Material slot 时的 Boolean marker index 回归
+- experimental Pipe Chamfer 的 Object-only Sharp FeatureGraph smoke test
+- 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
+- two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
+- Exact Union / Difference 与 cutter Face provenance smoke test
+- tessellated curved chain 不被固定角度切碎的 grouping 回归
+- surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 
-> 当前自动模式使用一次 Blender Bevel 处理全部安全 manifold feature edges；patch-pair chain 用于统计和诊断。Junction corner 仍由 Blender Bevel 求解，boundary/non-manifold feature edge 会跳过并在结果 JSON 中报告。原 Pipe Boolean 保留为 Selected Loop 实验模式。
+> 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
+> `PATCHED` 仅在 BoundaryGraph 可稳定分类时完成；当前 cube closed-loop probe 会返回 `ambiguous_boundary`，不会用旧 Bevel 结果伪装成功。two-pipe junction 的 Regular/Junction patch 仍是待继续验证的 Stop/Go 项。
 
 ## Experimental Pipe Chamfer API Probe
 

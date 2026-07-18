@@ -960,262 +960,193 @@ def test_marmoset_loader_generation_smoke(test_context: TestContext, result: Tes
     ensure('baker.importModel(group_config["low_fbx"])' in script_text, "Loader must use Baker quick loader")
     ensure(low_obj.name in bpy.data.objects and high_obj.name in bpy.data.objects, "Source objects should remain in Blender scene")
     result.add_detail(f"Loader: {paths.loader_path}")
-def run_pipe_chamfer_operator(source, edge_indices, stage, radius=0.1, keep_cutter=True):
-    """通过公开 Operator interface 执行实验性 Pipe Chamfer。
+def mark_edge_indices_sharp(obj, edge_indices):
+    """仅把指定 Edge 写入 sharp_edge attribute。
+
+    Args:
+        obj: 目标 Mesh Object。
+        edge_indices: 待标记的 Edge 索引。
+    """
+    sharp_attribute = obj.data.attributes.get("sharp_edge")
+    if sharp_attribute is None:
+        sharp_attribute = obj.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
+    edge_indices = set(edge_indices)
+    for edge in obj.data.edges:
+        sharp_attribute.data[edge.index].value = edge.index in edge_indices
+
+
+def run_pipe_chamfer_operator(source, stage, radius=0.1, keep_debug_objects=True):
+    """通过 Object-only Operator interface 执行实验性 Pipe Chamfer。
 
     Args:
         source: 输入 Mesh Object。
-        edge_indices: 缓存的 selected Edge 索引。
-        stage: 调试阶段。
+        stage: handoff 规定的 debug stage。
         radius: Pipe 半径。
-        keep_cutter: 是否保留 cutter。
+        keep_debug_objects: 是否保留 Pipe/Union debug Objects。
     """
-    select_edge_indices_in_edit_mode(source, edge_indices)
+    select_objects(source, [source])
     return bpy.ops.hst.experimental_pipe_chamfer(
         "EXEC_DEFAULT",
-        edge_source="SELECTED",
         radius=radius,
-        pipe_resolution=2,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
         debug_stage=stage,
-        keep_cutter=keep_cutter,
+        keep_debug_objects=keep_debug_objects,
         source_object_name=source.name,
-        selected_edge_indices_json=json.dumps(edge_indices),
     )
 
 
-def test_experimental_pipe_chamfer_pipe_only_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 PIPE_ONLY 输出、cutter manifold 与 source 不变。
+def test_sharp_feature_graph_object_smoke(test_context: TestContext, result: TestCaseResult):
+    """验证 Object-only 输入自动发现全部 Sharp 并按 corner 拆 Pipe Groups。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
         result: 当前测试结果记录器。
     """
-    collection = make_collection("PipeOnlyCase")
-    source = make_test_mesh("PipeOnlySource", collection)
+    collection = make_collection("SharpFeatureGraphCase")
+    source = make_test_mesh("SharpFeatureGraphSource", collection)
+    mark_all_edges_sharp(source)
     source_hash = mesh_topology_hash(source)
-    operator_result = run_pipe_chamfer_operator(source, cube_top_loop_edge_indices(source), "PIPE_ONLY")
-    ensure("FINISHED" in operator_result, "PIPE_ONLY did not finish")
-    output = bpy.data.objects.get("PipeOnlySource_PipeChamfer_TEST")
-    cutter = bpy.data.objects.get("PipeOnlySource_PipeCutter_TEST")
-    ensure(output is not None and cutter is not None, "PIPE_ONLY output or cutter missing")
-    ensure(mesh_topology_hash(source) == source_hash, "PIPE_ONLY changed source Mesh")
-    ensure(len(cutter.data.polygons) > 0, "PIPE_ONLY cutter has no Faces")
-    bm = bmesh.new()
-    bm.from_mesh(cutter.data)
-    ensure(all(len(edge.link_faces) == 2 for edge in bm.edges), "PIPE_ONLY cutter is not closed manifold")
-    bm.free()
-    ensure(cutter.display_type == "WIRE", "Debug cutter is not wire display")
-    result.add_detail(f"Cutter Faces: {len(cutter.data.polygons)}")
+    operator_result = run_pipe_chamfer_operator(source, "FEATURE_GRAPH")
+    ensure("FINISHED" in operator_result, "FEATURE_GRAPH did not finish")
+    ensure(mesh_topology_hash(source) == source_hash, "FEATURE_GRAPH changed source Mesh")
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(source, 0.1, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
+    ensure(stats["sharp_edge_count"] == 12, f"Expected 12 Sharp Edges, got {stats['sharp_edge_count']}")
+    ensure(len(groups) == 12, f"Expected 12 independent cube Pipes, got {len(groups)}")
+    ensure(stats["topology_junction_count"] == 8, "Cube Sharp graph should expose 8 junction vertices")
+    result.add_detail("12 Sharp Edges -> 12 Pipe Groups; 8 topology junctions")
 
 
-def test_experimental_pipe_chamfer_boolean_cut_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 BOOLEAN_CUT 的 marker Faces 与 source 不变。
+def test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression(test_context: TestContext, result: TestCaseResult):
+    """验证 PIPES 由独立 Mesh sweep 生成且 source 不变，不存在 Bevel modifier。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
         result: 当前测试结果记录器。
     """
-    collection = make_collection("BooleanCutCase")
-    source = make_test_mesh("BooleanCutSource", collection)
-    source.data.materials.append(bpy.data.materials.new("BooleanBase"))
-    source_hash = mesh_topology_hash(source)
-    operator_result = run_pipe_chamfer_operator(source, cube_top_loop_edge_indices(source), "BOOLEAN_CUT")
-    ensure("FINISHED" in operator_result, "BOOLEAN_CUT did not finish")
-    output = bpy.data.objects.get("BooleanCutSource_PipeChamfer_TEST")
-    marker = bpy.data.materials.get("HST_PipeChamfer_Marker")
-    marker_index = list(output.data.materials).index(marker)
-    marker_faces = [polygon for polygon in output.data.polygons if polygon.material_index == marker_index]
-    ensure(marker_faces, "BOOLEAN_CUT did not preserve cutter-derived marker Faces")
-    ensure(mesh_topology_hash(source) == source_hash, "BOOLEAN_CUT changed source Mesh")
-    result.add_detail(f"Marker Faces: {len(marker_faces)}")
-
-
-def test_experimental_pipe_chamfer_reconstruct_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 RECONSTRUCT 输出为无零面积面的 closed manifold。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    collection = make_collection("ReconstructCase")
-    source = make_test_mesh("ReconstructSource", collection)
-    source.data.materials.append(bpy.data.materials.new("ReconstructBase"))
-    source_hash = mesh_topology_hash(source)
-    operator_result = run_pipe_chamfer_operator(source, cube_top_loop_edge_indices(source), "RECONSTRUCT")
-    ensure("FINISHED" in operator_result, "RECONSTRUCT did not finish")
-    output = bpy.data.objects.get("ReconstructSource_PipeChamfer_TEST")
-    ensure(output is not None, "RECONSTRUCT output missing")
-    bm = bmesh.new()
-    bm.from_mesh(output.data)
-    ensure(all(len(edge.link_faces) == 2 for edge in bm.edges), "RECONSTRUCT output is not closed manifold")
-    ensure(all(face.calc_area() > 1.0e-12 for face in bm.faces), "RECONSTRUCT output has zero-area Face")
-    bm.free()
-    ensure(mesh_topology_hash(source) == source_hash, "RECONSTRUCT changed source Mesh")
-    result.add_detail(f"Output Faces: {len(output.data.polygons)}")
-
-
-def test_experimental_pipe_chamfer_open_chain_rejected_regression(test_context: TestContext, result: TestCaseResult):
-    """验证开放 selected chain 被稳定拒绝且不生成产物。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    collection = make_collection("OpenChainCase")
-    source = make_test_mesh("OpenChainSource", collection)
-    source_hash = mesh_topology_hash(source)
+    collection = make_collection("MultiPipeCase")
+    source = make_test_mesh("MultiPipeSource", collection)
     top_edges = cube_top_loop_edge_indices(source)
-    try:
-        run_pipe_chamfer_operator(source, top_edges[:-1], "PIPE_ONLY")
-    except RuntimeError as error:
-        ensure("selection_not_closed_loop" in str(error), f"Unexpected open-chain error: {error}")
-    else:
-        raise TestFailure("Open chain was not rejected")
-    ensure(mesh_topology_hash(source) == source_hash, "Rejected open chain changed source Mesh")
-    ensure(bpy.data.objects.get("OpenChainSource_PipeChamfer_TEST") is None, "Rejected input created output")
-
-
-def test_experimental_pipe_chamfer_junction_rejected_regression(test_context: TestContext, result: TestCaseResult):
-    """验证 selected junction 被稳定拒绝且不生成产物。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    collection = make_collection("JunctionCase")
-    source = make_test_mesh("JunctionSource", collection)
-    source_hash = mesh_topology_hash(source)
-    top_edges = cube_top_loop_edge_indices(source)
-    branch_edge = next(edge.index for edge in source.data.edges if edge.index not in top_edges and any(source.data.vertices[index].co.z > 0.0 for index in edge.vertices))
-    try:
-        run_pipe_chamfer_operator(source, top_edges + [branch_edge], "PIPE_ONLY")
-    except RuntimeError as error:
-        ensure("selection_not_closed_loop" in str(error), f"Unexpected junction error: {error}")
-    else:
-        raise TestFailure("Selected junction was not rejected")
-    ensure(mesh_topology_hash(source) == source_hash, "Rejected junction changed source Mesh")
-    ensure(bpy.data.objects.get("JunctionSource_PipeChamfer_TEST") is None, "Rejected input created output")
-
-
-def test_experimental_pipe_chamfer_source_preserved_regression(test_context: TestContext, result: TestCaseResult):
-    """验证三个 debug stage 都不修改 source Mesh。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    for stage in ("PIPE_ONLY", "BOOLEAN_CUT", "RECONSTRUCT"):
-        collection = make_collection(f"Preserve{stage}")
-        source = make_test_mesh(f"PreserveSource{stage}", collection, location=(len(bpy.data.objects) * 3.0, 0.0, 0.0))
-        source.data.materials.append(bpy.data.materials.new(f"PreserveBase{stage}"))
-        source_hash = mesh_topology_hash(source)
-        operator_result = run_pipe_chamfer_operator(source, cube_top_loop_edge_indices(source), stage)
-        ensure("FINISHED" in operator_result, f"{stage} did not finish")
-        ensure(mesh_topology_hash(source) == source_hash, f"{stage} changed source Mesh")
-
-
-def test_experimental_pipe_chamfer_cylinder_intersection_boolean_observation(test_context: TestContext, result: TestCaseResult):
-    """观测不同半径圆柱相交区域的 BOOLEAN_CUT marker 结果。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    collection = make_collection("CylinderIntersectionCase")
-    bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=1.0, depth=3.0)
-    source = ensure_object_in_collection(bpy.context.active_object, collection)
-    source.name = "CylinderIntersectionSource"
-    source.data.materials.append(bpy.data.materials.new("CylinderIntersectionBase"))
-    rim_edges = [
+    branch_edge = next(
         edge.index
         for edge in source.data.edges
-        if all(source.data.vertices[index].co.z > 1.0 for index in edge.vertices)
-    ]
-    bpy.ops.mesh.primitive_cylinder_add(vertices=24, radius=0.65, depth=3.0, location=(0.8, 0.0, 1.5), rotation=(0.0, 1.57079632679, 0.0))
-    observation_cylinder = ensure_object_in_collection(bpy.context.active_object, collection)
-    observation_cylinder.name = "DifferentRadiusObservationCylinder"
-    observation_cylinder.display_type = "WIRE"
-    # 此试件把第二圆柱作为相交比例/位置的可视化参照；首版 operator 仍只消费显式 selected loop。
-    operator_result = run_pipe_chamfer_operator(source, rim_edges, "BOOLEAN_CUT", radius=0.08)
-    ensure("FINISHED" in operator_result, "Different-radius cylinder observation BOOLEAN_CUT did not finish")
-    output = bpy.data.objects.get("CylinderIntersectionSource_PipeChamfer_TEST")
-    marker = bpy.data.materials.get("HST_PipeChamfer_Marker")
-    marker_index = list(output.data.materials).index(marker)
-    marker_face_count = sum(1 for polygon in output.data.polygons if polygon.material_index == marker_index)
-    ensure(marker_face_count > 0, "Different-radius cylinder observation found no marker Faces")
-    result.add_detail(f"Selected cylinder marker Faces: {marker_face_count}; reference cylinder radius: 0.65")
-
-
-def test_feature_chamfer_auto_sharp_open_chains_smoke(test_context: TestContext, result: TestCaseResult):
-    """验证 Object Mode 一次处理全部 Sharp Edge，包括 corner 之间的开放 chain。
-
-    Args:
-        test_context: 已注册 add-on 的测试上下文。
-        result: 当前测试结果记录器。
-    """
-    collection = make_collection("AutoSharpOpenChainsCase")
-    source = make_test_mesh("AutoSharpOpenChainsSource", collection)
-    mark_all_edges_sharp(source)
+        if edge.index not in top_edges and any(source.data.vertices[index].co.z > 0.0 for index in edge.vertices)
+    )
+    mark_edge_indices_sharp(source, top_edges + [branch_edge])
     source_hash = mesh_topology_hash(source)
-    select_objects(source, [source])
-    operator_result = bpy.ops.hst.experimental_pipe_chamfer(
-        "EXEC_DEFAULT",
-        edge_source="AUTO_SHARP",
-        radius=0.08,
-        pipe_resolution=0,
-        debug_stage="RECONSTRUCT",
-        keep_cutter=False,
-        source_object_name=source.name,
-        selected_edge_indices_json="[]",
-    )
-    ensure("FINISHED" in operator_result, "Auto Sharp Feature Chamfer did not finish")
-    output = bpy.data.objects.get("AutoSharpOpenChainsSource_FeatureChamfer_TEST")
-    ensure(output is not None, "Auto Sharp Feature Chamfer output missing")
-    ensure(mesh_topology_hash(source) == source_hash, "Auto Sharp Feature Chamfer changed source Mesh")
-    ensure(len(output.data.vertices) > len(source.data.vertices), "Open Sharp chains did not change output topology")
-    bm = bmesh.new()
-    bm.from_mesh(output.data)
-    ensure(all(len(edge.link_faces) == 2 for edge in bm.edges), "Auto Sharp output is not closed manifold")
-    ensure(all(face.calc_area() > 1.0e-12 for face in bm.faces), "Auto Sharp output has zero-area Face")
-    bm.free()
-    result.add_detail(f"Source Edges: {len(source.data.edges)}; Output Faces: {len(output.data.polygons)}")
+    operator_result = run_pipe_chamfer_operator(source, "PIPES")
+    ensure("FINISHED" in operator_result, "PIPES did not finish")
+    pipes = [obj for obj in bpy.data.objects if obj.get("hst_pipe_id") is not None]
+    ensure(len(pipes) >= 2, f"Expected independent Pipes, got {len(pipes)}")
+    ensure(all(modifier.type != "BEVEL" for obj in bpy.data.objects for modifier in obj.modifiers), "Experimental result contains a Bevel modifier")
+    ensure(mesh_topology_hash(source) == source_hash, "PIPES changed source Mesh")
+    for pipe in pipes:
+        bm = bmesh.new()
+        bm.from_mesh(pipe.data)
+        ensure(all(len(edge.link_faces) == 2 for edge in bm.edges), f"Pipe is not manifold: {pipe.name}")
+        bm.free()
+    result.add_detail(f"Independent manifold Pipes: {len(pipes)}")
 
 
-def test_feature_chamfer_no_material_marker_regression(test_context: TestContext, result: TestCaseResult):
-    """验证无 Material slot 时 source Faces 不会被误认成 cutter marker Faces。
+def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(test_context: TestContext, result: TestCaseResult):
+    """验证核心 two-Pipe junction 未完成分区时稳定失败，不输出伪 PATCHED 成功。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
         result: 当前测试结果记录器。
     """
-    collection = make_collection("NoMaterialMarkerCase")
-    source = make_test_mesh("NoMaterialMarkerSource", collection)
-    ensure(len(source.data.materials) == 0, "Fixture unexpectedly has a Material slot")
-    operator_result = run_pipe_chamfer_operator(
-        source, cube_top_loop_edge_indices(source), "RECONSTRUCT", radius=0.08, keep_cutter=False
+    collection = make_collection("TwoPipeJunctionCase")
+    source = make_test_mesh("TwoPipeJunctionSource", collection)
+    top_edges = cube_top_loop_edge_indices(source)
+    branch_edge = next(
+        edge.index
+        for edge in source.data.edges
+        if edge.index not in top_edges and any(source.data.vertices[index].co.z > 0.0 for index in edge.vertices)
     )
-    ensure("FINISHED" in operator_result, "No-material Feature Chamfer did not finish")
-    output = bpy.data.objects.get("NoMaterialMarkerSource_PipeChamfer_TEST")
-    ensure(output is not None, "No-material Feature Chamfer output missing")
-    ensure(len(output.data.polygons) > 0, "No-material marker bug deleted the complete output")
+    mark_edge_indices_sharp(source, top_edges + [branch_edge])
+    source_hash = mesh_topology_hash(source)
+    try:
+        run_pipe_chamfer_operator(source, "REGULAR_PATCHED", radius=0.08, keep_debug_objects=True)
+    except RuntimeError as error:
+        ensure(
+            any(
+                error_code in str(error)
+                for error_code in (
+                    "junction_region_unresolved",
+                    "ambiguous_boundary",
+                    "boolean_no_cutter_faces",
+                )
+            ),
+            f"Unexpected two-Pipe junction failure: {error}",
+        )
+    else:
+        raise TestFailure("Unresolved two-Pipe junction reported REGULAR_PATCHED success")
+    ensure(mesh_topology_hash(source) == source_hash, "Rejected two-Pipe junction changed source Mesh")
+    result.add_detail("Unresolved junction failed closed without Bevel fallback")
 
 
-def test_feature_chamfer_patch_pair_chain_grouping_regression(test_context: TestContext, result: TestCaseResult):
-    """验证 cube Sharp graph 会按 surface patch pair 拆成开放 maximal chains。
+def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestContext, result: TestCaseResult):
+    """验证 closed Pipe 的 Exact Union/Difference provenance 与 source-preserved 行为。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
         result: 当前测试结果记录器。
     """
-    collection = make_collection("PatchPairGroupingCase")
-    source = make_test_mesh("PatchPairGroupingSource", collection)
+    collection = make_collection("UnionDifferenceCase")
+    source = make_test_mesh("UnionDifferenceSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = mesh_topology_hash(source)
+    operator_result = run_pipe_chamfer_operator(source, "BOOLEAN_CUT", radius=0.08)
+    ensure("FINISHED" in operator_result, "BOOLEAN_CUT did not finish")
+    output = bpy.data.objects.get("UnionDifferenceSource_PipeChamfer_TEST")
+    marker = bpy.data.materials.get("HST_PipeChamfer_Marker")
+    ensure(output is not None and marker in output.data.materials[:], "BOOLEAN_CUT marker provenance missing")
+    marker_index = list(output.data.materials).index(marker)
+    ensure(any(face.material_index == marker_index for face in output.data.polygons), "No cutter-derived Faces were marked")
+    ensure(mesh_topology_hash(source) == source_hash, "BOOLEAN_CUT changed source Mesh")
+    result.add_detail(f"Boolean output Faces: {len(output.data.polygons)}")
+
+
+def test_grouping_curved_chain_regression(test_context: TestContext, result: TestCaseResult):
+    """验证 tessellated cylinder rim 不会按固定角度被切成许多 Pipe Groups。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("CurvedGroupingCase")
+    bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=1.0, depth=2.0)
+    source = ensure_object_in_collection(bpy.context.active_object, collection)
+    source.name = "CurvedGroupingSource"
+    top_rim = [edge.index for edge in source.data.edges if all(source.data.vertices[index].co.z > 0.9 for index in edge.vertices)]
+    mark_edge_indices_sharp(source, top_rim)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(source, 0.08, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
+    ensure(len(groups) == 1 and groups[0]["is_cyclic"], f"Cylinder rim split into {len(groups)} Pipes")
+    result.add_detail("32-edge curved rim remained one closed Pipe")
+
+
+def test_grouping_true_corner_regression(test_context: TestContext, result: TestCaseResult):
+    """验证 surface patch pair 与 degree junction 会把真实 cube corner 拆开。
+
+    Args:
+        test_context: 已注册 add-on 的测试上下文。
+        result: 当前测试结果记录器。
+    """
+    collection = make_collection("TrueCornerGroupingCase")
+    source = make_test_mesh("TrueCornerGroupingSource", collection)
     mark_all_edges_sharp(source)
-    chains = test_context.addon.utils.experimental_pipe_chamfer_utils.collect_feature_chains(source)
-    ensure(len(chains) == 12, f"Expected 12 maximal cube chains, got {len(chains)}")
-    ensure(all(not chain["is_cyclic"] for chain in chains), "Cube corner chains must be open")
-    ensure(all(len(chain["edge_indices"]) == 1 for chain in chains), "Cube patch-pair chains must each contain one Edge")
-    ensure(len({tuple(chain["patch_pair"]) for chain in chains}) == 12, "Patch pairs did not separate cube features")
-    result.add_detail("12 open chains grouped by 12 surface patch pairs")
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(source, 0.08, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
+    ensure(all(len(group["edge_indices"]) == 1 for group in groups), "True cube corners were merged")
+    ensure(stats["topology_junction_count"] == 8, "True corner junction count is wrong")
+    result.add_detail("Patch pair + degree split every true cube corner")
 
 
 def main():
@@ -1253,16 +1184,12 @@ def main():
     context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)
     context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)
-    context.run_case("experimental_pipe_chamfer_pipe_only_smoke", test_experimental_pipe_chamfer_pipe_only_smoke)
-    context.run_case("experimental_pipe_chamfer_boolean_cut_smoke", test_experimental_pipe_chamfer_boolean_cut_smoke)
-    context.run_case("experimental_pipe_chamfer_reconstruct_smoke", test_experimental_pipe_chamfer_reconstruct_smoke)
-    context.run_case("experimental_pipe_chamfer_open_chain_rejected_regression", test_experimental_pipe_chamfer_open_chain_rejected_regression)
-    context.run_case("experimental_pipe_chamfer_junction_rejected_regression", test_experimental_pipe_chamfer_junction_rejected_regression)
-    context.run_case("experimental_pipe_chamfer_source_preserved_regression", test_experimental_pipe_chamfer_source_preserved_regression)
-    context.run_case("experimental_pipe_chamfer_cylinder_intersection_boolean_observation", test_experimental_pipe_chamfer_cylinder_intersection_boolean_observation)
-    context.run_case("feature_chamfer_auto_sharp_open_chains_smoke", test_feature_chamfer_auto_sharp_open_chains_smoke)
-    context.run_case("feature_chamfer_no_material_marker_regression", test_feature_chamfer_no_material_marker_regression)
-    context.run_case("feature_chamfer_patch_pair_chain_grouping_regression", test_feature_chamfer_patch_pair_chain_grouping_regression)
+    context.run_case("sharp_feature_graph_object_smoke", test_sharp_feature_graph_object_smoke)
+    context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
+    context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
+    context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
+    context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
+    context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)
 
     summary = {
         "blender_version": bpy.app.version_string,

@@ -1,137 +1,40 @@
 # -*- coding: utf-8 -*-
-"""实验性 Pipe Chamfer 的几何实现。"""
+"""实验性 Sharp FeatureGraph → 多 Pipe → Boolean → Patch 实现。"""
+
+import math
 
 import bpy
 import bmesh
+from mathutils import Matrix
+from mathutils import Vector
 from mathutils import geometry
+from mathutils.bvhtree import BVHTree
 
 
 COLLECTION_NAME = "HST_Experimental_PipeChamfer"
-MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
 OUTPUT_TAG = "hst_experimental_pipe_chamfer_output"
-
-
-def collect_feature_chains(source_object, edge_source="AUTO_SHARP", selected_edge_indices=None):
-    """按 surface patch pair 把候选 Edge 拆成 maximal feature chains。
-
-    Args:
-        source_object: 输入 Mesh Object。
-        edge_source: AUTO_SHARP 或 SELECTED。
-        selected_edge_indices: SELECTED 模式缓存的 Edge 索引。
-    """
-    bm = bmesh.new()
-    bm.from_mesh(source_object.data)
-    bm.verts.ensure_lookup_table()
-    bm.edges.ensure_lookup_table()
-    bm.faces.ensure_lookup_table()
-    selected_edge_indices = set(selected_edge_indices or [])
-    if edge_source == "SELECTED":
-        candidate_edges = {edge for edge in bm.edges if edge.index in selected_edge_indices}
-    else:
-        sharp_attribute = source_object.data.attributes.get("sharp_edge")
-        candidate_edges = {
-            edge
-            for edge in bm.edges
-            if edge.seam
-            or source_object.data.edges[edge.index].use_edge_sharp
-            or (
-                sharp_attribute is not None
-                and bool(sharp_attribute.data[edge.index].value)
-            )
-        }
-    manifold_edges = {edge for edge in candidate_edges if len(edge.link_faces) == 2}
-
-    non_feature_adjacency = {}
-    for edge in bm.edges:
-        if edge in manifold_edges or len(edge.link_faces) != 2:
-            continue
-        face_a, face_b = edge.link_faces
-        non_feature_adjacency.setdefault(face_a, set()).add(face_b)
-        non_feature_adjacency.setdefault(face_b, set()).add(face_a)
-    face_patch = {}
-    patch_index = 0
-    for face in bm.faces:
-        if face in face_patch:
-            continue
-        stack = [face]
-        face_patch[face] = patch_index
-        while stack:
-            current_face = stack.pop()
-            for neighbor in non_feature_adjacency.get(current_face, ()):
-                if neighbor not in face_patch:
-                    face_patch[neighbor] = patch_index
-                    stack.append(neighbor)
-        patch_index += 1
-
-    grouped_edges = {}
-    for edge in manifold_edges:
-        patch_pair = tuple(sorted(face_patch[face] for face in edge.link_faces))
-        grouped_edges.setdefault(patch_pair, set()).add(edge)
-
-    chain_results = []
-    for patch_pair, group_edges in sorted(grouped_edges.items()):
-        vertex_edges = {}
-        for edge in group_edges:
-            for vert in edge.verts:
-                vertex_edges.setdefault(vert, set()).add(edge)
-        remaining = set(group_edges)
-        starts = sorted(
-            (vert for vert, edges in vertex_edges.items() if len(edges) != 2),
-            key=lambda vert: vert.index,
-        )
-        for start_vert in starts:
-            for start_edge in sorted(vertex_edges[start_vert], key=lambda edge: edge.index):
-                if start_edge not in remaining:
-                    continue
-                chain_results.append(_walk_feature_chain(start_vert, start_edge, vertex_edges, remaining, patch_pair))
-        while remaining:
-            start_edge = min(remaining, key=lambda edge: edge.index)
-            start_vert = min(start_edge.verts, key=lambda vert: vert.index)
-            chain_results.append(_walk_feature_chain(start_vert, start_edge, vertex_edges, remaining, patch_pair))
-    bm.free()
-    chain_results.sort(key=lambda chain: min(chain["edge_indices"]))
-    return chain_results
-
-
-def _walk_feature_chain(start_vert, start_edge, vertex_edges, remaining, patch_pair):
-    """从指定 Vertex/Edge 确定性遍历一条 maximal feature chain。
-
-    Args:
-        start_vert: 起始 BMesh Vertex。
-        start_edge: 起始 BMesh Edge。
-        vertex_edges: 同 patch pair 的 Vertex-Edge adjacency。
-        remaining: 尚未消费的 Edge 集合。
-        patch_pair: chain 两侧的 surface patch pair。
-    """
-    vertex_indices = [start_vert.index]
-    edge_indices = []
-    current_vert = start_vert
-    current_edge = start_edge
-    while current_edge in remaining:
-        remaining.remove(current_edge)
-        edge_indices.append(current_edge.index)
-        current_vert = current_edge.other_vert(current_vert)
-        vertex_indices.append(current_vert.index)
-        if current_vert is start_vert:
-            break
-        if len(vertex_edges[current_vert]) != 2:
-            break
-        current_edge = next(edge for edge in vertex_edges[current_vert] if edge.index != current_edge.index)
-    return {
-        "patch_pair": patch_pair,
-        "edge_indices": edge_indices,
-        "vertex_indices": vertex_indices[:-1] if current_vert is start_vert else vertex_indices,
-        "is_cyclic": current_vert is start_vert,
-    }
+PIPE_ID_TAG = "hst_pipe_id"
+DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
+MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
+BASE_MATERIAL_NAME = "HST_PipeChamfer_Base"
+SUPPORTED_STAGES = {
+    "FEATURE_GRAPH",
+    "PIPES",
+    "CUTTER_UNION",
+    "BOOLEAN_CUT",
+    "OPEN_BOUNDARY",
+    "REGULAR_PATCHED",
+    "PATCHED",
+}
 
 
 class PipeChamferError(RuntimeError):
-    """携带稳定 error code 与机器统计的已知几何错误。
+    """携带稳定 error code 与机器统计的几何错误。
 
     Args:
         error_code: 稳定错误代码。
         message: 面向用户的错误信息。
-        stats: 当前阶段已收集的统计。
+        stats: 当前阶段已收集的机器统计。
     """
 
     def __init__(self, error_code, message, stats):
@@ -141,187 +44,65 @@ class PipeChamferError(RuntimeError):
         self.stats.update(status="failed", error_code=error_code, error_message=message)
 
 
-def _base_stats(source_object, selected_edge_indices, radius, pipe_resolution, debug_stage):
-    """创建所有阶段共用的统计字典。
-
-    Args:
-        source_object: 输入 Mesh Object。
-        selected_edge_indices: 用户缓存的 Edge 索引。
-        radius: Pipe 半径。
-        pipe_resolution: Pipe 截面分辨率。
-        debug_stage: 当前调试阶段。
-    """
+# 创建 handoff 规定的结构化统计，所有分支都补齐同一组字段。
+# source_object: 输入 Mesh Object；其余参数为 Operator 的公开参数。
+def _base_stats(
+    source_object,
+    radius,
+    pipe_resolution,
+    chain_turn_threshold_degrees,
+    chain_turn_spike_ratio,
+    junction_margin,
+    debug_stage,
+):
     return {
         "status": "running",
+        "stage": debug_stage,
         "source_object_name": source_object.name if source_object else None,
         "output_object_name": None,
-        "cutter_object_name": None,
-        "stage": debug_stage,
-        "radius": radius,
-        "pipe_resolution": pipe_resolution,
-        "selected_edge_count": len(selected_edge_indices),
-        "selected_vertex_count": 0,
-        "source_boundary_edge_count": 0,
-        "source_non_manifold_edge_count": 0,
-        "pipe_face_count": 0,
+        "sharp_edge_count": 0,
+        "surface_patch_count": 0,
+        "pipe_group_count": 0,
+        "open_pipe_count": 0,
+        "closed_pipe_count": 0,
+        "topology_junction_count": 0,
+        "spatial_junction_count": 0,
+        "union_face_count": 0,
         "cutter_face_count": 0,
-        "marker_face_count": 0,
-        "trim_loop_count": 0,
-        "trim_loop_vertex_counts": [],
-        "chamfer_face_count": 0,
+        "ambiguous_face_count": 0,
+        "regular_region_count": 0,
+        "junction_region_count": 0,
+        "strip_port_count": 0,
+        "regular_patch_face_count": 0,
+        "junction_patch_face_count": 0,
         "boundary_edge_count_after": 0,
         "non_manifold_edge_count_after": 0,
-        "zero_area_face_count_after": 0,
+        "zero_area_face_count": 0,
+        "self_intersection_count": 0,
+        "radius": radius,
+        "pipe_resolution": pipe_resolution,
+        "chain_turn_threshold_degrees": chain_turn_threshold_degrees,
+        "chain_turn_spike_ratio": chain_turn_spike_ratio,
+        "junction_margin": junction_margin,
+        "feature_groups": [],
+        "junction_vertex_indices": [],
+        "debug_object_names": [],
         "warnings": [],
     }
 
 
+# 抛出稳定失败并标记已生成对象，避免 debug 产物伪装成成功结果。
+# error_code: 稳定错误码；message: 失败说明；stats: 当前机器统计。
 def _fail(error_code, message, stats):
-    """抛出带上下文的已知失败。
-
-    Args:
-        error_code: 稳定错误代码。
-        message: 失败说明。
-        stats: 已收集的统计。
-    """
-    _mark_failed_outputs(stats)
-    raise PipeChamferError(error_code, message, stats)
-
-
-def _mark_failed_outputs(stats):
-    """把后置几何失败产生的 debug 对象明确标记为 FAILED。
-
-    Args:
-        stats: 含 output/cutter 对象名的统计字典。
-    """
-    for key in ("output_object_name", "cutter_object_name"):
-        object_name = stats.get(key)
+    for object_name in [stats.get("output_object_name"), *stats.get("debug_object_names", [])]:
         obj = bpy.data.objects.get(object_name) if object_name else None
         if obj is not None and not obj.name.endswith("_FAILED"):
             obj.name = f"{obj.name}_FAILED"
-            stats[key] = obj.name
+    raise PipeChamferError(error_code, message, stats)
 
 
-def _validate_and_order_path(source_object, selected_edge_indices, radius, stats):
-    """验证输入并确定性提取闭合 selected edge path。
-
-    Args:
-        source_object: 输入 Mesh Object。
-        selected_edge_indices: 缓存的 Edge 索引。
-        radius: Pipe 半径。
-        stats: 可变统计字典。
-    """
-    if source_object.type != "MESH":
-        _fail("invalid_context", "Active Object must be a Mesh", stats)
-    if any(abs(scale - 1.0) > 1.0e-4 for scale in source_object.scale):
-        _fail("invalid_scale", "Object Scale must be applied", stats)
-    if source_object.modifiers:
-        _fail("modifiers_not_supported", "Objects with modifiers are not supported", stats)
-
-    bm = bmesh.new()
-    bm.from_mesh(source_object.data)
-    bm.verts.ensure_lookup_table()
-    bm.edges.ensure_lookup_table()
-    invalid_indices = [index for index in selected_edge_indices if index < 0 or index >= len(bm.edges)]
-    if invalid_indices or not selected_edge_indices:
-        bm.free()
-        _fail("stale_edge_indices", f"Invalid or empty Edge indices: {invalid_indices}", stats)
-
-    source_boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-    source_non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-    stats["source_boundary_edge_count"] = source_boundary
-    stats["source_non_manifold_edge_count"] = source_non_manifold
-    if source_non_manifold:
-        bm.free()
-        _fail("source_not_closed_manifold", "Source Mesh must be closed manifold", stats)
-
-    selected_edges = [bm.edges[index] for index in sorted(selected_edge_indices)]
-    for edge in selected_edges:
-        if len(edge.link_faces) != 2:
-            bm.free()
-            _fail("selected_edge_not_manifold", f"Selected Edge {edge.index} is not manifold", stats)
-
-    adjacency = {}
-    for edge in selected_edges:
-        for vert in edge.verts:
-            adjacency.setdefault(vert.index, []).append(edge)
-    stats["selected_vertex_count"] = len(adjacency)
-    if any(len(edges) != 2 for edges in adjacency.values()):
-        bm.free()
-        _fail("selection_not_closed_loop", "Selection must be one closed degree-2 Edge loop", stats)
-
-    start_vertex_index = min(adjacency)
-    ordered_vertex_indices = [start_vertex_index]
-    visited_edges = set()
-    current_vertex_index = start_vertex_index
-    previous_edge_index = None
-    while True:
-        candidates = sorted(
-            (edge for edge in adjacency[current_vertex_index] if edge.index != previous_edge_index),
-            key=lambda edge: edge.index,
-        )
-        next_edge = next((edge for edge in candidates if edge.index not in visited_edges), None)
-        if next_edge is None:
-            break
-        visited_edges.add(next_edge.index)
-        next_vertex = next(vert for vert in next_edge.verts if vert.index != current_vertex_index)
-        previous_edge_index = next_edge.index
-        current_vertex_index = next_vertex.index
-        if current_vertex_index == start_vertex_index:
-            break
-        ordered_vertex_indices.append(current_vertex_index)
-
-    if len(visited_edges) != len(selected_edges) or current_vertex_index != start_vertex_index:
-        bm.free()
-        _fail("selection_disconnected", "Selected edges do not form one connected closed loop", stats)
-
-    points = [bm.verts[index].co.copy() for index in ordered_vertex_indices]
-    segment_lengths = [(points[(index + 1) % len(points)] - point).length for index, point in enumerate(points)]
-    min_segment_length = min(segment_lengths)
-    stats["path_length"] = sum(segment_lengths)
-    stats["min_segment_length"] = min_segment_length
-    min_non_adjacent_distance = float("inf")
-    segment_count = len(points)
-    for index_a in range(segment_count):
-        for index_b in range(index_a + 1, segment_count):
-            if index_b in {index_a, (index_a + 1) % segment_count} or index_a == (index_b + 1) % segment_count:
-                continue
-            closest = geometry.intersect_line_line(
-                points[index_a], points[(index_a + 1) % segment_count],
-                points[index_b], points[(index_b + 1) % segment_count],
-            )
-            if closest is not None:
-                _, factor_a = geometry.intersect_point_line(
-                    closest[0], points[index_a], points[(index_a + 1) % segment_count]
-                )
-                _, factor_b = geometry.intersect_point_line(
-                    closest[1], points[index_b], points[(index_b + 1) % segment_count]
-                )
-                if 0.0 <= factor_a <= 1.0 and 0.0 <= factor_b <= 1.0:
-                    min_non_adjacent_distance = min(min_non_adjacent_distance, (closest[0] - closest[1]).length)
-            for point, segment_start, segment_end in (
-                (points[index_a], points[index_b], points[(index_b + 1) % segment_count]),
-                (points[(index_a + 1) % segment_count], points[index_b], points[(index_b + 1) % segment_count]),
-                (points[index_b], points[index_a], points[(index_a + 1) % segment_count]),
-                (points[(index_b + 1) % segment_count], points[index_a], points[(index_a + 1) % segment_count]),
-            ):
-                projected, factor = geometry.intersect_point_line(point, segment_start, segment_end)
-                factor = max(0.0, min(1.0, factor))
-                clamped = segment_start.lerp(segment_end, factor)
-                min_non_adjacent_distance = min(min_non_adjacent_distance, (point - clamped).length)
-    stats["min_non_adjacent_distance"] = (
-        None if min_non_adjacent_distance == float("inf") else min_non_adjacent_distance
-    )
-    bm.free()
-    if radius * 2.0 >= min_segment_length:
-        _fail("radius_exceeds_clearance", "Pipe diameter must be smaller than every path segment", stats)
-    if min_non_adjacent_distance != float("inf") and radius * 2.0 >= min_non_adjacent_distance:
-        _fail("radius_exceeds_clearance", "Pipe diameter exceeds non-adjacent path clearance", stats)
-    return points
-
-
+# 获取实验 Collection；该 Collection 只承载 output 与分阶段 debug artifacts。
 def _get_collection():
-    """获取或创建实验结果 Collection。"""
     collection = bpy.data.collections.get(COLLECTION_NAME)
     if collection is None:
         collection = bpy.data.collections.new(COLLECTION_NAME)
@@ -329,24 +110,17 @@ def _get_collection():
     return collection
 
 
+# 清理同一 source 上一轮生成的对象，使 Adjust Last Operation 可重复执行。
+# source_object: 当前输入 Mesh Object。
 def _remove_previous_result(source_object):
-    """仅清理同一 source 由本 operator 创建的上次结果，支持 redo。
-
-    Args:
-        source_object: 当前输入 Mesh Object。
-    """
     for obj in list(bpy.data.objects):
         if obj.get(OUTPUT_TAG) == source_object.name:
             bpy.data.objects.remove(obj, do_unlink=True)
 
 
+# 在不共享 Mesh Data 的前提下复制 source，后续只修改 duplicate。
+# source_object: 输入 Mesh Object；collection: 实验结果 Collection。
 def _duplicate_source(source_object, collection):
-    """复制 source Object 与 Mesh Data 到实验 Collection。
-
-    Args:
-        source_object: 输入 Mesh Object。
-        collection: 目标 Collection。
-    """
     output = source_object.copy()
     output.data = source_object.data.copy()
     output.name = f"{source_object.name}_PipeChamfer_TEST"
@@ -355,158 +129,18 @@ def _duplicate_source(source_object, collection):
     return output
 
 
-def _build_feature_chamfer_bevel(source_object, feature_edge_indices, radius, pipe_resolution, collection):
-    """在 source duplicate 上对全部 feature Edge 一次执行 Mesh bevel。
-
-    Args:
-        source_object: 输入 Mesh Object。
-        feature_edge_indices: 自动收集的全部 feature Edge 索引。
-        radius: Chamfer 宽度。
-        pipe_resolution: 输出横向分段数；0 代表单 span chamfer。
-        collection: 目标 Collection。
-    """
-    output = _duplicate_source(source_object, collection)
-    output.name = f"{source_object.name}_FeatureChamfer_TEST"
-    bevel_attribute_name = "hst_feature_chamfer_weight"
-    bevel_attribute = output.data.attributes.new(bevel_attribute_name, type="FLOAT", domain="EDGE")
-    feature_edge_indices = set(feature_edge_indices)
-    for edge in output.data.edges:
-        bevel_attribute.data[edge.index].value = 1.0 if edge.index in feature_edge_indices else 0.0
-    modifier = output.modifiers.new("HST Feature Chamfer", type="BEVEL")
-    modifier.limit_method = "WEIGHT"
-    modifier.edge_weight = bevel_attribute_name
-    modifier.width = radius
-    modifier.segments = max(1, pipe_resolution + 1)
-    modifier.affect = "EDGES"
-    modifier.harden_normals = False
-    modifier.loop_slide = True
-    if hasattr(modifier, "clamp_overlap"):
-        modifier.clamp_overlap = False
+# 把 Mesh Object 设为 active/selected，供 modifier apply 等 context API 使用。
+# obj: 待激活的 Blender Object。
+def _activate_object(obj):
     bpy.ops.object.select_all(action="DESELECT")
-    output.select_set(True)
-    bpy.context.view_layer.objects.active = output
-    bpy.ops.object.modifier_apply(modifier=modifier.name)
-    output.data.attributes.remove(output.data.attributes[bevel_attribute_name])
-    return output
+    obj.hide_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
 
 
-def build_feature_chamfer(
-    source_object,
-    radius,
-    pipe_resolution,
-    edge_source="AUTO_SHARP",
-    selected_edge_indices=None,
-):
-    """一次处理整个对象的 Sharp/Seam feature graph。
-
-    Args:
-        source_object: Active Mesh Object。
-        radius: Chamfer 宽度。
-        pipe_resolution: 横向额外分段控制。
-        edge_source: AUTO_SHARP 或 SELECTED。
-        selected_edge_indices: SELECTED 模式缓存的 Edge 索引。
-    """
-    stats = _base_stats(source_object, selected_edge_indices or [], radius, pipe_resolution, "RECONSTRUCT")
-    stats["edge_source"] = edge_source
-    if source_object.type != "MESH":
-        _fail("invalid_context", "Active Object must be a Mesh", stats)
-    if any(abs(scale - 1.0) > 1.0e-4 for scale in source_object.scale):
-        _fail("invalid_scale", "Object Scale must be applied", stats)
-    if source_object.modifiers:
-        _fail("modifiers_not_supported", "Objects with modifiers are not supported", stats)
-    chains = collect_feature_chains(source_object, edge_source, selected_edge_indices)
-    if not chains:
-        _fail("no_feature_edges", "No manifold Sharp/Seam feature Edges found", stats)
-    feature_edge_indices = sorted({edge_index for chain in chains for edge_index in chain["edge_indices"]})
-    stats["selected_edge_count"] = len(feature_edge_indices)
-    stats["feature_chain_count"] = len(chains)
-    stats["closed_chain_count"] = sum(1 for chain in chains if chain["is_cyclic"])
-    stats["open_chain_count"] = sum(1 for chain in chains if not chain["is_cyclic"])
-    stats["feature_chains"] = chains
-    candidate_vertex_degree = {}
-    for edge_index in feature_edge_indices:
-        edge = source_object.data.edges[edge_index]
-        for vertex_index in edge.vertices:
-            candidate_vertex_degree[vertex_index] = candidate_vertex_degree.get(vertex_index, 0) + 1
-    junction_vertex_indices = sorted(
-        vertex_index for vertex_index, degree in candidate_vertex_degree.items() if degree > 2
-    )
-    boundary_candidate_edge_indices = sorted(
-        edge.index
-        for edge in source_object.data.edges
-        if (edge.use_edge_sharp or edge.use_seam)
-        and edge.index not in feature_edge_indices
-    )
-    stats["junction_vertex_count"] = len(junction_vertex_indices)
-    stats["junction_vertex_indices"] = junction_vertex_indices
-    stats["skipped_edge_count"] = len(boundary_candidate_edge_indices)
-    stats["skipped_edge_indices"] = boundary_candidate_edge_indices
-    stats["warnings"] = []
-    if junction_vertex_indices:
-        stats["warnings"].append("junction corners are resolved by Blender Bevel")
-    if boundary_candidate_edge_indices:
-        stats["warnings"].append("boundary/non-manifold Sharp or Seam edges were skipped")
-    _remove_previous_result(source_object)
-    collection = _get_collection()
-    output = _build_feature_chamfer_bevel(
-        source_object, feature_edge_indices, radius, pipe_resolution, collection
-    )
-    risks = _mesh_risk_counts(output)
-    stats["output_object_name"] = output.name
-    stats["boundary_edge_count_after"] = risks["boundary"]
-    stats["non_manifold_edge_count_after"] = risks["non_manifold"]
-    stats["zero_area_face_count_after"] = risks["zero_area"]
-    stats["chamfer_face_count"] = max(0, len(output.data.polygons) - len(source_object.data.polygons))
-    if risks["non_manifold"] or risks["zero_area"]:
-        _fail("result_not_manifold", "Feature Chamfer result is not closed manifold", stats)
-    bpy.ops.object.select_all(action="DESELECT")
-    output.select_set(True)
-    bpy.context.view_layer.objects.active = output
-    stats["status"] = "finished"
-    return stats
-
-
-def _build_pipe(source_object, points, radius, pipe_resolution, collection):
-    """用 cyclic POLY Curve 构造并转换闭合 Pipe Mesh。
-
-    Args:
-        source_object: 输入 Mesh Object，用于继承 transform。
-        points: 有序闭合路径点。
-        radius: Pipe 半径。
-        pipe_resolution: Curve bevel 分辨率。
-        collection: 目标 Collection。
-    """
-    curve_data = bpy.data.curves.new(f"{source_object.name}_PipeCutterCurve_TEST", type="CURVE")
-    curve_data.dimensions = "3D"
-    curve_data.resolution_u = 1
-    curve_data.bevel_depth = radius
-    curve_data.bevel_resolution = pipe_resolution
-    curve_data.use_fill_caps = True
-    spline = curve_data.splines.new("POLY")
-    spline.points.add(len(points) - 1)
-    for spline_point, coordinate in zip(spline.points, points):
-        spline_point.co = (*coordinate, 1.0)
-    spline.use_cyclic_u = True
-
-    cutter = bpy.data.objects.new(f"{source_object.name}_PipeCutter_TEST", curve_data)
-    cutter.matrix_world = source_object.matrix_world.copy()
-    cutter[OUTPUT_TAG] = source_object.name
-    collection.objects.link(cutter)
-    bpy.ops.object.select_all(action="DESELECT")
-    cutter.select_set(True)
-    bpy.context.view_layer.objects.active = cutter
-    bpy.ops.object.convert(target="MESH")
-    cutter = bpy.context.active_object
-    cutter.name = f"{source_object.name}_PipeCutter_TEST"
-    return cutter
-
-
+# 返回 Mesh 的 boundary、non-manifold 和 zero-area 风险计数。
+# obj: 待检查的 Mesh Object。
 def _mesh_risk_counts(obj):
-    """统计 Mesh 的 boundary、non-manifold 与 zero-area 风险。
-
-    Args:
-        obj: 待统计的 Mesh Object。
-    """
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     result = {
@@ -518,82 +152,474 @@ def _mesh_risk_counts(obj):
     return result
 
 
-def _apply_boolean(output, cutter, marker_material):
-    """执行 Exact Boolean Difference 并返回 marker material index。
+# 读取 Blender 5.x sharp_edge attribute；只接受显式 Sharp，不混入 Seam 或角度发现。
+# source_object: 输入 Mesh Object；返回 Sharp Edge 索引集合。
+def _sharp_edge_indices(source_object):
+    sharp_attribute = source_object.data.attributes.get("sharp_edge")
+    if sharp_attribute is None or sharp_attribute.domain != "EDGE":
+        return set()
+    return {
+        edge.index
+        for edge in source_object.data.edges
+        if bool(sharp_attribute.data[edge.index].value)
+    }
 
-    Args:
-        output: source duplicate。
-        cutter: Pipe cutter Mesh Object。
-        marker_material: 唯一来源标记 Material。
-    """
-    if len(output.data.materials) == 0:
-        base_material = bpy.data.materials.get("HST_PipeChamfer_Base") or bpy.data.materials.new(
-            "HST_PipeChamfer_Base"
+
+# 计算由非 Sharp manifold Edge 连通的 Surface Patch，并返回 Face→Patch 映射。
+# bm: source 的 BMesh；sharp_edges: Sharp BMEdge 集合。
+def _surface_patch_map(bm, sharp_edges):
+    face_patch = {}
+    patch_index = 0
+    for seed_face in sorted(bm.faces, key=lambda face: face.index):
+        if seed_face in face_patch:
+            continue
+        face_patch[seed_face] = patch_index
+        stack = [seed_face]
+        while stack:
+            face = stack.pop()
+            for edge in face.edges:
+                if edge in sharp_edges or len(edge.link_faces) != 2:
+                    continue
+                neighbor = next(linked_face for linked_face in edge.link_faces if linked_face is not face)
+                if neighbor not in face_patch:
+                    face_patch[neighbor] = patch_index
+                    stack.append(neighbor)
+        patch_index += 1
+    return face_patch, patch_index
+
+
+# 判定 Sharp Edge 的 convex/concave 类型；只要求相邻 Edge 使用一致的稳定符号。
+# edge: manifold BMEdge；返回 -1/0/1。
+def _edge_convexity(edge):
+    face_a, face_b = edge.link_faces
+    edge_midpoint = (edge.verts[0].co + edge.verts[1].co) * 0.5
+    direction_a = face_a.calc_center_median() - edge_midpoint
+    direction_b = face_b.calc_center_median() - edge_midpoint
+    inward_b = direction_b - face_b.normal * direction_b.dot(face_b.normal)
+    sign = face_a.normal.dot(inward_b)
+    if abs(sign) <= 1.0e-7:
+        return 0
+    return -1 if sign > 0.0 else 1
+
+
+# 从指定 Vertex 取得离开该点的单位 tangent。
+# edge: 相邻 BMEdge；vertex: 共同 BMVert。
+def _outgoing_tangent(edge, vertex):
+    return (edge.other_vert(vertex).co - vertex.co).normalized()
+
+
+# 计算 degree-2 graph Vertex 的转角，直线为 0°、折返为 180°。
+# edge_a/edge_b: 相邻 Sharp BMEdge；vertex: 共同 BMVert。
+def _turn_angle_degrees(edge_a, edge_b, vertex):
+    tangent_a = _outgoing_tangent(edge_a, vertex)
+    tangent_b = _outgoing_tangent(edge_b, vertex)
+    return math.degrees(math.acos(max(-1.0, min(1.0, (-tangent_a).dot(tangent_b)))))
+
+
+# 从 Sharp Edge 建 FeatureGraph，并按 patch pair、convexity、degree 与 turn spike 分 Pipe Groups。
+# source_object: 输入 Mesh；threshold/spike: tangent continuity 参数；stats: 机器统计。
+def _build_feature_graph(
+    source_object,
+    chain_turn_threshold_degrees,
+    chain_turn_spike_ratio,
+    stats,
+):
+    bm = bmesh.new()
+    bm.from_mesh(source_object.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    sharp_indices = _sharp_edge_indices(source_object)
+    if not sharp_indices:
+        bm.free()
+        _fail("no_sharp_edges", "Mesh has no explicit sharp_edge attribute values", stats)
+    sharp_edges = {bm.edges[index] for index in sharp_indices}
+    invalid = sorted(edge.index for edge in sharp_edges if len(edge.link_faces) != 2)
+    if invalid:
+        bm.free()
+        _fail("sharp_edge_not_manifold", f"Sharp Edges must each connect two Faces: {invalid}", stats)
+    face_patch, patch_count = _surface_patch_map(bm, sharp_edges)
+    vertex_edges = {}
+    metadata = {}
+    for edge in sharp_edges:
+        patch_pair = tuple(sorted(face_patch[face] for face in edge.link_faces))
+        metadata[edge] = {
+            "patch_pair": patch_pair,
+            "convexity": _edge_convexity(edge),
+        }
+        for vertex in edge.verts:
+            vertex_edges.setdefault(vertex, []).append(edge)
+    for edges in vertex_edges.values():
+        edges.sort(key=lambda edge: edge.index)
+    topology_junctions = sorted(vertex.index for vertex, edges in vertex_edges.items() if len(edges) != 2)
+    turn_by_vertex = {
+        vertex: _turn_angle_degrees(edges[0], edges[1], vertex)
+        for vertex, edges in vertex_edges.items()
+        if len(edges) == 2
+    }
+    nonzero_turns = sorted(value for value in turn_by_vertex.values() if value > 1.0e-5)
+    median_turn = nonzero_turns[len(nonzero_turns) // 2] if nonzero_turns else 0.0
+
+    def can_continue(vertex, edge_a, edge_b):
+        if len(vertex_edges[vertex]) != 2:
+            return False
+        if metadata[edge_a] != metadata[edge_b]:
+            return False
+        turn = turn_by_vertex[vertex]
+        spike = turn / max(median_turn, 1.0e-6) if median_turn > 0.0 else float("inf")
+        return not (
+            turn > chain_turn_threshold_degrees
+            and spike > chain_turn_spike_ratio
         )
+
+    groups = []
+    remaining = set(sharp_edges)
+    while remaining:
+        seed = min(remaining, key=lambda edge: edge.index)
+        component = {seed}
+        stack = [seed]
+        remaining.remove(seed)
+        while stack:
+            edge = stack.pop()
+            for vertex in edge.verts:
+                for neighbor in vertex_edges[vertex]:
+                    if neighbor in remaining and can_continue(vertex, edge, neighbor):
+                        remaining.remove(neighbor)
+                        component.add(neighbor)
+                        stack.append(neighbor)
+        component_vertex_edges = {}
+        for edge in component:
+            for vertex in edge.verts:
+                component_vertex_edges.setdefault(vertex, []).append(edge)
+        endpoints = sorted(
+            (vertex for vertex, edges in component_vertex_edges.items() if len(edges) == 1),
+            key=lambda vertex: vertex.index,
+        )
+        cyclic = not endpoints and all(len(edges) == 2 for edges in component_vertex_edges.values())
+        if not cyclic and len(endpoints) != 2:
+            bm.free()
+            _fail("feature_group_invalid", "Pipe Group is neither an open chain nor a closed loop", stats)
+        start = endpoints[0] if endpoints else min(component_vertex_edges, key=lambda vertex: vertex.index)
+        ordered_vertices = [start]
+        ordered_edges = []
+        current = start
+        previous = None
+        while len(ordered_edges) < len(component):
+            candidates = sorted(
+                (edge for edge in component_vertex_edges[current] if edge is not previous),
+                key=lambda edge: edge.index,
+            )
+            next_edge = next((edge for edge in candidates if edge not in ordered_edges), None)
+            if next_edge is None:
+                break
+            ordered_edges.append(next_edge)
+            current = next_edge.other_vert(current)
+            previous = next_edge
+            if current is start:
+                break
+            ordered_vertices.append(current)
+        if len(ordered_edges) != len(component):
+            bm.free()
+            _fail("feature_group_invalid", "Pipe Group traversal did not consume every Edge", stats)
+        first_edge = ordered_edges[0]
+        group = {
+            "pipe_id": len(groups),
+            "edge_indices": [edge.index for edge in ordered_edges],
+            "vertex_indices": [vertex.index for vertex in ordered_vertices],
+            "points": [vertex.co.copy() for vertex in ordered_vertices],
+            "is_cyclic": cyclic,
+            "patch_pair": metadata[first_edge]["patch_pair"],
+            "convexity": metadata[first_edge]["convexity"],
+        }
+        groups.append(group)
+    groups.sort(key=lambda group: min(group["edge_indices"]))
+    for pipe_id, group in enumerate(groups):
+        group["pipe_id"] = pipe_id
+    stats["sharp_edge_count"] = len(sharp_edges)
+    stats["surface_patch_count"] = patch_count
+    stats["pipe_group_count"] = len(groups)
+    stats["open_pipe_count"] = sum(1 for group in groups if not group["is_cyclic"])
+    stats["closed_pipe_count"] = sum(1 for group in groups if group["is_cyclic"])
+    stats["topology_junction_count"] = len(topology_junctions)
+    stats["junction_vertex_indices"] = topology_junctions
+    stats["feature_groups"] = [
+        {
+            key: value
+            for key, value in group.items()
+            if key not in {"points"}
+        }
+        for group in groups
+    ]
+    bm.free()
+    return groups
+
+
+# 从相邻两段求稳定的截面 frame；平行 transport 让 tessellated curve 不随机翻转。
+# tangents: spine 顶点 tangent；cyclic: 是否为 closed group。
+def _parallel_transport_frames(tangents, cyclic):
+    tangent = tangents[0]
+    reference = Vector((0.0, 0.0, 1.0))
+    if abs(tangent.dot(reference)) > 0.9:
+        reference = Vector((1.0, 0.0, 0.0))
+    normal = tangent.cross(reference).normalized()
+    frames = [(normal, tangent.cross(normal).normalized())]
+    for previous_tangent, current_tangent in zip(tangents, tangents[1:]):
+        axis = previous_tangent.cross(current_tangent)
+        if axis.length > 1.0e-8:
+            rotation = Vector(axis).normalized()
+            angle = previous_tangent.angle(current_tangent)
+            normal.rotate(Matrix.Rotation(angle, 3, rotation))
+        normal = (normal - current_tangent * normal.dot(current_tangent)).normalized()
+        frames.append((normal, current_tangent.cross(normal).normalized()))
+    if cyclic and len(frames) > 2:
+        seam_axis = frames[-1][0].cross(frames[0][0])
+        signed_twist = math.atan2(tangents[0].dot(seam_axis), frames[-1][0].dot(frames[0][0]))
+        for index, (frame_normal, _) in enumerate(frames):
+            correction = Matrix.Rotation(signed_twist * index / len(frames), 3, tangents[index])
+            frame_normal = (correction @ frame_normal).normalized()
+            frames[index] = (frame_normal, tangents[index].cross(frame_normal).normalized())
+    return frames
+
+
+# 直接生成一根 closed manifold Pipe Mesh，不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
+# source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
+def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
+    points = [point.copy() for point in group["points"]]
+    cyclic = group["is_cyclic"]
+    if not cyclic:
+        start_tangent = (points[1] - points[0]).normalized()
+        end_tangent = (points[-1] - points[-2]).normalized()
+        extension = radius * 1.25 + 1.0e-4
+        points[0] -= start_tangent * extension
+        points[-1] += end_tangent * extension
+    tangents = []
+    for index, point in enumerate(points):
+        if cyclic:
+            previous_point = points[index - 1]
+            next_point = points[(index + 1) % len(points)]
+            tangent = (next_point - previous_point).normalized()
+        elif index == 0:
+            tangent = (points[1] - point).normalized()
+        elif index == len(points) - 1:
+            tangent = (point - points[index - 1]).normalized()
+        else:
+            tangent = (points[index + 1] - points[index - 1]).normalized()
+        tangents.append(tangent)
+    frames = _parallel_transport_frames(tangents, cyclic)
+    vertices = []
+    for point, (normal, binormal) in zip(points, frames):
+        for segment in range(pipe_resolution):
+            angle = math.tau * segment / pipe_resolution
+            vertices.append(tuple(point + radius * (math.cos(angle) * normal + math.sin(angle) * binormal)))
+    faces = []
+    ring_count = len(points)
+    span_count = ring_count if cyclic else ring_count - 1
+    for ring in range(span_count):
+        next_ring = (ring + 1) % ring_count
+        for segment in range(pipe_resolution):
+            next_segment = (segment + 1) % pipe_resolution
+            faces.append((
+                ring * pipe_resolution + segment,
+                ring * pipe_resolution + next_segment,
+                next_ring * pipe_resolution + next_segment,
+                next_ring * pipe_resolution + segment,
+            ))
+    if not cyclic:
+        faces.append(tuple(reversed(range(pipe_resolution))))
+        last_start = (ring_count - 1) * pipe_resolution
+        faces.append(tuple(last_start + segment for segment in range(pipe_resolution)))
+    elif ring_count > 2:
+        seam_shift = min(
+            range(pipe_resolution),
+            key=lambda shift: sum(
+                (
+                    Vector(vertices[segment])
+                    - Vector(vertices[(ring_count - 1) * pipe_resolution + (segment + shift) % pipe_resolution])
+                ).length_squared
+                for segment in range(pipe_resolution)
+            ),
+        )
+        faces = [face for face in faces if not any(index >= (ring_count - 1) * pipe_resolution for index in face) or not any(index < pipe_resolution for index in face)]
+        last_ring = ring_count - 1
+        for segment in range(pipe_resolution):
+            next_segment = (segment + 1) % pipe_resolution
+            faces.append((
+                last_ring * pipe_resolution + (segment + seam_shift) % pipe_resolution,
+                last_ring * pipe_resolution + (next_segment + seam_shift) % pipe_resolution,
+                next_segment,
+                segment,
+            ))
+    mesh = bpy.data.meshes.new(f"{source_object.name}_Pipe_{group['pipe_id']}")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    pipe = bpy.data.objects.new(f"{source_object.name}_Pipe_{group['pipe_id']}_TEST", mesh)
+    pipe.matrix_world = source_object.matrix_world.copy()
+    pipe[OUTPUT_TAG] = source_object.name
+    pipe[PIPE_ID_TAG] = group["pipe_id"]
+    pipe[DEBUG_STAGE_TAG] = "PIPES"
+    collection.objects.link(pipe)
+    return pipe
+
+
+# 使用 Blender Exact Boolean 合并两个 Pipe Object；结果写回 accumulator。
+# accumulator: 累积 union Object；operand: 下一根 Pipe。
+def _apply_union(accumulator, operand):
+    modifier = accumulator.modifiers.new("HST Pipe Exact Union", type="BOOLEAN")
+    modifier.operation = "UNION"
+    modifier.solver = "EXACT"
+    modifier.object = operand
+    _activate_object(accumulator)
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+
+# 合并全部独立 Pipes，同时用 BVH overlap 为空间 Junction 提供初始统计。
+# pipes: 独立 Pipe Objects；source_object/collection/stats: 输出上下文。
+def _union_pipes(pipes, source_object, collection, stats):
+    spatial_pairs = set()
+    trees = [BVHTree.FromObject(pipe, bpy.context.evaluated_depsgraph_get()) for pipe in pipes]
+    for index_a, tree_a in enumerate(trees):
+        for index_b in range(index_a + 1, len(trees)):
+            if tree_a.overlap(trees[index_b]):
+                spatial_pairs.add((index_a, index_b))
+    topology_pairs = set()
+    for index_a, pipe_a in enumerate(pipes):
+        pipe_id_a = int(pipe_a[PIPE_ID_TAG])
+        for index_b in range(index_a + 1, len(pipes)):
+            pipe_id_b = int(pipes[index_b][PIPE_ID_TAG])
+            if (pipe_id_a, pipe_id_b) in spatial_pairs or (pipe_id_b, pipe_id_a) in spatial_pairs:
+                topology_pairs.add((index_a, index_b))
+    stats["spatial_junction_count"] = len(spatial_pairs | topology_pairs)
+    union = pipes[0].copy()
+    union.data = pipes[0].data.copy()
+    union.name = f"{source_object.name}_PipeUnion_TEST"
+    union[OUTPUT_TAG] = source_object.name
+    union[DEBUG_STAGE_TAG] = "CUTTER_UNION"
+    collection.objects.link(union)
+    for pipe in pipes[1:]:
+        _apply_union(union, pipe)
+    union.data.update()
+    risks = _mesh_risk_counts(union)
+    stats["union_face_count"] = len(union.data.polygons)
+    if risks["non_manifold"] or risks["zero_area"]:
+        _fail("union_not_manifold", "Exact Union cutter is not a closed manifold Mesh", stats)
+    return union, trees
+
+
+# 给 cutter-derived Faces 使用唯一 material marker，并执行 source - union cutter。
+# output: source duplicate；union: union cutter；返回 marker slot index。
+def _apply_difference(output, union):
+    base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
+    if len(output.data.materials) == 0:
         output.data.materials.append(base_material)
-    output.data.materials.append(marker_material)
+    marker = bpy.data.materials.get(MARKER_MATERIAL_NAME) or bpy.data.materials.new(MARKER_MATERIAL_NAME)
+    marker.diffuse_color = (1.0, 0.02, 0.02, 1.0)
+    output.data.materials.append(marker)
     marker_index = len(output.data.materials) - 1
-    cutter.data.materials.append(marker_material)
-    for polygon in cutter.data.polygons:
+    union.data.materials.clear()
+    union.data.materials.append(marker)
+    for polygon in union.data.polygons:
         polygon.material_index = 0
-    modifier = output.modifiers.new("HST Experimental Pipe Exact", type="BOOLEAN")
+    modifier = output.modifiers.new("HST Pipe Exact Difference", type="BOOLEAN")
     modifier.operation = "DIFFERENCE"
     modifier.solver = "EXACT"
     modifier.material_mode = "TRANSFER"
-    modifier.object = cutter
-    bpy.ops.object.select_all(action="DESELECT")
-    output.select_set(True)
-    bpy.context.view_layer.objects.active = output
+    modifier.object = union
+    _activate_object(output)
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     return marker_index
 
 
-def _extract_boundary_loops(boundary_edges, stats):
-    """从 marker 删除后的 boundary edges 提取确定性闭环。
+# 用 marker 与 Pipe BVH 双重证据分类 cutter-derived Faces；ambiguous 时不进入 PATCHED。
+# output: Difference 结果；marker_index: material provenance；pipe_trees: 原始 Pipe BVH。
+def _classify_cutter_faces(output, marker_index, union_tree, pipe_trees, radius):
+    owner_sets = {}
+    ambiguous = []
+    tolerance = max(radius * 0.35, max(output.dimensions) * 2.0e-5 + 1.0e-6)
+    for polygon in output.data.polygons:
+        material_marked = polygon.material_index == marker_index
+        center = output.matrix_world @ polygon.center
+        union_nearest = union_tree.find_nearest(center)
+        on_union = (
+            union_nearest is not None
+            and union_nearest[3] is not None
+            and union_nearest[3] <= tolerance
+        )
+        owners = set()
+        for pipe_id, tree in enumerate(pipe_trees):
+            nearest = tree.find_nearest(center)
+            if nearest is not None and nearest[3] is not None and nearest[3] <= tolerance:
+                owners.add(pipe_id)
+        if material_marked and not owners:
+            ambiguous.append(polygon.index)
+        if material_marked or on_union or owners:
+            owner_sets[polygon.index] = owners
+    return owner_sets, ambiguous
 
-    Args:
-        boundary_edges: BMesh boundary Edge 集合。
-        stats: 可变统计字典。
-    """
+
+# 删除 cutter Faces 并把 BoundaryGraph 的连通边界环提取为有序 BMVert 序列。
+# output: Difference 结果；cutter_face_indices: 待删除 Face 索引；stats: 机器统计。
+def _open_boundary(output, cutter_face_indices, stats):
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
+    bm.faces.ensure_lookup_table()
+    to_delete = [bm.faces[index] for index in cutter_face_indices]
+    bmesh.ops.delete(bm, geom=to_delete, context="FACES_KEEP_BOUNDARY")
+    boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
     adjacency = {}
     for edge in boundary_edges:
-        for vert in edge.verts:
-            adjacency.setdefault(vert, []).append(edge)
+        for vertex in edge.verts:
+            adjacency.setdefault(vertex, []).append(edge)
     if any(len(edges) != 2 for edges in adjacency.values()):
-        _fail("invalid_trim_loop", "Trim boundary is not degree-2", stats)
-
-    remaining = set(boundary_edges)
+        bm.free()
+        _fail("ambiguous_boundary", "BoundaryGraph contains non degree-2 rail vertices", stats)
     loops = []
+    remaining = set(boundary_edges)
     while remaining:
         start_edge = min(remaining, key=lambda edge: edge.index)
-        start_vert = min(start_edge.verts, key=lambda vert: vert.index)
-        loop = [start_vert]
-        current_vert = start_vert
-        previous_edge = None
+        start = min(start_edge.verts, key=lambda vertex: vertex.index)
+        loop = [start]
+        current = start
+        previous = None
         while True:
-            candidate_edges = sorted(adjacency[current_vert], key=lambda edge: edge.index)
-            edge = next((item for item in candidate_edges if item is not previous_edge and item in remaining), None)
+            edge = next(
+                (candidate for candidate in sorted(adjacency[current], key=lambda item: item.index) if candidate is not previous and candidate in remaining),
+                None,
+            )
             if edge is None:
                 break
             remaining.remove(edge)
-            current_vert = edge.other_vert(current_vert)
-            previous_edge = edge
-            if current_vert is start_vert:
+            current = edge.other_vert(current)
+            previous = edge
+            if current is start:
                 break
-            loop.append(current_vert)
-        if current_vert is not start_vert or len(loop) < 3:
-            _fail("invalid_trim_loop", "Trim boundary is not a simple closed loop", stats)
+            loop.append(current)
+        if current is not start or len(loop) < 3:
+            bm.free()
+            _fail("ambiguous_boundary", "BoundaryGraph contains a non-simple boundary", stats)
         loops.append(loop)
-    return loops
+    bm.to_mesh(output.data)
+    output.data.update()
+    return bm, loops
 
 
+# 计算 closed boundary loop 的 normalized arc-length 参数。
+# loop: 有序 BMVert 序列。
+def _normalized_loop_parameters(loop):
+    lengths = [(loop[(index + 1) % len(loop)].co - vertex.co).length for index, vertex in enumerate(loop)]
+    total = sum(lengths)
+    if total <= 1.0e-10:
+        return [0.0 for _ in loop]
+    parameters = []
+    cumulative = 0.0
+    for length in lengths:
+        parameters.append(cumulative / total)
+        cumulative += length
+    return parameters
+
+
+# 选择 loop B 的方向和 cyclic offset，使两 rail 的距离与 tangent twist 最小。
+# loop_a/loop_b: 待配对的两个 closed boundary loops。
 def _align_loops(loop_a, loop_b):
-    """按最小配对距离选择 loop B 的方向和 cyclic offset。
-
-    Args:
-        loop_a: 第一条 trim loop Vertex 序列。
-        loop_b: 第二条 trim loop Vertex 序列。
-    """
     parameters_a = _normalized_loop_parameters(loop_a)
     best = None
     for candidate in (list(loop_b), list(reversed(loop_b))):
@@ -601,43 +627,17 @@ def _align_loops(loop_a, loop_b):
             rotated = candidate[offset:] + candidate[:offset]
             parameters_b = _normalized_loop_parameters(rotated)
             cost = 0.0
-            for index_a, parameter_a in enumerate(parameters_a):
-                index_b = min(range(len(rotated)), key=lambda index: abs(parameters_b[index] - parameter_a))
-                distance_cost = (loop_a[index_a].co - rotated[index_b].co).length_squared
-                tangent_a = loop_a[(index_a + 1) % len(loop_a)].co - loop_a[index_a].co
-                tangent_b = rotated[(index_b + 1) % len(rotated)].co - rotated[index_b].co
-                twist_cost = 1.0 - abs(tangent_a.normalized().dot(tangent_b.normalized()))
-                cost += distance_cost + twist_cost * 0.01
+            for index_a, parameter in enumerate(parameters_a):
+                index_b = min(range(len(rotated)), key=lambda index: abs(parameters_b[index] - parameter))
+                cost += (loop_a[index_a].co - rotated[index_b].co).length_squared
             if best is None or cost < best[0]:
                 best = (cost, rotated)
     return best[1]
 
 
-def _normalized_loop_parameters(loop):
-    """计算 closed loop 每个 Vertex 的 normalized cumulative arc-length 参数。
-
-    Args:
-        loop: 有序闭合 BMesh Vertex 序列。
-    """
-    lengths = [(loop[(index + 1) % len(loop)].co - vert.co).length for index, vert in enumerate(loop)]
-    total_length = sum(lengths)
-    parameters = []
-    cumulative = 0.0
-    for length in lengths:
-        parameters.append(cumulative / total_length)
-        cumulative += length
-    return parameters
-
-
-def _zipper_bridge(bm, loop_a, loop_b, stats):
-    """以 normalized event zipper 在两条 loop 间生成单 span strip。
-
-    Args:
-        bm: 目标 BMesh。
-        loop_a: 第一条 trim loop。
-        loop_b: 第二条 trim loop。
-        stats: 可变统计字典。
-    """
+# 以 normalized arc-length zipper 在两条 rail 间生成单 span Regular Strip。
+# bm: 目标 BMesh；loop_a/loop_b: rail loops；返回新 Face 列表。
+def _zipper_bridge(bm, loop_a, loop_b):
     loop_b = _align_loops(loop_a, loop_b)
     count_a = len(loop_a)
     count_b = len(loop_b)
@@ -662,112 +662,202 @@ def _zipper_bridge(bm, loop_a, loop_b, stats):
             vertices = (current_a, loop_b[(index_b + 1) % count_b], current_b)
             index_b += 1
         if len(set(vertices)) != len(vertices):
-            _fail("bridge_self_intersection", "Bridge generated a repeated-vertex Face", stats)
-        try:
-            face = bm.faces.new(vertices)
-        except ValueError as error:
-            _fail("bridge_self_intersection", f"Bridge Face creation failed: {error}", stats)
+            raise ValueError("Regular Strip produced a repeated-vertex Face")
+        face = bm.faces.new(vertices)
         if face.calc_area() <= 1.0e-12:
-            _fail("bridge_self_intersection", "Bridge generated a zero-area Face", stats)
+            raise ValueError("Regular Strip produced a zero-area Face")
         new_faces.append(face)
-    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
     return new_faces
 
 
-def _reconstruct(output, marker_index, stats):
-    """删除 marker faces、提取两条 trim loop 并 zipper bridge。
+# 用 constrained Delaunay triangulation 补单个 Junction boundary；复用所有 boundary 3D 点。
+# bm: 目标 BMesh；loop: Junction boundary；返回新 Triangle Face 列表。
+def _triangulate_junction_loop(bm, loop):
+    center = sum((vertex.co for vertex in loop), Vector()) / len(loop)
+    normal = Vector()
+    for index, vertex in enumerate(loop):
+        normal += (vertex.co - center).cross(loop[(index + 1) % len(loop)].co - center)
+    if normal.length <= 1.0e-8:
+        raise ValueError("Junction boundary has no stable best-fit plane")
+    normal.normalize()
+    axis_x = (loop[0].co - center).normalized()
+    axis_y = normal.cross(axis_x).normalized()
+    points_2d = [Vector(((vertex.co - center).dot(axis_x), (vertex.co - center).dot(axis_y))) for vertex in loop]
+    constraint_edges = [(index, (index + 1) % len(loop)) for index in range(len(loop))]
+    _, _, triangles, _, _, _ = geometry.delaunay_2d_cdt(
+        points_2d,
+        constraint_edges,
+        [list(range(len(loop)))],
+        1,
+        1.0e-7,
+        True,
+    )
+    if not triangles:
+        raise ValueError("Constrained triangulation returned no Junction Faces")
+    new_faces = []
+    for triangle in triangles:
+        if len(triangle) != 3 or any(index >= len(loop) for index in triangle):
+            raise ValueError("Constrained triangulation inserted unsupported interior vertices")
+        vertices = tuple(loop[index] for index in triangle)
+        face = bm.faces.new(vertices)
+        if face.calc_area() <= 1.0e-12:
+            raise ValueError("Junction Patch produced a zero-area Face")
+        new_faces.append(face)
+    return new_faces
 
-    Args:
-        output: Boolean 后的输出 Mesh Object。
-        marker_index: marker material slot index。
-        stats: 可变统计字典。
-    """
-    bm = bmesh.new()
-    bm.from_mesh(output.data)
-    bm.edges.ensure_lookup_table()
-    marker_faces = {face for face in bm.faces if face.material_index == marker_index}
-    boundary_edges = {
-        edge
-        for edge in bm.edges
-        if any(face in marker_faces for face in edge.link_faces)
-        and any(face not in marker_faces for face in edge.link_faces)
-    }
-    bmesh.ops.delete(bm, geom=list(marker_faces), context="FACES_KEEP_BOUNDARY")
-    live_boundary_edges = [edge for edge in boundary_edges if edge.is_valid and len(edge.link_faces) == 1]
-    loops = _extract_boundary_loops(live_boundary_edges, stats)
-    stats["trim_loop_count"] = len(loops)
-    stats["trim_loop_vertex_counts"] = [len(loop) for loop in loops]
-    if len(loops) != 2:
-        bm.free()
-        _fail("unexpected_trim_loop_count", f"Expected 2 trim loops, found {len(loops)}", stats)
-    new_faces = _zipper_bridge(bm, loops[0], loops[1], stats)
-    stats["chamfer_face_count"] = len(new_faces)
-    stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-    stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-    stats["zero_area_face_count_after"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
-    if stats["non_manifold_edge_count_after"] or stats["zero_area_face_count_after"]:
-        bm.free()
-        _fail("result_not_manifold", "Reconstructed result is not closed manifold", stats)
-    bm.to_mesh(output.data)
-    bm.free()
+
+# 对 BoundaryGraph 做 Regular/Junction 分区并 patch；复杂 overlap 宁可稳定失败也不伪成功。
+# bm/loops: open boundary；groups: Pipe Groups；junction_count: 拓扑+空间 junction 数；stats: 统计。
+def _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage):
+    if not loops:
+        _fail("ambiguous_boundary", "Difference produced no open boundary loops", stats)
+    regular_faces = []
+    junction_faces = []
+    if junction_count == 0 and len(groups) == 1 and len(loops) == 2:
+        try:
+            regular_faces = _zipper_bridge(bm, loops[0], loops[1])
+        except (ValueError, RuntimeError) as error:
+            _fail("regular_patch_invalid", str(error), stats)
+        stats["regular_region_count"] = 1
+    else:
+        stats["junction_region_count"] = max(1, junction_count)
+        stats["strip_port_count"] = max(0, 2 * len(groups))
+        _fail(
+            "junction_region_unresolved",
+            "Regular/Junction ownership split is not stable for this multi-Pipe BoundaryGraph",
+            stats,
+        )
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    stats["regular_patch_face_count"] = len(regular_faces)
+    stats["junction_patch_face_count"] = len(junction_faces)
+    return regular_faces, junction_faces
+
+
+# 删除临时 marker slot，并修正更高 material index。
+# output: 最终 duplicate；marker_index: 临时 marker slot。
+def _remove_marker_material(output, marker_index):
     output.data.materials.pop(index=marker_index)
     for polygon in output.data.polygons:
         if polygon.material_index > marker_index:
             polygon.material_index -= 1
 
 
-def build_experimental_pipe_chamfer(
+# 构建 Sharp FeatureGraph、多独立 Pipe、Exact Union/Difference、Regular/Junction Patch。
+# 参数与 Operator interface 一一对应；返回 handoff 规定的机器可读 dict。
+def build_pipe_chamfer(
     source_object,
-    selected_edge_indices,
     radius,
     pipe_resolution,
+    chain_turn_threshold_degrees,
+    chain_turn_spike_ratio,
+    junction_margin,
     debug_stage,
-    keep_cutter,
+    keep_debug_objects,
 ):
-    """构建实验性 Pipe Chamfer 并返回机器可读统计。
-
-    Args:
-        source_object: Active Mesh Object。
-        selected_edge_indices: Edit Mode 中缓存的 Edge 索引。
-        radius: Pipe 半径，使用对象局部单位。
-        pipe_resolution: Curve bevel 分辨率。
-        debug_stage: PIPE_ONLY、BOOLEAN_CUT 或 RECONSTRUCT。
-        keep_cutter: 完成后是否保留 debug cutter。
-    """
-    stats = _base_stats(source_object, selected_edge_indices, radius, pipe_resolution, debug_stage)
-    points = _validate_and_order_path(source_object, selected_edge_indices, radius, stats)
-    if debug_stage not in {"PIPE_ONLY", "BOOLEAN_CUT", "RECONSTRUCT"}:
+    stats = _base_stats(
+        source_object,
+        radius,
+        pipe_resolution,
+        chain_turn_threshold_degrees,
+        chain_turn_spike_ratio,
+        junction_margin,
+        debug_stage,
+    )
+    if source_object is None or source_object.type != "MESH":
+        _fail("invalid_context", "Active Object must be a Mesh", stats)
+    if source_object.mode != "OBJECT":
+        _fail("invalid_context", "Object Mode is required", stats)
+    if any(abs(scale - 1.0) > 1.0e-4 for scale in source_object.scale):
+        _fail("invalid_scale", "Object Scale must be applied", stats)
+    if source_object.modifiers:
+        _fail("modifiers_not_supported", "Objects with modifiers are not supported", stats)
+    if debug_stage not in SUPPORTED_STAGES:
         _fail("invalid_context", f"Unsupported debug stage: {debug_stage}", stats)
+    source_risks = _mesh_risk_counts(source_object)
+    if source_risks["non_manifold"]:
+        _fail("source_not_closed_manifold", "Source Mesh must be closed manifold", stats)
+
+    groups = _build_feature_graph(
+        source_object,
+        chain_turn_threshold_degrees,
+        chain_turn_spike_ratio,
+        stats,
+    )
     _remove_previous_result(source_object)
     collection = _get_collection()
+    if debug_stage == "FEATURE_GRAPH":
+        stats["status"] = "finished"
+        return stats
+
+    pipes = [
+        _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection)
+        for group in groups
+    ]
+    stats["debug_object_names"] = [pipe.name for pipe in pipes]
+    for pipe in pipes:
+        risks = _mesh_risk_counts(pipe)
+        if risks["non_manifold"] or risks["zero_area"]:
+            _fail("pipe_not_manifold", f"Generated Pipe is invalid: {pipe.name}", stats)
+        pipe.display_type = "WIRE"
+    if debug_stage == "PIPES":
+        if not keep_debug_objects:
+            stats["warnings"].append("PIPES stage forces debug Pipe objects to remain visible")
+        stats["status"] = "finished"
+        return stats
+
+    union, pipe_trees = _union_pipes(pipes, source_object, collection, stats)
+    stats["debug_object_names"].append(union.name)
+    union.display_type = "WIRE"
+    if debug_stage == "CUTTER_UNION":
+        stats["status"] = "finished"
+        return stats
+
     output = _duplicate_source(source_object, collection)
-    cutter = _build_pipe(source_object, points, radius, pipe_resolution, collection)
+    output[DEBUG_STAGE_TAG] = debug_stage
     stats["output_object_name"] = output.name
-    stats["cutter_object_name"] = cutter.name
-    stats["pipe_face_count"] = len(cutter.data.polygons)
-    pipe_risks = _mesh_risk_counts(cutter)
-    if pipe_risks["non_manifold"] or pipe_risks["zero_area"]:
-        _fail("pipe_not_manifold", "Generated Pipe is not closed manifold", stats)
-
-    if debug_stage != "PIPE_ONLY":
-        marker_material = bpy.data.materials.get(MARKER_MATERIAL_NAME) or bpy.data.materials.new(MARKER_MATERIAL_NAME)
-        marker_material.diffuse_color = (1.0, 0.03, 0.03, 1.0)
-        marker_index = _apply_boolean(output, cutter, marker_material)
-        stats["cutter_face_count"] = len(cutter.data.polygons)
-        marker_face_count = sum(1 for polygon in output.data.polygons if polygon.material_index == marker_index)
-        stats["marker_face_count"] = marker_face_count
-        if marker_face_count == 0:
-            _fail("boolean_no_marker_faces", "Exact Boolean produced no marker faces", stats)
-        if debug_stage == "RECONSTRUCT":
-            _reconstruct(output, marker_index, stats)
-
-    if keep_cutter:
-        cutter.display_type = "WIRE"
+    marker_index = _apply_difference(output, union)
+    union_tree = BVHTree.FromObject(union, bpy.context.evaluated_depsgraph_get())
+    owner_sets, ambiguous_faces = _classify_cutter_faces(
+        output, marker_index, union_tree, pipe_trees, radius
+    )
+    cutter_face_indices = sorted(owner_sets)
+    stats["cutter_face_count"] = len(cutter_face_indices)
+    stats["ambiguous_face_count"] = len(ambiguous_faces)
+    if not cutter_face_indices:
+        _fail("boolean_no_cutter_faces", "Exact Difference produced no cutter-derived Faces", stats)
+    if debug_stage in {"OPEN_BOUNDARY", "REGULAR_PATCHED", "PATCHED"} and ambiguous_faces:
+        _fail("ambiguous_provenance", f"Could not classify cutter Faces: {ambiguous_faces}", stats)
+    if debug_stage == "BOOLEAN_CUT":
+        stats["status"] = "finished"
     else:
-        bpy.data.objects.remove(cutter, do_unlink=True)
-        stats["cutter_object_name"] = None
-    bpy.ops.object.select_all(action="DESELECT")
-    output.select_set(True)
-    bpy.context.view_layer.objects.active = output
-    stats["status"] = "finished"
+        bm, loops = _open_boundary(output, cutter_face_indices, stats)
+        stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+        if debug_stage == "OPEN_BOUNDARY":
+            bm.free()
+            stats["status"] = "finished"
+        else:
+            junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
+            _patch_boundaries(bm, loops, groups, junction_count, stats, debug_stage)
+            stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+            stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
+            stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
+            if debug_stage == "PATCHED" and (
+                stats["boundary_edge_count_after"]
+                or stats["non_manifold_edge_count_after"]
+                or stats["zero_area_face_count"]
+            ):
+                bm.free()
+                _fail("result_not_manifold", "PATCHED result failed topology validation", stats)
+            bm.to_mesh(output.data)
+            bm.free()
+            output.data.update()
+            _remove_marker_material(output, marker_index)
+            stats["status"] = "finished"
+
+    if not keep_debug_objects and debug_stage not in {"PIPES", "CUTTER_UNION"}:
+        for debug_object in [*pipes, union]:
+            if debug_object.name in bpy.data.objects:
+                bpy.data.objects.remove(debug_object, do_unlink=True)
+        stats["debug_object_names"] = []
+    _activate_object(output)
     return stats
