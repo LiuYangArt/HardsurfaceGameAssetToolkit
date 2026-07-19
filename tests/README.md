@@ -31,6 +31,30 @@
 - static mesh GLB export smoke test
 - rename bones smoke test
 - cleanup UE SKM smoke test
+- experimental Pipe Chamfer 的 Object-only Sharp FeatureGraph smoke test
+- 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
+- two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
+- 未 Apply 的 Cutter Collection Boolean Preview smoke test
+- Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
+- 清理上一轮 Boolean Preview 后首次 OPEN_BOUNDARY 即成功的 dependency-graph 同步回归
+- Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
+- PATCHED 后 dissolve 为 chamfer n-gon、FACE attribute 标记与原 Mesh custom normal transfer smoke test
+- tessellated curved chain 不被固定角度切碎的 grouping 回归
+- surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
+
+> 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
+> 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
+> 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
+> `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
+> PATCHED 后会 dissolve chamfer 内部共面 Edge，写入 FACE Boolean attribute `hst_pipe_chamfer`，并用 `POLYINTERP_LNORPROJ` Data Transfer 从隐藏的原 Mesh 传递 custom normals。
+
+## Experimental Pipe Chamfer API Probe
+
+- Blender 5.1.2 实测 artifact：`tests/artifacts/experimental_pipe_chamfer_probe.json`
+- Pipe 由显式 Mesh sweep 生成 closed manifold cutter；当前实现不会调用 Blender Curve bevel、Mesh bevel 或 Bevel modifier。
+- Boolean `solver=EXACT`、`operand_type=COLLECTION` 与 `material_mode=TRANSFER` 可用；marker material 能传入 cutter-derived Faces。
+- 删除 marker Faces 后可由 marker/non-marker 邻接边稳定得到 trim boundaries。
+- 本机未安装 `ctx7` CLI，因此本轮 Blender API 结论以真实 background probe 为证据。
 
 ## 运行方式
 
