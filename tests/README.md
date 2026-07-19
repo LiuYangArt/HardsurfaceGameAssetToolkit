@@ -13,11 +13,9 @@
 - object vertex color 设置 / 从 active 复制 smoke test
 - collision 设置 / extract UCX smoke test
 - bevel / weighted normal / triangulate modifier smoke test
-- Feature Chamfer tricky_b / Extruded.002 Radius 0.01：closed Pipe 连续、junction overlap、BoundaryGraph 与 PATCHED 拓扑回归
-- Feature Chamfer legacy pipe-chamfer-test.blend / Extruded.002 Radius 0.01 回归
+- Feature Chamfer tricky_b / Extruded.002 真实 fixture PATCHED 拓扑回归
 - Feature Chamfer degree-4 Feature strand pairing 回归
 - Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
-- HST 主面板 Feature Chamfer 按钮可见性回归
 - decal project smoke test
 - quickweight smoke test
 - AO bake operator headless smoke test

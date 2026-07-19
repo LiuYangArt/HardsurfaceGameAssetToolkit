@@ -12,7 +12,6 @@ import bpy
 
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
 PACKAGE_NAME = "hst_pipe_probe_addon"
-PROBE_RADIUS = float(os.environ.get("HST_PIPE_PROBE_RADIUS", "0.01"))
 RESULT_KEYS = (
     "source_object_name",
     "sharp_edge_count",
@@ -33,7 +32,6 @@ RESULT_KEYS = (
     "boundary_edge_count_after",
     "non_manifold_edge_count_after",
     "zero_area_face_count",
-    "self_intersection_count",
     "regular_region_count",
     "junction_region_count",
     "regular_patch_face_count",
@@ -46,8 +44,6 @@ RESULT_KEYS = (
     "bridge_attempts",
     "occupied_cycles",
     "invalid_edges_after",
-    "invalid_boundary_vertices",
-    "boundary_degree_histogram",
     "remaining_loops",
     "error_code",
     "error_message",
@@ -94,7 +90,7 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
     try:
         result = utils.build_pipe_chamfer(
             source_object=source,
-            radius=PROBE_RADIUS,
+            radius=0.05,
             pipe_resolution=8,
             chain_turn_threshold_degrees=35.0,
             chain_turn_spike_ratio=3.0,
@@ -118,10 +114,11 @@ for stage in ("FEATURE_GRAPH", "PIPES", "CUTTER_UNION", "BOOLEAN_CUT", "OPEN_BOU
         )
         compact_result["endpoint_class_counts"] = {}
         for classification in result.get("pipe_endpoint_classifications", []):
-            endpoint_class = classification["class"]
-            compact_result["endpoint_class_counts"][endpoint_class] = (
-                compact_result["endpoint_class_counts"].get(endpoint_class, 0) + 1
-            )
+            for endpoint in ("start", "end"):
+                endpoint_class = classification[endpoint]
+                compact_result["endpoint_class_counts"][endpoint_class] = (
+                    compact_result["endpoint_class_counts"].get(endpoint_class, 0) + 1
+                )
         if stage == "BOOLEAN_CUT":
             output = bpy.data.objects.get(result.get("output_object_name"))
             boolean_modifiers = (

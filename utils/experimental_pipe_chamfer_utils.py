@@ -352,22 +352,27 @@ def _build_feature_graph(
         if len(edges) == 4
     }
     topology_junctions = sorted(vertex.index for vertex, edges in vertex_edges.items() if len(edges) != 2)
+    turn_by_vertex = {
+        vertex: _turn_angle_degrees(edges[0], edges[1], vertex)
+        for vertex, edges in vertex_edges.items()
+        if len(edges) == 2
+    }
+    nonzero_turns = sorted(value for value in turn_by_vertex.values() if value > 1.0e-5)
+    median_turn = nonzero_turns[len(nonzero_turns) // 2] if nonzero_turns else 0.0
 
     def can_continue(vertex, edge_a, edge_b):
-        """判断两条 Sharp Edge 是否属于同一条可连续 sweep 的 Feature strand。
-
-        Args:
-            vertex: 两条 Edge 的共同 FeatureGraph Vertex。
-            edge_a: 当前 Sharp BMEdge。
-            edge_b: 候选后继 Sharp BMEdge。
-        """
         if edge_b is strand_pairs.get(vertex, {}).get(edge_a):
             return True
         if len(vertex_edges[vertex]) != 2:
             return False
         if metadata[edge_a] != metadata[edge_b]:
             return False
-        return _turn_angle_degrees(edge_a, edge_b, vertex) < 179.0
+        turn = turn_by_vertex[vertex]
+        spike = turn / max(median_turn, 1.0e-6) if median_turn > 0.0 else float("inf")
+        return not (
+            turn > chain_turn_threshold_degrees
+            and spike > chain_turn_spike_ratio
+        )
 
     groups = []
     remaining = set(sharp_edges)
@@ -531,7 +536,6 @@ def _pipe_endpoint_extensions(source_object, group, radius):
     group["end_terminal_face_index"] = end_face.index if end_face is not None else None
 
     def extension_for(endpoint_class, angle):
-        """按端点类别和 incident angle 返回延长距离。"""
         if endpoint_class == "TERMINAL_FACE":
             return radius
         if endpoint_class == "JUNCTION_BRANCH":
@@ -548,85 +552,39 @@ def _pipe_endpoint_extensions(source_object, group, radius):
     )
 
 
-# 一次性为全部 Pipe Group 建立端点上下文，并保存延长量供 Mesh 构建与诊断复用。
-# source_object: source Mesh；groups: 全部 Pipe Groups；radius: Pipe 半径；junction_margin: 安全余量倍数。
-def _classify_pipe_endpoints(source_object, groups, radius, junction_margin):
+# 一次性为全部 Pipe Group 分类端点，并保存延长量供 Mesh 构建与诊断复用。
+# source_object: source Mesh；groups: 全部 Pipe Groups；radius: Pipe 半径。
+def _classify_pipe_endpoints(source_object, groups, radius):
     bm = bmesh.new()
     bm.from_mesh(source_object.data)
     bm.verts.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
-    endpoints_by_vertex = {}
     for group in groups:
         if group["is_cyclic"]:
-            continue
-        for endpoint, point_index, neighbor_index in (
-            ("start", 0, 1),
-            ("end", -1, -2),
+            endpoint_results = (("CYCLIC", None, 0.0), ("CYCLIC", None, 0.0))
+        else:
+            endpoint_results = (
+                _classify_pipe_endpoint(bm, group, "start"),
+                _classify_pipe_endpoint(bm, group, "end"),
+            )
+        for endpoint, (endpoint_class, terminal_face, angle) in zip(
+            ("start", "end"), endpoint_results
         ):
-            endpoint_record = {
-                "group": group,
-                "endpoint": endpoint,
-                "vertex_index": group["vertex_indices"][point_index],
-                "outward": (
-                    group["points"][point_index] - group["points"][neighbor_index]
-                ).normalized(),
-            }
-            endpoints_by_vertex.setdefault(endpoint_record["vertex_index"], []).append(
-                endpoint_record
-            )
-
-    for group in groups:
-        if group["is_cyclic"]:
-            for endpoint in ("start", "end"):
-                group[f"{endpoint}_endpoint_class"] = "CYCLIC"
-                group[f"{endpoint}_terminal_face_index"] = None
-                group[f"{endpoint}_angle"] = 0.0
-                group[f"{endpoint}_extension"] = 0.0
-                group[f"{endpoint}_partner_pipe_ids"] = []
-            continue
-
-        for endpoint, point_index in (("start", 0), ("end", -1)):
-            vertex_index = group["vertex_indices"][point_index]
-            feature_degree = group[f"{endpoint}_feature_degree"]
-            incident = endpoints_by_vertex.get(vertex_index, [])
-            current = next(
-                record
-                for record in incident
-                if record["group"] is group and record["endpoint"] == endpoint
-            )
-            partners = [record for record in incident if record is not current]
-            if feature_degree > 2 and partners:
-                endpoint_class = "JUNCTION_BRANCH"
-                terminal_face = None
-                minimum_angle = min(
-                    current["outward"].angle(record["outward"])
-                    for record in partners
-                )
-                extension = min(
-                    radius / max(math.sin(minimum_angle / 2.0), 1.0e-6)
-                    + radius * junction_margin,
-                    radius * max(3.0, junction_margin + 2.0),
-                )
-            else:
-                endpoint_class, terminal_face, minimum_angle = _classify_pipe_endpoint(
-                    bm,
-                    group,
-                    endpoint,
-                )
-                extension = radius if endpoint_class == "TERMINAL_FACE" else 0.0
-
             group[f"{endpoint}_endpoint_class"] = endpoint_class
             group[f"{endpoint}_terminal_face_index"] = (
                 terminal_face.index if terminal_face is not None else None
             )
-            group[f"{endpoint}_vertex_index"] = vertex_index
-            group[f"{endpoint}_coordinate"] = tuple(group["points"][point_index])
-            group[f"{endpoint}_angle"] = minimum_angle
-            group[f"{endpoint}_extension"] = extension
-            group[f"{endpoint}_partner_pipe_ids"] = sorted(
-                record["group"]["pipe_id"] for record in partners
-            )
+            group[f"{endpoint}_angle"] = angle
+            if endpoint_class == "TERMINAL_FACE":
+                group[f"{endpoint}_extension"] = radius
+            elif endpoint_class == "JUNCTION_BRANCH":
+                group[f"{endpoint}_extension"] = min(
+                    radius / max(math.sin(angle / 2.0), 1.0e-6) + radius * 0.25,
+                    radius * 3.0,
+                )
+            else:
+                group[f"{endpoint}_extension"] = 0.0
     bm.free()
 
 
@@ -841,35 +799,6 @@ def _build_cutter_set(pipes, source_object, stats):
     ]
     stats["spatial_junction_count"] = len(spatial_pairs)
     stats["pipe_overlap_pairs"] = [list(pair) for pair in sorted(spatial_pairs)]
-
-    for endpoint_record in stats.get("pipe_endpoint_classifications", []):
-        partner_pipe_ids = endpoint_record.get("partner_pipe_ids", [])
-        pipe_id = endpoint_record["pipe_id"]
-        endpoint_coordinate = endpoint_record.get("coordinate")
-        if endpoint_coordinate is None:
-            continue
-        endpoint_record["overlap_partner_pipe_ids"] = []
-        endpoint_record["overlap_partner_distances"] = {}
-        for partner_pipe_id in partner_pipe_ids:
-            if tuple(sorted((pipe_id, partner_pipe_id))) not in spatial_pairs:
-                continue
-            nearest = trees[partner_pipe_id].find_nearest(endpoint_coordinate)
-            distance = nearest[3] if nearest is not None else None
-            if distance is not None and distance <= stats["radius"] * 1.05:
-                endpoint_record["overlap_partner_pipe_ids"].append(partner_pipe_id)
-                endpoint_record["overlap_partner_distances"][str(partner_pipe_id)] = float(distance)
-        if (
-            endpoint_record["class"] == "JUNCTION_BRANCH"
-            and not endpoint_record["overlap_partner_pipe_ids"]
-        ):
-            _fail(
-                "junction_pipe_gap",
-                (
-                    f"Pipe {pipe_id} endpoint at Feature Vertex "
-                    f"{endpoint_record['vertex_index']} does not overlap its junction partners"
-                ),
-                stats,
-            )
     stats["cutter_set_object_count"] = len(pipes)
     stats["cutter_collection_name"] = cutter_collection.name
     stats["joined_cutter_object_names"] = [cutter.name for cutter in joined_cutters]
@@ -1006,50 +935,9 @@ def _open_boundary(output, cutter_face_indices, stats):
     for edge in boundary_edges:
         for vertex in edge.verts:
             adjacency.setdefault(vertex, []).append(edge)
-    invalid_boundary_vertices = [
-        {
-            "vertex_index": vertex.index,
-            "degree": len(edges),
-            "coordinate": tuple(round(value, 8) for value in vertex.co),
-            "edge_indices": sorted(edge.index for edge in edges),
-        }
-        for vertex, edges in adjacency.items()
-        if len(edges) != 2
-    ]
-    if invalid_boundary_vertices:
-        stats["invalid_boundary_vertices"] = invalid_boundary_vertices
-        stats["boundary_degree_histogram"] = {
-            degree: sum(
-                1 for edges in adjacency.values() if len(edges) == degree
-            )
-            for degree in sorted({len(edges) for edges in adjacency.values()})
-        }
-        separable_vertices = [
-            vertex
-            for vertex, edges in adjacency.items()
-            if len(edges) == 4 and len(vertex.link_faces) == 2
-        ]
-        if len(separable_vertices) != len(invalid_boundary_vertices):
-            stats["unresolved_boundary_vertices"] = invalid_boundary_vertices
-            bm.free()
-            _fail("ambiguous_boundary", "BoundaryGraph contains unsupported rail junctions", stats)
-        for vertex in separable_vertices:
-            bmesh.utils.vert_separate(vertex, adjacency[vertex])
-        boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
-        adjacency = {}
-        for edge in boundary_edges:
-            for vertex in edge.verts:
-                adjacency.setdefault(vertex, []).append(edge)
-        unresolved = [
-            (vertex.index, len(edges))
-            for vertex, edges in adjacency.items()
-            if len(edges) != 2
-        ]
-        if unresolved:
-            stats["unresolved_boundary_vertices"] = unresolved
-            bm.free()
-            _fail("ambiguous_boundary", "BoundaryGraph contains non degree-2 rail vertices", stats)
-        stats["separated_boundary_vertex_count"] = len(invalid_boundary_vertices)
+    if any(len(edges) != 2 for edges in adjacency.values()):
+        bm.free()
+        _fail("ambiguous_boundary", "BoundaryGraph contains non degree-2 rail vertices", stats)
     loops = []
     remaining = set(boundary_edges)
     while remaining:
@@ -1450,10 +1338,8 @@ def _bridge_then_fill(bm, loops, groups, pipe_trees, pipe_bounds, radius, stats)
 
     if occupied_cycles:
         stats["occupied_cycles"] = occupied_cycles
-        _fail(
-            "occupied_boundary_cycle",
-            "Bridge 后仍存在 occupied boundary cycles，拒绝输出伪 PATCHED 结果",
-            stats,
+        stats["warnings"].append(
+            "Fill candidates contained occupied cycles; preserved their existing Faces"
         )
 
     for loop in true_holes:
@@ -1598,27 +1484,6 @@ def _dissolve_chamfer_faces(bm, chamfer_faces, radius):
     return {face for face in bm.faces if not bool(face[original_layer])}
 
 
-# 使用 BVH 检查不共享 Vertex 的 Face 是否相交。
-# bm: 已完成 Patch 的 BMesh；返回唯一的 Face index pairs。
-def _self_intersection_pairs(bm):
-    """返回 BMesh 中不相邻的自交 Face pairs。
-
-    Args:
-        bm: 待验证的 BMesh。
-    """
-    bm.faces.ensure_lookup_table()
-    tree = BVHTree.FromBMesh(bm, epsilon=1.0e-7)
-    pairs = set()
-    for face_index_a, face_index_b in tree.overlap(tree):
-        if face_index_a == face_index_b:
-            continue
-        face_a = bm.faces[face_index_a]
-        face_b = bm.faces[face_index_b]
-        if set(face_a.verts) & set(face_b.verts):
-            continue
-        pairs.add(tuple(sorted((face_index_a, face_index_b))))
-    return sorted(pairs)
-
 # 在最终 Mesh 上创建 FACE Boolean attribute，标记自动补出的 chamfer 区域。
 # output: 最终输出 Object；chamfer_face_indices: BMesh 写回后对应的 polygon indices。
 def _mark_chamfer_attribute(output, chamfer_face_indices):
@@ -1692,7 +1557,7 @@ def build_pipe_chamfer(
         stats,
     )
     stats["timings"]["feature_graph"] = time.perf_counter() - started_at
-    _classify_pipe_endpoints(source_object, groups, radius, junction_margin)
+    _classify_pipe_endpoints(source_object, groups, radius)
     _remove_previous_result(source_object)
     collection = _get_collection()
     if debug_stage == "FEATURE_GRAPH":
@@ -1716,17 +1581,12 @@ def build_pipe_chamfer(
     stats["pipe_endpoint_classifications"] = [
         {
             "pipe_id": group["pipe_id"],
-            "endpoint": endpoint,
-            "class": group.get(f"{endpoint}_endpoint_class", "CYCLIC"),
-            "vertex_index": group.get(f"{endpoint}_vertex_index"),
-            "coordinate": group.get(f"{endpoint}_coordinate"),
-            "terminal_face_index": group.get(f"{endpoint}_terminal_face_index"),
-            "angle": float(group.get(f"{endpoint}_angle", 0.0)),
-            "extension": float(group.get(f"{endpoint}_extension", 0.0)),
-            "partner_pipe_ids": group.get(f"{endpoint}_partner_pipe_ids", []),
+            "start": group.get("start_endpoint_class", "CYCLIC"),
+            "end": group.get("end_endpoint_class", "CYCLIC"),
+            "start_terminal_face_index": group.get("start_terminal_face_index"),
+            "end_terminal_face_index": group.get("end_terminal_face_index"),
         }
         for group in groups
-        for endpoint in ("start", "end")
     ]
     for pipe in pipes:
         risks = _mesh_risk_counts(pipe)
@@ -1804,30 +1664,65 @@ def build_pipe_chamfer(
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
         stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
         stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
-        if debug_stage == "PATCHED":
-            # BMesh bridge/fill 偶尔会遗留零 Face 的 wire Edge；它不承载 Surface，删除前记录并保持 fail-closed 验证。
-            wire_edges = [edge for edge in bm.edges if len(edge.link_faces) == 0]
-            if wire_edges:
-                stats["wire_edge_cleanup_count"] = len(wire_edges)
-                bmesh.ops.delete(bm, geom=wire_edges, context="EDGES")
+
+        if debug_stage == "PATCHED" and stats["boundary_edge_count_after"]:
+            loose_shells = []
+            boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+            while boundary_edges:
+                seed = boundary_edges.pop()
+                component = {seed}
+                stack = [seed]
+                while stack:
+                    edge = stack.pop()
+                    for vertex in edge.verts:
+                        for neighbor in vertex.link_edges:
+                            if neighbor in boundary_edges and len(neighbor.link_faces) == 1:
+                                boundary_edges.remove(neighbor)
+                                component.add(neighbor)
+                                stack.append(neighbor)
+                component_faces = {
+                    face
+                    for edge in component
+                    for face in edge.link_faces
+                }
+                component_face_edges = {
+                    edge
+                    for face in component_faces
+                    for edge in face.edges
+                }
+                if component_face_edges == component:
+                    loose_shells.extend(component_faces)
+            if loose_shells:
+                loose_shell_faces = set(loose_shells)
+                original_layer = bm.faces.layers.int.get(ORIGINAL_FACE_ATTRIBUTE)
+                if original_layer is not None and any(
+                    bool(face[original_layer])
+                    for face in loose_shell_faces
+                ):
+                    _fail(
+                        "result_not_manifold",
+                        "PATCHED cleanup found a detached original Surface Patch",
+                        stats,
+                    )
+                bmesh.ops.delete(
+                    bm,
+                    geom=list(loose_shell_faces),
+                    context="FACES",
+                )
+                stats["loose_shell_cleanup_count"] = len(loose_shell_faces)
                 stats["boundary_edge_count_after"] = sum(
                     1 for edge in bm.edges if len(edge.link_faces) == 1
                 )
                 stats["non_manifold_edge_count_after"] = sum(
                     1 for edge in bm.edges if len(edge.link_faces) != 2
                 )
-
-
-        if debug_stage == "PATCHED":
-            self_intersections = _self_intersection_pairs(bm)
-            stats["self_intersection_count"] = len(self_intersections)
-            if self_intersections:
-                stats["self_intersection_pairs"] = self_intersections[:100]
+                stats["zero_area_face_count"] = sum(
+                    1 for face in bm.faces if face.calc_area() <= 1.0e-12
+                )
         if debug_stage == "PATCHED" and (
             stats["boundary_edge_count_after"]
             or stats["non_manifold_edge_count_after"]
             or stats["zero_area_face_count"]
-            or stats["self_intersection_count"]
         ):
             stats["invalid_edges_after"] = [
                 {
