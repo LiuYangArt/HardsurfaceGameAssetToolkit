@@ -1082,6 +1082,136 @@ def test_prepare_cad_mesh_sets_ue_centimeter_units(test_context: TestContext, re
     result.add_detail(f"Scene units: {scene_units.system}, {scene_units.length_unit}, scale={scene_units.scale_length}")
 
 
+# 创建 Safe Ngon 的 CAD-like closed fixture；name/collection 分别为对象名和目标 Collection。
+def make_safe_ngon_closed_fixture(name: str, collection):
+    vertices = [
+        (-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0),
+        (-1, -2, 0.2), (1, -2, 0.2), (1, 2, -0.2), (-1, 2, -0.2),
+        (2, -1, 0), (2, 1, 0),
+        (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+        (-1, -2, -0.8), (1, -2, -0.8), (1, 2, -1.2), (-1, 2, -1.2),
+        (2, -1, -1), (2, 1, -1),
+    ]
+    top_faces = [(0, 1, 2, 3), (1, 8, 9, 2), (4, 5, 1, 0), (3, 2, 6, 7)]
+    bottom_faces = [tuple(index + 10 for index in reversed(face)) for face in top_faces]
+    top_boundary_edges = {(0, 3), (3, 7), (6, 7), (2, 6), (8, 9), (1, 8), (4, 5), (0, 4), (5, 1), (9, 2)}
+    side_faces = [(a, b, b + 10, a + 10) for a, b in sorted(top_boundary_edges)]
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], top_faces + bottom_faces + side_faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    return obj
+
+
+# 验证共享 Safe Ngon pipeline 修改拓扑、保留属性且重复运行稳定。
+def test_safe_ngon_cad_pipeline_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("SafeNgonPipelineCase")
+    obj = make_safe_ngon_closed_fixture("SafeNgonPipelineMesh", collection)
+    mesh = obj.data
+    mesh.materials.append(bpy.data.materials.new("SafeNgonMaterial"))
+    for polygon in mesh.polygons:
+        polygon.material_index = 0
+    uv_layer = mesh.uv_layers.new(name="SafeNgonUV")
+    for loop in uv_layer.data:
+        loop.uv = (0.25, 0.75)
+    face_attribute = mesh.attributes.new("safe_ngon_face_value", "INT", "FACE")
+    for item in face_attribute.data:
+        item.value = 7
+    edge_attribute = mesh.attributes.new("safe_ngon_edge_value", "FLOAT", "EDGE")
+    for item in edge_attribute.data:
+        item.value = 0.5
+
+    select_objects(obj, [obj])
+    before_edges = len(mesh.edges)
+    pipeline = test_context.addon.utils.safe_ngon_utils
+    first_stats = pipeline.repair_cad_mesh(
+        bpy.context,
+        obj,
+        clean_mid_vertices=False,
+        clean_loose_vertices=False,
+    )
+    after_first_hash = mesh_topology_hash(obj)
+    ensure(first_stats["safe_ngon"]["new_vertices"] > 0, "Safe Ngon did not create repair vertices")
+    ensure(len(obj.data.edges) > before_edges, "Safe Ngon did not change edge flow")
+    ensure(obj.data.uv_layers.get("SafeNgonUV") is not None, "Safe Ngon dropped UV data")
+    ensure(obj.data.attributes.get("safe_ngon_face_value") is not None, "Safe Ngon dropped Face attribute")
+    ensure(obj.data.attributes.get("safe_ngon_edge_value") is not None, "Safe Ngon dropped Edge attribute")
+    ensure(all(polygon.material_index == 0 for polygon in obj.data.polygons), "Safe Ngon changed Material index")
+    ensure(not any(first_stats["topology"].values()), f"Safe Ngon produced invalid topology: {first_stats['topology']}")
+
+    second_stats = pipeline.repair_cad_mesh(
+        bpy.context,
+        obj,
+        clean_mid_vertices=False,
+        clean_loose_vertices=False,
+    )
+    ensure(mesh_topology_hash(obj) == after_first_hash, "Repeated Safe Ngon changed topology")
+    ensure(second_stats["safe_ngon"]["new_vertices"] == 0, "Repeated Safe Ngon was not idempotent")
+    ensure(not [item for item in bpy.data.objects if item.name.startswith("__HST_SafeNgon_Source_")], "Temporary source Object leaked")
+    ensure(not [item for item in bpy.data.meshes if item.name.startswith("__HST_SafeNgon_SourceMesh_")], "Temporary source Mesh leaked")
+    ensure(not [modifier for modifier in obj.modifiers if modifier.name.startswith("__HST_SafeNgon_")], "Temporary Modifier leaked")
+    result.add_detail(f"edges={before_edges}->{len(obj.data.edges)}, stats={first_stats['safe_ngon']}")
+
+
+# 验证 Fix CAD Obj 与 Prepare CAD Mesh 复用 pipeline，且 Multi-user Mesh 被隔离。
+def test_safe_ngon_fix_then_prepare_multi_user_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("SafeNgonOperatorsCase")
+    first = make_safe_ngon_closed_fixture("SafeNgonOperatorsA", collection)
+    second = bpy.data.objects.new("SafeNgonOperatorsB", first.data)
+    second.location.x = 5.0
+    collection.objects.link(second)
+    select_objects(first, [first, second])
+    fix_result = bpy.ops.hst.fixcadobj()
+    ensure("FINISHED" in fix_result, f"Fix CAD Obj failed: {fix_result}")
+    ensure(first.data is not second.data, "Fix CAD Obj did not isolate Multi-user Mesh Data")
+    hashes_after_fix = (mesh_topology_hash(first), mesh_topology_hash(second))
+
+    select_objects(first, [first, second])
+    prep_result = bpy.ops.hst.prepcadmesh()
+    ensure("FINISHED" in prep_result, f"Prepare CAD Mesh failed after Fix: {prep_result}")
+    ensure(mesh_topology_hash(first) == hashes_after_fix[0], "Fix then Prepare drifted first Mesh topology")
+    ensure(mesh_topology_hash(second) == hashes_after_fix[1], "Fix then Prepare drifted second Mesh topology")
+    ensure(first.data.uv_layers.get(test_context.const.UV_BASE) is not None, "Prepare did not create UV layer")
+    ensure(not [item for item in bpy.data.objects if item.name.startswith("__HST_SafeNgon_Source_")], "Operator pipeline leaked source Object")
+    result.add_detail("Fix -> Prepare remained topology-idempotent for two Multi-user inputs")
+
+
+# 验证 custom normals 会从 Clean 前 source 恢复，且无 custom normals 时不会创建无效层。
+def test_safe_ngon_custom_normals_and_cleanup_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("SafeNgonNormalsCase")
+    obj = make_safe_ngon_closed_fixture("SafeNgonNormalsMesh", collection)
+    source_mesh = obj.data.copy()
+    source = bpy.data.objects.new("SafeNgonNormalsInitializer", source_mesh)
+    collection.objects.link(source)
+    custom_attribute = source_mesh.attributes.new("custom_normal", "FLOAT_VECTOR", "CORNER")
+    for item in custom_attribute.data:
+        item.vector = (0.1, 0.2, 1.0)
+    select_objects(obj, [obj])
+    modifier = obj.modifiers.new("Initialize Safe Ngon Normals", "DATA_TRANSFER")
+    modifier.object = source
+    modifier.use_loop_data = True
+    modifier.data_types_loops = {"CUSTOM_NORMAL"}
+    modifier.loop_mapping = "TOPOLOGY"
+    bpy.context.view_layer.update()
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    ensure(obj.data.has_custom_normals, "Custom normal fixture initialization failed")
+    bpy.data.objects.remove(source, do_unlink=True)
+    bpy.data.meshes.remove(source_mesh)
+
+    stats = test_context.addon.utils.safe_ngon_utils.repair_cad_mesh(
+        bpy.context,
+        obj,
+        clean_mid_vertices=False,
+        clean_loose_vertices=False,
+    )
+    ensure(stats["custom_normals_restored"], "Safe Ngon did not restore custom normals")
+    normals = [normal.vector for normal in obj.data.corner_normals]
+    ensure(normals and all(normal.length > 0.99 for normal in normals), "Restored custom normals are invalid")
+    ensure(not [item for item in bpy.data.objects if item.name.startswith("__HST_SafeNgon_Source_")], "Custom normal source leaked")
+    result.add_detail(f"restored_corner_normals={len(normals)}")
+
+
 def test_collection_get_selected_outliner_precedence(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
     outliner_collection = make_collection("OutlinerPropMarkerCase")
@@ -2275,6 +2405,9 @@ def main():
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
     context.run_case("prepare_cad_mesh_sets_ue_centimeter_units", test_prepare_cad_mesh_sets_ue_centimeter_units)
+    context.run_case("safe_ngon_cad_pipeline_regression", test_safe_ngon_cad_pipeline_regression)
+    context.run_case("safe_ngon_fix_then_prepare_multi_user_regression", test_safe_ngon_fix_then_prepare_multi_user_regression)
+    context.run_case("safe_ngon_custom_normals_and_cleanup_regression", test_safe_ngon_custom_normals_and_cleanup_regression)
     context.run_case("bake_collection_export_fbx_smoke", test_bake_collection_export_fbx_smoke)
     context.run_case("marmoset_bake_pairing_smoke", test_marmoset_bake_pairing_smoke)
     context.run_case("marmoset_bake_pairing_missing_side_regression", test_marmoset_bake_pairing_missing_side_regression)
