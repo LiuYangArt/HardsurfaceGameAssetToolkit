@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """Blender-side regression test driver."""
 
+import hashlib
 import importlib.util
 import inspect
 import json
 import os
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -179,6 +181,140 @@ def select_objects(active_obj, selected_objects):
     bpy.context.view_layer.objects.active = active_obj
 
 
+# 构造在一个 Vertex 相交的两条 Feature strands，模拟 CAD 圆柱交叠后的 degree-4 Sharp junction。
+
+
+# 加载测试 fixtures 目录下的 .blend 文件。
+# name: fixture 文件名；返回当前 Scene。
+def load_fixture_blend(name: str):
+    path = REPO_ROOT / "tests" / "fixtures" / name
+    ensure(path.exists(), f"Fixture blend not found: {path}")
+    bpy.ops.wm.open_mainfile(filepath=str(path))
+    return bpy.context.scene
+
+
+# 生成 Mesh 的稳定指纹，用于断言真实 fixture 未发生变动。
+# obj: Mesh Object。
+def _mesh_fingerprint(obj):
+    mesh = obj.data
+    sharp_attribute = mesh.attributes.get("sharp_edge")
+    fingerprint_payload = {
+        "vertices": [tuple(round(value, 8) for value in vertex.co) for vertex in mesh.vertices],
+        "edges": [tuple(edge.vertices) for edge in mesh.edges],
+        "polygons": [tuple(polygon.vertices) for polygon in mesh.polygons],
+        "sharp_edges": [
+            edge.index
+            for edge in mesh.edges
+            if sharp_attribute is not None and sharp_attribute.data[edge.index].value
+        ],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return fingerprint
+
+
+# 验证用户 tricky_b fixture 中真实对象 Extruded.002 的 PATCHED 成功。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_pipe_chamfer_tricky_b_extruded002_regression(test_context: TestContext, result: TestCaseResult):
+    load_fixture_blend("pipe-chamfer-test-tricky_b.blend")
+    obj = bpy.data.objects.get("Extruded.002")
+    ensure(obj is not None, "Extruded.002 not found in fixture")
+    ensure(obj.type == "MESH", "Extruded.002 is not a Mesh")
+
+    expected_fingerprint = "f62100103b6926528efde370610db3f015d41c900b972b7e21a374f5abae22f8"
+    ensure(
+        _mesh_fingerprint(obj) == expected_fingerprint,
+        f"Mesh fingerprint mismatch: {_mesh_fingerprint(obj)}",
+    )
+    ensure(len(obj.data.vertices) == 371, f"Unexpected vertex count: {len(obj.data.vertices)}")
+    ensure(len(obj.data.edges) == 552, f"Unexpected edge count: {len(obj.data.edges)}")
+    ensure(len(obj.data.polygons) == 183, f"Unexpected face count: {len(obj.data.polygons)}")
+
+    sharp_attribute = obj.data.attributes.get("sharp_edge")
+    sharp_count = sum(
+        1 for edge in obj.data.edges
+        if sharp_attribute is not None and sharp_attribute.data[edge.index].value
+    )
+    ensure(sharp_count == 324, f"Expected 324 sharp edges, got {sharp_count}")
+
+    select_objects(obj, [obj])
+    bpy.context.view_layer.objects.active = obj
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=obj,
+        radius=0.05,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="PATCHED",
+        keep_debug_objects=False,
+    )
+    ensure(
+        stats["status"] == "finished",
+        f"Feature Chamfer did not finish on Extruded.002: {stats.get('error_message', 'unknown')}",
+    )
+
+    output = bpy.data.objects.get(stats["output_object_name"])
+    ensure(output is not None, "PATCHED output object not found")
+    risks = utils._mesh_risk_counts(output)
+    ensure(risks["boundary"] == 0, f"Boundary edges after PATCHED: {risks['boundary']}")
+    ensure(risks["non_manifold"] == 0, f"Non-manifold edges after PATCHED: {risks['non_manifold']}")
+    ensure(risks["zero_area"] == 0, f"Zero-area faces after PATCHED: {risks['zero_area']}")
+    source_fingerprint_after = _mesh_fingerprint(obj)
+    ensure(
+        source_fingerprint_after == expected_fingerprint,
+        "Source Mesh fingerprint changed during PATCHED",
+    )
+    topology_payload = {
+        "vertices": [tuple(round(value, 8) for value in vertex.co) for vertex in output.data.vertices],
+        "edges": [tuple(edge.vertices) for edge in output.data.edges],
+        "polygons": [tuple(polygon.vertices) for polygon in output.data.polygons],
+    }
+    topology_hash = hashlib.sha256(
+        json.dumps(topology_payload, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    ensure(
+        topology_hash == "9ec6d981458b4929842581c047d2920f6535496bb19ebe3a15674c89615775c6",
+        f"Unexpected PATCHED topology hash: {topology_hash}",
+    )
+    result.add_detail(
+        f"Extruded.002 PATCHED with clean topology; topology_hash={topology_hash}"
+    )
+
+
+# name: Mesh Object 名称；collection: 输出 Collection。
+def make_crossing_feature_strands(name: str, collection):
+    vertices = [
+        (0.0, 0.0, 0.05),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, -1.0),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (0, 3, 4),
+        (0, 4, 1),
+        (5, 2, 1),
+        (5, 3, 2),
+        (5, 4, 3),
+        (5, 1, 4),
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, [], faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    sharp_attribute = mesh_data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE")
+    for edge in mesh_data.edges:
+        sharp_attribute.data[edge.index].value = 0 in edge.vertices
+    return obj
+
+
 def collect_hst_operator_idnames(test_context: TestContext):
     operator_idnames = set()
     for module in test_context.addon.auto_load.modules:
@@ -206,6 +342,106 @@ def test_addon_registers(test_context: TestContext, result: TestCaseResult):
     result.add_detail(f"Blender version: {bpy.app.version_string}")
     result.add_detail(f"Registered hst operators: {len(operator_idnames)}")
 
+
+# 验证异常残留的 Scene PointerProperty 会在下一次 register 前被安全替换。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_scene_params_stale_pointer_recovery_regression(test_context: TestContext, result: TestCaseResult):
+    stale_params_type = type(
+        "HSTStaleParamsProbe",
+        (bpy.types.PropertyGroup,),
+        {"__annotations__": {"probe": bpy.props.BoolProperty(default=True)}},
+    )
+    bpy.utils.register_class(stale_params_type)
+    bpy.types.Scene.hst_params = bpy.props.PointerProperty(type=stale_params_type)
+    bpy.utils.unregister_class(stale_params_type)
+
+    test_context.addon._register_scene_properties()
+
+    params = bpy.context.scene.hst_params
+    ensure(len(params.vertexcolor) == 4, "Stale Scene pointer was not replaced with UIParams")
+    result.add_detail("Stale Scene.hst_params was replaced before add-on registration")
+
+
+# 验证 degree-4 junction 只在切向与 Surface Patch 上下文唯一时连接为两条 strand。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_pipe_chamfer_degree_four_strand_pairing_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("PipeChamferStrandPairingCase")
+    obj = make_crossing_feature_strands("CrossingFeatureStrands", collection)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(obj, 0.05, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+
+    groups = utils._build_feature_graph(obj, 35.0, 3.0, stats)
+
+    ensure(len(groups) == 2, f"Expected 2 paired Feature strands, got {len(groups)}")
+    ensure(stats["topology_junction_count"] == 5, "Expected one degree-4 junction and four strand endpoints")
+    ensure(stats["pipe_group_count"] == 2, f"Expected 2 Pipe Groups, got {stats['pipe_group_count']}")
+    ensure(all(not group["is_cyclic"] for group in groups), "Degree-4 crossing unexpectedly produced cyclic strands")
+    ensure(sorted(len(group["edge_indices"]) for group in groups) == [2, 2], "Unexpected strand edge counts")
+    grouped_edges = [edge_index for group in groups for edge_index in group["edge_indices"]]
+    sharp_attribute = obj.data.attributes["sharp_edge"]
+    sharp_edges = {edge.index for edge in obj.data.edges if sharp_attribute.data[edge.index].value}
+    ensure(len(grouped_edges) == len(set(grouped_edges)), "Feature strand pairing reused a Sharp Edge")
+    ensure(set(grouped_edges) == sharp_edges, "Feature strand pairing did not consume every Sharp Edge")
+    endpoint_pairs = {
+        frozenset((group["vertex_indices"][0], group["vertex_indices"][-1]))
+        for group in groups
+    }
+    ensure(endpoint_pairs == {frozenset((1, 3)), frozenset((2, 4))}, f"Incorrect strand pairing: {endpoint_pairs}")
+    ensure(stats["open_pipe_count"] == 2, f"Expected 2 open Pipes, got {stats['open_pipe_count']}")
+    ensure(stats["closed_pipe_count"] == 0, f"Expected no closed Pipes, got {stats['closed_pipe_count']}")
+    result.add_detail("Degree-4 crossing preserved two opposite Feature strands")
+
+
+# 验证几何失败仍保留为可重做操作，使 Adjust Last Operation 可修改 Feature Chamfer 参数。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_pipe_chamfer_failure_keeps_redo_panel_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("PipeChamferRedoCase")
+    obj = make_test_mesh("PipeChamferNoSharp", collection)
+    select_objects(obj, [obj])
+    operator_result = bpy.ops.hst.experimental_pipe_chamfer(
+        "INVOKE_DEFAULT",
+        radius=0.05,
+        pipe_resolution=8,
+    )
+    operator_rna = bpy.ops.hst.experimental_pipe_chamfer.get_rna_type()
+
+    ensure("FINISHED" in operator_result, "Feature Chamfer failure did not preserve Adjust Last Operation")
+    ensure(
+        operator_rna.properties["radius"].is_skip_save,
+        "Feature Chamfer Radius can inherit an unusable value from a previous run",
+    )
+    ensure(
+        operator_rna.properties["pipe_resolution"].is_skip_save,
+        "Feature Chamfer Pipe Resolution can inherit an unusable value from a previous run",
+    )
+    ensure(obj.name in bpy.data.objects, "Feature Chamfer failure removed the source Object")
+    result.add_detail("Geometry failure returned FINISHED so parameters remain editable")
+
+
+# 验证 Feature Chamfer GUI 执行会留下可用于用户现场对比的参数、代码路径和 Mesh 指纹。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_pipe_chamfer_writes_diagnostic_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("PipeChamferDiagnosticCase")
+    obj = make_test_mesh("PipeChamferDiagnosticNoSharp", collection)
+    select_objects(obj, [obj])
+    diagnostic_path = Path(tempfile.gettempdir()) / "hst_feature_chamfer_diagnostic.jsonl"
+    diagnostic_path.unlink(missing_ok=True)
+
+    operator_result = bpy.ops.hst.experimental_pipe_chamfer(
+        "INVOKE_DEFAULT",
+        radius=0.05,
+        pipe_resolution=8,
+    )
+
+    ensure("FINISHED" in operator_result, "Feature Chamfer diagnostic probe did not finish")
+    ensure(diagnostic_path.exists(), "Feature Chamfer diagnostic log was not written")
+    records = [json.loads(line) for line in diagnostic_path.read_text(encoding="utf-8").splitlines()]
+    ensure([record["event"] for record in records] == ["execute_start", "geometry_failure"], "Unexpected diagnostic events")
+    start = records[0]
+    ensure(abs(start["parameters"]["radius"] - 0.05) <= 1.0e-6, "Diagnostic Radius does not match operator input")
+    ensure(start["source"]["mesh_fingerprint"], "Diagnostic Mesh fingerprint is missing")
+    ensure(start["operator_module"].endswith("experimental_pipe_chamfer_ops.py"), "Diagnostic operator source is missing")
+    result.add_detail("Feature Chamfer wrote start/failure diagnostics with a Mesh fingerprint")
 
 def test_transfer_proxy_reuse(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
@@ -913,6 +1149,11 @@ def main():
 
     context = TestContext(addon_module)
     context.run_case("addon_registers", test_addon_registers)
+    context.run_case("scene_params_stale_pointer_recovery_regression", test_scene_params_stale_pointer_recovery_regression)
+    context.run_case("pipe_chamfer_tricky_b_extruded002_regression", test_pipe_chamfer_tricky_b_extruded002_regression)
+    context.run_case("pipe_chamfer_degree_four_strand_pairing_regression", test_pipe_chamfer_degree_four_strand_pairing_regression)
+    context.run_case("pipe_chamfer_failure_keeps_redo_panel_regression", test_pipe_chamfer_failure_keeps_redo_panel_regression)
+    context.run_case("pipe_chamfer_writes_diagnostic_regression", test_pipe_chamfer_writes_diagnostic_regression)
     context.run_case("transfer_proxy_reuse", test_transfer_proxy_reuse)
     context.run_case("bevel_transfer_normal_collection_reuse", test_bevel_transfer_normal_collection_reuse)
     context.run_case("project_decal_smoke", test_project_decal_smoke)

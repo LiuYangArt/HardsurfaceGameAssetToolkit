@@ -7,11 +7,15 @@
 ## 当前覆盖
 
 - addon 注册 smoke test（包含全部 `hst.*` operator 注册检查）
+- 遗留 `Scene.hst_params` PointerProperty 安全替换的 UI 崩溃回归
 - `_TransferProxy` collection 复用回归
 - bake collection low/high 标记 smoke test
 - object vertex color 设置 / 从 active 复制 smoke test
 - collision 设置 / extract UCX smoke test
 - bevel / weighted normal / triangulate modifier smoke test
+- Feature Chamfer tricky_b / Extruded.002 真实 fixture PATCHED 拓扑回归
+- Feature Chamfer degree-4 Feature strand pairing 回归
+- Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
 - decal project smoke test
 - quickweight smoke test
 - AO bake operator headless smoke test
