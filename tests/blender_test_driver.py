@@ -441,6 +441,20 @@ def test_addon_registers(test_context: TestContext, result: TestCaseResult):
     result.add_detail(f"Registered hst operators: {len(operator_idnames)}")
 
 
+# 验证 HST 主面板仍暴露 Feature Chamfer 的用户入口。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_feature_chamfer_button_visible_regression(test_context: TestContext, result: TestCaseResult):
+    panel_source = inspect.getsource(test_context.addon.ui_panel.HST_PT_MainPanel.draw)
+    ensure(
+        '"hst.experimental_pipe_chamfer"' in panel_source,
+        "HST main panel no longer exposes Feature Chamfer",
+    )
+    ensure(
+        'text="Feature Chamfer (Sharp/Seam)"' in panel_source,
+        "Feature Chamfer button label is missing",
+    )
+    result.add_detail("HST main panel exposes Feature Chamfer (Sharp/Seam)")
+
 # 验证异常残留的 Scene PointerProperty 会在下一次 register 前被安全替换。
 # test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
 def test_scene_params_stale_pointer_recovery_regression(test_context: TestContext, result: TestCaseResult):
@@ -1247,6 +1261,7 @@ def main():
 
     context = TestContext(addon_module)
     context.run_case("addon_registers", test_addon_registers)
+    context.run_case("feature_chamfer_button_visible_regression", test_feature_chamfer_button_visible_regression)
     context.run_case("scene_params_stale_pointer_recovery_regression", test_scene_params_stale_pointer_recovery_regression)
     context.run_case("pipe_chamfer_tricky_b_extruded002_regression", test_pipe_chamfer_tricky_b_extruded002_regression)
     context.run_case("pipe_chamfer_legacy_fixture_regression", test_pipe_chamfer_legacy_fixture_regression)
