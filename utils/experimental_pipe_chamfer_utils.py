@@ -10,6 +10,7 @@ from mathutils import Matrix
 from mathutils import Vector
 from mathutils import geometry
 from mathutils.bvhtree import BVHTree
+from .feature_chamfer_patch_utils import patch_boolean_result
 
 
 COLLECTION_NAME = "HST_Experimental_PipeChamfer"
@@ -1650,16 +1651,19 @@ def build_pipe_chamfer(
         stats["status"] = "finished"
     else:
         junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
-        _patch_boundaries(
-            bm,
-            loops,
-            groups,
-            pipe_trees,
-            pipe_bounds,
-            radius,
-            junction_count,
-            stats,
-            debug_stage,
+        patch_boolean_result(
+            legacy_context={
+                "bm": bm,
+                "loops": loops,
+                "groups": groups,
+                "pipe_trees": pipe_trees,
+                "pipe_bounds": pipe_bounds,
+                "radius": radius,
+                "junction_count": junction_count,
+                "stats": stats,
+                "debug_stage": debug_stage,
+                "patch_callable": _patch_boundaries,
+            }
         )
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
         stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)

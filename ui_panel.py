@@ -19,6 +19,9 @@ def feature_chamfer_gn_button_label(context):
     source_object = context.active_object
     if source_object is None or source_object.type != "MESH":
         return "Feature Chamfer GN Preview"
+    linked_source_name = source_object.get(FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+    if linked_source_name:
+        source_object = bpy.data.objects.get(linked_source_name) or source_object
     try:
         state = preview_state(source_object)
     except Exception as error:
@@ -26,6 +29,8 @@ def feature_chamfer_gn_button_label(context):
         state = FEATURE_CHAMFER_PREVIEW_STALE
     if state == FEATURE_CHAMFER_PREVIEW_VALID:
         return "Finalize Feature Chamfer Patch"
+    if state == FEATURE_CHAMFER_PATCHED:
+        return "Rebuild Feature Chamfer GN Preview"
     if state == FEATURE_CHAMFER_PREVIEW_STALE:
         return "Rebuild Feature Chamfer GN Preview"
     return "Feature Chamfer GN Preview"

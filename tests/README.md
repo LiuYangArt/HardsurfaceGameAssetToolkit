@@ -33,8 +33,8 @@
 - cleanup UE SKM smoke test
 - experimental Pipe Chamfer 的 Object-only Sharp FeatureGraph smoke test
 - 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
-- two-Pipe junction 在 Region split 未稳定时 fail-closed 的回归
-- 未 Apply 的 Cutter Collection Boolean Preview smoke test
+- two-Pipe junction 的 redo-compatible 诊断与 source 不变回归
+- 未 Apply 的单 Object / 多 Object Cutter Boolean Preview smoke test
 - Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
 - 清理上一轮 Boolean Preview 后首次 OPEN_BOUNDARY 即成功的 dependency-graph 同步回归
 - Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
@@ -43,10 +43,13 @@
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 - Feature Chamfer GN 发布资产 exact/version import、Preview modifier 幂等与 source fingerprint 回归
 - Feature Chamfer GN 参数 socket 更新、SDF cutter closed-manifold smoke test
-- Feature Chamfer GN topology/live 参数 stale、Finalize fail-closed 与无 Sharp 时 Cancel 生命周期回归
+- Feature Chamfer GN topology/live 参数 stale 与无 Sharp 时 Cancel 生命周期回归
+- Feature Chamfer GN endpoint/junction extension、Python tracked Boolean provenance 与 Boundary region classification
+- Feature Chamfer GN terminal、junction、cyclic、end-cap Patch 与真实 fixture closed-manifold Finalize
+- 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
-> 新的 `hst.feature_chamfer_gn` 当前完成 Preview / Cancel Preview；Finalize 在 provenance 与 SDF rail ownership 未达到 100% 前明确 fail-closed，不会生成伪 Patch 结果。
+> 新的 `hst.feature_chamfer_gn` 已完成 Preview / Finalize / Cancel Preview；Finalize 从同一 GN modifier 提取 extended SDF cutter，执行 Python tracked Boolean、显式 Boundary region Patch，并生成独立 output。任何 stale、provenance、region 或 final topology gate 失败都会保留 source/Preview 并 fail-closed。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
 > `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
@@ -68,6 +71,14 @@
 - `Boolean Pro.New Faces / Slice Faces` 在当前 fixture 配置为空；`Boundary Edges` 可保存但主要是 loose Edge，尚不能安全驱动 Patch，Finalize 继续 fail-closed。
 - 统一 probe：设置 `HST_ADDON_ROOT` 后用 Blender background 执行 `tools/probe_feature_chamfer_gn.py`。
 - Boolean Pro 输出专项 probe：`tools/probe_boolean_pro_provenance.py`。
+
+## Feature Chamfer GN Finalize Probe
+
+- 入口：`tools/probe_feature_chamfer_finalize.py`。
+- 结果：`tests/artifacts/feature_chamfer_gn_finalize_fixture_probe.json`。
+- 可打开的最终 Mesh：`tests/artifacts/feature_chamfer_gn_finalize_fixture.blend`。
+- Finalize 渲染预览：`tests/artifacts/feature_chamfer_gn_finalize_fixture.png`。
+- 覆盖 cutter extension、tracked Boolean、Boundary region、junction/end-cap filler 与 final manifold 风险。
 
 ## 运行方式
 

@@ -5,6 +5,16 @@ import bpy
 
 from ..const import FEATURE_CHAMFER_GN_LAST_ACTION_TAG
 from ..const import FEATURE_CHAMFER_GN_MODIFIER
+from ..const import FEATURE_CHAMFER_GN_STATE_TAG
+from ..const import FEATURE_CHAMFER_ORIGINAL_FACE_ATTRIBUTE
+from ..const import FEATURE_CHAMFER_PATCHED
+from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
+from ..const import NORMALTRANSFER_MODIFIER
+from ..utils.feature_chamfer_finalize_utils import FeatureChamferFinalizeError
+from ..utils.feature_chamfer_finalize_utils import extract_feature_chamfer_finalize_context
+from ..utils.feature_chamfer_finalize_utils import release_feature_chamfer_finalize_context
+from ..utils.feature_chamfer_patch_utils import FeatureChamferPatchError
+from ..utils.feature_chamfer_patch_utils import patch_boolean_result
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
 from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
@@ -32,6 +42,13 @@ def _validated_source(operator, context, require_feature_input=True):
     if source_object is None or source_object.type != "MESH":
         operator.report({"ERROR"}, "Select one Mesh Object")
         return None
+    source_name = source_object.get(FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+    if source_name:
+        linked_source = bpy.data.objects.get(source_name)
+        if linked_source is None or linked_source.type != "MESH":
+            operator.report({"ERROR"}, "Feature Chamfer source Object no longer exists")
+            return None
+        source_object = linked_source
     if source_object.mode != "OBJECT":
         operator.report({"ERROR"}, "Feature Chamfer GN requires Object Mode")
         return None
@@ -112,11 +129,92 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             if preview_state(source_object) != PREVIEW_VALID:
                 self.report({"WARNING"}, "Feature Chamfer Preview is stale; rebuild Preview first")
                 return {"CANCELLED"}
-            self.report(
-                {"ERROR"},
-                "Finalize is unavailable: SDF Boolean provenance/rail ownership has not passed the fail-closed gate",
-            )
-            return {"CANCELLED"}
+            finalize_context = None
+            patched_mesh = None
+            try:
+                finalize_context = extract_feature_chamfer_finalize_context(source_object)
+                patched_mesh, patch_stats = patch_boolean_result(
+                    finalize_context["open_mesh"],
+                    finalize_context["boundary_regions"],
+                    finalize_context["diagnostics"]["boundary_graph"]["components"],
+                    donor_mesh=finalize_context["boolean_mesh"],
+                    groove_face_indices=finalize_context["groove_face_indices"],
+                )
+            except FeatureChamferFinalizeError as error:
+                release_feature_chamfer_finalize_context(finalize_context)
+                self.report({"WARNING"}, f"Finalize preflight failed [{error.error_code}]: {error}")
+                return {"CANCELLED"}
+            except FeatureChamferPatchError as error:
+                release_feature_chamfer_finalize_context(finalize_context)
+                self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
+                return {"CANCELLED"}
+            except Exception:
+                release_feature_chamfer_finalize_context(finalize_context)
+                raise
+            try:
+                output = bpy.data.objects.new(
+                    f"{source_object.name}_FeatureChamfer",
+                    patched_mesh,
+                )
+                source_object.users_collection[0].objects.link(output)
+                output.matrix_world = source_object.matrix_world.copy()
+                patched_mesh = None
+                original_attribute = output.data.attributes.get(
+                    FEATURE_CHAMFER_ORIGINAL_FACE_ATTRIBUTE
+                )
+                chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
+                if chamfer_attribute is not None:
+                    output.data.attributes.remove(chamfer_attribute)
+                chamfer_attribute = output.data.attributes.new(
+                    "hst_feature_chamfer_face",
+                    type="BOOLEAN",
+                    domain="FACE",
+                )
+                for polygon in output.data.polygons:
+                    chamfer_attribute.data[polygon.index].value = (
+                        original_attribute is None
+                        or not bool(original_attribute.data[polygon.index].value)
+                    )
+                normal_modifier = output.modifiers.new(
+                    f"{NORMALTRANSFER_MODIFIER} Feature Chamfer",
+                    type="DATA_TRANSFER",
+                )
+                normal_modifier.object = source_object
+                normal_modifier.use_loop_data = True
+                normal_modifier.data_types_loops = {"CUSTOM_NORMAL"}
+                normal_modifier.loop_mapping = "POLYINTERP_LNORPROJ"
+                preview_modifier = owned_preview_modifier(source_object)
+                if preview_modifier is not None:
+                    preview_modifier.show_viewport = False
+                    preview_modifier.show_render = False
+                source_object[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
+                output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
+                output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
+                for selected_object in tuple(context.selected_objects):
+                    selected_object.select_set(False)
+                output.select_set(True)
+                context.view_layer.objects.active = output
+                self.report(
+                    {"INFO"},
+                    f"Feature Chamfer finalized: {patch_stats['patch_face_count']} Patch Faces",
+                )
+                return {"FINISHED"}
+            except Exception:
+                if "output" in locals() and bpy.data.objects.get(output.name) == output:
+                    output_mesh = output.data
+                    bpy.data.objects.remove(output, do_unlink=True)
+                    if bpy.data.meshes.get(output_mesh.name) == output_mesh:
+                        bpy.data.meshes.remove(output_mesh)
+                preview_modifier = owned_preview_modifier(source_object)
+                if preview_modifier is not None:
+                    preview_modifier.show_viewport = True
+                    preview_modifier.show_render = True
+                source_object[FEATURE_CHAMFER_GN_STATE_TAG] = PREVIEW_VALID
+                raise
+            finally:
+                if patched_mesh is not None and bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
+                    bpy.data.meshes.remove(patched_mesh)
+                release_feature_chamfer_finalize_context(finalize_context)
         if actual_action != "PREVIEW":
             self.report({"ERROR"}, f"Unsupported Feature Chamfer action: {actual_action}")
             return {"CANCELLED"}

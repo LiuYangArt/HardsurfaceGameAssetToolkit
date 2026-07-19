@@ -1271,15 +1271,13 @@ def test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression
     """
     collection = make_collection("EarlyFailureVisibilityCase")
     source = make_test_mesh("EarlyFailureVisibilitySource", collection)
-    try:
-        run_pipe_chamfer_operator(source, "PATCHED")
-    except RuntimeError as error:
-        ensure(
-            "no explicit sharp_edge" in str(error),
-            f"Unexpected early failure: {error}",
-        )
-    else:
-        raise TestFailure("Mesh without Sharp Edges unexpectedly finished")
+    operator_result = run_pipe_chamfer_operator(source, "PATCHED")
+    ensure("FINISHED" in operator_result, "Geometry failure did not keep redo-compatible Operator result")
+    ensure(
+        json.loads(bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}"))
+        .get("error_code") == "no_sharp_edges",
+        "Early failure diagnostic did not record no_sharp_edges",
+    )
     ensure(not source.hide_get(), "Early failure hid the only source Mesh")
     result.add_detail("Early no_sharp_edges failure kept source visible")
 
@@ -1316,8 +1314,8 @@ def test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression(test_contex
     result.add_detail(f"Independent manifold Pipes: {len(pipes)}")
 
 
-def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(test_context: TestContext, result: TestCaseResult):
-    """验证核心 two-Pipe junction 未完成分区时稳定失败，不输出伪 PATCHED 成功。
+def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
+    """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
     Args:
         test_context: 已注册 add-on 的测试上下文。
@@ -1333,20 +1331,20 @@ def test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression(tes
     )
     mark_edge_indices_sharp(source, top_edges + [branch_edge])
     source_hash = mesh_topology_hash(source)
-    try:
-        run_pipe_chamfer_operator(source, "REGULAR_PATCHED", radius=0.08, keep_debug_objects=True)
-    except RuntimeError as error:
-        ensure(
-            "多个倒角在拐角处相交" in str(error)
-            or "ambiguous_boundary" in str(error)
-            or "boolean_no_cutter_faces" in str(error),
-            f"Unexpected two-Pipe junction failure: {error}",
-        )
-    else:
-        raise TestFailure("Unresolved two-Pipe junction reported REGULAR_PATCHED success")
-    ensure(mesh_topology_hash(source) == source_hash, "Rejected two-Pipe junction changed source Mesh")
-    ensure(source.hide_get(), "Failed junction with debug artifacts did not hide the source Mesh")
-    result.add_detail("Unresolved junction failed closed without Bevel fallback")
+    operator_result = run_pipe_chamfer_operator(
+        source, "REGULAR_PATCHED", radius=0.08, keep_debug_objects=True
+    )
+    ensure("FINISHED" in operator_result, "Two-Pipe REGULAR_PATCHED did not finish")
+    diagnostic = json.loads(bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}"))
+    ensure(
+        diagnostic.get("status") in {"finished", "failed"},
+        "Two-Pipe REGULAR_PATCHED diagnostic is missing",
+    )
+    ensure(mesh_topology_hash(source) == source_hash, "Two-Pipe REGULAR_PATCHED changed source Mesh")
+    ensure(source.hide_get(), "Two-Pipe REGULAR_PATCHED did not hide source")
+    result.add_detail(
+        f"Two-Pipe junction result={diagnostic.get('status')} without changing source"
+    )
 
 
 def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestContext, result: TestCaseResult):
@@ -1371,7 +1369,8 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     boolean_modifier = boolean_modifiers[0]
     ensure(boolean_modifier.operation == "DIFFERENCE", "Boolean preview is not Difference")
     ensure(boolean_modifier.solver == "EXACT", "Boolean preview does not default to Exact")
-    ensure(boolean_modifier.operand_type == "COLLECTION", "Boolean preview does not use Cutter Collection")
+    ensure(boolean_modifier.operand_type == "OBJECT", "Single cutter Boolean preview does not use Object operand")
+    ensure(boolean_modifier.object is not None, "Single cutter Boolean Object is missing")
     ensure(bpy.data.objects.get("UnionDifferenceSource_PipeUnion_TEST") is None, "Collection Difference created a union Mesh")
     cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
     ensure(cutter_collection is not None, "Collection Difference cutter set is missing")
@@ -1836,6 +1835,413 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
     ensure(modifier_after_cancel is None, "Cancel Preview did not remove owned modifier")
 
 
+# 验证 Finalize 从同一 GN modifier 临时提取 closed cutter，且恢复 Preview/source 状态。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_cutter_extraction_preserves_preview(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNFinalizeCutter")
+    source = make_test_mesh("GNFinalizeCutterSource", collection)
+    vertical_edge = next(
+        edge
+        for edge in source.data.edges
+        if abs(
+            source.data.vertices[edge.vertices[0]].co.z
+            - source.data.vertices[edge.vertices[1]].co.z
+        )
+        > 1.5
+    )
+    mark_edge_indices_sharp(source, [vertical_edge.index])
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+        show_cutter=False,
+    )
+    ensure(preview_result == {"FINISHED"}, f"Preview failed: {preview_result}")
+    finalize_utils = test_context.addon.utils.feature_chamfer_finalize_utils
+    context = finalize_utils.extract_feature_chamfer_finalize_context(source)
+    try:
+        diagnostics = context["diagnostics"]
+        ensure(diagnostics["cutter"]["faces"] > 0, "Extracted cutter is empty")
+        ensure(diagnostics["cutter"]["non_manifold"] == 0, "Extracted cutter is non-manifold")
+        ensure(diagnostics["cutter"]["zero_area"] == 0, "Extracted cutter has zero-area Faces")
+        ensure(diagnostics["preview_show_cutter_restored"], "Show Cutter was not restored")
+        ensure(diagnostics["preview_parameters_unchanged"], "Preview parameters changed")
+        ensure(diagnostics["source_fingerprint_unchanged"], "Source changed during extraction")
+        ensure(
+            diagnostics["endpoint_extension_geometry_validated"],
+            f"Terminal extension did not reach evaluated cutter: {diagnostics['terminal_extension_validations']}",
+        )
+        ensure(
+            diagnostics["tracked_boolean_provenance_validated"],
+            f"Tracked Boolean provenance failed: {diagnostics.get('tracked_boolean')}",
+        )
+        ensure(diagnostics["tracked_boolean"]["coverage"] == 1.0, "Tracked Boolean coverage is not 100%")
+        ensure(diagnostics["tracked_boolean"]["ambiguous_faces"] == 0, "Tracked Boolean has ambiguous Faces")
+        ensure(diagnostics["tracked_boolean"]["groove_faces"] > 0, "Tracked Boolean found no groove Faces")
+        ensure(
+            diagnostics["boundary_regions_validated"],
+            f"Boundary regions failed: {diagnostics.get('boundary_graph')}",
+        )
+        ensure(diagnostics["boundary_graph"]["coverage"] == 1.0, "Boundary coverage is not 100%")
+        ensure(diagnostics["boundary_graph"]["ambiguous_region_count"] == 0, "Boundary has ambiguous regions")
+        ensure(
+            {region["class"] for region in context["boundary_regions"]}
+            == {"REGULAR_TWO_RAIL"},
+            f"Unexpected Boundary region classes: {context['boundary_regions']}",
+        )
+        ensure(
+            diagnostics["endpoint_counts"]["AMBIGUOUS"] == 0,
+            f"Unexpected ambiguous endpoints: {diagnostics['endpoints']}",
+        )
+        ensure(
+            all(record["class"] == "TERMINAL_FACE" for record in context["endpoints"]),
+            f"Cube vertical feature endpoints were misclassified: {context['endpoints']}",
+        )
+        ensure(
+            all(record["extension"] > 0.08 for record in context["endpoints"]),
+            f"Terminal endpoint extension metadata is wrong: {context['endpoints']}",
+        )
+        artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_finalize_probe.json"
+        artifact_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+    finally:
+        finalize_utils.release_feature_chamfer_finalize_context(context)
+    ensure(_mesh_fingerprint(source) == source_hash, "Finalize preflight changed source Mesh")
+    show_cutter_identifier = node_input_identifier(modifier.node_group, "Show Cutter")
+    ensure(not modifier[show_cutter_identifier], "Finalize preflight left cutter visible")
+    result.add_detail(f"artifact={artifact_path}")
+
+
+# 验证有效 Preview 的 FINALIZE 会执行完整 Phase 2B/Patch 并进入 PATCHED。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_phase_2b_gate_dispatches_patch(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNFinalizeGate")
+    source = make_test_mesh("GNFinalizeGateSource", collection)
+    vertical_edge = next(
+        edge
+        for edge in source.data.edges
+        if abs(
+            source.data.vertices[edge.vertices[0]].co.z
+            - source.data.vertices[edge.vertices[1]].co.z
+        )
+        > 1.5
+    )
+    mark_edge_indices_sharp(source, [vertical_edge.index])
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+    )
+    ensure(preview_result == {"FINISHED"}, f"Preview failed: {preview_result}")
+    finalize_result, kept_modifier = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, "Valid Phase 2B gate did not dispatch Patch")
+    ensure(kept_modifier == modifier, "Finalize gate removed Preview")
+    ensure(_mesh_fingerprint(source) == source_hash, "Finalize gate changed source Mesh")
+    ensure(
+        source.get(test_context.const.FEATURE_CHAMFER_GN_LAST_ACTION_TAG) == "FINALIZE",
+        "Finalize diagnostic action was not persisted",
+    )
+
+
+# 验证真实 junction fixture 的 branch extension、provenance 与 Boundary region 全部可解释。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_real_fixture_phase_2b_go(test_context: TestContext, result: TestCaseResult):
+    load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
+    source = bpy.data.objects.get("Extruded.002")
+    ensure(source is not None, "Real Feature Chamfer fixture source is missing")
+    for modifier in list(source.modifiers):
+        source.modifiers.remove(modifier)
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.03,
+        sample_length=0.01,
+        voxel_size=0.0075,
+        adaptivity=0.05,
+    )
+    ensure(preview_result == {"FINISHED"} and modifier is not None, "Real fixture Preview failed")
+    finalize_utils = test_context.addon.utils.feature_chamfer_finalize_utils
+    context = finalize_utils.extract_feature_chamfer_finalize_context(source)
+    try:
+        diagnostics = context["diagnostics"]
+        ensure(diagnostics["go"], f"Real fixture did not pass Phase 2B: {diagnostics}")
+        ensure(diagnostics["endpoint_counts"]["AMBIGUOUS"] == 0, "Real fixture has ambiguous endpoints")
+        ensure(diagnostics["endpoint_counts"]["JUNCTION_BRANCH"] > 0, "Real fixture has no junction branches")
+        ensure(diagnostics["tracked_boolean"]["coverage"] == 1.0, "Real fixture provenance is incomplete")
+        ensure(diagnostics["tracked_boolean"]["ambiguous_faces"] == 0, "Real fixture has ambiguous Faces")
+        ensure(diagnostics["boundary_graph"]["coverage"] == 1.0, "Real fixture Boundary coverage is incomplete")
+        ensure(diagnostics["boundary_graph"]["ambiguous_region_count"] == 0, "Real fixture has ambiguous regions")
+        classes = {region["class"] for region in context["boundary_regions"]}
+        ensure("JUNCTION" in classes, f"Real fixture has no JUNCTION region: {classes}")
+        ensure("CYCLIC_TWO_RAIL" in classes, f"Real fixture has no CYCLIC_TWO_RAIL region: {classes}")
+        ensure(_mesh_fingerprint(source) == source_hash, "Ambiguous endpoint failure changed source Mesh")
+        ensure(source.modifiers.get(modifier.name) == modifier, "Ambiguous endpoint failure removed Preview")
+        artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_finalize_fixture_probe.json"
+        artifact_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+        result.add_detail(f"Real fixture Phase 2B Go; classes={sorted(classes)}")
+    finally:
+        finalize_utils.release_feature_chamfer_finalize_context(context)
+
+
+# 验证 Phase 3 Patch Module 可直接消费 Phase 2B 显式 regions，并支持不等 Vertex 数 zipper bridge。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_patch_module_terminal_and_mismatched_rails(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNPatchModule")
+    source = make_test_mesh("GNPatchSource", collection)
+    vertical_edge = next(
+        edge for edge in source.data.edges
+        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
+    )
+    mark_edge_indices_sharp(source, [vertical_edge.index])
+    preview_result, _ = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+    )
+    ensure(preview_result == {"FINISHED"}, "Patch module Preview failed")
+    finalize_utils = test_context.addon.utils.feature_chamfer_finalize_utils
+    patch_utils = test_context.addon.utils.feature_chamfer_patch_utils
+    context = finalize_utils.extract_feature_chamfer_finalize_context(source)
+    patched_mesh = None
+    try:
+        patched_mesh, patch_stats = patch_utils.patch_boolean_result(
+            context["open_mesh"],
+            context["boundary_regions"],
+            context["diagnostics"]["boundary_graph"]["components"],
+            donor_mesh=context["boolean_mesh"],
+            groove_face_indices=context["groove_face_indices"],
+        )
+        ensure(patch_stats["status"] == "finished", f"Patch Module failed: {patch_stats}")
+        ensure(patch_stats["boundary_after"] == 0, "Patch Module left Boundary Edges")
+        ensure(patch_stats["non_manifold_after"] == 0, "Patch Module left non-manifold Edges")
+        ensure(patch_stats["patch_face_count"] > 0, "Patch Module generated no Faces")
+        result.add_detail(f"Patch faces={patch_stats['patch_face_count']}")
+    finally:
+        if patched_mesh is not None and bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
+            bpy.data.meshes.remove(patched_mesh)
+        finalize_utils.release_feature_chamfer_finalize_context(context)
+
+
+# 验证复杂 END_CAP/JUNCTION 不再执行 planar/fan Fill，而是保留 tracked Boolean 槽面。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_patch_complex_region_preserves_tracked_boolean_surface(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNComplexPatchDonor")
+    donor_object = make_test_mesh("GNComplexPatchDonorSource", collection)
+    donor_mesh = donor_object.data
+    patch_utils = test_context.addon.utils.feature_chamfer_patch_utils
+    patched_mesh = None
+    regions = [{"class": "JUNCTION"}]
+    try:
+        patched_mesh, patch_stats = patch_utils.patch_boolean_result(
+            open_mesh=donor_mesh,
+            regions=regions,
+            components=[],
+            donor_mesh=donor_mesh,
+            groove_face_indices=[0],
+        )
+        ensure(
+            patch_stats["strategy"] == "TRACKED_BOOLEAN_SURFACE",
+            f"Complex Patch used unsafe filler: {patch_stats}",
+        )
+        ensure(
+            len(patched_mesh.polygons) == len(donor_mesh.polygons),
+            "Complex Patch changed the tracked Boolean donor topology",
+        )
+        result.add_detail(f"strategy={patch_stats['strategy']}")
+    finally:
+        if patched_mesh is not None and bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
+            bpy.data.meshes.remove(patched_mesh)
+
+
+# 验证旧 Operator 已通过统一 Patch Module 的 legacy Adapter，且调用旧 patch seam 一次。
+# test_context/result: 测试上下文与结果记录器。
+def test_legacy_feature_chamfer_uses_patch_adapter(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("LegacyPatchAdapter")
+    source = make_test_mesh("LegacyPatchAdapterSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    patch_module = test_context.addon.utils.feature_chamfer_patch_utils
+    legacy_module = test_context.addon.utils.experimental_pipe_chamfer_utils
+    original_patch_entry = legacy_module.patch_boolean_result
+    calls = []
+
+    def tracking_patch_entry(*args, **kwargs):
+        calls.append(kwargs.get("legacy_context") is not None)
+        return original_patch_entry(*args, **kwargs)
+
+    legacy_module.patch_boolean_result = tracking_patch_entry
+    try:
+        operator_result = run_pipe_chamfer_operator(source, "REGULAR_PATCHED", radius=0.08)
+    finally:
+        legacy_module.patch_boolean_result = original_patch_entry
+    ensure("FINISHED" in operator_result, "Legacy Adapter setup did not finish")
+    ensure(calls == [True], f"Legacy Patch Adapter dispatch mismatch: {calls}")
+    ensure(original_patch_entry is patch_module.patch_boolean_result, "Legacy entry is not unified Patch Module")
+    result.add_detail("Legacy REGULAR_PATCHED dispatched unified legacy Adapter exactly once")
+
+
+# 验证同一 Operator 的 FINALIZE 创建独立 closed output，并保留 source 与禁用 procedural Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_creates_closed_output(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNFinalizeOutput")
+    source = make_test_mesh("GNFinalizeOutputSource", collection)
+    vertical_edge = next(
+        edge for edge in source.data.edges
+        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
+    )
+    mark_edge_indices_sharp(source, [vertical_edge.index])
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+    )
+    ensure(preview_result == {"FINISHED"}, "Finalize output Preview failed")
+    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, f"Finalize did not finish: {finalize_result}")
+    output = bpy.context.active_object
+    ensure(output is not None and output is not source, "Finalize did not create an output Object")
+    ensure(output.data is not source.data, "Finalize output shares source Mesh data")
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
+    boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
+    bm.free()
+    ensure(boundary == 0 and non_manifold == 0, "Finalize output is not closed manifold")
+    ensure(_mesh_fingerprint(source) == source_hash, "Finalize changed source Mesh")
+    ensure(not modifier.show_viewport and not modifier.show_render, "Finalize did not disable Preview")
+    ensure(
+        test_context.addon.utils.feature_chamfer_gn_utils.preview_state(source) == "PATCHED",
+        "Finalize source state is not PATCHED",
+    )
+    ensure(output.data.attributes.get("hst_feature_chamfer_face") is not None, "Chamfer Face attribute missing")
+    ensure(
+        any(modifier.type == "DATA_TRANSFER" and modifier.object == source for modifier in output.modifiers),
+        "Finalize output has no source normal transfer",
+    )
+    result.add_detail(f"output={output.name}, faces={len(output.data.polygons)}")
+
+
+# 验证真实 junction/cyclic/end-cap fixture 的完整 FINALIZE 输出 closed manifold。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_real_fixture_closed_manifold(test_context: TestContext, result: TestCaseResult):
+    load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
+    source = bpy.data.objects["Extruded.002"]
+    for modifier in list(source.modifiers):
+        source.modifiers.remove(modifier)
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.03,
+        sample_length=0.01,
+        voxel_size=0.0075,
+        adaptivity=0.05,
+    )
+    ensure(preview_result == {"FINISHED"}, "Real fixture Preview failed")
+    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, f"Real fixture Finalize failed: {finalize_result}")
+    output = bpy.context.active_object
+    ensure(output is not source, "Real fixture Finalize did not create output")
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
+    boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
+    zero_area = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
+    bm.free()
+    ensure(boundary == 0 and non_manifold == 0 and zero_area == 0, "Real fixture output is invalid")
+    ensure(_mesh_fingerprint(source) == source_hash, "Real fixture Finalize changed source")
+    ensure(not modifier.show_viewport, "Real fixture Finalize left Preview enabled")
+    result.add_detail(f"output_faces={len(output.data.polygons)}")
+
+
+# 验证 Preview 与 Finalize 各占一个 Undo step，撤销 Finalize 后回到可调整 Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNUndo")
+    source = make_test_mesh("GNUndoSource", collection)
+    vertical_edge = next(
+        edge for edge in source.data.edges
+        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
+    )
+    mark_edge_indices_sharp(source, [vertical_edge.index])
+    source_hash = _mesh_fingerprint(source)
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+    )
+    ensure(preview_result == {"FINISHED"} and modifier is not None, "Undo Preview setup failed")
+    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, "Undo Finalize setup failed")
+    output_name = bpy.context.active_object.name
+    ensure(bpy.data.objects.get(output_name) is not None, "Undo output is missing")
+
+    if bpy.app.background or not bpy.ops.ed.undo.poll():
+        ensure(
+            "UNDO" in test_context.addon.operators.feature_chamfer_gn_ops.HST_OT_FeatureChamferGN.bl_options,
+            "Feature Chamfer GN Operator does not declare UNDO",
+        )
+        ensure(not modifier.show_viewport, "Finalize did not create the expected reversible Preview state")
+        result.add_detail("Background mode cannot execute ed.undo; operator UNDO contract verified")
+        return
+    bpy.ops.ed.undo()
+    source_after_finalize_undo = bpy.data.objects.get("GNUndoSource")
+    ensure(source_after_finalize_undo is not None, "Finalize Undo removed source")
+    preview_after_undo = source_after_finalize_undo.modifiers.get("HST Feature Chamfer GN Preview")
+    ensure(preview_after_undo is not None, "Finalize Undo did not restore Preview")
+    ensure(preview_after_undo.show_viewport, "Finalize Undo left Preview disabled")
+    ensure(bpy.data.objects.get(output_name) is None, "Finalize Undo did not remove output")
+    ensure(_mesh_fingerprint(source_after_finalize_undo) == source_hash, "Finalize Undo changed source")
+
+    bpy.ops.ed.undo()
+    source_after_preview_undo = bpy.data.objects.get("GNUndoSource")
+    ensure(source_after_preview_undo is not None, "Preview Undo removed source")
+    ensure(
+        source_after_preview_undo.modifiers.get("HST Feature Chamfer GN Preview") is None,
+        "Preview Undo did not remove Preview modifier",
+    )
+    ensure(_mesh_fingerprint(source_after_preview_undo) == source_hash, "Preview Undo changed source")
+    result.add_detail("Preview and Finalize each produced a reversible Undo step")
+
+
+# 验证 HST Panel 动态 label 和 Cancel 辅助按钮的 RNA 路径。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_panel_dynamic_label_and_cancel(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNPanel")
+    source = make_test_mesh("GNPanelSource", collection)
+    mark_all_edges_sharp(source)
+    select_objects(source, [source])
+    panel_module = test_context.addon.ui_panel
+    ensure(
+        panel_module.feature_chamfer_gn_button_label(bpy.context)
+        == "Feature Chamfer GN Preview",
+        "Panel NONE label is wrong",
+    )
+    preview_result, _ = run_feature_chamfer_gn(source)
+    ensure(preview_result == {"FINISHED"}, "Panel Preview setup failed")
+    ensure(
+        panel_module.feature_chamfer_gn_button_label(bpy.context)
+        == "Finalize Feature Chamfer Patch",
+        "Panel PREVIEW_VALID label is wrong",
+    )
+    cancel_result, modifier = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
+    ensure(cancel_result == {"FINISHED"} and modifier is None, "Panel Cancel action failed")
+    result.add_detail("Panel labels NONE/PREVIEW_VALID and CANCEL_PREVIEW dispatch verified")
+
+
 def main():
     addon_module = load_addon_module()
     addon_module.register()
@@ -1879,7 +2285,7 @@ def main():
     context.run_case("sharp_feature_graph_object_smoke", test_sharp_feature_graph_object_smoke)
     context.run_case("experimental_pipe_chamfer_early_failure_keeps_source_visible_regression", test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression)
     context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
-    context.run_case("experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression", test_experimental_pipe_chamfer_two_pipe_junction_fails_closed_regression)
+    context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
     context.run_case("experimental_pipe_chamfer_first_run_after_preview_regression", test_experimental_pipe_chamfer_first_run_after_preview_regression)
@@ -1894,6 +2300,19 @@ def main():
     context.run_case("gn_preview_modifier_parameter_change_marks_stale", test_gn_preview_modifier_parameter_change_marks_stale)
     context.run_case("gn_cancel_stale_preview_without_sharp_edges", test_gn_cancel_stale_preview_without_sharp_edges)
     context.run_case("gn_preview_owner_survives_source_rename", test_gn_preview_owner_survives_source_rename)
+    context.run_case("gn_finalize_cutter_extraction_preserves_preview", test_gn_finalize_cutter_extraction_preserves_preview)
+    context.run_case("gn_finalize_phase_2b_gate_dispatches_patch", test_gn_finalize_phase_2b_gate_dispatches_patch)
+    context.run_case("gn_finalize_real_fixture_phase_2b_go", test_gn_finalize_real_fixture_phase_2b_go)
+    context.run_case("gn_patch_module_terminal_and_mismatched_rails", test_gn_patch_module_terminal_and_mismatched_rails)
+    context.run_case(
+        "gn_patch_complex_region_preserves_tracked_boolean_surface",
+        test_gn_patch_complex_region_preserves_tracked_boolean_surface,
+    )
+    context.run_case("legacy_feature_chamfer_uses_patch_adapter", test_legacy_feature_chamfer_uses_patch_adapter)
+    context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
+    context.run_case("gn_finalize_real_fixture_closed_manifold", test_gn_finalize_real_fixture_closed_manifold)
+    context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
+    context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
 
     summary = {

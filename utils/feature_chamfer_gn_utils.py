@@ -20,6 +20,7 @@ from ..const import FEATURE_CHAMFER_GN_STATE_TAG
 from ..const import FEATURE_CHAMFER_PREVIEW_NONE
 from ..const import FEATURE_CHAMFER_PREVIEW_STALE
 from ..const import FEATURE_CHAMFER_PREVIEW_VALID
+from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import PRESET_FILE_PATH
 
 
@@ -175,6 +176,8 @@ def ensure_feature_chamfer_preview_node_group():
 # 读取当前 Preview 状态，并把 source 或资产不一致归类为 stale。
 # source_object: Preview 所属 Mesh；Modifier sockets 是 live 参数真源。
 def preview_state(source_object):
+    if source_object.get(FEATURE_CHAMFER_GN_STATE_TAG) == FEATURE_CHAMFER_PATCHED:
+        return FEATURE_CHAMFER_PATCHED
     modifier = owned_preview_modifier(source_object)
     if modifier is None:
         return PREVIEW_NONE
@@ -212,13 +215,6 @@ def ensure_gn_feature_chamfer_preview(
         raise FeatureChamferPreviewError(
             f"Modifier 名称冲突：{FEATURE_CHAMFER_GN_MODIFIER}"
         )
-    parameters = {
-        "adaptivity": float(adaptivity),
-        "radius": float(radius),
-        "sample_length": float(sample_length),
-        "show_cutter": bool(show_cutter),
-        "voxel_size": float(voxel_size),
-    }
     identifiers = _input_identifiers(node_group)
     values = {
         "Radius": radius,
@@ -235,8 +231,11 @@ def ensure_gn_feature_chamfer_preview(
     if modifier is None:
         modifier = source_object.modifiers.new(FEATURE_CHAMFER_GN_MODIFIER, "NODES")
     modifier.node_group = node_group
+    modifier.show_viewport = True
+    modifier.show_render = True
     for name, value in values.items():
         modifier[identifiers[name]] = value
+    parameters = live_preview_parameters(modifier)
 
     modifier[FEATURE_CHAMFER_GN_OWNER_TAG] = OWNER_VALUE
     modifier[FEATURE_CHAMFER_GN_FINGERPRINT_TAG] = source_fingerprint(source_object)

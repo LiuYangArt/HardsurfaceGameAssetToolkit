@@ -178,6 +178,9 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
                 keep_debug_objects=self.keep_debug_objects,
             )
         except PipeChamferError as error:
+            context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+                error.stats, ensure_ascii=False, separators=(",", ":")
+            )
             _ACTIVE_DIAGNOSTIC_RUN["failure"] = {
                 "error_type": type(error).__name__,
                 "error_message": str(error),
@@ -201,6 +204,9 @@ class HST_OT_ExperimentalPipeChamfer(bpy.types.Operator):
                 f"stage={self.debug_stage}, radius={self.radius}"
             ) from error
         _write_diagnostic_event("geometry_success", {"stats": result})
+        context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+            result, ensure_ascii=False, separators=(",", ":")
+        )
         _ACTIVE_DIAGNOSTIC_RUN = None
         print(RESULT_PREFIX + json.dumps(result, ensure_ascii=False, separators=(",", ":")))
         self.report(
