@@ -10,6 +10,25 @@ from bpy.props import (
 )
 from bpy.types import PropertyGroup
 from .const import *
+from .utils.feature_chamfer_gn_utils import preview_state
+
+
+# 返回 HST 面板动态 Feature Chamfer 主按钮的 label。
+# context: 当前 Blender UI Context。
+def feature_chamfer_gn_button_label(context):
+    source_object = context.active_object
+    if source_object is None or source_object.type != "MESH":
+        return "Feature Chamfer GN Preview"
+    try:
+        state = preview_state(source_object)
+    except Exception as error:
+        print(f"[HST_FEATURE_CHAMFER_UI_STATE_ERROR] object={source_object.name}: {error}")
+        state = FEATURE_CHAMFER_PREVIEW_STALE
+    if state == FEATURE_CHAMFER_PREVIEW_VALID:
+        return "Finalize Feature Chamfer Patch"
+    if state == FEATURE_CHAMFER_PREVIEW_STALE:
+        return "Rebuild Feature Chamfer GN Preview"
+    return "Feature Chamfer GN Preview"
 
 
 def axis_check_toggle(self, context):
@@ -257,6 +276,19 @@ class HST_PT_MainPanel(bpy.types.Panel):
             text="Feature Chamfer (Sharp/Seam)",
             icon="MOD_BEVEL",
         )
+        feature_chamfer_row = box_column.row(align=True)
+        feature_chamfer_operator = feature_chamfer_row.operator(
+            "hst.feature_chamfer_gn",
+            text=feature_chamfer_gn_button_label(context),
+            icon="GEOMETRY_NODES",
+        )
+        feature_chamfer_operator.action = "AUTO"
+        cancel_feature_chamfer_operator = feature_chamfer_row.operator(
+            "hst.feature_chamfer_gn",
+            text="",
+            icon="X",
+        )
+        cancel_feature_chamfer_operator.action = "CANCEL_PREVIEW"
         bevel_setting_row = box_column.row(align=True)
         bevel_setting_row.prop(parameters, "set_bevel_width", text="Width")
         bevel_setting_row.prop(parameters, "set_bevel_segments", text="Segments")

@@ -102,6 +102,21 @@ PRESET_FILE_PATH = ASSET_PATH / "Presets.blend"
 
 WEARMASK_NODE = "GN_HSTWearmaskVertColor"
 VERTEXCOLORBLUR_NODE = "GN_HSTVertexColorBlur"
+FEATURE_CHAMFER_GN_NODE = "GN_HSTFeatureChamferSDFPreview"
+FEATURE_CHAMFER_GN_MODIFIER = "HST Feature Chamfer GN Preview"
+FEATURE_CHAMFER_GN_ASSET_VERSION = 1
+FEATURE_CHAMFER_GN_OWNER_TAG = "hst_feature_chamfer_preview_owner"
+FEATURE_CHAMFER_GN_FINGERPRINT_TAG = "hst_feature_chamfer_source_fingerprint"
+FEATURE_CHAMFER_GN_ASSET_VERSION_TAG = "hst_feature_chamfer_asset_version"
+FEATURE_CHAMFER_GN_STATE_TAG = "hst_feature_chamfer_preview_state"
+FEATURE_CHAMFER_GN_PARAMETERS_TAG = "hst_feature_chamfer_parameters"
+FEATURE_CHAMFER_GN_LAST_ACTION_TAG = "hst_feature_chamfer_last_action"
+FEATURE_CHAMFER_PREVIEW_NONE = "NONE"
+FEATURE_CHAMFER_PREVIEW_VALID = "PREVIEW_VALID"
+FEATURE_CHAMFER_PREVIEW_STALE = "PREVIEW_STALE"
+FEATURE_CHAMFER_ORIGINAL_FACE_ATTRIBUTE = "hst_feature_chamfer_original_face"
+FEATURE_CHAMFER_SOURCE_PATCH_ATTRIBUTE = "hst_feature_chamfer_source_patch_id"
+FEATURE_CHAMFER_GROOVE_FACE_ATTRIBUTE = "hst_feature_chamfer_groove_face"
 LOOKDEV_HDR = "HDR_LookDev_Mid"
 
 # socket

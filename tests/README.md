@@ -41,8 +41,12 @@
 - PATCHED 后 dissolve 为 chamfer n-gon、FACE attribute 标记与原 Mesh custom normal transfer smoke test
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
+- Feature Chamfer GN 发布资产 exact/version import、Preview modifier 幂等与 source fingerprint 回归
+- Feature Chamfer GN 参数 socket 更新、SDF cutter closed-manifold smoke test
+- Feature Chamfer GN topology/live 参数 stale、Finalize fail-closed 与无 Sharp 时 Cancel 生命周期回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
+> 新的 `hst.feature_chamfer_gn` 当前完成 Preview / Cancel Preview；Finalize 在 provenance 与 SDF rail ownership 未达到 100% 前明确 fail-closed，不会生成伪 Patch 结果。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
 > `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
@@ -55,6 +59,13 @@
 - Boolean `solver=EXACT`、`operand_type=COLLECTION` 与 `material_mode=TRANSFER` 可用；marker material 能传入 cutter-derived Faces。
 - 删除 marker Faces 后可由 marker/non-marker 邻接边稳定得到 trim boundaries。
 - 本机未安装 `ctx7` CLI，因此本轮 Blender API 结论以真实 background probe 为证据。
+
+## Feature Chamfer GN Probe
+
+- Blender 5.1.2 实测 artifact：`tests/artifacts/feature_chamfer_gn_probe.json`
+- 发布 cutter 使用原生 `Points to SDF Grid → Grid to Mesh`，fixture 上 closed manifold。
+- 当前原生 Mesh Boolean evaluated result 丢失 original-face attribute，provenance coverage 为 0；Finalize 因此 fail-closed。
+- 统一 probe：设置 `HST_ADDON_ROOT` 后用 Blender background 执行 `tools/probe_feature_chamfer_gn.py`。
 
 ## 运行方式
 

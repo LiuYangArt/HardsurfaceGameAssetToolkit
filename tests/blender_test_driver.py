@@ -1625,6 +1625,176 @@ def test_grouping_true_corner_regression(test_context: TestContext, result: Test
     result.add_detail("Patch pair + degree split every true cube corner")
 
 
+# 调用 Feature Chamfer GN Operator 并返回 source 与 owned modifier。
+# source: 单个 active Mesh；action: Operator action；properties: 其余 RNA 参数。
+def run_feature_chamfer_gn(source, action="PREVIEW", **properties):
+    select_objects(source, [source])
+    result = bpy.ops.hst.feature_chamfer_gn(action=action, **properties)
+    modifier = source.modifiers.get("HST Feature Chamfer GN Preview")
+    return result, modifier
+
+
+# 返回 Node Group input socket display name 对应的 modifier identifier。
+# node_group/name: GeometryNodeTree 与 input display name。
+def node_input_identifier(node_group, name):
+    return next(
+        item.identifier
+        for item in node_group.interface.items_tree
+        if item.item_type == "SOCKET" and item.in_out == "INPUT" and item.name == name
+    )
+
+
+# 验证发布资产 exact/version import 与 Preview modifier 幂等创建。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNPreview")
+    source = make_test_mesh("GNSource", collection)
+    mark_all_edges_sharp(source)
+    source_hash = _mesh_fingerprint(source)
+    first_result, first_modifier = run_feature_chamfer_gn(source)
+    ensure(first_result == {"FINISHED"}, f"First Preview failed: {first_result}")
+    ensure(first_modifier is not None, "Preview modifier was not created")
+    node_group = first_modifier.node_group
+    ensure(node_group.name == test_context.const.FEATURE_CHAMFER_GN_NODE, "Preview asset name is not exact")
+    ensure(node_group.bl_idname == "GeometryNodeTree", "Preview asset has wrong node tree type")
+    ensure(
+        node_group.get(test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION_TAG)
+        == test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION,
+        "Preview asset version mismatch",
+    )
+    second_result, second_modifier = run_feature_chamfer_gn(source, action="PREVIEW")
+    ensure(second_result == {"FINISHED"}, f"Second Preview failed: {second_result}")
+    ensure(first_modifier == second_modifier, "Repeated Preview stacked a modifier")
+    ensure(sum(1 for modifier in source.modifiers if modifier.name == first_modifier.name) == 1, "Duplicate Preview modifier")
+    ensure(_mesh_fingerprint(source) == source_hash, "Preview changed source Mesh data")
+    result.add_detail(f"asset={node_group.name}, modifier={first_modifier.name}")
+
+
+# 验证 Radius 等参数通过 interface identifier 更新，且 cutter 是 closed manifold。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_preview_modifier_parameter_and_cutter_smoke(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNParameters")
+    source = make_test_mesh("GNParameterSource", collection)
+    mark_all_edges_sharp(source)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        radius=0.08,
+        sample_length=0.04,
+        voxel_size=0.025,
+        adaptivity=0.1,
+        show_cutter=True,
+    )
+    ensure(operator_result == {"FINISHED"}, f"Cutter Preview failed: {operator_result}")
+    expected = {
+        "Radius": 0.08,
+        "Sample Length": 0.04,
+        "Voxel Size": 0.025,
+        "Adaptivity": 0.1,
+        "Show Cutter": True,
+    }
+    for name, expected_value in expected.items():
+        identifier = node_input_identifier(modifier.node_group, name)
+        actual_value = modifier[identifier]
+        ensure(abs(actual_value - expected_value) < 1.0e-6, f"{name} was not updated: {actual_value}")
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+    evaluated_mesh = bpy.data.meshes.new_from_object(source.evaluated_get(depsgraph), depsgraph=depsgraph)
+    bm = bmesh.new()
+    bm.from_mesh(evaluated_mesh)
+    boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
+    face_count = len(bm.faces)
+    bm.free()
+    bpy.data.meshes.remove(evaluated_mesh)
+    ensure(face_count > 0, "Cutter Preview is empty")
+    ensure(boundary == 0, f"Cutter boundary edges: {boundary}")
+    ensure(non_manifold == 0, f"Cutter non-manifold edges: {non_manifold}")
+    result.add_detail(f"cutter_faces={face_count}")
+
+
+# 验证 source 改变后状态变 stale，Finalize fail-closed 并保留 Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_rejects_stale_preview(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNStale")
+    source = make_test_mesh("GNStaleSource", collection)
+    mark_all_edges_sharp(source)
+    preview_result, modifier = run_feature_chamfer_gn(source)
+    ensure(preview_result == {"FINISHED"}, f"Preview failed: {preview_result}")
+    source.data.vertices[0].co.x += 0.01
+    source.data.update()
+    finalize_result, kept_modifier = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"CANCELLED"}, "Stale Preview was not rejected")
+    ensure(kept_modifier == modifier, "Stale failure removed Preview")
+    ensure(
+        source.get(test_context.const.FEATURE_CHAMFER_GN_STATE_TAG) == "PREVIEW_STALE",
+        "Stale Preview state was not persisted",
+    )
+
+
+# 验证用户直接修改 Modifier socket 后 Preview 变 stale，必须重新 Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_preview_modifier_parameter_change_marks_stale(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNLiveParameter")
+    source = make_test_mesh("GNLiveParameterSource", collection)
+    mark_all_edges_sharp(source)
+    preview_result, modifier = run_feature_chamfer_gn(source)
+    ensure(preview_result == {"FINISHED"}, f"Preview failed: {preview_result}")
+    radius_identifier = node_input_identifier(modifier.node_group, "Radius")
+    modifier[radius_identifier] = 0.09
+    utils = test_context.addon.utils.feature_chamfer_gn_utils
+    ensure(utils.preview_state(source) == "PREVIEW_STALE", "Live Radius edit did not stale Preview")
+    rebuild_result, rebuilt_modifier = run_feature_chamfer_gn(source, action="AUTO")
+    ensure(rebuild_result == {"FINISHED"}, "AUTO did not rebuild stale Preview")
+    ensure(abs(rebuilt_modifier[radius_identifier] - 0.09) < 1.0e-6, "Rebuild reset live Radius")
+
+
+# 验证 source Sharp 标记被移除后仍能取消本工具拥有的 Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_cancel_stale_preview_without_sharp_edges(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNCancelStale")
+    source = make_test_mesh("GNCancelStaleSource", collection)
+    mark_all_edges_sharp(source)
+    preview_result, modifier = run_feature_chamfer_gn(source)
+    ensure(preview_result == {"FINISHED"} and modifier is not None, "Preview setup failed")
+    sharp_attribute = source.data.attributes.get("sharp_edge")
+    for value in sharp_attribute.data:
+        value.value = False
+    cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
+    ensure(cancel_result == {"FINISHED"}, "Stale Preview Cancel was rejected")
+    ensure(modifier_after_cancel is None, "Stale Preview modifier was not removed")
+
+
+# 验证 source 重命名后 owned Preview 仍可识别并取消。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_preview_owner_survives_source_rename(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("GNRename")
+    source = make_test_mesh("GNRenameSource", collection)
+    mark_all_edges_sharp(source)
+    preview_result, modifier = run_feature_chamfer_gn(source)
+    ensure(preview_result == {"FINISHED"} and modifier is not None, "Preview setup failed")
+    source.name = "GNRenamedSource"
+    cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
+    ensure(cancel_result == {"FINISHED"}, "Renamed source could not cancel Preview")
+    ensure(modifier_after_cancel is None, "Renamed source left owned Preview")
+
+
+# 验证单一 Operator 的 action RNA、Preview 与 Cancel 生命周期。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_single_operator_action_dispatch(test_context: TestContext, result: TestCaseResult):
+    ensure(hasattr(bpy.ops.hst, "feature_chamfer_gn"), "Feature Chamfer GN Operator is not registered")
+    operator_rna = bpy.ops.hst.feature_chamfer_gn.get_rna_type()
+    action_items = {item.identifier for item in operator_rna.properties["action"].enum_items}
+    ensure(action_items == {"AUTO", "PREVIEW", "FINALIZE", "CANCEL_PREVIEW"}, f"Unexpected actions: {action_items}")
+    collection = make_collection("GNDispatch")
+    source = make_test_mesh("GNDispatchSource", collection)
+    mark_all_edges_sharp(source)
+    preview_result, modifier = run_feature_chamfer_gn(source, action="AUTO")
+    ensure(preview_result == {"FINISHED"} and modifier is not None, "AUTO did not create Preview")
+    cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
+    ensure(cancel_result == {"FINISHED"}, "Cancel Preview failed")
+    ensure(modifier_after_cancel is None, "Cancel Preview did not remove owned modifier")
+
+
 def main():
     addon_module = load_addon_module()
     addon_module.register()
@@ -1677,6 +1847,13 @@ def main():
     context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)
+    context.run_case("gn_preview_asset_import_exact_and_idempotent", test_gn_preview_asset_import_exact_and_idempotent)
+    context.run_case("gn_preview_modifier_parameter_and_cutter_smoke", test_gn_preview_modifier_parameter_and_cutter_smoke)
+    context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
+    context.run_case("gn_preview_modifier_parameter_change_marks_stale", test_gn_preview_modifier_parameter_change_marks_stale)
+    context.run_case("gn_cancel_stale_preview_without_sharp_edges", test_gn_cancel_stale_preview_without_sharp_edges)
+    context.run_case("gn_preview_owner_survives_source_rename", test_gn_preview_owner_survives_source_rename)
+    context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
 
     summary = {
         "blender_version": bpy.app.version_string,
