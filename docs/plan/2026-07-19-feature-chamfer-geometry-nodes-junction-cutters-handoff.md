@@ -281,3 +281,31 @@ Pivot 时再评估 local surface offset / Straight Skeleton；不是现在的首
 ## 11. 最终判断
 
 这个方案值得做。它最大化复用现有 GN regular tubes 与 PATCHED 补面，只把 990 条 Sharp Edges 中 12 个 topology junction 作为特殊问题处理。GN 很适合作为快速可视化实验台；生产实现应由插件 FeatureGraph 驱动 Junction-aware CutterBuilder，并保持 GN 与 Python 使用同一组 junction records 和验收指标。
+
+## 12. 2026-07-19 后续实验：SDF Pipe 原型
+
+在用户提供的 `C:/Users/LiuYang/Desktop/pipe-chamfer/geo-node.blend` 上继续通过 Blender MCP 实测。为避免覆盖原文件，实验结果保存为：
+
+```text
+C:/Users/LiuYang/Desktop/pipe-chamfer/geo-node-junction-safe.blend
+```
+
+新增节点分支：
+
+```text
+Mesh to Curve
+→ Curve to Points（Length = 0.01）
+→ Points to SDF Grid（Radius = 0.03，Voxel Size = 0.0075）
+→ Grid to Mesh（Threshold = 0，Adaptivity = 0.05）
+→ Boolean Pro / Geometry B
+```
+
+实测结果：
+
+- SDF cutter：125996 vertices / 268738 edges / 142728 faces；
+- boundary / non-manifold edges：0；
+- connected components：13，与 Sharp FeatureGraph component 数一致；
+- 截图中 degree-3/4 junction 和大转角不再出现 `Curve to Mesh` 的 miter 拉伸，管径由同一 SDF radius 定义；
+- 原 `Curve to Mesh` 节点仍保留在 node group 中，便于 A/B；Group Output 最终恢复为 `Boolean Pro`。
+
+当前限制：`Boolean Pro` 的最终输出仍非流形（17055 non-manifold edges）。这不是 cutter 的开口问题：SDF cutter 自身已 closed manifold。下一阶段应单独诊断该第三方 node group 的 Manifold/Surface 模式与 source Difference，而不是继续改变 pipe 生成分支。
