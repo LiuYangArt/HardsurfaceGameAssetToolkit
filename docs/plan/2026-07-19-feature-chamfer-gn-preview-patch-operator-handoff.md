@@ -9,8 +9,8 @@
 
 ## 0. 2026-07-19 实施记录
 
-- 已完成 Phase 0/1：清理后的原生 GN SDF/Boolean 资产、exact/version loader、单一 Operator 的 Preview/AUTO/Cancel、Object/Modifier 状态、动态面板与 Adjust Last Operation 参数。
-- 已完成 Phase 2 spike：本机 Blender 5.1.2 上 SDF cutter closed manifold；`tests/artifacts/feature_chamfer_gn_probe.json` 显示原生 evaluated Boolean 丢失 original-face attribute，coverage=0，且 SDF junction 合并后没有稳定 per-feature rail owner。
+- 已完成 Phase 0/1 修正：发布资产直接从 fixture 的 `pipecut` 迁移，完整保留 `Boolean Pro` 与 nested Node Groups；只新增公开参数、Cutter switch 和诊断 Named Attributes，不再用原生 Mesh Boolean 替换已验证主链。
+- 已完成 Phase 2 spike：本机 Blender 5.1.2 上 SDF cutter closed manifold。`Boolean Pro` 的 `New Faces` / `Slice Faces` 在当前 fixture 配置均为空，`Boundary Edges` 能保存但包含大量 loose Edge；因此仍不足以直接驱动 Patch，需转向 Python 读取 GN cutter 后做可追踪 Boolean。
 - 因未满足本文 Stop/Go 的 provenance 与 rail ownership Go 条件，Finalize 当前明确 fail-closed；没有用最近距离猜测或旧 Pipe builder 伪造 Patch。
 - 本机没有 Blender 5.0，且发布 `Presets.blend` 暂由 5.1.2 保存；最低版本 5.0 的 asset/API 验收仍是硬门槛。
 - 已加入 4 个 headless cases，覆盖 exact/idempotent import、参数更新/source 不变、cutter manifold、stale reject 与 action/cancel lifecycle。Finalize/Patch/Undo/viewport artifact 测试等待上述 Go 条件。

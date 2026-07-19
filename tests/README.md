@@ -64,8 +64,10 @@
 
 - Blender 5.1.2 实测 artifact：`tests/artifacts/feature_chamfer_gn_probe.json`
 - 发布 cutter 使用原生 `Points to SDF Grid → Grid to Mesh`，fixture 上 closed manifold。
-- 当前原生 Mesh Boolean evaluated result 丢失 original-face attribute，provenance coverage 为 0；Finalize 因此 fail-closed。
+- 发布资产直接迁移 fixture 的 `pipecut + Boolean Pro + nested Node Groups`，不再替换成原生 Mesh Boolean。
+- `Boolean Pro.New Faces / Slice Faces` 在当前 fixture 配置为空；`Boundary Edges` 可保存但主要是 loose Edge，尚不能安全驱动 Patch，Finalize 继续 fail-closed。
 - 统一 probe：设置 `HST_ADDON_ROOT` 后用 Blender background 执行 `tools/probe_feature_chamfer_gn.py`。
+- Boolean Pro 输出专项 probe：`tools/probe_boolean_pro_provenance.py`。
 
 ## 运行方式
 

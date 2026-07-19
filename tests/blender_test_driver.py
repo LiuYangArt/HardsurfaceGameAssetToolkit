@@ -1662,6 +1662,47 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         == test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION,
         "Preview asset version mismatch",
     )
+    ensure(
+        node_group.get("hst_feature_chamfer_asset_source")
+        == "tests/fixtures/feature-chamfer-gn-junction-safe.blend:pipecut",
+        "Preview asset was not migrated from the validated fixture",
+    )
+    boolean_pro_nodes = [
+        node
+        for node in node_group.nodes
+        if node.bl_idname == "GeometryNodeGroup"
+        and node.node_tree is not None
+        and node.node_tree.name.startswith("HST Feature Chamfer :: Boolean Pro")
+    ]
+    ensure(len(boolean_pro_nodes) == 1, "Preview asset does not preserve the fixture Boolean Pro node")
+    ensure(
+        any(group.name.startswith("HST Feature Chamfer :: Float Boolean Edges") for group in bpy.data.node_groups)
+        and any(group.name.startswith("HST Feature Chamfer :: Boolean Solver Select") for group in bpy.data.node_groups),
+        "Boolean Pro nested dependencies were not appended",
+    )
+    boolean_node = boolean_pro_nodes[0]
+    grid_node = node_group.nodes.get("HST Junction-safe Pipe")
+    group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
+    ensure(
+        any(
+            link.from_node == group_input
+            and link.from_socket.name == "Geometry"
+            and link.to_node == boolean_node
+            and link.to_socket.name == "Geometry"
+            for link in node_group.links
+        ),
+        "Fixture source→Boolean Pro link changed",
+    )
+    ensure(
+        any(
+            link.from_node == grid_node
+            and link.from_socket.name == "Mesh"
+            and link.to_node == boolean_node
+            and link.to_socket.name == "Geometry B"
+            for link in node_group.links
+        ),
+        "Fixture SDF cutter→Boolean Pro link changed",
+    )
     second_result, second_modifier = run_feature_chamfer_gn(source, action="PREVIEW")
     ensure(second_result == {"FINISHED"}, f"Second Preview failed: {second_result}")
     ensure(first_modifier == second_modifier, "Repeated Preview stacked a modifier")

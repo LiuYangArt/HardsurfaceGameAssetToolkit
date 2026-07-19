@@ -8,6 +8,8 @@ import bpy
 
 from ..const import FEATURE_CHAMFER_GN_ASSET_VERSION
 from ..const import FEATURE_CHAMFER_GN_ASSET_VERSION_TAG
+from ..const import FEATURE_CHAMFER_GN_ASSET_SOURCE
+from ..const import FEATURE_CHAMFER_GN_ASSET_SOURCE_TAG
 from ..const import FEATURE_CHAMFER_GN_FINGERPRINT_TAG
 from ..const import FEATURE_CHAMFER_GN_LAST_ACTION_TAG
 from ..const import FEATURE_CHAMFER_GN_MODIFIER
@@ -29,6 +31,53 @@ OWNER_VALUE = "HST_FEATURE_CHAMFER_GN_V1"
 
 class FeatureChamferPreviewError(RuntimeError):
     """可诊断的 Feature Chamfer Preview 失败。"""
+
+
+# 验证发布资产确实是 fixture 的 pipecut/Boolean Pro 主链，而非同名替代品。
+# node_group: 待验证 GeometryNodeTree；失败时返回 False。
+def _is_valid_feature_chamfer_asset(node_group):
+    if node_group.get(FEATURE_CHAMFER_GN_ASSET_SOURCE_TAG) != FEATURE_CHAMFER_GN_ASSET_SOURCE:
+        return False
+    boolean_node = node_group.nodes.get("Boolean Pro")
+    grid_node = node_group.nodes.get("HST Junction-safe Pipe")
+    group_input = next(
+        (node for node in node_group.nodes if node.bl_idname == "NodeGroupInput"),
+        None,
+    )
+    if (
+        boolean_node is None
+        or boolean_node.bl_idname != "GeometryNodeGroup"
+        or boolean_node.node_tree is None
+        or not boolean_node.node_tree.name.startswith("HST Feature Chamfer :: Boolean Pro")
+        or grid_node is None
+        or group_input is None
+    ):
+        return False
+    links = node_group.links
+    return (
+        any(
+            link.from_node == group_input
+            and link.from_socket.name == "Geometry"
+            and link.to_node == boolean_node
+            and link.to_socket.name == "Geometry"
+            for link in links
+        )
+        and any(
+            link.from_node == grid_node
+            and link.from_socket.name == "Mesh"
+            and link.to_node == boolean_node
+            and link.to_socket.name == "Geometry B"
+            for link in links
+        )
+        and any(
+            dependency.name.startswith("HST Feature Chamfer :: Float Boolean Edges")
+            for dependency in bpy.data.node_groups
+        )
+        and any(
+            dependency.name.startswith("HST Feature Chamfer :: Boolean Solver Select")
+            for dependency in bpy.data.node_groups
+        )
+    )
 
 
 # 计算 source Mesh topology、位置和 Sharp Edge 的稳定指纹。
@@ -98,6 +147,8 @@ def ensure_feature_chamfer_preview_node_group():
             raise FeatureChamferPreviewError(
                 f"Node Group 名称冲突或版本不匹配：{FEATURE_CHAMFER_GN_NODE}"
             )
+        if not _is_valid_feature_chamfer_asset(node_group):
+            raise FeatureChamferPreviewError("同名 Preview 资产不是受控 fixture/Boolean Pro 主链")
         return node_group
 
     if not PRESET_FILE_PATH.exists():
@@ -116,6 +167,8 @@ def ensure_feature_chamfer_preview_node_group():
         raise FeatureChamferPreviewError("导入的 Preview 资产不是 GeometryNodeTree")
     if node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
         raise FeatureChamferPreviewError("导入的 Preview 资产版本不匹配")
+    if not _is_valid_feature_chamfer_asset(node_group):
+        raise FeatureChamferPreviewError("导入的 Preview 资产缺少 fixture/Boolean Pro 主链")
     return node_group
 
 

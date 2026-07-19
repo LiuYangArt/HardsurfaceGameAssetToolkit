@@ -1,13 +1,36 @@
 # -*- coding: utf-8 -*-
-"""在 Presets.blend 中构建最小化 Feature Chamfer SDF Preview Node Group。"""
+"""从已验证 fixture 迁移 Feature Chamfer GN 资产，保留 Boolean Pro 主链。"""
+
+import os
+from pathlib import Path
 
 import bpy
 
 
 NODE_GROUP_NAME = "GN_HSTFeatureChamferSDFPreview"
+SOURCE_NODE_GROUP_NAME = "pipecut"
 ASSET_VERSION_PROPERTY = "hst_feature_chamfer_asset_version"
-ASSET_VERSION = 1
-ORIGINAL_FACE_ATTRIBUTE = "hst_feature_chamfer_original_face"
+ASSET_SOURCE_PROPERTY = "hst_feature_chamfer_asset_source"
+ASSET_VERSION = 2
+GROOVE_FACE_ATTRIBUTE = "hst_feature_chamfer_groove_face"
+BOUNDARY_EDGE_ATTRIBUTE = "hst_feature_chamfer_boundary_edge"
+DEPENDENCY_PREFIX = "HST Feature Chamfer :: "
+FIXTURE_DEPENDENCY_NAMES = {
+    "3 Plane Intersection",
+    "Boolean Pro",
+    "Boolean Solver Select",
+    "Boundary Edge",
+    "Curve Point Angle",
+    "Float Boolean Edges",
+    "Is Mesh Manifold",
+    "MultiObjectInput",
+    "Offset Face Corners",
+    "Offset Mesh",
+    "Opposite Face Corners",
+    "Sharp Edges",
+    "Vector Plane Intersection",
+    "View Normals",
+}
 
 
 # 创建一个 interface socket 并设置默认值与限制。
@@ -25,16 +48,10 @@ def _new_socket(node_group, name, in_out, socket_type, default=None, minimum=Non
     return socket
 
 
-# 使用 Blender 原生 nodes 构建 SDF cutter 与 Boolean/Cutter preview switch。
-# 无参数；返回新 GeometryNodeTree。
-def build_node_group():
-    existing = bpy.data.node_groups.get(NODE_GROUP_NAME)
-    if existing is not None:
-        bpy.data.node_groups.remove(existing)
-    node_group = bpy.data.node_groups.new(NODE_GROUP_NAME, "GeometryNodeTree")
-    node_group.use_fake_user = True
-    node_group[ASSET_VERSION_PROPERTY] = ASSET_VERSION
-
+# 清空 fixture 只有 Geometry I/O 的 interface，改为正式公开参数。
+# node_group: 从 fixture 载入的 pipecut GeometryNodeTree。
+def _rebuild_interface(node_group):
+    node_group.interface.clear()
     _new_socket(node_group, "Geometry", "INPUT", "NodeSocketGeometry")
     _new_socket(node_group, "Radius", "INPUT", "NodeSocketFloat", 0.03, 0.00001)
     _new_socket(node_group, "Sample Length", "INPUT", "NodeSocketFloat", 0.01, 0.00001)
@@ -43,47 +60,121 @@ def build_node_group():
     _new_socket(node_group, "Show Cutter", "INPUT", "NodeSocketBool", False)
     _new_socket(node_group, "Geometry", "OUTPUT", "NodeSocketGeometry")
 
+
+# 在不改变 fixture SDF/Boolean Pro 主链的前提下，公开参数并保存诊断 selection。
+# node_group: 从 fixture 迁移的 pipecut。
+def _configure_node_group(node_group):
     nodes = node_group.nodes
     links = node_group.links
-    group_input = nodes.new("NodeGroupInput")
-    group_output = nodes.new("NodeGroupOutput")
-    named_attribute = nodes.new("GeometryNodeInputNamedAttribute")
-    named_attribute.data_type = "BOOLEAN"
-    named_attribute.inputs["Name"].default_value = "sharp_edge"
-    mesh_to_curve = nodes.new("GeometryNodeMeshToCurve")
-    curve_to_points = nodes.new("GeometryNodeCurveToPoints")
-    curve_to_points.mode = "LENGTH"
-    points_to_sdf = nodes.new("GeometryNodePointsToSDFGrid")
-    grid_to_mesh = nodes.new("GeometryNodeGridToMesh")
-    grid_to_mesh.inputs["Threshold"].default_value = 0.0
-    store_original_face = nodes.new("GeometryNodeStoreNamedAttribute")
-    store_original_face.data_type = "BOOLEAN"
-    store_original_face.domain = "FACE"
-    store_original_face.inputs["Name"].default_value = ORIGINAL_FACE_ATTRIBUTE
-    store_original_face.inputs["Value"].default_value = True
-    mesh_boolean = nodes.new("GeometryNodeMeshBoolean")
-    mesh_boolean.operation = "DIFFERENCE"
+    group_input = next(node for node in nodes if node.bl_idname == "NodeGroupInput")
+    group_output = next(node for node in nodes if node.bl_idname == "NodeGroupOutput")
+    boolean_node = nodes["Boolean Pro"]
+    sample_node = nodes["HST Pipe Samples"]
+    sdf_node = nodes["HST Pipe SDF"]
+    grid_node = nodes["HST Junction-safe Pipe"]
+
+    source_geometry_targets = [
+        link.to_socket
+        for link in links
+        if link.from_node == group_input and link.from_socket.name == "Geometry"
+    ]
+    _rebuild_interface(node_group)
+    for target_socket in source_geometry_targets:
+        links.new(group_input.outputs["Geometry"], target_socket)
+
+    links.new(group_input.outputs["Sample Length"], sample_node.inputs["Length"])
+    links.new(group_input.outputs["Radius"], sdf_node.inputs["Radius"])
+    links.new(group_input.outputs["Voxel Size"], sdf_node.inputs["Voxel Size"])
+    links.new(group_input.outputs["Adaptivity"], grid_node.inputs["Adaptivity"])
+
+    store_groove = nodes.new("GeometryNodeStoreNamedAttribute")
+    store_groove.name = "HST Groove Face Provenance"
+    store_groove.data_type = "BOOLEAN"
+    store_groove.domain = "FACE"
+    store_groove.inputs["Name"].default_value = GROOVE_FACE_ATTRIBUTE
+    store_boundary = nodes.new("GeometryNodeStoreNamedAttribute")
+    store_boundary.name = "HST Boolean Boundary Evidence"
+    store_boundary.data_type = "BOOLEAN"
+    store_boundary.domain = "EDGE"
+    store_boundary.inputs["Name"].default_value = BOUNDARY_EDGE_ATTRIBUTE
     preview_switch = nodes.new("GeometryNodeSwitch")
+    preview_switch.name = "HST Boolean Result or Cutter"
     preview_switch.input_type = "GEOMETRY"
 
-    links.new(group_input.outputs["Geometry"], mesh_to_curve.inputs["Mesh"])
-    links.new(named_attribute.outputs["Attribute"], mesh_to_curve.inputs["Selection"])
-    links.new(mesh_to_curve.outputs["Curve"], curve_to_points.inputs["Curve"])
-    links.new(group_input.outputs["Sample Length"], curve_to_points.inputs["Length"])
-    links.new(curve_to_points.outputs["Points"], points_to_sdf.inputs["Points"])
-    links.new(group_input.outputs["Radius"], points_to_sdf.inputs["Radius"])
-    links.new(group_input.outputs["Voxel Size"], points_to_sdf.inputs["Voxel Size"])
-    links.new(points_to_sdf.outputs["SDF Grid"], grid_to_mesh.inputs["Grid"])
-    links.new(group_input.outputs["Adaptivity"], grid_to_mesh.inputs["Adaptivity"])
-    links.new(group_input.outputs["Geometry"], store_original_face.inputs["Geometry"])
-    links.new(store_original_face.outputs["Geometry"], mesh_boolean.inputs["Mesh 1"])
-    links.new(grid_to_mesh.outputs["Mesh"], mesh_boolean.inputs["Mesh 2"])
+    links.new(boolean_node.outputs["Geometry"], store_groove.inputs["Geometry"])
+    links.new(boolean_node.outputs["New Faces"], store_groove.inputs["Value"])
+    links.new(store_groove.outputs["Geometry"], store_boundary.inputs["Geometry"])
+    links.new(boolean_node.outputs["Boundary Edges"], store_boundary.inputs["Value"])
     links.new(group_input.outputs["Show Cutter"], preview_switch.inputs["Switch"])
-    links.new(mesh_boolean.outputs["Mesh"], preview_switch.inputs["False"])
-    links.new(grid_to_mesh.outputs["Mesh"], preview_switch.inputs["True"])
+    links.new(store_boundary.outputs["Geometry"], preview_switch.inputs["False"])
+    links.new(grid_node.outputs["Mesh"], preview_switch.inputs["True"])
     links.new(preview_switch.outputs["Output"], group_output.inputs["Geometry"])
-    return node_group
+
+    node_group.name = NODE_GROUP_NAME
+    node_group.use_fake_user = True
+    node_group[ASSET_VERSION_PROPERTY] = ASSET_VERSION
+    node_group[ASSET_SOURCE_PROPERTY] = "tests/fixtures/feature-chamfer-gn-junction-safe.blend:pipecut"
 
 
-build_node_group()
-bpy.ops.wm.save_as_mainfile(filepath=bpy.data.filepath)
+# 给 fixture 迁入的 nested Node Groups 加受控前缀，避免覆盖用户同名资产。
+# root_group: 已配置的发布根 Node Group。
+def _namespace_dependencies(root_group):
+    pending = [root_group]
+    dependencies = set()
+    while pending:
+        node_group = pending.pop()
+        for node in node_group.nodes:
+            dependency = getattr(node, "node_tree", None)
+            if dependency is None or dependency == root_group or dependency in dependencies:
+                continue
+            dependencies.add(dependency)
+            pending.append(dependency)
+    for dependency in dependencies:
+        base_name = dependency.name
+        if base_name.startswith(DEPENDENCY_PREFIX):
+            base_name = base_name.removeprefix(DEPENDENCY_PREFIX)
+        if base_name.endswith(".001"):
+            base_name = base_name[:-4]
+        dependency.name = DEPENDENCY_PREFIX + base_name
+        dependency.use_fake_user = True
+        dependency[ASSET_SOURCE_PROPERTY] = (
+            "tests/fixtures/feature-chamfer-gn-junction-safe.blend:pipecut"
+        )
+
+
+# 从 fixture append 已验证 pipecut，依赖的 Boolean Pro/nested groups 由 Blender 一并迁移。
+# fixture_path/preset_path: 输入 fixture 与目标 Presets.blend。
+def build_asset(fixture_path, preset_path):
+    bpy.ops.wm.open_mainfile(filepath=str(preset_path))
+    for existing in list(bpy.data.node_groups):
+        base_name = existing.name.removeprefix(DEPENDENCY_PREFIX)
+        if base_name.endswith(".001"):
+            base_name = base_name[:-4]
+        owned_dependency = existing.name.startswith(DEPENDENCY_PREFIX) and existing.get(
+            ASSET_SOURCE_PROPERTY
+        ) == "tests/fixtures/feature-chamfer-gn-junction-safe.blend:pipecut"
+        legacy_migration_dependency = base_name in FIXTURE_DEPENDENCY_NAMES
+        if owned_dependency or legacy_migration_dependency:
+            bpy.data.node_groups.remove(existing)
+    for node_group_name in (NODE_GROUP_NAME, SOURCE_NODE_GROUP_NAME):
+        existing = bpy.data.node_groups.get(node_group_name)
+        if existing is not None:
+            bpy.data.node_groups.remove(existing)
+    bpy.ops.wm.append(
+        filepath=str(fixture_path),
+        directory=str(fixture_path / "NodeTree"),
+        filename=SOURCE_NODE_GROUP_NAME,
+    )
+    node_group = bpy.data.node_groups.get(SOURCE_NODE_GROUP_NAME)
+    if node_group is None:
+        raise RuntimeError(f"Fixture missing NodeTree: {SOURCE_NODE_GROUP_NAME}")
+    _configure_node_group(node_group)
+    _namespace_dependencies(node_group)
+    bpy.ops.wm.save_as_mainfile(filepath=str(preset_path))
+
+
+repo_root = Path(os.environ.get("HST_ADDON_ROOT", Path(__file__).resolve().parent.parent))
+build_asset(
+    repo_root / "tests" / "fixtures" / "feature-chamfer-gn-junction-safe.blend",
+    repo_root / "preset_files" / "Presets.blend",
+)
