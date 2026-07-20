@@ -300,7 +300,13 @@ Blender: C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe
 - artifact：`tests/artifacts/feature_chamfer_rail_phase2_resolution4_probe.json`；`graph_alignment=true`，source fingerprint unchanged，`phase2_go=false`；
 - Task 4.1 加入 owner-patch 小步 Surface walk、intrinsic offset、projection/continuity diagnostics，以及 curved Surface 上 intrinsic=1.200 / chord=1.130 的区分回归；Blender 5.1.2 完整回归 75/75 passed；
 - 真实文件复验仍未过门槛：51 spans 中仅 17 paired / 15 guard-valid（33.3% coverage、29.4% guarded coverage）；失败已细分为 walk 无法完成、owner-patch continuity 与 cyclic self-intersection，不再误把 3D 欧氏距离当 intrinsic radius；
-- Phase 2 继续 `STOP`。下一步需基于 Surface Patch adjacency 的 owner Face walk（不能继续依赖全 Patch nearest）后重测；不实现 Strip/Junction/Patch。
+- Task 4.2 将全 Patch nearest 替换为 Surface Patch adjacency 驱动的 owner Face walk，并为失败 span 记录 failed sample/source Edge、为成功 rail 记录左右 owner Face path；平面/折叠曲面与非相邻同 Patch 防跳转回归均通过；
+- 真实 Rail probe 当前为 51 spans 中 10 paired / 9 guard-valid（19.6% coverage、17.6% guarded coverage），唯一已配对 guard failure 为 group 9 / span 2 的 `SAMPLE_DENSITY_EXCEEDED`，其余失败保持逐 span `OWNER_FACE_WALK_FAILED` 诊断；source fingerprint 未变化；
+- Task 4.2 cutter-driven pivot 已改为对每根正式四边 Curve Pipe 单独执行 Exact Difference，并从 `original Face ↔ cutter-derived Face` 邻接边直接提取 Surface Patch 交线；ownership backend 为 `CUTTER_FACE_COMPONENT_PROVENANCE`，不再以 nearest Pipe 猜 owner；
+- 真实 cutter-driven probe 当前为 51 spans 中 11 paired / 0 guard-valid（21.6% coverage、0% guarded coverage）；所有 23 根 Pipe 都提取到逐 Patch 交线，但当前 chain/span 切分与 guard 仍沿用旧 Boundary rail 假设，出现 sample density、self-intersection、radius tolerance 失败；
+- cutter-driven 交线现已按最近 Feature Edge ownership 裁成 span-local runs，并以 `1.5 * radius` 最大边长重采样；真实 probe 提升到 51 spans 中 34 paired / 5 guard-valid（66.7% coverage、9.8% guarded coverage），sample-density failure 已消失；
+- 剩余 17 个 unresolved spans 集中在 group 3/4/18–22；29 个 guard failure 以 radius tolerance 为主，另有 cyclic self-intersection/ordering。当前证据说明 span 裁切方向有效，但还不能进入 Patch；
+- Phase 2 继续 `STOP`。下一步只允许纠正交线的中心线参数排序与 width guard 语义，并补 terminal 短 span 的裁切边界；不实现 Strip/Junction/Patch。
 
 ## 禁止事项
 

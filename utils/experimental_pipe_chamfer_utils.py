@@ -1406,16 +1406,25 @@ def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
 def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_index):
     vertices = []
     faces = []
+    face_pipe_ids = []
     for pipe in pipes:
         vertex_offset = len(vertices)
         vertices.extend(vertex.co.copy() for vertex in pipe.data.vertices)
-        faces.extend(
-            tuple(vertex_offset + vertex_index for vertex_index in polygon.vertices)
-            for polygon in pipe.data.polygons
-        )
+        for polygon in pipe.data.polygons:
+            faces.append(
+                tuple(vertex_offset + vertex_index for vertex_index in polygon.vertices)
+            )
+            face_pipe_ids.append(int(pipe[PIPE_ID_TAG]))
     mesh = bpy.data.meshes.new(f"{source_object.name}{CUTTER_OBJECT_SUFFIX}_{cutter_index}")
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
+    pipe_id_attribute = mesh.attributes.new(
+        "hst_pipe_component_id",
+        type="INT",
+        domain="FACE",
+    )
+    for polygon, pipe_id in zip(mesh.polygons, face_pipe_ids):
+        pipe_id_attribute.data[polygon.index].value = pipe_id
     cutter = bpy.data.objects.new(mesh.name, mesh)
     cutter.matrix_world = source_object.matrix_world.copy()
     cutter[OUTPUT_TAG] = source_object.name
@@ -1892,24 +1901,102 @@ def _pipe_boundary_rails(bm, groups, pipe_trees, pipe_bounds, radius):
     return rails
 
 
+# 为每根正式 Cutter Pipe 单独执行 Difference，并以 Boolean 生成槽面邻接关系提取真实交线。
+# source_object/groups/pipes/radius: 原 Mesh、Feature groups、正式四边 Cutter Pipes 与 radius；返回 Pipe/Patch rails。
+def _cutter_intersection_rails(source_object, groups, pipes, radius):
+    del radius
+    source_patch_ids = _source_face_patch_ids(source_object)
+    group_by_pipe = {group["pipe_id"]: group for group in groups}
+    rails = {}
+    diagnostics = []
+    for pipe in pipes:
+        pipe_id = int(pipe[PIPE_ID_TAG])
+        group = group_by_pipe[pipe_id]
+        probe_mesh = source_object.data.copy()
+        probe = bpy.data.objects.new(
+            f"{source_object.name}_RailIntersectionProbe_{pipe_id}",
+            probe_mesh,
+        )
+        probe.matrix_world = source_object.matrix_world.copy()
+        bpy.context.scene.collection.objects.link(probe)
+        try:
+            _mark_original_faces(probe, source_patch_ids)
+            modifier = probe.modifiers.new("HST Rail Intersection Difference", type="BOOLEAN")
+            modifier.operation = "DIFFERENCE"
+            modifier.solver = "EXACT"
+            modifier.operand_type = "OBJECT"
+            modifier.object = pipe
+            with bpy.context.temp_override(
+                object=probe,
+                active_object=probe,
+                selected_objects=[probe],
+                selected_editable_objects=[probe],
+            ):
+                bpy.ops.object.modifier_apply(modifier=modifier.name)
+            probe_bmesh = bmesh.new()
+            probe_bmesh.from_mesh(probe.data)
+            probe_bmesh.edges.ensure_lookup_table()
+            probe_bmesh.faces.ensure_lookup_table()
+            original_layer = probe_bmesh.faces.layers.int.get(ORIGINAL_FACE_ATTRIBUTE)
+            if original_layer is None:
+                original_layer = probe_bmesh.faces.layers.bool.get(ORIGINAL_FACE_ATTRIBUTE)
+            patch_layer = probe_bmesh.faces.layers.int.get(SOURCE_PATCH_ID_ATTRIBUTE)
+            if original_layer is None or patch_layer is None:
+                probe_bmesh.free()
+                continue
+            edges_by_patch = {}
+            for edge in probe_bmesh.edges:
+                original_faces = [face for face in edge.link_faces if bool(face[original_layer])]
+                cutter_faces = [face for face in edge.link_faces if not bool(face[original_layer])]
+                if len(original_faces) != 1 or not cutter_faces:
+                    continue
+                patch_id = original_faces[0][patch_layer]
+                if patch_id not in group["patch_pair"]:
+                    continue
+                edges_by_patch.setdefault(patch_id, []).append(edge)
+            for patch_id, edges in edges_by_patch.items():
+                rails.setdefault(pipe_id, {})[patch_id] = [
+                    {
+                        "coordinates": [vertex.co.copy() for vertex in chain["vertices"]],
+                        "is_cyclic": chain["is_cyclic"],
+                    }
+                    for chain in _ordered_edge_chains(edges)
+                ]
+            diagnostics.append(
+                {
+                    "pipe_id": pipe_id,
+                    "patch_edge_counts": {
+                        patch_id: len(edges)
+                        for patch_id, edges in edges_by_patch.items()
+                    },
+                }
+            )
+            probe_bmesh.free()
+        finally:
+            bpy.data.objects.remove(probe, do_unlink=True)
+            if probe_mesh.users == 0:
+                bpy.data.meshes.remove(probe_mesh)
+    return rails, diagnostics
+
+
 # 计算两个 open/cyclic rail chains 的配对成本；成本主要取端点距离和中心距离。
 # chain_a/chain_b: 同一 Pipe 两侧的候选 rail chain；返回可排序 score。
 def _rail_pair_score(chain_a, chain_b):
-    vertices_a = chain_a["vertices"]
-    vertices_b = chain_b["vertices"]
-    center_a = sum((vertex.co for vertex in vertices_a), Vector()) / len(vertices_a)
-    center_b = sum((vertex.co for vertex in vertices_b), Vector()) / len(vertices_b)
-    count_ratio = max(len(vertices_a), len(vertices_b)) / min(len(vertices_a), len(vertices_b))
+    coordinates_a = chain_a.get("coordinates") or [vertex.co for vertex in chain_a["vertices"]]
+    coordinates_b = chain_b.get("coordinates") or [vertex.co for vertex in chain_b["vertices"]]
+    center_a = sum(coordinates_a, Vector()) / len(coordinates_a)
+    center_b = sum(coordinates_b, Vector()) / len(coordinates_b)
+    count_ratio = max(len(coordinates_a), len(coordinates_b)) / min(len(coordinates_a), len(coordinates_b))
     if chain_a["is_cyclic"] or chain_b["is_cyclic"]:
         endpoint_cost = (center_a - center_b).length
     else:
         direct = (
-            (vertices_a[0].co - vertices_b[0].co).length
-            + (vertices_a[-1].co - vertices_b[-1].co).length
+            (coordinates_a[0] - coordinates_b[0]).length
+            + (coordinates_a[-1] - coordinates_b[-1]).length
         ) * 0.5
         reversed_cost = (
-            (vertices_a[0].co - vertices_b[-1].co).length
-            + (vertices_a[-1].co - vertices_b[0].co).length
+            (coordinates_a[0] - coordinates_b[-1]).length
+            + (coordinates_a[-1] - coordinates_b[0]).length
         ) * 0.5
         endpoint_cost = min(direct, reversed_cost)
     return endpoint_cost + (center_a - center_b).length * 0.25 + (count_ratio - 1.0)
@@ -1940,7 +2027,7 @@ def _coordinate_parameters(coordinates, cyclic):
 # vertices/cyclic: 有序 rail vertices 与闭环标记；返回与 vertices 等长的参数。
 def _rail_parameters(vertices, cyclic):
     return _coordinate_parameters(
-        [vertex.co for vertex in vertices],
+        [vertex.co if hasattr(vertex, "co") else vertex for vertex in vertices],
         cyclic,
     )
 
@@ -2087,8 +2174,8 @@ def _rail_vertex_at_parameter(vertices, parameters, parameter):
 # 对齐 open/cyclic rail B 的方向和 cyclic offset，避免端点或 seam 错配。
 # chain_left/right: 待配对 Boundary chains；返回 aligned right vertices。
 def _aligned_rail_vertices(chain_left, chain_right):
-    left_vertices = chain_left["vertices"]
-    right_vertices = chain_right["vertices"]
+    left_vertices = chain_left.get("coordinates") or chain_left["vertices"]
+    right_vertices = chain_right.get("coordinates") or chain_right["vertices"]
     candidates = []
     if chain_left["is_cyclic"] and chain_right["is_cyclic"]:
         for candidate in (list(right_vertices), list(reversed(right_vertices))):
@@ -2102,8 +2189,12 @@ def _aligned_rail_vertices(chain_left, chain_right):
         candidate_u = _rail_parameters(candidate, chain_right["is_cyclic"])
         cost = sum(
             (
-                left_vertex.co
-                - _rail_vertex_at_parameter(candidate, candidate_u, parameter).co
+                (left_vertex.co if hasattr(left_vertex, "co") else left_vertex)
+                - (
+                    _rail_vertex_at_parameter(candidate, candidate_u, parameter).co
+                    if hasattr(_rail_vertex_at_parameter(candidate, candidate_u, parameter), "co")
+                    else _rail_vertex_at_parameter(candidate, candidate_u, parameter)
+                )
             ).length_squared
             for left_vertex, parameter in zip(left_vertices, left_u)
         )
@@ -2121,7 +2212,7 @@ def _boolean_rail_pair_record(
     chain_right,
     radius,
 ):
-    left_vertices = chain_left["vertices"]
+    left_vertices = chain_left.get("coordinates") or chain_left["vertices"]
     right_vertices = _aligned_rail_vertices(chain_left, chain_right)
     left_u = _rail_parameters(left_vertices, chain_left["is_cyclic"])
     right_u = _rail_parameters(right_vertices, chain_right["is_cyclic"])
@@ -2135,14 +2226,14 @@ def _boolean_rail_pair_record(
             max(
                 abs(
                     _point_to_feature_group_distance(
-                        left_vertices[index].co,
+                        left_vertices[index].co if hasattr(left_vertices[index], "co") else left_vertices[index],
                         group,
                     )
                     - radius
                 ),
                 abs(
                     _point_to_feature_group_distance(
-                        right_vertices[nearest_index].co,
+                        right_vertices[nearest_index].co if hasattr(right_vertices[nearest_index], "co") else right_vertices[nearest_index],
                         group,
                     )
                     - radius
@@ -2156,14 +2247,14 @@ def _boolean_rail_pair_record(
         "source_edge_ids": span["source_edge_ids"],
         "left_patch_id": span["patch_pair"][0],
         "right_patch_id": span["patch_pair"][1],
-        "rail_left": [tuple(vertex.co) for vertex in left_vertices],
-        "rail_right": [tuple(vertex.co) for vertex in right_vertices],
+        "rail_left": [tuple(vertex.co if hasattr(vertex, "co") else vertex) for vertex in left_vertices],
+        "rail_right": [tuple(vertex.co if hasattr(vertex, "co") else vertex) for vertex in right_vertices],
         "u": left_u,
         "width_error": radial_error_samples,
         "ownership_confidence": 1.0,
         "cyclic": chain_left["is_cyclic"] and chain_right["is_cyclic"],
-        "left_edge_count": len(chain_left["edges"]),
-        "right_edge_count": len(chain_right["edges"]),
+        "left_edge_count": len(chain_left.get("edges", left_vertices)),
+        "right_edge_count": len(chain_right.get("edges", right_vertices)),
     }
     record["geometry_guard"] = _rail_pair_geometry_guard(
         record,
@@ -2219,6 +2310,92 @@ def _group_patch_pair_spans(group):
     return spans
 
 
+# 返回交线点最近的 Feature Edge offset 与距离。
+# point/group: Cutter 交线坐标与含 ordered points/cyclic 的 Feature group。
+def _nearest_feature_edge_offset(point, group):
+    best = None
+    point_count = len(group["points"])
+    for edge_offset in range(len(group["edge_indices"])):
+        start = group["points"][edge_offset]
+        end = group["points"][(edge_offset + 1) % point_count]
+        closest, factor = geometry.intersect_point_line(point, start, end)
+        factor = max(0.0, min(1.0, factor))
+        closest = start.lerp(end, factor)
+        candidate = ((point - closest).length_squared, edge_offset, factor)
+        if best is None or candidate < best:
+            best = candidate
+    return best[1], math.sqrt(best[0]), best[2]
+
+
+# 把有序 Cutter 交线按最近 Feature Edge owner 切成当前 span 的连续 runs。
+# chain/group/span: 原始交线、Feature group 与目标 ownership span；返回局部 chain records。
+def _clip_intersection_chain_to_span(chain, group, span):
+    coordinates = [Vector(point) for point in chain["coordinates"]]
+    if not coordinates:
+        return []
+    owned_offsets = set(span["edge_offsets"])
+    ownership = [
+        _nearest_feature_edge_offset(point, group)[0] in owned_offsets
+        for point in coordinates
+    ]
+    if all(ownership):
+        return [
+            {
+                "coordinates": coordinates,
+                "is_cyclic": bool(chain["is_cyclic"]),
+            }
+        ]
+    if chain["is_cyclic"] and any(ownership):
+        first_unowned = ownership.index(False)
+        offset = first_unowned + 1
+        coordinates = coordinates[offset:] + coordinates[:offset]
+        ownership = ownership[offset:] + ownership[:offset]
+    runs = []
+    current = []
+    for point, is_owned in zip(coordinates, ownership):
+        if is_owned:
+            current.append(point)
+        elif current:
+            if len(current) >= 2:
+                runs.append({"coordinates": current, "is_cyclic": False})
+            current = []
+    if len(current) >= 2:
+        runs.append({"coordinates": current, "is_cyclic": False})
+    return runs
+
+
+# 按最大 segment length 线性重采样 Cutter 交线，保持 open endpoints/cyclic seam。
+# chain/max_length: 待重采样 chain 与最大采样边长；返回新的 chain record。
+def _resample_intersection_chain(chain, max_length):
+    coordinates = chain["coordinates"]
+    cyclic = chain["is_cyclic"]
+    segment_count = len(coordinates) if cyclic else len(coordinates) - 1
+    resampled = []
+    for index in range(segment_count):
+        start = coordinates[index]
+        end = coordinates[(index + 1) % len(coordinates)]
+        divisions = max(1, int(math.ceil((end - start).length / max_length)))
+        if not resampled:
+            resampled.append(start.copy())
+        for step in range(1, divisions + 1):
+            if cyclic and index == segment_count - 1 and step == divisions:
+                continue
+            resampled.append(start.lerp(end, step / divisions))
+    return {"coordinates": resampled, "is_cyclic": cyclic}
+
+
+# 为目标 Feature span 生成已裁切且满足采样密度的 Cutter 交线候选。
+# chains/group/span/radius: 原始交线、Feature group、目标 span 与 Chamfer radius。
+def _span_intersection_chains(chains, group, span, radius):
+    max_length = max(radius * 1.5, 1.0e-4)
+    return [
+        _resample_intersection_chain(local_chain, max_length)
+        for chain in chains
+        for local_chain in _clip_intersection_chain_to_span(chain, group, span)
+        if len(local_chain["coordinates"]) >= 2
+    ]
+
+
 # 为 span 选择局部 Boundary chain pair；拒绝明显超出 span local bounds 的全局 chains。
 # span/group/chains/radius: ownership span、Feature group、候选 rails 与目标 radius。
 def _span_chain_candidates(span, group, chains_left, chains_right, radius):
@@ -2240,8 +2417,10 @@ def _span_chain_candidates(span, group, chains_left, chains_right, radius):
 
     def chain_is_local(chain):
         return all(
-            minimum[axis] - margin <= vertex.co[axis] <= maximum[axis] + margin
-            for vertex in chain["vertices"]
+            minimum[axis] - margin
+            <= (vertex.co if hasattr(vertex, "co") else vertex)[axis]
+            <= maximum[axis] + margin
+            for vertex in (chain.get("coordinates") or chain["vertices"])
             for axis in range(3)
         )
 
@@ -2253,7 +2432,11 @@ def _span_chain_candidates(span, group, chains_left, chains_right, radius):
         )
         for index_left, chain_left in enumerate(chains_left)
         for index_right, chain_right in enumerate(chains_right)
-        if _rail_pair_is_valid(chain_left, chain_right)
+        if (
+            "coordinates" in chain_left
+            and "coordinates" in chain_right
+            or _rail_pair_is_valid(chain_left, chain_right)
+        )
         and chain_is_local(chain_left)
         and chain_is_local(chain_right)
     )
@@ -2267,14 +2450,17 @@ def _extract_boolean_rail_pair_records(
     pipe_trees,
     pipe_bounds,
     radius,
+    rails=None,
+    ownership_backend="PROXIMITY_NEAREST_PIPE",
 ):
-    rails = _pipe_boundary_rails(
-        bm,
-        groups,
-        pipe_trees,
-        pipe_bounds,
-        radius,
-    )
+    if rails is None:
+        rails = _pipe_boundary_rails(
+            bm,
+            groups,
+            pipe_trees,
+            pipe_bounds,
+            radius,
+        )
     records = []
     unresolved_spans = []
     total_span_count = 0
@@ -2290,6 +2476,19 @@ def _extract_boolean_rail_pair_records(
                 patch_right,
                 [],
             )
+            if ownership_backend == "CUTTER_FACE_COMPONENT_PROVENANCE":
+                chains_left = _span_intersection_chains(
+                    chains_left,
+                    group,
+                    span,
+                    radius,
+                )
+                chains_right = _span_intersection_chains(
+                    chains_right,
+                    group,
+                    span,
+                    radius,
+                )
             candidates = _span_chain_candidates(
                 span,
                 group,
@@ -2307,15 +2506,15 @@ def _extract_boolean_rail_pair_records(
                 )
                 continue
             _, index_left, index_right = candidates[0]
-            records.append(
-                _boolean_rail_pair_record(
+            record = _boolean_rail_pair_record(
                     group,
                     span,
                     chains_left[index_left],
                     chains_right[index_right],
                     radius,
                 )
-            )
+            record["ownership_backend"] = ownership_backend
+            records.append(record)
     valid_records = [
         record for record in records if record["geometry_guard"]["status"] == "PASS"
     ]
@@ -2330,6 +2529,7 @@ def _extract_boolean_rail_pair_records(
     ]
     summary = {
         "backend": "BOOLEAN_INTERSECTION_ORACLE",
+        "ownership_backend": ownership_backend,
         "group_count": len(groups),
         "span_count": total_span_count,
         "paired_span_count": len(records),
@@ -2345,13 +2545,112 @@ def _extract_boolean_rail_pair_records(
     return records, summary
 
 
-# 把点沿 owner Face 切平面偏移，并在同一 Surface Patch 上做受限连续投影。
-# point/tangent/face/patch_tree/radius: Feature sample、切线、owner Face、Patch BVH 与目标偏移；previous: 上一投影诊断。
+# 返回 2D 向量叉积标量，用于 owner Face 平面内的 ray/Edge 相交。
+# vector_a/vector_b: Face 主轴投影后的二维向量。
+def _cross_2d(vector_a, vector_b):
+    return vector_a[0] * vector_b[1] - vector_a[1] * vector_b[0]
+
+
+# 把 3D 点投影到 owner Face 法线主轴对应的稳定二维平面。
+# point/normal: 待投影坐标与 owner Face normal；返回二维坐标。
+def _project_to_face_2d(point, normal):
+    dropped_axis = max(range(3), key=lambda axis: abs(normal[axis]))
+    axes = [axis for axis in range(3) if axis != dropped_axis]
+    return Vector((point[axes[0]], point[axes[1]]))
+
+
+# 查找 owner Face 内从 point 沿 direction 首次穿过的 Edge。
+# point/direction/face: Face 平面内的起点、单位方向与当前 owner Face；excluded_edge: 刚进入 Face 的 Edge。
+def _next_owner_face_crossing(point, direction, face, excluded_edge=None):
+    point_2d = _project_to_face_2d(point, face.normal)
+    direction_2d = _project_to_face_2d(direction, face.normal)
+    tolerance = 1.0e-8
+    candidates = []
+    for edge in face.edges:
+        if edge is excluded_edge:
+            continue
+        edge_start = edge.verts[0].co
+        edge_end = edge.verts[1].co
+        edge_start_2d = _project_to_face_2d(edge_start, face.normal)
+        edge_vector_2d = _project_to_face_2d(edge_end - edge_start, face.normal)
+        denominator = _cross_2d(direction_2d, edge_vector_2d)
+        if abs(denominator) <= tolerance:
+            continue
+        relative = edge_start_2d - point_2d
+        distance = _cross_2d(relative, edge_vector_2d) / denominator
+        edge_factor = _cross_2d(relative, direction_2d) / denominator
+        if distance <= tolerance or not -tolerance <= edge_factor <= 1.0 + tolerance:
+            continue
+        candidates.append((distance, edge.index, edge))
+    return min(candidates, default=None, key=lambda item: (item[0], item[1]))
+
+
+# 沿同一 Surface Patch 的 Face adjacency 累计 intrinsic distance。
+# point/direction/face/face_patch/radius: 起点、Face 切向、owner Face、Face→Patch 映射与目标距离。
+def _walk_owner_face_adjacency(point, direction, face, face_patch, radius):
+    patch_id = face_patch[face]
+    current_face = face
+    current_point = Vector(point)
+    current_direction = Vector(direction).normalized()
+    travelled = 0.0
+    previous_edge = None
+    face_path = [face.index]
+    max_crossings = max(32, len(face_patch) * 2)
+    for _ in range(max_crossings):
+        remaining = radius - travelled
+        if remaining <= max(radius * 1.0e-6, 1.0e-9):
+            return {
+                "point": current_point,
+                "travelled": travelled,
+                "face_path": face_path,
+            }
+        current_direction -= current_face.normal * current_direction.dot(current_face.normal)
+        if current_direction.length <= 1.0e-10:
+            return None
+        current_direction.normalize()
+        crossing = _next_owner_face_crossing(
+            current_point,
+            current_direction,
+            current_face,
+            previous_edge,
+        )
+        if crossing is None or crossing[0] >= remaining:
+            current_point += current_direction * remaining
+            travelled += remaining
+            return {
+                "point": current_point,
+                "travelled": travelled,
+                "face_path": face_path,
+            }
+        distance, _, crossed_edge = crossing
+        current_point += current_direction * distance
+        travelled += distance
+        neighbors = sorted(
+            (
+                linked_face
+                for linked_face in crossed_edge.link_faces
+                if linked_face is not current_face
+                and face_patch.get(linked_face) == patch_id
+            ),
+            key=lambda linked_face: linked_face.index,
+        )
+        if len(neighbors) != 1:
+            return None
+        next_face = neighbors[0]
+        current_direction = current_face.normal.rotation_difference(next_face.normal) @ current_direction
+        current_face = next_face
+        previous_edge = crossed_edge
+        face_path.append(current_face.index)
+    return None
+
+
+# 把点沿 owner Face 切平面偏移，并只沿同一 Surface Patch 的 Face adjacency walk。
+# point/tangent/face/face_patch/radius: Feature sample、切线、owner Face、Face→Patch 映射与目标偏移；previous: 上一 walk 诊断。
 def _offset_point_on_face(
     point,
     tangent,
     face,
-    patch_tree,
+    face_patch,
     radius,
     previous=None,
 ):
@@ -2363,44 +2662,17 @@ def _offset_point_on_face(
         return None
     inward.normalize()
 
-    # 将一次 radius 跳跃拆成小步 Surface walk，避免 nearest point 越过窄曲面后吸回 Feature Edge。
-    step_length = max(radius / 8.0, 1.0e-5)
-    projection_limit = max(step_length * 0.75, 1.0e-5)
-    projected = Vector(point)
-    transported_inward = inward.copy()
-    travelled = 0.0
-    projection_distance = 0.0
-    for _ in range(16):
-        remaining = radius - travelled
-        if remaining <= max(radius * 1.0e-5, 1.0e-8):
-            break
-        current_step = min(step_length, remaining)
-        step_candidate = projected + transported_inward * current_step
-        nearest = patch_tree.find_nearest(step_candidate)
-        if nearest is None:
-            return None
-        next_projected = Vector(nearest[0])
-        step_projection_distance = (next_projected - step_candidate).length
-        if step_projection_distance > projection_limit:
-            return None
-        displacement = next_projected - projected
-        displacement_length = displacement.length
-        if displacement_length <= max(current_step * 0.05, 1.0e-9):
-            return None
-        if displacement_length > current_step * 1.5:
-            return None
-        projection_distance = max(projection_distance, step_projection_distance)
-        travelled += displacement_length
-        projected = next_projected
-        surface_normal = Vector(nearest[1])
-        transported_inward = transported_inward - surface_normal * transported_inward.dot(
-            surface_normal
-        )
-        if transported_inward.length <= 1.0e-10:
-            return None
-        transported_inward.normalize()
-        if transported_inward.dot(displacement) < 0.0:
-            transported_inward.negate()
+    walk = _walk_owner_face_adjacency(
+        point,
+        inward,
+        face,
+        face_patch,
+        radius,
+    )
+    if walk is None:
+        return None
+    projected = walk["point"]
+    travelled = walk["travelled"]
 
     candidate = point + inward * radius
     continuity_error = 0.0
@@ -2415,25 +2687,11 @@ def _offset_point_on_face(
         "candidate": candidate,
         "signed_offset": signed_offset,
         "intrinsic_offset_error": abs(travelled - radius),
-        "projection_distance": projection_distance,
-        "projection_limit": projection_limit,
+        "projection_distance": 0.0,
+        "projection_limit": max(radius * 0.1, 1.0e-5),
         "continuity_error": continuity_error,
         "continuity_limit": continuity_limit,
-    }
-
-
-# 为每个 Surface Patch 构建独立 BVH，避免 rail 被错误夹在单个 triangle 内。
-# bm/face_patch: source BMesh 与 Face -> patch id 映射；返回 patch id -> BVHTree。
-def _surface_patch_trees(bm, face_patch):
-    coordinates = [tuple(vertex.co) for vertex in bm.verts]
-    polygons_by_patch = {}
-    for face, patch_id in face_patch.items():
-        polygons_by_patch.setdefault(patch_id, []).append(
-            tuple(vertex.index for vertex in face.verts)
-        )
-    return {
-        patch_id: BVHTree.FromPolygons(coordinates, polygons)
-        for patch_id, polygons in polygons_by_patch.items()
+        "owner_face_path": walk["face_path"],
     }
 
 
@@ -2489,7 +2747,6 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
     bm.faces.ensure_lookup_table()
     sharp_edges = {bm.edges[index] for index in _sharp_edge_indices(source_object)}
     face_patch, _ = _surface_patch_map(bm, sharp_edges)
-    patch_trees = _surface_patch_trees(bm, face_patch)
     records = []
     unresolved_spans = []
     total_span_count = 0
@@ -2531,7 +2788,7 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                         point,
                         tangent,
                         face_by_patch[patch_left],
-                        patch_trees[patch_left],
+                        face_patch,
                         radius,
                         left_projection_records[-1]
                         if left_projection_records
@@ -2541,7 +2798,7 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                         point,
                         tangent,
                         face_by_patch[patch_right],
-                        patch_trees[patch_right],
+                        face_patch,
                         radius,
                         right_projection_records[-1]
                         if right_projection_records
@@ -2560,6 +2817,14 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                             "group_id": group["pipe_id"],
                             "span_id": span["span_id"],
                             "patch_pair": span["patch_pair"],
+                            "reason": "OWNER_FACE_WALK_FAILED",
+                            "failed_sample_index": len(left_points),
+                            "sample_count": len(samples),
+                            "source_edge_id": (
+                                group["edge_indices"][samples[len(left_points)]["edge_offset"]]
+                                if len(left_points) < len(samples)
+                                else None
+                            ),
                         }
                     )
                     continue
@@ -2615,6 +2880,14 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                     ),
                     "ownership_confidence": 1.0,
                     "cyclic": cyclic,
+                    "left_owner_face_paths": [
+                        projection["owner_face_path"]
+                        for projection in left_projection_records
+                    ],
+                    "right_owner_face_paths": [
+                        projection["owner_face_path"]
+                        for projection in right_projection_records
+                    ],
                 }
                 record["geometry_guard"] = _rail_pair_geometry_guard(
                     record,
@@ -3102,13 +3375,24 @@ def build_pipe_chamfer(
         allow_non_simple=debug_stage == "OPEN_BOUNDARY",
     )
     stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    cutter_intersection_rails, cutter_intersection_diagnostics = (
+        _cutter_intersection_rails(
+            source_object,
+            groups,
+            pipes,
+            radius,
+        )
+    )
     boolean_rail_pairs, boolean_rail_summary = _extract_boolean_rail_pair_records(
         bm,
         groups,
         pipe_trees,
         pipe_bounds,
         radius,
+        rails=cutter_intersection_rails,
+        ownership_backend="CUTTER_FACE_COMPONENT_PROVENANCE",
     )
+    boolean_rail_summary["intersection_diagnostics"] = cutter_intersection_diagnostics
     surface_rail_pairs, surface_rail_summary = (
         _extract_source_surface_offset_rail_records(
             source_object,

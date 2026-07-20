@@ -1706,6 +1706,17 @@ def test_feature_chamfer_rail_oracle_contract_smoke(
         ),
         f"RailPairRecord owner guard mismatch: {records[:1]}",
     )
+    ensure(
+        summaries["boolean"].get("ownership_backend")
+        == "CUTTER_FACE_COMPONENT_PROVENANCE"
+        and stats["boolean_rail_pairs"]
+        and all(
+            record.get("ownership_backend")
+            == "CUTTER_FACE_COMPONENT_PROVENANCE"
+            for record in stats["boolean_rail_pairs"]
+        ),
+        f"Boolean Rail still uses proximity ownership: {summaries['boolean']}",
+    )
     result.add_detail(
         f"boolean={summaries['boolean']['coverage']:.3f}, "
         f"surface={summaries['source_surface']['coverage']:.3f}"
@@ -1776,20 +1787,21 @@ def test_feature_chamfer_folded_surface_walk_intrinsic_distance_regression(
         )
         for index in range(segment_count)
     ]
-    patch_tree = BVHTree.FromPolygons(vertices, polygons)
     mesh_data = bpy.data.meshes.new("RailFoldedSurfaceOwner")
     mesh_data.from_pydata(vertices, [], polygons)
     mesh_data.update()
     owner_bmesh = bmesh.new()
     owner_bmesh.from_mesh(mesh_data)
+    owner_bmesh.edges.ensure_lookup_table()
     owner_bmesh.faces.ensure_lookup_table()
     owner_face = owner_bmesh.faces[0]
+    owner_face_patch = {face: 0 for face in owner_bmesh.faces}
     radius = 1.2
     record = utils._offset_point_on_face(
         Vector((0.0, 1.0, 0.0)),
         Vector((-1.0, 0.0, 0.0)),
         owner_face,
-        patch_tree,
+        owner_face_patch,
         radius,
     )
     ensure(record is not None, "Folded owner-patch Surface walk failed")
@@ -1803,6 +1815,51 @@ def test_feature_chamfer_folded_surface_walk_intrinsic_distance_regression(
     result.add_detail(
         f"folded intrinsic={radius:.3f}, chord={chord_length:.3f}"
     )
+
+
+# 验证 owner Face walk 只通过 Surface Patch adjacency 前进，不会吸到同 Patch 的邻近非相邻 Face。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_owner_face_adjacency_walk_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    mesh_data = bpy.data.meshes.new("RailOwnerFaceAdjacency")
+    mesh_data.from_pydata(
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 0.0, 0.01),
+            (1.0, 0.0, 0.01),
+            (0.0, 1.0, 0.01),
+            (1.0, 1.0, 0.01),
+        ],
+        [],
+        [(0, 1, 3, 2), (4, 6, 7, 5)],
+    )
+    mesh_data.update()
+    owner_bmesh = bmesh.new()
+    owner_bmesh.from_mesh(mesh_data)
+    owner_bmesh.edges.ensure_lookup_table()
+    owner_bmesh.faces.ensure_lookup_table()
+    face_patch = {face: 0 for face in owner_bmesh.faces}
+    record = utils._offset_point_on_face(
+        Vector((0.5, 0.0, 0.0)),
+        Vector((1.0, 0.0, 0.0)),
+        owner_bmesh.faces[0],
+        face_patch,
+        0.25,
+    )
+    ensure(record is not None, "Planar owner Face adjacency walk failed")
+    ensure(
+        record["owner_face_path"] == [0]
+        and abs(record["point"].z) <= 1.0e-8,
+        f"Owner Face walk jumped to a non-adjacent Face: {record}",
+    )
+    owner_bmesh.free()
+    result.add_detail(f"owner face path={record['owner_face_path']}")
 
 
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
@@ -3623,6 +3680,10 @@ def main():
     context.run_case(
         "feature_chamfer_folded_surface_walk_intrinsic_distance_regression",
         test_feature_chamfer_folded_surface_walk_intrinsic_distance_regression,
+    )
+    context.run_case(
+        "feature_chamfer_owner_face_adjacency_walk_regression",
+        test_feature_chamfer_owner_face_adjacency_walk_regression,
     )
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
