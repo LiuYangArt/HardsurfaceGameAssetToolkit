@@ -27,7 +27,7 @@ from ..const import FEATURE_CHAMFER_CURVE_OBJECT_TAG
 from ..const import FEATURE_CHAMFER_CURVE_OWNER_TAG
 from ..const import PRESET_FILE_PATH
 from .experimental_pipe_chamfer_utils import _base_stats
-from .experimental_pipe_chamfer_utils import _build_feature_graph
+from .experimental_pipe_chamfer_utils import _build_preview_feature_graph
 from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
 
 
@@ -182,15 +182,7 @@ def _remove_preview_curve_object(curve_object):
 # source_object/radius: source Mesh 与 endpoint cap containment 的采样距离；返回 Curve 与 stats。
 def _rebuild_owned_preview_curve(source_object, radius):
     stats = _base_stats(source_object, 0.0, 8, 35.0, 3.0, 1.5, "PREVIEW")
-    groups = _build_feature_graph(
-        source_object,
-        35.0,
-        3.0,
-        stats,
-        miter_scale_limit=1.5,
-        global_surface_patch_matching=True,
-        endpoint_clearance=radius,
-    )
+    groups = _build_preview_feature_graph(source_object, radius, stats)
     curve_data = bpy.data.curves.new(
         f"{source_object.name}_FeatureChamferPreviewCurve",
         type="CURVE",

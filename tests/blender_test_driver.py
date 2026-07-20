@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import math
 import os
 import sys
 import tempfile
@@ -13,6 +14,8 @@ from pathlib import Path
 
 import bpy
 import bmesh
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
 
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
@@ -1709,6 +1712,99 @@ def test_feature_chamfer_rail_oracle_contract_smoke(
     )
 
 
+# 验证 source-surface Rail 使用 owner Face intrinsic offset，而非 3D 欧氏距离近似。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_source_surface_intrinsic_offset_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("RailIntrinsicOffset")
+    source = make_test_mesh("RailIntrinsicOffsetSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=0.08,
+        pipe_resolution=4,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="OPEN_BOUNDARY",
+        keep_debug_objects=True,
+        feature_graph_contract="GN_PREVIEW_V1",
+    )
+    records = stats["surface_offset_rail_pairs"]
+    ensure(records, "Intrinsic source-surface rail extraction emitted no records")
+    ensure(
+        all(
+            "intrinsic_offset_error" in record
+            and "projection_distance" in record
+            and "projection_continuity_error" in record
+            for record in records
+        ),
+        f"Intrinsic projection diagnostics are missing: {records[:1]}",
+    )
+    ensure(
+        stats["rail_oracle_summary"]["source_surface"]["guarded_coverage"] == 1.0,
+        f"Planar owner-patch intrinsic rails did not pass: {stats['rail_oracle_summary']['source_surface']}",
+    )
+    result.add_detail(
+        f"intrinsic source-surface coverage={stats['rail_oracle_summary']['source_surface']['guarded_coverage']:.3f}"
+    )
+
+
+# 验证曲面 owner-patch Rail 的累计 intrinsic distance 与 3D chord 明确可区分。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_folded_surface_walk_intrinsic_distance_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    segment_count = 32
+    vertices = []
+    for x in (-0.5, 0.5):
+        vertices.extend(
+            (x, math.cos(index * math.pi / segment_count), math.sin(index * math.pi / segment_count))
+            for index in range(segment_count + 1)
+        )
+    polygons = [
+        (
+            index,
+            index + 1,
+            segment_count + 2 + index,
+            segment_count + 1 + index,
+        )
+        for index in range(segment_count)
+    ]
+    patch_tree = BVHTree.FromPolygons(vertices, polygons)
+    mesh_data = bpy.data.meshes.new("RailFoldedSurfaceOwner")
+    mesh_data.from_pydata(vertices, [], polygons)
+    mesh_data.update()
+    owner_bmesh = bmesh.new()
+    owner_bmesh.from_mesh(mesh_data)
+    owner_bmesh.faces.ensure_lookup_table()
+    owner_face = owner_bmesh.faces[0]
+    radius = 1.2
+    record = utils._offset_point_on_face(
+        Vector((0.0, 1.0, 0.0)),
+        Vector((-1.0, 0.0, 0.0)),
+        owner_face,
+        patch_tree,
+        radius,
+    )
+    ensure(record is not None, "Folded owner-patch Surface walk failed")
+    chord_length = (record["point"] - Vector((0.0, 1.0, 0.0))).length
+    ensure(
+        record["intrinsic_offset_error"] <= radius * 0.01
+        and chord_length < radius - 0.05,
+        f"Surface walk did not distinguish intrinsic distance from chord: record={record}, chord={chord_length}",
+    )
+    owner_bmesh.free()
+    result.add_detail(
+        f"folded intrinsic={radius:.3f}, chord={chord_length:.3f}"
+    )
+
+
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
     """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
@@ -2746,6 +2842,60 @@ def test_gn_preview_junction_endpoint_containment_closed_mesh_bvh(
         f"closed Mesh BVH hidden={hidden_score}, exposed={exposed_score}"
     )
 
+
+# 验证 Rail diagnostic 与正式 GN Preview 使用同一 FeatureGraph 合同。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_rail_feature_graph_contract_alignment(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNRailGraphAlignment")
+    source = make_ordered_sharp_cube("GNRailGraphAlignmentSource", collection, 0)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    preview_stats = utils._base_stats(source, 0.05, 4, 35.0, 3.0, 1.5, "PREVIEW")
+    preview_groups = utils._build_preview_feature_graph(source, 0.05, preview_stats)
+    rail_stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=0.05,
+        pipe_resolution=4,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="FEATURE_GRAPH",
+        keep_debug_objects=False,
+        feature_graph_contract="GN_PREVIEW_V1",
+    )
+
+    def signature(groups):
+        def canonical_edges(group):
+            edge_ids = tuple(group["edge_indices"])
+            if not group["is_cyclic"]:
+                return min(edge_ids, tuple(reversed(edge_ids)))
+            rotations = [
+                edge_ids[offset:] + edge_ids[:offset]
+                for offset in range(len(edge_ids))
+            ]
+            reversed_ids = tuple(reversed(edge_ids))
+            rotations.extend(
+                reversed_ids[offset:] + reversed_ids[:offset]
+                for offset in range(len(reversed_ids))
+            )
+            return min(rotations)
+
+        return sorted(
+            (canonical_edges(group), bool(group["is_cyclic"]))
+            for group in groups
+        )
+
+    ensure(
+        rail_stats["feature_graph_contract"] == "GN_PREVIEW_V1"
+        and signature(preview_groups) == signature(rail_stats["feature_groups"]),
+        "Rail diagnostic FeatureGraph diverged from formal GN Preview",
+    )
+    result.add_detail(
+        f"aligned FeatureGraph groups={len(preview_groups)}, contract=GN_PREVIEW_V1"
+    )
+
 # 验证多处等角 90° junction 会全局组成稳定的共面 ]/U strands。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_gn_preview_operator_builds_coplanar_bracket_strands(
@@ -3466,6 +3616,14 @@ def main():
     context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
     context.run_case("curve_pipe_asset_import_and_backend_smoke", test_curve_pipe_asset_import_and_backend_smoke)
     context.run_case("feature_chamfer_rail_oracle_contract_smoke", test_feature_chamfer_rail_oracle_contract_smoke)
+    context.run_case(
+        "feature_chamfer_source_surface_intrinsic_offset_regression",
+        test_feature_chamfer_source_surface_intrinsic_offset_regression,
+    )
+    context.run_case(
+        "feature_chamfer_folded_surface_walk_intrinsic_distance_regression",
+        test_feature_chamfer_folded_surface_walk_intrinsic_distance_regression,
+    )
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
@@ -3512,6 +3670,10 @@ def main():
     context.run_case(
         "gn_preview_junction_endpoint_containment_closed_mesh_bvh",
         test_gn_preview_junction_endpoint_containment_closed_mesh_bvh,
+    )
+    context.run_case(
+        "gn_preview_rail_feature_graph_contract_alignment",
+        test_gn_preview_rail_feature_graph_contract_alignment,
     )
     context.run_case(
         "gn_preview_operator_builds_coplanar_bracket_strands",

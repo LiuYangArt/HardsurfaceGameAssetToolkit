@@ -1013,6 +1013,21 @@ def _build_feature_graph(
     return groups
 
 
+# 使用正式 GN Preview 的唯一 FeatureGraph 参数合同。
+# source_object/radius/stats: source Mesh、Chamfer radius 与诊断字典；返回正式 Preview groups。
+def _build_preview_feature_graph(source_object, radius, stats):
+    stats["feature_graph_contract"] = "GN_PREVIEW_V1"
+    return _build_feature_graph(
+        source_object,
+        35.0,
+        3.0,
+        stats,
+        miter_scale_limit=1.5,
+        global_surface_patch_matching=True,
+        endpoint_clearance=radius,
+    )
+
+
 # 从相邻两段求稳定的截面 frame；平行 transport 让 tessellated curve 不随机翻转。
 # tangents: spine 顶点 tangent；cyclic: 是否为 closed group。
 def _parallel_transport_frames(tangents, cyclic):
@@ -2019,6 +2034,11 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         + _polyline_self_intersection_count(right, cyclic, intersection_tolerance)
     )
     max_width_error = max(record["width_error"], default=float("inf"))
+    max_projection_distance = max(record.get("projection_distance", []), default=0.0)
+    max_projection_continuity_error = max(
+        record.get("projection_continuity_error", []),
+        default=0.0,
+    )
     max_edge_length = max(left_lengths + right_lengths, default=0.0)
     reasons = []
     if record["ownership_confidence"] < 1.0:
@@ -2029,6 +2049,13 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         reasons.append("SELF_INTERSECTION")
     if max_width_error > tolerance:
         reasons.append("RADIUS_TOLERANCE_EXCEEDED")
+    if max_projection_distance > record.get("projection_limit", float("inf")):
+        reasons.append("OWNER_PATCH_PROJECTION_EXCEEDED")
+    if max_projection_continuity_error > record.get(
+        "projection_continuity_limit",
+        float("inf"),
+    ):
+        reasons.append("OWNER_PATCH_CONTINUITY_EXCEEDED")
     if max_edge_length > max_sample_edge:
         reasons.append("SAMPLE_DENSITY_EXCEEDED")
     return {
@@ -2036,6 +2063,8 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         "reasons": reasons,
         "radius_tolerance": tolerance,
         "max_width_error": max_width_error,
+        "max_projection_distance": max_projection_distance,
+        "max_projection_continuity_error": max_projection_continuity_error,
         "u_monotonic": u_monotonic,
         "self_intersection_count": self_intersection_count,
         "max_edge_length": max_edge_length,
@@ -2316,18 +2345,81 @@ def _extract_boolean_rail_pair_records(
     return records, summary
 
 
-# 把点沿目标 source Face 内侧偏移并投影回该 Face triangles。
-# point/tangent/face/radius: Feature sample、strand tangent、owner Face 与偏移距离。
-def _offset_point_on_face(point, tangent, face, patch_tree, radius):
+# 把点沿 owner Face 切平面偏移，并在同一 Surface Patch 上做受限连续投影。
+# point/tangent/face/patch_tree/radius: Feature sample、切线、owner Face、Patch BVH 与目标偏移；previous: 上一投影诊断。
+def _offset_point_on_face(
+    point,
+    tangent,
+    face,
+    patch_tree,
+    radius,
+    previous=None,
+):
     inward = face.normal.cross(tangent)
     face_direction = face.calc_center_median() - point
     if inward.dot(face_direction) < 0.0:
         inward.negate()
     if inward.length <= 1.0e-10:
         return None
-    candidate = point + inward.normalized() * radius
-    nearest = patch_tree.find_nearest(candidate)
-    return Vector(nearest[0]) if nearest is not None else None
+    inward.normalize()
+
+    # 将一次 radius 跳跃拆成小步 Surface walk，避免 nearest point 越过窄曲面后吸回 Feature Edge。
+    step_length = max(radius / 8.0, 1.0e-5)
+    projection_limit = max(step_length * 0.75, 1.0e-5)
+    projected = Vector(point)
+    transported_inward = inward.copy()
+    travelled = 0.0
+    projection_distance = 0.0
+    for _ in range(16):
+        remaining = radius - travelled
+        if remaining <= max(radius * 1.0e-5, 1.0e-8):
+            break
+        current_step = min(step_length, remaining)
+        step_candidate = projected + transported_inward * current_step
+        nearest = patch_tree.find_nearest(step_candidate)
+        if nearest is None:
+            return None
+        next_projected = Vector(nearest[0])
+        step_projection_distance = (next_projected - step_candidate).length
+        if step_projection_distance > projection_limit:
+            return None
+        displacement = next_projected - projected
+        displacement_length = displacement.length
+        if displacement_length <= max(current_step * 0.05, 1.0e-9):
+            return None
+        if displacement_length > current_step * 1.5:
+            return None
+        projection_distance = max(projection_distance, step_projection_distance)
+        travelled += displacement_length
+        projected = next_projected
+        surface_normal = Vector(nearest[1])
+        transported_inward = transported_inward - surface_normal * transported_inward.dot(
+            surface_normal
+        )
+        if transported_inward.length <= 1.0e-10:
+            return None
+        transported_inward.normalize()
+        if transported_inward.dot(displacement) < 0.0:
+            transported_inward.negate()
+
+    candidate = point + inward * radius
+    continuity_error = 0.0
+    if previous is not None:
+        candidate_step = candidate - previous["candidate"]
+        projected_step = projected - previous["point"]
+        continuity_error = (projected_step - candidate_step).length
+    continuity_limit = max(radius * 0.75, 1.0e-5)
+    signed_offset = (projected - point).dot(inward)
+    return {
+        "point": projected,
+        "candidate": candidate,
+        "signed_offset": signed_offset,
+        "intrinsic_offset_error": abs(travelled - radius),
+        "projection_distance": projection_distance,
+        "projection_limit": projection_limit,
+        "continuity_error": continuity_error,
+        "continuity_limit": continuity_limit,
+    }
 
 
 # 为每个 Surface Patch 构建独立 BVH，避免 rail 被错误夹在单个 triangle 内。
@@ -2415,6 +2507,8 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                 tangents = _sample_tangents(samples, cyclic)
                 left_points = []
                 right_points = []
+                left_projection_records = []
+                right_projection_records = []
                 valid = True
                 for sample, tangent in zip(samples, tangents):
                     edge = bm.edges[
@@ -2439,6 +2533,9 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                         face_by_patch[patch_left],
                         patch_trees[patch_left],
                         radius,
+                        left_projection_records[-1]
+                        if left_projection_records
+                        else None,
                     )
                     right = _offset_point_on_face(
                         point,
@@ -2446,12 +2543,17 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                         face_by_patch[patch_right],
                         patch_trees[patch_right],
                         radius,
+                        right_projection_records[-1]
+                        if right_projection_records
+                        else None,
                     )
                     if left is None or right is None:
                         valid = False
                         break
-                    left_points.append(left)
-                    right_points.append(right)
+                    left_projection_records.append(left)
+                    right_projection_records.append(right)
+                    left_points.append(left["point"])
+                    right_points.append(right["point"])
                 if not valid or len(left_points) < 2:
                     unresolved_spans.append(
                         {
@@ -2463,13 +2565,12 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                     continue
                 radial_errors = [
                     max(
-                        abs((left - sample["point"]).length - radius),
-                        abs((right - sample["point"]).length - radius),
+                        left["intrinsic_offset_error"],
+                        right["intrinsic_offset_error"],
                     )
-                    for left, right, sample in zip(
-                        left_points,
-                        right_points,
-                        samples,
+                    for left, right in zip(
+                        left_projection_records,
+                        right_projection_records,
                     )
                 ]
                 record = {
@@ -2483,6 +2584,35 @@ def _extract_source_surface_offset_rail_records(source_object, groups, radius):
                     "rail_right": [tuple(point) for point in right_points],
                     "u": _coordinate_parameters(left_points, cyclic),
                     "width_error": radial_errors,
+                    "intrinsic_offset_error": radial_errors,
+                    "projection_distance": [
+                        max(
+                            left["projection_distance"],
+                            right["projection_distance"],
+                        )
+                        for left, right in zip(
+                            left_projection_records,
+                            right_projection_records,
+                        )
+                    ],
+                    "projection_continuity_error": [
+                        max(
+                            left["continuity_error"],
+                            right["continuity_error"],
+                        )
+                        for left, right in zip(
+                            left_projection_records,
+                            right_projection_records,
+                        )
+                    ],
+                    "projection_limit": min(
+                        left_projection_records[0]["projection_limit"],
+                        right_projection_records[0]["projection_limit"],
+                    ),
+                    "projection_continuity_limit": min(
+                        left_projection_records[0]["continuity_limit"],
+                        right_projection_records[0]["continuity_limit"],
+                    ),
                     "ownership_confidence": 1.0,
                     "cyclic": cyclic,
                 }
@@ -2817,6 +2947,8 @@ def build_pipe_chamfer(
     junction_margin,
     debug_stage,
     keep_debug_objects,
+    *,
+    feature_graph_contract="EXPERIMENTAL",
 ):
     started_at = time.perf_counter()
     stats = _base_stats(
@@ -2842,12 +2974,22 @@ def build_pipe_chamfer(
     if source_risks["non_manifold"]:
         _fail("source_not_closed_manifold", "Source Mesh must be closed manifold", stats)
 
-    groups = _build_feature_graph(
-        source_object,
-        chain_turn_threshold_degrees,
-        chain_turn_spike_ratio,
-        stats,
-    )
+    if feature_graph_contract == "GN_PREVIEW_V1":
+        groups = _build_preview_feature_graph(source_object, radius, stats)
+    elif feature_graph_contract == "EXPERIMENTAL":
+        stats["feature_graph_contract"] = "EXPERIMENTAL"
+        groups = _build_feature_graph(
+            source_object,
+            chain_turn_threshold_degrees,
+            chain_turn_spike_ratio,
+            stats,
+        )
+    else:
+        _fail(
+            "invalid_context",
+            f"Unsupported FeatureGraph contract: {feature_graph_contract}",
+            stats,
+        )
     stats["timings"]["feature_graph"] = time.perf_counter() - started_at
     _classify_pipe_endpoints(source_object, groups, radius)
     _remove_previous_result(source_object)
