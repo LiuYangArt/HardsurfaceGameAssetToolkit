@@ -6,59 +6,11 @@ CAD 模型处理 Operators
 包含 CAD 模型导入后的预处理、修复、清理等功能。
 """
 
-import math
-
 import bpy
 from ..const import *
 from ..functions.common_functions import *
 from ..utils.mesh_utils import check_non_solid_meshes
 from ..utils.misc_utils import set_default_scene_units
-from ..utils.safe_ngon_utils import repair_cad_mesh
-
-
-# 校验 CAD Operator 的选择上下文；context 为 Blender Context，operator 为报告错误的 Operator。
-def _validate_cad_context(context: bpy.types.Context, operator: bpy.types.Operator) -> bool:
-    selected_meshes = filter_type(context.selected_objects, "MESH")
-    if not selected_meshes:
-        operator.report(
-            {"ERROR"},
-            "No selected mesh object, please select mesh objects and retry\n"
-            + "没有选中Mesh物体，请选中Mesh物体后重试",
-        )
-        return False
-    return context.mode in {"OBJECT", "EDIT_MESH"}
-
-
-# 检查共享 CAD pipeline 的末端 topology gate；obj 为目标 Object，stats 为 pipeline 统计。
-def _raise_for_invalid_topology(obj: bpy.types.Object, stats: dict) -> None:
-    topology = stats["topology"]
-    if any(topology.values()):
-        raise RuntimeError(f"{obj.name!r} topology validation failed: {topology}")
-
-
-# 为多对象 CAD Operator 创建显式回滚快照；objects 为待处理 Mesh Object 列表。
-def _create_cad_rollback_snapshots(objects: list) -> list:
-    return [
-        (obj, obj.data.copy(), obj.matrix_world.copy())
-        for obj in objects
-    ]
-
-
-# 释放成功执行后不再需要的回滚 Mesh；snapshots 为 _create_cad_rollback_snapshots 的结果。
-def _discard_cad_rollback_snapshots(snapshots: list) -> None:
-    for _obj, mesh_data, _matrix_world in snapshots:
-        if mesh_data.name in bpy.data.meshes:
-            bpy.data.meshes.remove(mesh_data)
-
-
-# 从快照恢复所有已处理对象，并清理失败结果 Mesh；snapshots 为回滚快照。
-def _restore_cad_rollback_snapshots(snapshots: list) -> None:
-    for obj, mesh_data, matrix_world in snapshots:
-        failed_mesh = obj.data
-        obj.data = mesh_data
-        obj.matrix_world = matrix_world
-        if failed_mesh.users == 0 and failed_mesh.name in bpy.data.meshes:
-            bpy.data.meshes.remove(failed_mesh)
 
 
 class HST_OT_PrepCADMesh(bpy.types.Operator):
@@ -79,28 +31,6 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
         ],
         default='STANDARD'
     )
-
-    use_safe_ngon: bpy.props.BoolProperty(name="Safe Ngon", default=True)
-    safe_ngon_convert_coplanar: bpy.props.BoolProperty(name="Convert to Ngons", default=False)
-    safe_ngon_parallel_angle: bpy.props.FloatProperty(
-        name="Parallel Angle", subtype="ANGLE", default=math.radians(10.0), min=math.radians(0.0001)
-    )
-    safe_ngon_merge_distance: bpy.props.FloatProperty(
-        name="Merge Distance", subtype="DISTANCE", default=0.01, min=0.0001
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "uv_seam_mode")
-        layout.prop(self, "use_safe_ngon")
-        layout.prop(self, "safe_ngon_convert_coplanar")
-        layout.prop(self, "safe_ngon_parallel_angle")
-        layout.prop(self, "safe_ngon_merge_distance")
-
-    def invoke(self, context, event):
-        if not _validate_cad_context(context, self):
-            return {"CANCELLED"}
-        return self.execute(context)
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -157,53 +87,31 @@ class HST_OT_PrepCADMesh(bpy.types.Operator):
             )
             return {"CANCELLED"}
 
-        pipeline_stats = []
-        rollback_snapshots = _create_cad_rollback_snapshots(selected_meshes)
-        try:
-            for mesh in selected_meshes:
-                if mesh.data.users > 1:
-                    mesh.data = mesh.data.copy()
-                Transform.apply(mesh, location=False, rotation=True, scale=True)
-                stats = repair_cad_mesh(
-                    context,
-                    mesh,
-                    clean_mid_vertices=True,
-                    clean_loose_vertices=True,
-                    use_safe_ngon=self.use_safe_ngon,
-                    convert_coplanar=self.safe_ngon_convert_coplanar,
-                    parallel_angle=math.degrees(self.safe_ngon_parallel_angle),
-                    merge_distance=self.safe_ngon_merge_distance,
-                )
-                _raise_for_invalid_topology(mesh, stats)
-                pipeline_stats.append(stats)
-                Object.mark_hst_type(mesh, "STATICMESH")
+        for mesh in selected_meshes:
+            Transform.apply(mesh, location=False, rotation=True, scale=True)
+            Mesh.clean_mid_verts(mesh)
+            Mesh.clean_loose_verts(mesh)
+            Object.mark_hst_type(mesh, "STATICMESH")
 
-                has_uv = has_uv_attribute(mesh)
-                if has_uv is True:
-                    uv_base = rename_uv_layers(mesh, new_name=UV_BASE, uv_index=0)
-                else:
-                    uv_base = add_uv_layers(mesh, uv_name=UV_BASE)
-                uv_base.active = True
+            has_uv = has_uv_attribute(mesh)
+            if has_uv is True:
+                uv_base = rename_uv_layers(mesh, new_name=UV_BASE, uv_index=0)
+            else:
+                uv_base = add_uv_layers(mesh, uv_name=UV_BASE)
+            uv_base.active = True
 
-                mark_sharp_edges_by_split_normal(mesh)
-                for edge in mesh.data.edges:
-                    edge.use_seam = edge.use_edge_sharp
+            for edge in mesh.data.edges:
+                edge.use_seam = True if edge.use_edge_sharp else False
 
-                Mesh.auto_seam(mesh, mode=self.uv_seam_mode)
-        except Exception as error:
-            _restore_cad_rollback_snapshots(rollback_snapshots)
-            restore_select_mode(store_mode)
-            self.report({"ERROR"}, str(error))
-            raise
-        else:
-            _discard_cad_rollback_snapshots(rollback_snapshots)
+            Mesh.auto_seam(mesh, mode=self.uv_seam_mode)
+
+        Mesh.merge_verts_ops(selected_meshes)
 
         uv_unwrap(
             selected_meshes, method="ANGLE_BASED", margin=0.005, correct_aspect=True
         )
         bpy.context.scene.tool_settings.use_uv_select_sync = True
         restore_select_mode(store_mode)
-        print(f"Prepare CAD Mesh stats: {pipeline_stats}")
         self.report({"INFO"}, "Selected meshes prepped")
         return {"FINISHED"}
 
@@ -249,28 +157,6 @@ class HST_OT_FixCADObj(bpy.types.Operator):
     bl_label = "Fix CAD Obj"
     bl_description = "修理CAD输出的obj，以便进行后续操作\
         自动合并面，并根据顶点法线标记锐边"
-    bl_options = {"REGISTER", "UNDO"}
-
-    use_safe_ngon: bpy.props.BoolProperty(name="Safe Ngon", default=True)
-    safe_ngon_convert_coplanar: bpy.props.BoolProperty(name="Convert to Ngons", default=False)
-    safe_ngon_parallel_angle: bpy.props.FloatProperty(
-        name="Parallel Angle", subtype="ANGLE", default=math.radians(10.0), min=math.radians(0.0001)
-    )
-    safe_ngon_merge_distance: bpy.props.FloatProperty(
-        name="Merge Distance", subtype="DISTANCE", default=0.01, min=0.0001
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "use_safe_ngon")
-        layout.prop(self, "safe_ngon_convert_coplanar")
-        layout.prop(self, "safe_ngon_parallel_angle")
-        layout.prop(self, "safe_ngon_merge_distance")
-
-    def invoke(self, context, event):
-        if not _validate_cad_context(context, self):
-            return {"CANCELLED"}
-        return self.execute(context)
 
     def execute(self, context):
         selected_objects = bpy.context.selected_objects
@@ -289,37 +175,24 @@ class HST_OT_FixCADObj(bpy.types.Operator):
         for object in selected_objects:
             object.select_set(False)
 
-        pipeline_stats = []
-        rollback_snapshots = _create_cad_rollback_snapshots(selected_meshes)
-        try:
-            for mesh in selected_meshes:
-                if mesh.data.users > 1:
-                    mesh.data = mesh.data.copy()
-                Transform.apply(mesh, location=False, rotation=True, scale=True)
-                stats = repair_cad_mesh(
-                    context,
-                    mesh,
-                    clean_mid_vertices=False,
-                    clean_loose_vertices=False,
-                    use_safe_ngon=self.use_safe_ngon,
-                    convert_coplanar=self.safe_ngon_convert_coplanar,
-                    parallel_angle=math.degrees(self.safe_ngon_parallel_angle),
-                    merge_distance=self.safe_ngon_merge_distance,
-                )
-                _raise_for_invalid_topology(mesh, stats)
-                pipeline_stats.append(stats)
-                mark_sharp_edges_by_split_normal(mesh)
-                mesh.select_set(True)
-        except Exception as error:
-            _restore_cad_rollback_snapshots(rollback_snapshots)
-            restore_select_mode(store_mode)
-            self.report({"ERROR"}, str(error))
-            raise
-        else:
-            _discard_cad_rollback_snapshots(rollback_snapshots)
+        for mesh in selected_meshes:
+            Transform.apply(mesh, location=False, rotation=True, scale=True)
+        Mesh.merge_verts_ops(selected_meshes)
+
+        bad_meshes = check_non_solid_meshes(selected_meshes)
+        if bad_meshes:
+            bad_mesh_count = len(bad_meshes)
+            self.report(
+                {"ERROR"},
+                f"{bad_mesh_count} selected meshes has open boundary | {bad_mesh_count}个选中的模型有开放边界",
+            )
+            return {"CANCELLED"}
+
+        for mesh in selected_meshes:
+            mark_sharp_edges_by_split_normal(mesh)
+            mesh.select_set(True)
 
         restore_select_mode(store_mode)
-        print(f"Fix CAD Obj stats: {pipeline_stats}")
         self.report({"INFO"}, "Selected meshes fixed")
         return {"FINISHED"}
 

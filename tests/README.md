@@ -21,9 +21,6 @@
 - AO bake operator headless smoke test
 - wearmask AO proxy 拓扑回归（确保 proxy 捕获 bevel 后几何，并被 Data Transfer 正确引用）
 - asset origin / snap transform / reset to origin smoke test
-- Safe Ngon CAD pipeline 的 topology repair、UV/Material/Attribute 保留、重复运行与临时资源清理回归
-- Safe Ngon Clean 前 custom normals 恢复与有效性回归
-- Fix CAD Obj → Prepare CAD Mesh 的 Multi-user 隔离与 topology 幂等回归
 - prop / decal collection 标记 smoke test
 - isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
