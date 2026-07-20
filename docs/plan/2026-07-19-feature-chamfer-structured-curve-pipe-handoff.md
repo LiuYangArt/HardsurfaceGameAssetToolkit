@@ -422,3 +422,74 @@ Object: Extruded.002
 - `codebase-design`：保持 FeatureGraph、RailSolver、StripBuilder、PortExtractor、JunctionSolver 深模块边界。
 - `windows-patch-fallback`：Windows 文件编辑。
 - `verification-before-completion`：真实主文件 + 近景 artifacts + 完整 suite。
+
+## 9. 2026-07-20 实施审计与恢复状态
+
+> 历史审计快照（已被 `docs/plan/2026-07-20-feature-chamfer-gn-preview-recovery-tasklist.md` 的后续状态取代）：当时本轮不能视为计划完成。Phase 0 与 Phase 1 的底层 spike 有可复用价值，但正式 `hst.feature_chamfer_gn` Preview 尚未接入新 Curve backend；Phase 2 未过 Go 门槛，Phase 3–6 的原型属于越阶段实现，必须撤回正式入口并重新实施。
+
+### 9.1 目标入口与可见成功条件
+
+本计划的目标入口明确为 UI 中的 `Feature Chamfer GN Preview`，即 `hst.feature_chamfer_gn`，不是旁边的 `hst.experimental_pipe_chamfer`，也不是只能手工打开的离线 `.blend` artifact。
+
+Phase 1 的首个用户可见交付必须是：
+
+```text
+hst.feature_chamfer_gn PREVIEW
+  → Python 从 source Sharp Edges 构建 FeatureGraph
+  → 按 connection angle / Patch ownership / convexity / miter guard 配对
+  → 锐角或不兼容位置断开，连续方向合成无分支 CutterStrands
+  → 生成受 Operator 生命周期管理的 Curve Object / splines
+  → Preview Geometry Nodes 消费这些 Curves
+  → Curve-To-Mesh Even-Thickness 生成 Boolean cutter
+  → 用户第一次点击 Preview 即看到新 cutter 结果
+```
+
+Python 负责分组与 topology decision；Geometry Nodes 只负责消费分组 Curve、生成 Pipe、Boolean 和显示。禁止让旧 GN 再从整张 Sharp Mesh 自行运行 `Mesh to Curve` 推导另一套 strands。
+
+### 9.2 审计后可保留
+
+- Phase 0：复杂 `END_CAP/JUNCTION` 不再保留 `TRACKED_BOOLEAN_SURFACE` 槽面冒充 Chamfer，失败时保留 source/preview。
+- 受控资产：`Curve-To-Mesh Even-Thickness`、`Poly-Curve Info`、版本/source/fingerprint 常量及构建脚本。
+- FeatureGraph spike：任意 degree 的 maximum-weight strand matching、逐 Edge Patch ownership、degree-3 regression。
+- Curve Pipe backend/probe：Python groups 可以生成 Even-Thickness Pipe；主文件 source fingerprint 保持不变。
+- Phase 2 rail A/B 代码、JSON 与 `.blend` 仅作为实验诊断保存，不代表正式功能通过。
+
+### 9.3 必须撤回或隔离
+
+- 撤回 `hst.feature_chamfer_gn FINALIZE` 中提前加入的 structured preflight；在 Phase 1 Preview 接通、Phase 2 通过前，不改正式 Finalize。
+- 撤回/隔离 `build_structured_feature_chamfer_artifacts`、StripPort、JunctionRecord、Junction Mesh 与相应“PASS”测试。
+- 删除 junction center-fan/简单投影排序补面原型；它违反本计划“不得靠通用 Fill/fan 掩盖 solver”的禁止项。
+- 不再把离线 strip/junction artifact、字段 contract 或 topology clean 表述为 Phase 3–6 完成。
+- `Feature Chamfer GN Preview` 仍调用旧 `ensure_gn_feature_chamfer_preview()` 并显示旧 SDF cutter；这是当前最关键的缺失链路。
+
+### 9.4 当前阶段状态
+
+| 阶段 | 状态 | 证据与下一步 |
+|---|---|---|
+| Phase 0 | 已完成 | 复杂伪 Finalize fail-closed；需保留相关 regression。 |
+| Phase 1A：FeatureGraph/资产 spike | 部分完成 | matching、资产与 Pipe probe 可复用。 |
+| Phase 1B：接入正式 GN Preview | 未开始 | 必须让 `hst.feature_chamfer_gn` 第一次 Preview 可见地使用 Python CutterStrands + Even-Thickness。 |
+| Phase 2 | Stop | source-surface records 为 51/51，但严格 guard 仅 17/51；不得进入 junction。 |
+| Phase 3–5 | 未开始 | 现有 strip/port/junction 仅为越阶段 prototype，撤回后重新按门槛实施。 |
+| Phase 6 | 未开始 | 不得声称已接回 Operator/UI。 |
+
+### 9.5 恢复顺序与硬门槛
+
+1. 先撤回越阶段的正式 Operator/Finalize、strip、port、junction 改动，保留 Phase 0、FeatureGraph、资产和 probes。
+2. 为 `hst.feature_chamfer_gn` 建立唯一 Preview seam：输入为 Python 生成的 Curve Object/Collection，输出为 Even-Thickness cutter + Boolean Preview。
+3. 新增 Operator 级 regression：调用 `PREVIEW` 后断言实际 modifier 使用新受控资产、Curve strands 与 source Sharp graph mapping 一致；禁止只调用底层 builder 测试。
+4. 主文件保存同一机位的旧 SDF 与新 Curve cutter 近景；至少覆盖急转角、cyclic hole、degree-3 junction。
+5. 只有用户可见 Preview 和 Phase 1 数值/视觉门槛通过，才恢复 Phase 2 rail spike。
+6. Phase 2 rail coverage/ownership/geometry guard 达到 100% 前，禁止新增或接入 StripPort/JunctionSolver/Finalize。
+7. Phase 3–5 各自通过真实主文件近景和数值门槛后，才能进入 Phase 6。
+
+### 9.6 防止再次偏航的执行规则
+
+- 每个阶段开始前写清 `目标 Operator / 用户操作 / 应看到的可见变化 / 自动证据`；缺一项不得开始实现。
+- 每个阶段结束时必须从 UI Operator 入口做一次验收；底层函数、headless JSON、离线 artifact 不能替代入口验收。
+- Stop/Go 条件做成任务清单：前一阶段未 Go，后续阶段代码不得进入正式入口。
+- 测试分三层并明确命名：`algorithm unit`、`backend probe`、`operator acceptance`；禁止用前两层的绿色结果宣称第三层完成。
+- 完成声明必须逐项引用计划门槛，并附用户可见 artifact；不能只报告测试数量或 topology clean。
+- 发现实际入口与假设不一致时立即停工并重新定位，不允许先完成旁路 prototype 再声称已接入。
+
+本次偏差的完整原因、影响与长期预防措施见：`docs/postmortem/2026-07-20-feature-chamfer-preview-integration-drift.md`。

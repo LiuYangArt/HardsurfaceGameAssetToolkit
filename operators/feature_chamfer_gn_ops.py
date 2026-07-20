@@ -85,9 +85,9 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
     resolved_action: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     source_object_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     radius: bpy.props.FloatProperty(name="Radius", default=0.03, min=1.0e-5)
-    sample_length: bpy.props.FloatProperty(name="Sample Length", default=0.01, min=1.0e-5)
-    voxel_size: bpy.props.FloatProperty(name="Voxel Size", default=0.0075, min=1.0e-5)
-    adaptivity: bpy.props.FloatProperty(name="Adaptivity", default=0.05, min=0.0, max=1.0)
+    sample_length: bpy.props.FloatProperty(name="Sample Length", default=0.01, min=1.0e-5, options={"HIDDEN"})
+    voxel_size: bpy.props.FloatProperty(name="Voxel Size", default=0.0075, min=1.0e-5, options={"HIDDEN"})
+    adaptivity: bpy.props.FloatProperty(name="Adaptivity", default=0.05, min=0.0, max=1.0, options={"HIDDEN"})
     show_cutter: bpy.props.BoolProperty(name="Show Cutter", default=False)
 
     def invoke(self, context, event):
@@ -223,17 +223,11 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
         if preview_modifier is not None and preview_state(source_object) != PREVIEW_VALID:
             live_parameters = live_preview_parameters(preview_modifier)
             self.radius = live_parameters["radius"]
-            self.sample_length = live_parameters["sample_length"]
-            self.voxel_size = live_parameters["voxel_size"]
-            self.adaptivity = live_parameters["adaptivity"]
             self.show_cutter = live_parameters["show_cutter"]
         try:
             ensure_gn_feature_chamfer_preview(
                 source_object=source_object,
                 radius=self.radius,
-                sample_length=self.sample_length,
-                voxel_size=self.voxel_size,
-                adaptivity=self.adaptivity,
                 show_cutter=self.show_cutter,
             )
         except FeatureChamferPreviewError as error:
@@ -246,7 +240,4 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
         del context
         layout = self.layout
         layout.prop(self, "radius")
-        layout.prop(self, "sample_length")
-        layout.prop(self, "voxel_size")
-        layout.prop(self, "adaptivity")
         layout.prop(self, "show_cutter")

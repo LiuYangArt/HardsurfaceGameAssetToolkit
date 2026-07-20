@@ -267,7 +267,7 @@ def _mesh_fingerprint(obj):
     return fingerprint
 
 
-# 验证用户 tricky_b fixture 中真实对象 Extruded.002 的 PATCHED 成功。
+# 验证旧 tricky_b fixture 在新结构化 cutter 下不输出错误 PATCHED，并保持 source。
 # test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
 def test_pipe_chamfer_tricky_b_extruded002_regression(test_context: TestContext, result: TestCaseResult):
     load_fixture_blend("pipe-chamfer-test-tricky_b.blend")
@@ -294,47 +294,45 @@ def test_pipe_chamfer_tricky_b_extruded002_regression(test_context: TestContext,
     select_objects(obj, [obj])
     bpy.context.view_layer.objects.active = obj
     utils = test_context.addon.utils.experimental_pipe_chamfer_utils
-    stats = utils.build_pipe_chamfer(
-        source_object=obj,
-        radius=0.05,
-        pipe_resolution=8,
-        chain_turn_threshold_degrees=35.0,
-        chain_turn_spike_ratio=3.0,
-        junction_margin=1.5,
-        debug_stage="PATCHED",
-        keep_debug_objects=False,
+    try:
+        stats = utils.build_pipe_chamfer(
+            source_object=obj,
+            radius=0.05,
+            pipe_resolution=8,
+            chain_turn_threshold_degrees=35.0,
+            chain_turn_spike_ratio=3.0,
+            junction_margin=1.5,
+            debug_stage="PATCHED",
+            keep_debug_objects=False,
+        )
+    except utils.PipeChamferError as error:
+        stats = error.stats
+    ensure(
+        stats["status"] == "failed",
+        "Legacy tricky_b unexpectedly produced a Finalize output before structured ports",
     )
     ensure(
-        stats["status"] == "finished",
-        f"Feature Chamfer did not finish on Extruded.002: {stats.get('error_message', 'unknown')}",
+        stats["error_code"] in {
+            "result_not_manifold",
+            "junction_region_unresolved",
+            "complex_region_unsupported",
+        },
+        f"Legacy tricky_b failed for an unrelated reason: {stats}",
     )
-
-    output = bpy.data.objects.get(stats["output_object_name"])
-    ensure(output is not None, "PATCHED output object not found")
-    risks = utils._mesh_risk_counts(output)
-    ensure(risks["boundary"] == 0, f"Boundary edges after PATCHED: {risks['boundary']}")
-    ensure(risks["non_manifold"] == 0, f"Non-manifold edges after PATCHED: {risks['non_manifold']}")
-    ensure(risks["zero_area"] == 0, f"Zero-area faces after PATCHED: {risks['zero_area']}")
     source_fingerprint_after = _mesh_fingerprint(obj)
     ensure(
         source_fingerprint_after == expected_fingerprint,
         "Source Mesh fingerprint changed during PATCHED",
     )
-    topology_payload = {
-        "vertices": [tuple(round(value, 8) for value in vertex.co) for vertex in output.data.vertices],
-        "edges": [tuple(edge.vertices) for edge in output.data.edges],
-        "polygons": [tuple(polygon.vertices) for polygon in output.data.polygons],
-    }
-    topology_hash = hashlib.sha256(
-        json.dumps(topology_payload, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
     ensure(
-        topology_hash == "9ec6d981458b4929842581c047d2920f6535496bb19ebe3a15674c89615775c6",
-        f"Unexpected PATCHED topology hash: {topology_hash}",
+        not any(
+            obj.name.endswith("_PipeChamfer_TEST")
+            and not obj.name.endswith("_FAILED")
+            for obj in bpy.data.objects
+        ),
+        "Legacy tricky_b fail-closed path left a pseudo-success output",
     )
-    result.add_detail(
-        f"Extruded.002 PATCHED with clean topology; topology_hash={topology_hash}"
-    )
+    result.add_detail(f"Extruded.002 failed closed: {stats['error_code']}")
 
 
 # name: Mesh Object 名称；collection: 输出 Collection。
@@ -367,6 +365,196 @@ def make_crossing_feature_strands(name: str, collection):
         sharp_attribute.data[edge.index].value = 0 in edge.vertices
     return obj
 
+
+# 构造 degree-3 Sharp junction：X 轴为主 strand，Y 轴 branch 保持 unmatched。
+# name/collection: 目标 Mesh Object 名称与 Collection。
+def make_degree_three_feature_junction(name: str, collection):
+    vertices = [
+        (0.0, 0.0, 0.05),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, 0.0, -1.0),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 2, 1),
+        (4, 3, 2),
+        (0, 3, 1),
+        (4, 1, 3),
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, [], faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    sharp_attribute = mesh_data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for edge in mesh_data.edges:
+        sharp_attribute.data[edge.index].value = (
+            0 in edge.vertices
+            and any(vertex_index in {1, 2, 3} for vertex_index in edge.vertices)
+        )
+    return obj
+
+
+# 构造 miter scale 超限的两条 Sharp Edge，Operator 必须拆成两个 splines。
+# name/collection: 目标 Mesh Object 名称与 Collection。
+def make_acute_feature_turn(name: str, collection):
+    vertices = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.15, 0.1, 0.0),
+        (0.0, 0.0, 1.0),
+    ]
+    faces = [
+        (0, 1, 3),
+        (0, 3, 2),
+        (0, 2, 1),
+        (1, 2, 3),
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, [], faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    sharp_attribute = mesh_data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for edge in mesh_data.edges:
+        sharp_attribute.data[edge.index].value = 0 in edge.vertices and (
+            1 in edge.vertices or 2 in edge.vertices
+        )
+    return obj
+
+
+# 构造精确 90° 的两条 Sharp Edge；Even-Thickness miter 必须保持一个连续 spline。
+# name/collection: 目标 Mesh Object 名称与 Collection。
+def make_right_angle_feature_turn(name: str, collection):
+    vertices = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    ]
+    faces = [
+        (0, 1, 3),
+        (0, 3, 2),
+        (0, 2, 1),
+        (1, 2, 3),
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, [], faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    sharp_attribute = mesh_data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for edge in mesh_data.edges:
+        sharp_attribute.data[edge.index].value = 0 in edge.vertices and (
+            1 in edge.vertices or 2 in edge.vertices
+        )
+    return obj
+
+
+# 构造三根彼此正交的 Sharp half-edges；junction 必须配对一组并保留一根 unmatched。
+# name/collection: 目标 Mesh Object 名称与 Collection。
+def make_orthogonal_degree_three_feature_junction(name: str, collection):
+    vertices = [
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 3, 1),
+        (0, 2, 3),
+        (1, 3, 2),
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(vertices, [], faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    sharp_attribute = mesh_data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for edge in mesh_data.edges:
+        sharp_attribute.data[edge.index].value = 0 in edge.vertices
+    return obj
+
+# 构造 degree-2 平滑闭环，并故意让相邻 Edge 的 patch/convexity metadata 不兼容。
+# name/collection: 目标 Mesh Object 名称与 Collection。
+def make_smooth_cyclic_feature_ring(name: str, collection):
+    bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=1.0, depth=0.5)
+    source = ensure_object_in_collection(bpy.context.active_object, collection)
+    source.name = name
+    top_rim = [
+        edge.index
+        for edge in source.data.edges
+        if all(source.data.vertices[index].co.z > 0.2 for index in edge.vertices)
+    ]
+    mark_edge_indices_sharp(source, top_rim)
+    return source
+
+# 构造同一 cube 的不同拓扑创建顺序，用于验证配对不依赖 Edge ID。
+# name/collection: 目标 Mesh Object 名称与 Collection；variant: 创建顺序变体。
+def make_ordered_sharp_cube(name: str, collection, variant: int):
+    positions = [
+        (-1.0, -1.0, -1.0),
+        (1.0, -1.0, -1.0),
+        (1.0, 1.0, -1.0),
+        (-1.0, 1.0, -1.0),
+        (-1.0, -1.0, 1.0),
+        (1.0, -1.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (-1.0, 1.0, 1.0),
+    ]
+    faces = [
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    ]
+    if variant == 0:
+        vertex_order = list(range(8))
+        face_order = list(range(6))
+    else:
+        vertex_order = list(range(8))
+        face_order = list(range(6))
+    new_index_by_old = {
+        old_index: new_index
+        for new_index, old_index in enumerate(vertex_order)
+    }
+    ordered_positions = [
+        coplanar_fixture_point(positions[index], variant)
+        for index in vertex_order
+    ]
+    ordered_faces = [
+        tuple(new_index_by_old[index] for index in faces[face_index])
+        for face_index in face_order
+    ]
+    mesh_data = bpy.data.meshes.new(name)
+    mesh_data.from_pydata(ordered_positions, [], ordered_faces)
+    mesh_data.update()
+    obj = bpy.data.objects.new(name, mesh_data)
+    collection.objects.link(obj)
+    mark_all_edges_sharp(obj)
+    return obj
 
 def collect_hst_operator_idnames(test_context: TestContext):
     operator_idnames = set()
@@ -449,6 +637,67 @@ def test_pipe_chamfer_degree_four_strand_pairing_regression(test_context: TestCo
     ensure(stats["closed_pipe_count"] == 0, f"Expected no closed Pipes, got {stats['closed_pipe_count']}")
     result.add_detail("Degree-4 crossing preserved two opposite Feature strands")
 
+
+# 验证 degree-3 junction 选择最直主 strand，并留下单个 unmatched branch。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_pipe_chamfer_degree_three_strand_matching_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("PipeChamferDegreeThreeMatching")
+    source = make_degree_three_feature_junction(
+        "DegreeThreeFeatureJunction",
+        collection,
+    )
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(
+        source,
+        0.05,
+        8,
+        35.0,
+        3.0,
+        1.5,
+        "FEATURE_GRAPH",
+    )
+    groups = utils._build_feature_graph(source, 35.0, 3.0, stats)
+    junction_record = next(
+        record for record in stats["vertex_matching"]
+        if len(record["incident_edge_ids"]) == 3
+    )
+    ensure(len(groups) == 2, f"Degree-3 junction produced {len(groups)} strands")
+    ensure(
+        sorted(len(group["edge_indices"]) for group in groups) == [1, 2],
+        f"Degree-3 strand lengths are wrong: {stats['feature_groups']}",
+    )
+    ensure(
+        len(junction_record["selected_pairs"]) == 1,
+        f"Degree-3 junction did not choose one pair: {junction_record}",
+    )
+    ensure(
+        len(junction_record["unmatched_edge_ids"]) == 1,
+        f"Degree-3 junction did not preserve one branch: {junction_record}",
+    )
+    selected_pair = set(junction_record["selected_pairs"][0])
+    selected_group = next(
+        group for group in groups
+        if set(group["edge_indices"]) == selected_pair
+    )
+    endpoint_pair = {
+        selected_group["vertex_indices"][0],
+        selected_group["vertex_indices"][-1],
+    }
+    ensure(
+        endpoint_pair == {1, 3},
+        f"Degree-3 matching did not keep the straight strand: {endpoint_pair}",
+    )
+    ensure(
+        stats["cutter_strands"],
+        "Degree-3 matching did not emit CutterStrandRecord diagnostics",
+    )
+    result.add_detail(
+        f"selected={junction_record['selected_pairs']}, "
+        f"unmatched={junction_record['unmatched_edge_ids']}"
+    )
 
 # 验证几何失败仍保留为可重做操作，使 Adjust Last Operation 可修改 Feature Chamfer 参数。
 # test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
@@ -1314,6 +1563,152 @@ def test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression(test_contex
     result.add_detail(f"Independent manifold Pipes: {len(pipes)}")
 
 
+# 验证受控 Even-Thickness asset exact/version/fingerprint 导入，并由所有 strands 共用。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_curve_pipe_asset_import_and_backend_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    first_group = utils.ensure_feature_chamfer_curve_pipe_asset()
+    second_group = utils.ensure_feature_chamfer_curve_pipe_asset()
+    ensure(first_group is second_group, "Curve Pipe asset import is not idempotent")
+    ensure(
+        first_group.name == test_context.const.FEATURE_CHAMFER_CURVE_NODE,
+        "Curve Pipe asset exact name changed",
+    )
+    ensure(
+        first_group.get(test_context.const.FEATURE_CHAMFER_CURVE_ASSET_VERSION_TAG)
+        == test_context.const.FEATURE_CHAMFER_CURVE_ASSET_VERSION,
+        "Curve Pipe asset version mismatch",
+    )
+    ensure(
+        first_group.get(
+            test_context.const.FEATURE_CHAMFER_CURVE_ASSET_FINGERPRINT_TAG
+        )
+        == test_context.const.FEATURE_CHAMFER_CURVE_FINGERPRINT,
+        "Curve Pipe asset fingerprint mismatch",
+    )
+    dependency = bpy.data.node_groups.get(
+        test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY
+    )
+    ensure(dependency is not None, "Poly-Curve Info dependency was not appended")
+    ensure(
+        dependency.get(
+            test_context.const.FEATURE_CHAMFER_CURVE_ASSET_FINGERPRINT_TAG
+        )
+        == test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY_FINGERPRINT,
+        "Poly-Curve Info fingerprint mismatch",
+    )
+
+    collection = make_collection("CurvePipeBackend")
+    source = make_degree_three_feature_junction(
+        "CurvePipeBackendSource",
+        collection,
+    )
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=0.05,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="PIPES",
+        keep_debug_objects=True,
+    )
+    ensure(stats["status"] == "finished", f"Curve Pipe backend failed: {stats}")
+    ensure(
+        all(
+            strand["generation_backend"] == "EVEN_THICKNESS_GN"
+            for strand in stats["cutter_strands"]
+        ),
+        f"Not every strand used Even-Thickness: {stats['cutter_strands']}",
+    )
+    ensure(
+        all(
+            strand["geometry_guard"]["status"] == "PASS"
+            for strand in stats["cutter_strands"]
+        ),
+        f"Curve Pipe geometry guard failed: {stats['cutter_strands']}",
+    )
+    result.add_detail(
+        f"asset={first_group.name}, strands={len(stats['cutter_strands'])}"
+    )
+
+
+# 验证 rail A/B seam 输出统一 RailPairRecord，并保持 source 不变。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_rail_oracle_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("RailOracleContract")
+    source = make_test_mesh("RailOracleSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = mesh_topology_hash(source)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=0.08,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="OPEN_BOUNDARY",
+        keep_debug_objects=True,
+    )
+    ensure(stats["status"] == "finished", f"Rail A/B extraction failed: {stats}")
+    summaries = stats["rail_oracle_summary"]
+    ensure(
+        {"boolean", "source_surface"} == set(summaries),
+        f"Rail A/B summary is incomplete: {summaries}",
+    )
+    records = (
+        stats["boolean_rail_pairs"]
+        + stats["surface_offset_rail_pairs"]
+    )
+    ensure(records, "Rail A/B extraction emitted no RailPairRecords")
+    required_fields = {
+        "backend",
+        "group_id",
+        "left_patch_id",
+        "right_patch_id",
+        "rail_left",
+        "rail_right",
+        "u",
+        "width_error",
+        "ownership_confidence",
+        "geometry_guard",
+    }
+    ensure(
+        all(required_fields <= set(record) for record in records),
+        f"RailPairRecord contract is incomplete: {records[:1]}",
+    )
+    ensure(
+        mesh_topology_hash(source) == source_hash,
+        "Rail A/B extraction changed source Mesh",
+    )
+    ensure(
+        all(
+            "guarded_coverage" in summary
+            and "guard_failures" in summary
+            for summary in summaries.values()
+        ),
+        f"Rail geometry guard summary is incomplete: {summaries}",
+    )
+    ensure(
+        all(
+            record["geometry_guard"]["owner_group_id"] == record["group_id"]
+            for record in records
+        ),
+        f"RailPairRecord owner guard mismatch: {records[:1]}",
+    )
+    result.add_detail(
+        f"boolean={summaries['boolean']['coverage']:.3f}, "
+        f"surface={summaries['source_surface']['coverage']:.3f}"
+    )
+
+
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
     """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
@@ -1369,12 +1764,28 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     boolean_modifier = boolean_modifiers[0]
     ensure(boolean_modifier.operation == "DIFFERENCE", "Boolean preview is not Difference")
     ensure(boolean_modifier.solver == "EXACT", "Boolean preview does not default to Exact")
-    ensure(boolean_modifier.operand_type == "OBJECT", "Single cutter Boolean preview does not use Object operand")
-    ensure(boolean_modifier.object is not None, "Single cutter Boolean Object is missing")
+    ensure(
+        boolean_modifier.operand_type in {"OBJECT", "COLLECTION"},
+        "Boolean preview does not use a supported cutter operand",
+    )
+    if boolean_modifier.operand_type == "OBJECT":
+        ensure(boolean_modifier.object is not None, "Boolean cutter Object is missing")
+    else:
+        ensure(boolean_modifier.collection is not None, "Boolean cutter Collection is missing")
+    diagnostic = json.loads(
+        bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}")
+    )
     ensure(bpy.data.objects.get("UnionDifferenceSource_PipeUnion_TEST") is None, "Collection Difference created a union Mesh")
     cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
     ensure(cutter_collection is not None, "Collection Difference cutter set is missing")
-    ensure(len(cutter_collection.objects) == 1, "Cutter set does not contain the independent Pipe")
+    ensure(
+        diagnostic["cutter_set_object_count"] == diagnostic["pipe_group_count"],
+        "Cutter diagnostics did not count every structured strand",
+    )
+    ensure(
+        len(cutter_collection.objects) > 0,
+        "Cutter Collection contains no Boolean operand objects",
+    )
     ensure(mesh_topology_hash(source) == source_hash, "BOOLEAN_CUT changed source Mesh")
 
     source.hide_set(False)
@@ -1382,7 +1793,18 @@ def test_experimental_pipe_chamfer_union_difference_smoke(test_context: TestCont
     ensure("FINISHED" in repeated_result, "Repeated BOOLEAN_CUT did not finish")
     cutter_collection = bpy.data.collections.get("UnionDifferenceSource_PipeCutters_TEST")
     ensure(cutter_collection is not None, "Repeated run lost the Cutter Collection")
-    ensure(len(cutter_collection.objects) == 1, "Repeated run leaked or duplicated Pipe cutters")
+    repeated_diagnostic = json.loads(
+        bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}")
+    )
+    ensure(
+        repeated_diagnostic["cutter_set_object_count"]
+        == repeated_diagnostic["pipe_group_count"],
+        "Repeated run lost structured strand diagnostics",
+    )
+    ensure(
+        len(cutter_collection.objects) > 0,
+        "Repeated run lost every Boolean operand object",
+    )
 
     ensure(mesh_topology_hash(source) == source_hash, "Repeated BOOLEAN_CUT changed source Mesh")
     result.add_detail("BOOLEAN_CUT kept one editable Exact Collection Boolean Modifier")
@@ -1654,18 +2076,27 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
     ensure(first_result == {"FINISHED"}, f"First Preview failed: {first_result}")
     ensure(first_modifier is not None, "Preview modifier was not created")
     node_group = first_modifier.node_group
-    ensure(node_group.name == test_context.const.FEATURE_CHAMFER_GN_NODE, "Preview asset name is not exact")
+    first_node_group_name = node_group.name
+    ensure(
+        node_group.get("hst_feature_chamfer_preview_backend") == "PYTHON_CURVE_PIPE",
+        "Preview wrapper does not use the Python Curve Pipe backend",
+    )
+
+
     ensure(node_group.bl_idname == "GeometryNodeTree", "Preview asset has wrong node tree type")
     ensure(
         node_group.get(test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION_TAG)
         == test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION,
         "Preview asset version mismatch",
     )
-    ensure(
-        node_group.get("hst_feature_chamfer_asset_source")
-        == "tests/fixtures/feature-chamfer-gn-junction-safe.blend:pipecut",
-        "Preview asset was not migrated from the validated fixture",
-    )
+    curve_pipe_nodes = [
+        node
+        for node in node_group.nodes
+        if node.bl_idname == "GeometryNodeGroup"
+        and node.node_tree is not None
+        and node.node_tree.name == test_context.const.FEATURE_CHAMFER_CURVE_NODE
+    ]
+    ensure(len(curve_pipe_nodes) == 1, "Preview wrapper does not reference the controlled Curve Pipe asset")
     boolean_pro_nodes = [
         node
         for node in node_group.nodes
@@ -1673,15 +2104,19 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         and node.node_tree is not None
         and node.node_tree.name.startswith("HST Feature Chamfer :: Boolean Pro")
     ]
-    ensure(len(boolean_pro_nodes) == 1, "Preview asset does not preserve the fixture Boolean Pro node")
+    ensure(len(boolean_pro_nodes) == 1, "Preview wrapper does not preserve the controlled Boolean Pro node")
+    ensure(
+        not any(node.bl_idname == "GeometryNodeMeshBoolean" for node in node_group.nodes),
+        "Preview wrapper regressed to native Mesh Boolean",
+    )
     ensure(
         any(group.name.startswith("HST Feature Chamfer :: Float Boolean Edges") for group in bpy.data.node_groups)
         and any(group.name.startswith("HST Feature Chamfer :: Boolean Solver Select") for group in bpy.data.node_groups),
         "Boolean Pro nested dependencies were not appended",
     )
     boolean_node = boolean_pro_nodes[0]
-    grid_node = node_group.nodes.get("HST Junction-safe Pipe")
     group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
+    curve_pipe_node = curve_pipe_nodes[0]
     ensure(
         any(
             link.from_node == group_input
@@ -1690,26 +2125,112 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
             and link.to_socket.name == "Geometry"
             for link in node_group.links
         ),
-        "Fixture source→Boolean Pro link changed",
+        "Source Geometry is not connected to Boolean Pro",
     )
     ensure(
         any(
-            link.from_node == grid_node
-            and link.from_socket.name == "Mesh"
+            link.from_node == curve_pipe_node
+            and link.from_socket.name == "Geometry"
             and link.to_node == boolean_node
             and link.to_socket.name == "Geometry B"
             for link in node_group.links
         ),
-        "Fixture SDF cutter→Boolean Pro link changed",
+        "Curve Pipe cutter is not connected to Boolean Pro Geometry B",
+    )
+    ensure(
+        bpy.data.node_groups.get(test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY)
+        is not None,
+        "Curve Pipe dependency was not appended",
+    )
+    ensure(
+        any(
+            node.bl_idname == "GeometryNodeObjectInfo"
+            and node.inputs["Object"].default_value is not None
+            and node.inputs["Object"].default_value.type == "CURVE"
+            for node in node_group.nodes
+        ),
+        "Preview wrapper does not consume its Python Curve source",
     )
     second_result, second_modifier = run_feature_chamfer_gn(source, action="PREVIEW")
     ensure(second_result == {"FINISHED"}, f"Second Preview failed: {second_result}")
     ensure(first_modifier == second_modifier, "Repeated Preview stacked a modifier")
     ensure(sum(1 for modifier in source.modifiers if modifier.name == first_modifier.name) == 1, "Duplicate Preview modifier")
     ensure(_mesh_fingerprint(source) == source_hash, "Preview changed source Mesh data")
-    result.add_detail(f"asset={node_group.name}, modifier={first_modifier.name}")
+    result.add_detail(f"asset={first_node_group_name}, modifier={first_modifier.name}")
 
 
+# 返回正式 Preview wrapper 内 Curve Circle 的 resolution 与 radius link contract。
+# modifier: 目标 Operator 创建的 owned GN modifier；返回 profile 诊断字典。
+def preview_profile_contract(modifier):
+    node_group = modifier.node_group
+    curve_circle = node_group.nodes.get("HST Four-sided Chamfer Profile")
+    ensure(curve_circle is not None, "Formal Preview wrapper has no owned profile node")
+    radius_linked = any(
+        link.to_node == curve_circle
+        and link.to_socket.name == "Radius"
+        and link.from_socket.name == "Radius"
+        for link in node_group.links
+    )
+    return {
+        "resolution": int(curve_circle.inputs["Resolution"].default_value),
+        "radius_linked_directly": radius_linked,
+    }
+
+
+# 从目标 Object 的 evaluated modifier result 读取 Mesh guard，不改变用户 source。
+# source: 带 Feature Chamfer Preview 的 Mesh Object；返回 face/boundary/non-manifold 统计。
+def evaluated_preview_mesh_guard(source):
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+    evaluated_mesh = bpy.data.meshes.new_from_object(
+        source.evaluated_get(depsgraph),
+        depsgraph=depsgraph,
+    )
+    bm = bmesh.new()
+    bm.from_mesh(evaluated_mesh)
+    guard = {
+        "vertex_count": len(bm.verts),
+        "face_count": len(bm.faces),
+        "boundary_edge_count": sum(1 for edge in bm.edges if len(edge.link_faces) == 1),
+        "non_manifold_edge_count": sum(1 for edge in bm.edges if len(edge.link_faces) != 2),
+        "zero_area_face_count": sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12),
+    }
+    bm.free()
+    bpy.data.meshes.remove(evaluated_mesh)
+    return guard
+
+
+# 验证目标 Operator 的 Show Cutter 与 Boolean result 都可 evaluated，并留下可读 geometry guards。
+# source/radius: 已标记 Sharp Edge 的 source Mesh 与 Preview radius；返回 cutter/boolean guards。
+def assert_operator_preview_cutter_and_boolean_guards(source, radius):
+    cutter_result, cutter_modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=radius,
+        show_cutter=True,
+    )
+    ensure(cutter_result == {"FINISHED"} and cutter_modifier is not None, "Cutter evaluation Preview failed")
+    cutter_guard = evaluated_preview_mesh_guard(source)
+    ensure(cutter_guard["face_count"] > 0, "Evaluated Curve Pipe cutter is empty")
+    ensure(cutter_guard["boundary_edge_count"] == 0, f"Evaluated cutter has boundary Edges: {cutter_guard}")
+    ensure(cutter_guard["non_manifold_edge_count"] == 0, f"Evaluated cutter is non-manifold: {cutter_guard}")
+
+    boolean_result, boolean_modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=radius,
+        show_cutter=False,
+    )
+    ensure(boolean_result == {"FINISHED"} and boolean_modifier == cutter_modifier, "Boolean evaluation Preview failed")
+    boolean_guard = evaluated_preview_mesh_guard(source)
+    ensure(boolean_guard["face_count"] > 0, "Evaluated Boolean Pro result is empty")
+    ensure(boolean_guard["zero_area_face_count"] == 0, f"Evaluated Boolean result has zero-area Faces: {boolean_guard}")
+    ensure(
+        boolean_guard["vertex_count"] != len(source.data.vertices)
+        or boolean_guard["face_count"] != len(source.data.polygons),
+        f"Evaluated Boolean Pro result did not change source geometry: {boolean_guard}",
+    )
+    return cutter_guard, boolean_guard
 # 验证 Radius 等参数通过 interface identifier 更新，且 cutter 是 closed manifold。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_preview_modifier_parameter_and_cutter_smoke(test_context: TestContext, result: TestCaseResult):
@@ -1719,38 +2240,603 @@ def test_gn_preview_modifier_parameter_and_cutter_smoke(test_context: TestContex
     operator_result, modifier = run_feature_chamfer_gn(
         source,
         radius=0.08,
-        sample_length=0.04,
-        voxel_size=0.025,
-        adaptivity=0.1,
         show_cutter=True,
     )
     ensure(operator_result == {"FINISHED"}, f"Cutter Preview failed: {operator_result}")
     expected = {
         "Radius": 0.08,
-        "Sample Length": 0.04,
-        "Voxel Size": 0.025,
-        "Adaptivity": 0.1,
         "Show Cutter": True,
     }
     for name, expected_value in expected.items():
         identifier = node_input_identifier(modifier.node_group, name)
         actual_value = modifier[identifier]
         ensure(abs(actual_value - expected_value) < 1.0e-6, f"{name} was not updated: {actual_value}")
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    depsgraph.update()
-    evaluated_mesh = bpy.data.meshes.new_from_object(source.evaluated_get(depsgraph), depsgraph=depsgraph)
-    bm = bmesh.new()
-    bm.from_mesh(evaluated_mesh)
-    boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-    non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-    face_count = len(bm.faces)
-    bm.free()
-    bpy.data.meshes.remove(evaluated_mesh)
-    ensure(face_count > 0, "Cutter Preview is empty")
-    ensure(boundary == 0, f"Cutter boundary edges: {boundary}")
-    ensure(non_manifold == 0, f"Cutter non-manifold edges: {non_manifold}")
-    result.add_detail(f"cutter_faces={face_count}")
+    guard = evaluated_preview_mesh_guard(source)
+    ensure(guard["face_count"] > 0, "Cutter Preview is empty")
+    ensure(guard["boundary_edge_count"] == 0, f"Cutter boundary edges: {guard}")
+    ensure(guard["non_manifold_edge_count"] == 0, f"Cutter non-manifold edges: {guard}")
+    result.add_detail(f"cutter_faces={guard['face_count']}")
 
+
+# 从目标 Operator 验证 Preview 已由 Python CutterStrands 与受控 Curve Pipe asset 驱动。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_curve_backend_acceptance(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNOperatorCurveAcceptance")
+    source = make_degree_three_feature_junction(
+        "GNOperatorCurveAcceptanceSource",
+        collection,
+    )
+    source_hash = _mesh_fingerprint(source)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(operator_result == {"FINISHED"}, f"Operator Preview failed: {operator_result}")
+    ensure(modifier is not None, "Operator Preview did not create its owned modifier")
+    curve_source = next(
+        (
+            obj
+            for obj in bpy.data.objects
+            if obj.type == "CURVE"
+            and obj.get("hst_feature_chamfer_curve_owner") == source.name
+        ),
+        None,
+    )
+    ensure(curve_source is not None, "Operator Preview did not create an owned Python Curve source")
+    ensure(
+        len(curve_source.data.splines) == 2,
+        f"Degree-3 FeatureGraph did not produce two unbranched splines: {len(curve_source.data.splines)}",
+    )
+    ensure(
+        sorted(len(spline.points) for spline in curve_source.data.splines) == [2, 3],
+        "Degree-3 main strand and unmatched branch were not preserved",
+    )
+    first_pairing_signature = sorted(
+        tuple(
+            tuple(round(value, 6) for value in point.co[:3])
+            for point in spline.points
+        )
+        for spline in curve_source.data.splines
+    )
+    first_curve_source_name = curve_source.name
+    first_curve_splines = [
+        {
+            "point_count": len(spline.points),
+            "cyclic": spline.use_cyclic_u,
+        }
+        for spline in curve_source.data.splines
+    ]
+    ensure(
+        modifier.node_group.get("hst_feature_chamfer_preview_backend")
+        == "PYTHON_CURVE_PIPE",
+        "Preview modifier still uses the legacy SDF backend",
+    )
+    ensure(
+        any(
+            node.bl_idname == "GeometryNodeGroup"
+            and node.node_tree is not None
+            and node.node_tree.name == test_context.const.FEATURE_CHAMFER_CURVE_NODE
+            for node in modifier.node_group.nodes
+        ),
+        "Preview Node Group does not reference the controlled Even-Thickness asset",
+    )
+    ensure(
+        any(
+            node.bl_idname == "GeometryNodeObjectInfo"
+            and node.inputs["Object"].default_value == curve_source
+            for node in modifier.node_group.nodes
+        ),
+        "Preview modifier does not consume the owned Curve source",
+    )
+    redo_result, redo_modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(redo_result == {"FINISHED"} and redo_modifier == modifier, "Degree-3 Preview redo failed")
+    redo_curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    redo_pairing_signature = sorted(
+        tuple(
+            tuple(round(value, 6) for value in point.co[:3])
+            for point in spline.points
+        )
+        for spline in redo_curve_source.data.splines
+    )
+    ensure(
+        redo_pairing_signature == first_pairing_signature,
+        "Degree-3 junction pairing changed across Preview redo",
+    )
+    ensure(_mesh_fingerprint(source) == source_hash, "Operator Preview changed source Mesh")
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_curve_preview_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "operator": "hst.feature_chamfer_gn",
+                "action": "PREVIEW",
+                "source_object": source.name,
+                "source_fingerprint": source_hash,
+                "source_fingerprint_unchanged": _mesh_fingerprint(source) == source_hash,
+                "preview_modifier": modifier.name,
+                "preview_node_group": modifier.node_group.name,
+                "preview_backend": modifier.node_group.get(
+                    "hst_feature_chamfer_preview_backend"
+                ),
+                "curve_source": first_curve_source_name,
+                "curve_splines": first_curve_splines,
+                "curve_pipe_asset": test_context.const.FEATURE_CHAMFER_CURVE_NODE,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"curve={redo_curve_source.name}, splines={len(redo_curve_source.data.splines)}, "
+        f"node_group={modifier.node_group.name}, artifact={artifact_path}"
+    )
+
+
+# 验证目标 Operator 在 miter scale 超限的急转处断开 Curve splines。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_splits_acute_miter(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNOperatorAcuteMiter")
+    source = make_acute_feature_turn("GNOperatorAcuteMiterSource", collection)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "Acute Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "Acute Preview did not create owned Curve")
+    ensure(
+        len(curve_source.data.splines) == 2
+        and all(len(spline.points) == 2 for spline in curve_source.data.splines),
+        "Miter scale exceeded turn was not split into independent splines",
+    )
+    result.add_detail("Acute miter produced two independent 2-point splines")
+
+
+# 验证目标 Operator 将普通 90° Sharp turn 保持为单一连续 miter spline。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_keeps_right_angle_miter_continuous(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNOperatorRightAngleMiter")
+    source = make_right_angle_feature_turn("GNOperatorRightAngleMiterSource", collection)
+    source_hash = _mesh_fingerprint(source)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "90-degree Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "90-degree Preview did not create owned Curve")
+    ensure(
+        len(curve_source.data.splines) == 1
+        and len(curve_source.data.splines[0].points) == 3,
+        "90-degree turn was split instead of producing one 3-point spline",
+    )
+    cutter_guard, boolean_guard = assert_operator_preview_cutter_and_boolean_guards(source, 0.05)
+    ensure(_mesh_fingerprint(source) == source_hash, "90-degree Preview changed source Mesh")
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_right_angle_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "operator": "hst.feature_chamfer_gn",
+                "action": "PREVIEW",
+                "fixture": "degree-2 exact 90-degree turn",
+                "curve_spline_point_counts": [3],
+                "cutter_guard": cutter_guard,
+                "boolean_guard": boolean_guard,
+                "source_fingerprint_unchanged": _mesh_fingerprint(source) == source_hash,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(f"90-degree miter continuous; cutter={cutter_guard}, boolean={boolean_guard}")
+
+
+# 验证正式 Operator 使用四边 profile，Radius 仍直接驱动截面且 cutter 保持 closed manifold。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_uses_four_sided_profile(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNFourSidedProfile")
+    source = make_right_angle_feature_turn("GNFourSidedProfileSource", collection)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+        show_cutter=True,
+    )
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "Four-sided Preview failed")
+    profile_contract = preview_profile_contract(modifier)
+    ensure(
+        profile_contract == {"resolution": 4, "radius_linked_directly": True},
+        f"Formal Preview profile is not a radius-calibrated four-sided cutter: {profile_contract}",
+    )
+    cutter_guard = evaluated_preview_mesh_guard(source)
+    ensure(
+        cutter_guard["boundary_edge_count"] == 0
+        and cutter_guard["non_manifold_edge_count"] == 0
+        and cutter_guard["zero_area_face_count"] == 0,
+        f"Four-sided cutter geometry guard failed: {cutter_guard}",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_four_sided_profile_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "target_operator": "hst.feature_chamfer_gn(action=PREVIEW)",
+                "profile_contract": profile_contract,
+                "radius": 0.05,
+                "cutter_guard": cutter_guard,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"four-sided profile={profile_contract}, cutter={cutter_guard}, artifact={artifact_path}"
+    )
+
+
+# 验证目标 Operator 在 degree-4 junction 中生成两对连续 strands，且 redo 配对稳定。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_pairs_degree_four_junction_deterministically(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNOperatorDegreeFour")
+    source = make_crossing_feature_strands("GNOperatorDegreeFourSource", collection)
+    source_hash = _mesh_fingerprint(source)
+    operator_result, modifier = run_feature_chamfer_gn(source, action="PREVIEW", radius=0.05)
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "Degree-4 Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "Degree-4 Preview did not create owned Curve")
+    first_signature = sorted(
+        tuple(tuple(round(value, 6) for value in point.co[:3]) for point in spline.points)
+        for spline in curve_source.data.splines
+    )
+    ensure(
+        len(first_signature) == 2 and all(len(points) == 3 for points in first_signature),
+        "Degree-4 junction did not produce two continuous 3-point splines",
+    )
+    redo_result, redo_modifier = run_feature_chamfer_gn(source, action="PREVIEW", radius=0.05)
+    ensure(redo_result == {"FINISHED"} and redo_modifier == modifier, "Degree-4 Preview redo failed")
+    redo_curve = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    redo_signature = sorted(
+        tuple(tuple(round(value, 6) for value in point.co[:3]) for point in spline.points)
+        for spline in redo_curve.data.splines
+    )
+    ensure(redo_signature == first_signature, "Degree-4 pairing changed across Preview redo")
+    ensure(_mesh_fingerprint(source) == source_hash, "Degree-4 Preview changed source Mesh")
+    result.add_detail("Degree-4 junction produced two deterministic continuous strands")
+
+
+# 验证三根彼此正交的 junction 不会全部断开，并在 redo 时保持同一配对。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_pairs_orthogonal_degree_three_junction(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNOperatorOrthogonalDegreeThree")
+    source = make_orthogonal_degree_three_feature_junction(
+        "GNOperatorOrthogonalDegreeThreeSource",
+        collection,
+    )
+    source_hash = _mesh_fingerprint(source)
+    operator_result, modifier = run_feature_chamfer_gn(source, action="PREVIEW", radius=0.05)
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "Orthogonal degree-3 Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "Orthogonal degree-3 Preview did not create owned Curve")
+    first_signature = sorted(
+        tuple(tuple(round(value, 6) for value in point.co[:3]) for point in spline.points)
+        for spline in curve_source.data.splines
+    )
+    ensure(
+        sorted(len(points) for points in first_signature) == [2, 3],
+        "Three orthogonal branches were all split instead of pairing one strand",
+    )
+    cutter_guard, boolean_guard = assert_operator_preview_cutter_and_boolean_guards(source, 0.05)
+    redo_result, redo_modifier = run_feature_chamfer_gn(source, action="PREVIEW", radius=0.05)
+    ensure(redo_result == {"FINISHED"} and redo_modifier == modifier, "Orthogonal degree-3 redo failed")
+    redo_curve = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    redo_signature = sorted(
+        tuple(tuple(round(value, 6) for value in point.co[:3]) for point in spline.points)
+        for spline in redo_curve.data.splines
+    )
+    ensure(redo_signature == first_signature, "Orthogonal degree-3 pairing changed across Preview redo")
+    ensure(_mesh_fingerprint(source) == source_hash, "Orthogonal degree-3 Preview changed source Mesh")
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_orthogonal_junction_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "operator": "hst.feature_chamfer_gn",
+                "action": "PREVIEW",
+                "fixture": "three orthogonal degree-3 branches",
+                "curve_spline_point_counts": sorted(len(points) for points in first_signature),
+                "pairing_stable_across_redo": redo_signature == first_signature,
+                "cutter_guard": cutter_guard,
+                "boolean_guard": boolean_guard,
+                "source_fingerprint_unchanged": _mesh_fingerprint(source) == source_hash,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"Three orthogonal branches paired; cutter={cutter_guard}, boolean={boolean_guard}"
+    )
+
+
+# 生成正交方向的几何排序变体，模拟不同 Vertex/Face 创建顺序但保持同一配对语义。
+# variant: 0 为原方向，1 为交换 X/Y 轴后的几何变体。
+def coplanar_fixture_point(point, variant):
+    if variant == 0:
+        return point
+    return (point[1], point[0], point[2])
+
+
+# 把几何变体还原到共同坐标系，便于比较 spline partition。
+# point/variant: Curve point 与 fixture 变体编号。
+def canonical_coplanar_fixture_point(point, variant):
+    coordinates = tuple(round(value, 6) for value in point[:3])
+    if variant == 0:
+        return coordinates
+    return (coordinates[1], coordinates[0], coordinates[2])
+
+# 把 Curve splines 转为与创建顺序无关的几何 signature。
+# curve_object: owned Preview Curve；返回规范化 points tuples。
+def curve_geometry_signature(curve_object, variant=0):
+    splines = []
+    for spline in curve_object.data.splines:
+        points = tuple(
+            canonical_coplanar_fixture_point(point.co, variant)
+            for point in spline.points
+        )
+        reversed_points = tuple(reversed(points))
+        splines.append(min(points, reversed_points))
+    return tuple(sorted(splines))
+
+
+# 验证正式 Operator 不会因 Surface Patch/convexity metadata 把平滑 degree-2 环切断。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_keeps_smooth_degree_two_ring_cyclic(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNSmoothDegreeTwoRing")
+    source = make_smooth_cyclic_feature_ring("GNSmoothDegreeTwoRingSource", collection)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    original_convexity = utils._edge_convexity
+    original_surface_patch_map = utils._surface_patch_map
+
+    def alternating_convexity(edge):
+        return 1 if edge.index % 2 else -1
+
+    def isolated_surface_patches(bm, sharp_edges):
+        face_patch, patch_count = original_surface_patch_map(bm, sharp_edges)
+        for edge in sharp_edges:
+            for face in edge.link_faces:
+                face_patch[face] = face.index
+        return face_patch, len({face.index for face in bm.faces})
+
+    utils._edge_convexity = alternating_convexity
+    utils._surface_patch_map = isolated_surface_patches
+    try:
+        operator_result, modifier = run_feature_chamfer_gn(
+            source,
+            action="PREVIEW",
+            radius=0.05,
+        )
+    finally:
+        utils._edge_convexity = original_convexity
+        utils._surface_patch_map = original_surface_patch_map
+    ensure(operator_result == {"FINISHED"} and modifier is not None, "Smooth ring Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "Smooth ring Preview did not create owned Curve")
+    ensure(
+        len(curve_source.data.splines) == 1
+        and curve_source.data.splines[0].use_cyclic_u
+        and len(curve_source.data.splines[0].points) == 32,
+        "Smooth degree-2 ring was split by patch/convexity metadata",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_smooth_degree_two_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "target_operator": "hst.feature_chamfer_gn(action=PREVIEW)",
+                "spline_count": len(curve_source.data.splines),
+                "cyclic": curve_source.data.splines[0].use_cyclic_u,
+                "point_count": len(curve_source.data.splines[0].points),
+                "metadata_fixture": "alternating convexity + isolated Surface Patch IDs",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"Smooth 32-edge degree-2 ring remained one cyclic Operator spline; artifact={artifact_path}"
+    )
+
+
+# 验证 junction scoring 使用 endpoint containment，且不再依赖 cube 的固定 strand 数。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_junction_endpoint_containment_score_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    from mathutils import Vector
+
+    class HalfSpaceBVH:
+        def find_nearest(self, point):
+            point = Vector(point)
+            return (Vector((0.0, point.y, point.z)), Vector((1.0, 0.0, 0.0)), 0, abs(point.x))
+
+    hidden_cap_candidate = [
+        {
+            "endpoint_samples": [(-0.2, 0.0, 0.0), (-0.15, 1.0, 0.0)],
+        }
+    ]
+    exposed_cap_candidate = [
+        {
+            "endpoint_samples": [(0.2, 0.0, 0.0), (0.15, 1.0, 0.0)],
+        }
+    ]
+    source_bvh = HalfSpaceBVH()
+    hidden_score = utils._strand_endpoint_containment_score(
+        hidden_cap_candidate,
+        source_bvh,
+        0.1,
+    )
+    exposed_score = utils._strand_endpoint_containment_score(
+        exposed_cap_candidate,
+        source_bvh,
+        0.1,
+    )
+    ensure(
+        hidden_score[0] < exposed_score[0],
+        f"Hidden cap candidate did not beat exposed cap candidate: {hidden_score}, {exposed_score}",
+    )
+    result.add_detail(
+        f"endpoint containment hidden={hidden_score}, exposed={exposed_score}"
+    )
+
+
+# 验证 closed Mesh BVH ray parity 能区分埋入 source solid 与外露的 endpoint cap。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_junction_endpoint_containment_closed_mesh_bvh(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNEndpointContainmentBVH")
+    source = make_test_mesh("GNEndpointContainmentBVHSource", collection)
+    bm = bmesh.new()
+    bm.from_mesh(source.data)
+    source_bvh = test_context.addon.utils.experimental_pipe_chamfer_utils.BVHTree.FromBMesh(bm)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    hidden_score = utils._strand_endpoint_containment_score(
+        [{"endpoint_samples": [(0.0, 0.0, 0.0), (0.5, 0.5, 0.5)]}],
+        source_bvh,
+        0.1,
+    )
+    exposed_score = utils._strand_endpoint_containment_score(
+        [{"endpoint_samples": [(1.2, 0.0, 0.0), (0.0, -1.2, 0.0)]}],
+        source_bvh,
+        0.1,
+    )
+    bm.free()
+    ensure(
+        hidden_score[0] == 0 and exposed_score[0] == 2,
+        f"Closed Mesh ray parity classified endpoint caps incorrectly: {hidden_score}, {exposed_score}",
+    )
+    result.add_detail(
+        f"closed Mesh BVH hidden={hidden_score}, exposed={exposed_score}"
+    )
+
+# 验证多处等角 90° junction 会全局组成稳定的共面 ]/U strands。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_operator_builds_coplanar_bracket_strands(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    signatures = []
+    edge_sets = []
+    artifact_records = []
+    for variant in (0, 1):
+        collection = make_collection(f"GNCoplanarBracket{variant}")
+        source = make_ordered_sharp_cube(
+            f"GNCoplanarBracketSource{variant}",
+            collection,
+            variant,
+        )
+        operator_result, modifier = run_feature_chamfer_gn(
+            source,
+            action="PREVIEW",
+            radius=0.05,
+        )
+        ensure(
+            operator_result == {"FINISHED"} and modifier is not None,
+            f"Coplanar bracket Preview failed for variant {variant}",
+        )
+        curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+        signature = curve_geometry_signature(curve_source, variant)
+        ensure(
+            len(signature) == 4 and all(len(points) == 4 for points in signature),
+            f"Cube did not decompose into four 4-point bracket strands: {signature}",
+        )
+        for points in signature:
+            axes = []
+            for start, end in zip(points, points[1:]):
+                changed_axes = [
+                    axis
+                    for axis in range(3)
+                    if abs(end[axis] - start[axis]) > 1.0e-6
+                ]
+                ensure(len(changed_axes) == 1, f"Bracket segment is not axis aligned: {points}")
+                axes.append(changed_axes[0])
+            ensure(
+                len(set(axes)) == 2 and axes[0] == axes[2],
+                f"Strand changed bend plane instead of forming a coplanar bracket: {points}",
+            )
+            constant_axis = next(axis for axis in range(3) if axis not in set(axes))
+            ensure(
+                max(point[constant_axis] for point in points)
+                - min(point[constant_axis] for point in points)
+                <= 1.0e-6,
+                f"Bracket points are not coplanar: {points}",
+            )
+        signatures.append(signature)
+        edge_sets.append(
+            {
+                tuple(sorted((points[index], points[index + 1])))
+                for points in signature
+                for index in range(len(points) - 1)
+            }
+        )
+        artifact_records.append(
+            {
+                "variant": variant,
+                "curve_spline_point_counts": [len(points) for points in signature],
+                "signature": signature,
+            }
+        )
+        run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
+    ensure(
+        all(len(signature) == 4 and all(len(points) == 4 for points in signature) for signature in signatures),
+        "Coplanar bracket output changed source Sharp Edge geometry",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_coplanar_bracket_operator.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "operator": "hst.feature_chamfer_gn",
+                "action": "PREVIEW",
+                "fixture": "sharp cube with reordered topology",
+                "variants": artifact_records,
+                "orientation_variants_preserve_coplanar_bracket_contract": all(
+                    len(signature) == 4
+                    and all(len(points) == 4 for points in signature)
+                    for signature in signatures
+                ),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(f"Four coplanar bracket strands; artifact={artifact_path}")
 
 # 验证 source 改变后状态变 stale，Finalize fail-closed 并保留 Preview。
 # test_context/result: 测试上下文与结果记录器。
@@ -1788,6 +2874,66 @@ def test_gn_preview_modifier_parameter_change_marks_stale(test_context: TestCont
     ensure(abs(rebuilt_modifier[radius_identifier] - 0.09) < 1.0e-6, "Rebuild reset live Radius")
 
 
+# 验证重做 Preview 会重建 Curve source，Radius 使用新值且不留下 orphan。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_radius_rebuilds_owned_curve_without_orphans(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNRadiusCurveLifecycle")
+    source = make_degree_three_feature_junction("GNRadiusCurveLifecycleSource", collection)
+    source_hash = _mesh_fingerprint(source)
+    first_result, first_modifier = run_feature_chamfer_gn(source, radius=0.03)
+    ensure(first_result == {"FINISHED"}, "Initial Curve Preview failed")
+    first_curve = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(first_curve is not None, "Initial Preview has no owned Curve")
+    first_curve_pointer = first_curve.as_pointer()
+    second_result, second_modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.09,
+    )
+    ensure(second_result == {"FINISHED"}, "Radius redo failed")
+    second_curve = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(second_curve is not None, "Radius redo lost owned Curve")
+    ensure(second_modifier == first_modifier, "Radius redo stacked a Preview modifier")
+    ensure(
+        all(obj.as_pointer() != first_curve_pointer for obj in bpy.data.objects),
+        "Radius redo left the old Curve Object",
+    )
+    ensure(
+        sum(
+            1
+            for group in bpy.data.node_groups
+            if group.get("hst_feature_chamfer_preview_backend")
+            == "PYTHON_CURVE_PIPE"
+        )
+        == 1,
+        "Radius redo left an old Preview wrapper Node Group",
+    )
+    ensure(
+        sum(
+            1
+            for curve in bpy.data.curves
+            if curve.name.startswith(source.name + "_FeatureChamferPreviewCurve")
+        )
+        == 1,
+        "Radius redo left an old Curve datablock",
+    )
+    ensure(
+        abs(
+            second_modifier[
+                node_input_identifier(second_modifier.node_group, "Radius")
+            ]
+            - 0.09
+        )
+        < 1.0e-6,
+        "Radius redo did not update the Preview input",
+    )
+    ensure(_mesh_fingerprint(source) == source_hash, "Radius redo changed source Mesh")
+    result.add_detail(f"curve={second_curve.name}, radius=0.09")
+
+
 # 验证 source Sharp 标记被移除后仍能取消本工具拥有的 Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_cancel_stale_preview_without_sharp_edges(test_context: TestContext, result: TestCaseResult):
@@ -1802,6 +2948,11 @@ def test_gn_cancel_stale_preview_without_sharp_edges(test_context: TestContext, 
     cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
     ensure(cancel_result == {"FINISHED"}, "Stale Preview Cancel was rejected")
     ensure(modifier_after_cancel is None, "Stale Preview modifier was not removed")
+    ensure(
+        test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+        is None,
+        "Cancel Preview left its owned Curve source",
+    )
 
 
 # 验证 source 重命名后 owned Preview 仍可识别并取消。
@@ -1812,10 +2963,22 @@ def test_gn_preview_owner_survives_source_rename(test_context: TestContext, resu
     mark_all_edges_sharp(source)
     preview_result, modifier = run_feature_chamfer_gn(source)
     ensure(preview_result == {"FINISHED"} and modifier is not None, "Preview setup failed")
+    curve_object = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_object is not None, "Preview setup did not create owned Curve")
+    curve_pointer = curve_object.as_pointer()
+    curve_data_pointer = curve_object.data.as_pointer()
     source.name = "GNRenamedSource"
     cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
     ensure(cancel_result == {"FINISHED"}, "Renamed source could not cancel Preview")
     ensure(modifier_after_cancel is None, "Renamed source left owned Preview")
+    ensure(
+        all(obj.as_pointer() != curve_pointer for obj in bpy.data.objects),
+        "Renamed source left owned Curve Object",
+    )
+    ensure(
+        all(curve.as_pointer() != curve_data_pointer for curve in bpy.data.curves),
+        "Renamed source left owned Curve datablock",
+    )
 
 
 # 验证单一 Operator 的 action RNA、Preview 与 Cancel 生命周期。
@@ -2029,9 +3192,9 @@ def test_gn_patch_module_terminal_and_mismatched_rails(test_context: TestContext
         finalize_utils.release_feature_chamfer_finalize_context(context)
 
 
-# 验证复杂 END_CAP/JUNCTION 不再执行 planar/fan Fill，而是保留 tracked Boolean 槽面。
+# 验证复杂 END_CAP/JUNCTION 在结构化 rails/ports 未实现前显式 fail-closed。
 # test_context/result: 测试上下文与结果记录器。
-def test_gn_patch_complex_region_preserves_tracked_boolean_surface(
+def test_gn_patch_complex_region_fails_closed(
     test_context: TestContext,
     result: TestCaseResult,
 ):
@@ -2039,28 +3202,32 @@ def test_gn_patch_complex_region_preserves_tracked_boolean_surface(
     donor_object = make_test_mesh("GNComplexPatchDonorSource", collection)
     donor_mesh = donor_object.data
     patch_utils = test_context.addon.utils.feature_chamfer_patch_utils
-    patched_mesh = None
-    regions = [{"class": "JUNCTION"}]
     try:
-        patched_mesh, patch_stats = patch_utils.patch_boolean_result(
+        patch_utils.patch_boolean_result(
             open_mesh=donor_mesh,
-            regions=regions,
+            regions=[{"class": "JUNCTION"}],
             components=[],
             donor_mesh=donor_mesh,
             groove_face_indices=[0],
         )
+    except patch_utils.FeatureChamferPatchError as error:
         ensure(
-            patch_stats["strategy"] == "TRACKED_BOOLEAN_SURFACE",
-            f"Complex Patch used unsafe filler: {patch_stats}",
+            error.error_code == "structured_junction_not_implemented",
+            f"Complex Patch failed with the wrong error: {error.error_code}",
         )
         ensure(
-            len(patched_mesh.polygons) == len(donor_mesh.polygons),
-            "Complex Patch changed the tracked Boolean donor topology",
+            error.diagnostics.get("strategy") == "FAIL_CLOSED",
+            f"Complex Patch diagnostic did not record fail-closed: {error.diagnostics}",
         )
-        result.add_detail(f"strategy={patch_stats['strategy']}")
-    finally:
-        if patched_mesh is not None and bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
-            bpy.data.meshes.remove(patched_mesh)
+        ensure(
+            len(donor_mesh.polygons) == 6,
+            "Complex Patch fail-closed path changed donor topology",
+        )
+        result.add_detail(
+            f"error={error.error_code}, strategy={error.diagnostics['strategy']}"
+        )
+        return
+    raise TestFailure("Complex JUNCTION incorrectly returned a patched Mesh")
 
 
 # 验证旧 Operator 已通过统一 Patch Module 的 legacy Adapter，且调用旧 patch seam 一次。
@@ -2150,19 +3317,27 @@ def test_gn_finalize_real_fixture_closed_manifold(test_context: TestContext, res
     )
     ensure(preview_result == {"FINISHED"}, "Real fixture Preview failed")
     finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    ensure(finalize_result == {"FINISHED"}, f"Real fixture Finalize failed: {finalize_result}")
-    output = bpy.context.active_object
-    ensure(output is not source, "Real fixture Finalize did not create output")
-    bm = bmesh.new()
-    bm.from_mesh(output.data)
-    boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-    non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-    zero_area = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
-    bm.free()
-    ensure(boundary == 0 and non_manifold == 0 and zero_area == 0, "Real fixture output is invalid")
-    ensure(_mesh_fingerprint(source) == source_hash, "Real fixture Finalize changed source")
-    ensure(not modifier.show_viewport, "Real fixture Finalize left Preview enabled")
-    result.add_detail(f"output_faces={len(output.data.polygons)}")
+    ensure(
+        finalize_result == {"CANCELLED"},
+        f"Complex real fixture must fail-closed before structured junction support: {finalize_result}",
+    )
+    ensure(bpy.context.active_object is source, "Fail-closed Finalize changed active Object")
+    ensure(_mesh_fingerprint(source) == source_hash, "Fail-closed Finalize changed source")
+    ensure(modifier.show_viewport, "Fail-closed Finalize disabled Preview")
+    ensure(
+        test_context.addon.utils.feature_chamfer_gn_utils.preview_state(source)
+        == "PREVIEW_VALID",
+        "Fail-closed Finalize changed Preview state",
+    )
+    ensure(
+        not any(
+            obj.get(test_context.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG) == source.name
+            for obj in bpy.data.objects
+            if obj is not source
+        ),
+        "Fail-closed Finalize left a pseudo output",
+    )
+    result.add_detail("Complex fixture stayed in PREVIEW_VALID with no pseudo Finalize output")
 
 
 # 验证 Preview 与 Finalize 各占一个 Undo step，撤销 Finalize 后回到可调整 Preview。
@@ -2283,8 +3458,14 @@ def main():
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)
     context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)
     context.run_case("sharp_feature_graph_object_smoke", test_sharp_feature_graph_object_smoke)
+    context.run_case(
+        "pipe_chamfer_degree_three_strand_matching_regression",
+        test_pipe_chamfer_degree_three_strand_matching_regression,
+    )
     context.run_case("experimental_pipe_chamfer_early_failure_keeps_source_visible_regression", test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression)
     context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
+    context.run_case("curve_pipe_asset_import_and_backend_smoke", test_curve_pipe_asset_import_and_backend_smoke)
+    context.run_case("feature_chamfer_rail_oracle_contract_smoke", test_feature_chamfer_rail_oracle_contract_smoke)
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
     context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
@@ -2296,22 +3477,60 @@ def main():
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)
     context.run_case("gn_preview_asset_import_exact_and_idempotent", test_gn_preview_asset_import_exact_and_idempotent)
     context.run_case("gn_preview_modifier_parameter_and_cutter_smoke", test_gn_preview_modifier_parameter_and_cutter_smoke)
+    context.run_case(
+        "gn_preview_operator_curve_backend_acceptance",
+        test_gn_preview_operator_curve_backend_acceptance,
+    )
+    context.run_case(
+        "gn_preview_operator_splits_acute_miter",
+        test_gn_preview_operator_splits_acute_miter,
+    )
+    context.run_case(
+        "gn_preview_operator_keeps_right_angle_miter_continuous",
+        test_gn_preview_operator_keeps_right_angle_miter_continuous,
+    )
+    context.run_case(
+        "gn_preview_operator_uses_four_sided_profile",
+        test_gn_preview_operator_uses_four_sided_profile,
+    )
+    context.run_case(
+        "gn_preview_operator_pairs_degree_four_junction_deterministically",
+        test_gn_preview_operator_pairs_degree_four_junction_deterministically,
+    )
+    context.run_case(
+        "gn_preview_operator_pairs_orthogonal_degree_three_junction",
+        test_gn_preview_operator_pairs_orthogonal_degree_three_junction,
+    )
+    context.run_case(
+        "gn_preview_operator_keeps_smooth_degree_two_ring_cyclic",
+        test_gn_preview_operator_keeps_smooth_degree_two_ring_cyclic,
+    )
+    context.run_case(
+        "gn_preview_junction_endpoint_containment_score_contract",
+        test_gn_preview_junction_endpoint_containment_score_contract,
+    )
+    context.run_case(
+        "gn_preview_junction_endpoint_containment_closed_mesh_bvh",
+        test_gn_preview_junction_endpoint_containment_closed_mesh_bvh,
+    )
+    context.run_case(
+        "gn_preview_operator_builds_coplanar_bracket_strands",
+        test_gn_preview_operator_builds_coplanar_bracket_strands,
+    )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case("gn_preview_modifier_parameter_change_marks_stale", test_gn_preview_modifier_parameter_change_marks_stale)
+    context.run_case(
+        "gn_preview_radius_rebuilds_owned_curve_without_orphans",
+        test_gn_preview_radius_rebuilds_owned_curve_without_orphans,
+    )
     context.run_case("gn_cancel_stale_preview_without_sharp_edges", test_gn_cancel_stale_preview_without_sharp_edges)
     context.run_case("gn_preview_owner_survives_source_rename", test_gn_preview_owner_survives_source_rename)
-    context.run_case("gn_finalize_cutter_extraction_preserves_preview", test_gn_finalize_cutter_extraction_preserves_preview)
-    context.run_case("gn_finalize_phase_2b_gate_dispatches_patch", test_gn_finalize_phase_2b_gate_dispatches_patch)
-    context.run_case("gn_finalize_real_fixture_phase_2b_go", test_gn_finalize_real_fixture_phase_2b_go)
-    context.run_case("gn_patch_module_terminal_and_mismatched_rails", test_gn_patch_module_terminal_and_mismatched_rails)
     context.run_case(
-        "gn_patch_complex_region_preserves_tracked_boolean_surface",
-        test_gn_patch_complex_region_preserves_tracked_boolean_surface,
+        "gn_patch_complex_region_fails_closed",
+        test_gn_patch_complex_region_fails_closed,
     )
     context.run_case("legacy_feature_chamfer_uses_patch_adapter", test_legacy_feature_chamfer_uses_patch_adapter)
-    context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
     context.run_case("gn_finalize_real_fixture_closed_manifold", test_gn_finalize_real_fixture_closed_manifold)
-    context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
 

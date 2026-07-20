@@ -210,58 +210,21 @@ def _centroid_fan_fill(bm, vertices):
     return faces
 
 
-# 验证复杂 region 的 tracked Boolean donor，并直接保留其曲面 Patch。
-# donor_mesh/groove_face_indices: Phase 2B 的 closed Boolean Mesh 与槽面 indices；regions: Boundary regions。
+# 拒绝把 tracked Boolean groove surface 当成 Chamfer；保留旧函数名作为统一 complex seam。
+# donor_mesh/groove_face_indices/regions: 旧 Phase 2B donor 与复杂 Boundary regions。
 def _preserve_tracked_boolean_surface(donor_mesh, groove_face_indices, regions):
-    if donor_mesh is None or groove_face_indices is None:
-        raise FeatureChamferPatchError(
-            "complex_patch_donor_missing",
-            "END_CAP/JUNCTION requires the tracked Boolean surface donor",
-        )
-    groove_face_indices = {int(index) for index in groove_face_indices}
-    if not groove_face_indices or max(groove_face_indices) >= len(donor_mesh.polygons):
-        raise FeatureChamferPatchError(
-            "complex_patch_donor_invalid",
-            "Tracked Boolean groove Face indices are invalid",
-        )
-    patched_mesh = donor_mesh.copy()
-    bm = bmesh.new()
-    try:
-        bm.from_mesh(patched_mesh)
-        boundary = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-        non_manifold = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
-        zero_area = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
-    finally:
-        bm.free()
-    stats = {
-        "strategy": "TRACKED_BOOLEAN_SURFACE",
-        "regular_region_count": 0,
-        "cyclic_region_count": sum(
-            1 for region in regions if region["class"] == "CYCLIC_TWO_RAIL"
-        ),
-        "end_cap_region_count": sum(1 for region in regions if region["class"] == "END_CAP"),
-        "junction_region_count": sum(1 for region in regions if region["class"] == "JUNCTION"),
-        "patch_face_count": len(groove_face_indices),
-        "boundary_after": boundary,
-        "non_manifold_after": non_manifold,
-        "over_connected_after": 0,
-        "loose_edges_after": 0,
-        "zero_area_after": zero_area,
-        "duplicate_faces_removed": 0,
-        "loose_edges_removed": 0,
-        "loose_vertices_removed": 0,
-    }
-    if boundary or non_manifold or zero_area:
-        if bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
-            bpy.data.meshes.remove(patched_mesh)
-        raise FeatureChamferPatchError(
-            "complex_patch_donor_invalid",
-            "Tracked Boolean donor is not a closed manifold Mesh",
-            stats,
-        )
-    stats["status"] = "finished"
-    return patched_mesh, stats
-
+    del donor_mesh, groove_face_indices
+    raise FeatureChamferPatchError(
+        "structured_junction_not_implemented",
+        "END_CAP/JUNCTION requires structured rails, setback ports, and a Vertex Mesh solver",
+        {
+            "unsupported_region_count": len(regions),
+            "unsupported_region_classes": sorted(
+                {region["class"] for region in regions}
+            ),
+            "strategy": "FAIL_CLOSED",
+        },
+    )
 
 # 使用统一入口生成 Patch；GN 路径消费显式 regions，旧 Operator 通过 legacy_context Adapter 保持行为。
 # open_mesh/regions/components: Phase 2B 输出；donor_mesh/groove_face_indices: 复杂 region 的安全曲面 donor。
@@ -291,11 +254,15 @@ def patch_boolean_result(
             "patch_context_missing",
             "Patch requires explicit Boundary regions or a legacy Adapter context",
         )
-    if any(region["class"] in {"END_CAP", "JUNCTION"} for region in regions):
+    complex_regions = [
+        region for region in regions
+        if region["class"] in {"END_CAP", "JUNCTION"}
+    ]
+    if complex_regions:
         return _preserve_tracked_boolean_surface(
             donor_mesh,
             groove_face_indices,
-            regions,
+            complex_regions,
         )
     patched_mesh = open_mesh.copy()
     bm = bmesh.new()

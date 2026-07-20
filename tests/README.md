@@ -15,6 +15,9 @@
 - bevel / weighted normal / triangulate modifier smoke test
 - Feature Chamfer tricky_b / Extruded.002 真实 fixture PATCHED 拓扑回归
 - Feature Chamfer degree-4 Feature strand pairing 回归
+- Feature Chamfer degree-3 maximum-weight strand matching 回归
+- Feature Chamfer Even-Thickness Curve Pipe asset exact/version/fingerprint 与 backend smoke test
+- Feature Chamfer Boolean/source-surface rail A/B 统一 RailPairRecord contract smoke test
 - Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
 - decal project smoke test
 - quickweight smoke test
@@ -42,14 +45,20 @@
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 - Feature Chamfer GN 发布资产 exact/version import、Preview modifier 幂等与 source fingerprint 回归
-- Feature Chamfer GN 参数 socket 更新、SDF cutter closed-manifold smoke test
+- Feature Chamfer GN 正式 Preview 保留受控 Boolean Pro 主链并禁止原生 Mesh Boolean 回归
+- Feature Chamfer GN 90° miter 连续、极锐角断开、三根正交 branch 与 degree-3/4 deterministic strand pairing 回归
+- Feature Chamfer GN Task 2.1：完整 Sharp cube 从目标 Operator 分解为四条共面 `]`/`U` strands，并验证正交旋转变体保持共面 bracket 合同
+- Feature Chamfer GN Task 2.2A：正式 Operator 的 smooth degree-2/cyclic chain 不受 Surface Patch/convexity metadata 波动切断；acute miter 仍 fail-closed
+- Feature Chamfer GN Task 2.2B：junction 候选以 source-solid endpoint containment 处理等价 U 朝向，优先把圆形端盖埋入 attachment body，且移除固定四 strand 偏好
+- Feature Chamfer GN Task 2.2C：正式 Preview 使用 resolution=4 四边 profile，Radius 直接驱动主轴尺寸，保持 Even-Thickness、Boolean Pro 与 closed-manifold cutter
+- Feature Chamfer GN 参数 socket 更新、Curve Pipe cutter closed-manifold smoke test
 - Feature Chamfer GN topology/live 参数 stale 与无 Sharp 时 Cancel 生命周期回归
 - Feature Chamfer GN endpoint/junction extension、Python tracked Boolean provenance 与 Boundary region classification
-- Feature Chamfer GN terminal、junction、cyclic、end-cap Patch 与真实 fixture closed-manifold Finalize
+- Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
-> 新的 `hst.feature_chamfer_gn` 已完成 Preview / Finalize / Cancel Preview；Finalize 从同一 GN modifier 提取 extended SDF cutter，执行 Python tracked Boolean、显式 Boundary region Patch，并生成独立 output。任何 stale、provenance、region 或 final topology gate 失败都会保留 source/Preview 并 fail-closed。
+> `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。旧 Finalize 不再作为当前阶段验收；复杂 region 保持 fail-closed。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
 > `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
@@ -72,7 +81,28 @@
 - 统一 probe：设置 `HST_ADDON_ROOT` 后用 Blender background 执行 `tools/probe_feature_chamfer_gn.py`。
 - Boolean Pro 输出专项 probe：`tools/probe_boolean_pro_provenance.py`。
 
-## Feature Chamfer GN Finalize Probe
+## Feature Chamfer Structured Curve Phase 1 Prototype
+
+> Status: PROTOTYPE only. This does not prove that hst.feature_chamfer_gn PREVIEW uses the new Curve backend.
+
+- 入口：`tools/probe_feature_chamfer_curve_phase1.py`。
+- 结果：`tests/artifacts/feature_chamfer_curve_phase1_probe.json`。
+- 固定读取 `pipe-chamfer-mixed.blend::Extruded.002`，验证 Python strand matching、
+  受控 Even-Thickness GN backend、每 strand manifold guard 与 source fingerprint。
+- Even-Thickness 与 `Poly-Curve Info` 已复制到 `preset_files/Presets.blend`，
+  由 exact name/version/fingerprint guard 幂等导入。
+
+## Feature Chamfer Rail Phase 2 Stop-State Probe
+
+> Status: STOP. The real-file rail guard is 17/51; this does not unlock Strip/Junction implementation.
+
+- 入口：`tools/probe_feature_chamfer_rail_phase2.py`。
+- 结果：`tests/artifacts/feature_chamfer_rail_phase2_probe.json`。
+- 同时输出 `BOOLEAN_INTERSECTION_ORACLE` 与 `SOURCE_SURFACE_OFFSET` 的
+  `RailPairRecord`，记录 coverage、unresolved group IDs 和 width error。
+- Phase 2 只有 coverage=100%、ambiguous=0 且 width error 通过 radius 容差后才能 Go。
+
+## Feature Chamfer GN Finalize Probe（历史 artifact，当前不作为验收）
 
 - 入口：`tools/probe_feature_chamfer_finalize.py`。
 - 结果：`tests/artifacts/feature_chamfer_gn_finalize_fixture_probe.json`。
@@ -124,3 +154,10 @@ python .\tools\run_blender_tests.py
 
 - 测试新增/维护规范：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/TESTING_POLICY.md`
 - 以后新功能、修 bug、Blender 升级兼容，默认按该规范补 smoke/regression 测试。
+
+## Experimental structured artifacts (not accepted)
+
+- `tests/artifacts/feature_chamfer_rail_phase2_probe.json` and the companion `.blend` are diagnostic prototypes only.
+- They do not come from the target `hst.feature_chamfer_gn PREVIEW` runtime path.
+- Strip/Junction PASS statistics must not be used as Operator or product acceptance.
+- See `docs/postmortem/2026-07-20-feature-chamfer-preview-integration-drift.md`.

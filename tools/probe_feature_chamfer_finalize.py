@@ -62,9 +62,6 @@ preview_utils = addon.utils.feature_chamfer_gn_utils
 preview_utils.ensure_gn_feature_chamfer_preview(
     source,
     radius=float(os.environ.get("HST_FEATURE_CHAMFER_RADIUS", "0.03")),
-    sample_length=float(os.environ.get("HST_FEATURE_CHAMFER_SAMPLE_LENGTH", "0.01")),
-    voxel_size=float(os.environ.get("HST_FEATURE_CHAMFER_VOXEL_SIZE", "0.0075")),
-    adaptivity=float(os.environ.get("HST_FEATURE_CHAMFER_ADAPTIVITY", "0.05")),
     show_cutter=False,
 )
 finalize_utils = addon.utils.feature_chamfer_finalize_utils

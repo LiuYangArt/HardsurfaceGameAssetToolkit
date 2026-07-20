@@ -61,3 +61,62 @@
 
 ## 验证
 - 完成修改前，优先运行最小必要的验证命令；无法验证时明确说明原因。
+
+## Agent 规格对齐与阶段门禁
+
+### 目标入口契约
+
+涉及 UI、Blender Operator、Geometry Nodes 或用户工作流的任务，修改前必须在计划或 tasklist 中明确并核对：
+
+```text
+UI 按钮/菜单
+→ Operator bl_idname
+→ action / invoke / execute
+→ 实际 runtime path
+→ 用户可见结果
+```
+
+- 首轮代码定位必须沿该路径逐段确认；不能只实现旁路 builder、实验 Operator 或离线 probe。
+- 若实现过程中发现目标入口与原假设不一致，必须立即停止并更新计划，不得先完成旁路 prototype 后宣称已接入。
+- “资产已存在”“底层函数可运行”“artifact 可打开”均不等于目标 Operator 已使用该实现。
+
+### 四层验收
+
+所有用户可见功能必须区分四层证据：
+
+1. `Algorithm`：算法或数据合同正确。
+2. `Backend`：Mesh、Curve、Geometry Nodes 等 backend 能生成 artifact。
+3. `Operator`：从目标 Operator 入口运行，确认实际 runtime path 使用新 backend。
+4. `Visual/Product`：真实文件中的用户可见结果符合产品语义。
+
+低层通过不能代替高层。测试数量、字段存在、topology clean、headless JSON 或离线 `.blend` 只能支持对应层级的声明。
+
+### Stop / Go 硬门禁
+
+- 分阶段计划中的 Stop/Go 是硬约束，不是建议。
+- 前一阶段任一必要门槛失败时，下一阶段只能更新设计和诊断，禁止实现或接入正式 runtime path。
+- 每个阶段开始前必须写明：目标 Operator、用户操作、预期可见变化、自动证据、Go 条件。
+- 每个阶段结束时必须从目标 Operator 做验收并留下可读取 artifact；旁路 probe 不能替代入口验收。
+
+### 状态分级
+
+阶段交付只能使用以下状态：
+
+- `PROTOTYPE`：算法或 backend 局部可运行。
+- `INTEGRATED`：目标 Operator 已接入。
+- `VERIFIED`：真实文件的数值、拓扑和固定近景通过。
+- `ACCEPTED`：用户在真实 UI 中验收通过。
+
+禁止跨级声明完成。交付时必须同时报告当前状态、未通过门槛和本轮明确未做的范围。
+
+### 完成前独立 Spec Audit
+
+影响核心工作流的功能在完成声明前，必须进行独立 spec audit，至少核对：
+
+- diff 是否实际修改目标 runtime path；
+- 每项计划门槛是否有直接证据；
+- 是否存在越阶段实现或 scope creep；
+- 测试是否从目标 Operator 开始；
+- 文档阶段状态是否与代码和用户可见行为一致。
+
+发现任一高严重度偏差时，不得给出完成声明，应先恢复正确阶段边界。

@@ -1,11 +1,22 @@
 # -*- coding: utf-8 -*-
 """实验性 Sharp FeatureGraph → 多 Pipe → Boolean → Patch 实现。"""
 
+import itertools
 import math
 import time
 
 import bpy
 import bmesh
+from ..const import FEATURE_CHAMFER_CURVE_ASSET_FINGERPRINT_TAG
+from ..const import FEATURE_CHAMFER_CURVE_ASSET_SOURCE
+from ..const import FEATURE_CHAMFER_CURVE_ASSET_SOURCE_TAG
+from ..const import FEATURE_CHAMFER_CURVE_ASSET_VERSION
+from ..const import FEATURE_CHAMFER_CURVE_ASSET_VERSION_TAG
+from ..const import FEATURE_CHAMFER_CURVE_DEPENDENCY
+from ..const import FEATURE_CHAMFER_CURVE_DEPENDENCY_FINGERPRINT
+from ..const import FEATURE_CHAMFER_CURVE_FINGERPRINT
+from ..const import FEATURE_CHAMFER_CURVE_NODE
+from ..const import PRESET_FILE_PATH
 from mathutils import Matrix
 from mathutils import Vector
 from mathutils import geometry
@@ -103,6 +114,11 @@ def _base_stats(
         "chain_turn_spike_ratio": chain_turn_spike_ratio,
         "junction_margin": junction_margin,
         "feature_groups": [],
+        "vertex_matching": [],
+        "cutter_strands": [],
+        "boolean_rail_pairs": [],
+        "surface_offset_rail_pairs": [],
+        "rail_oracle_summary": {},
         "junction_vertex_indices": [],
         "debug_object_names": [],
         "source_hidden": False,
@@ -264,56 +280,506 @@ def _turn_angle_degrees(edge_a, edge_b, vertex):
     return math.degrees(math.acos(max(-1.0, min(1.0, (-tangent_a).dot(tangent_b)))))
 
 
-# 在 degree-4 FeatureGraph Vertex 将四条 half-edges 保守地配成两条连续 strand。
-# vertex/edges: junction Vertex 与四条相邻 Sharp Edges；metadata: Surface Patch 上下文；threshold: 最大连续转角。
-def _degree_four_strand_pairs(vertex, edges, metadata, threshold):
-    if len(edges) != 4:
-        return {}
-    pairing_candidates = (
-        ((0, 1), (2, 3)),
-        ((0, 2), (1, 3)),
-        ((0, 3), (1, 2)),
+# 计算两条 half-edge 的 connection angle；180° 表示直通，0° 表示折返。
+# edge_a/edge_b: 相邻 Sharp BMEdge；vertex: 共同 BMVert。
+def _connection_angle_degrees(edge_a, edge_b, vertex):
+    tangent_a = _outgoing_tangent(edge_a, vertex)
+    tangent_b = _outgoing_tangent(edge_b, vertex)
+    return math.degrees(
+        math.acos(max(-1.0, min(1.0, tangent_a.dot(tangent_b))))
     )
-    scored_pairings = []
-    for pairing in pairing_candidates:
-        if any(
-            not set(metadata[edges[index_a]]["patch_pair"])
-            & set(metadata[edges[index_b]]["patch_pair"])
-            for index_a, index_b in pairing
-        ):
-            continue
-        angles = tuple(
-            _turn_angle_degrees(edges[index_a], edges[index_b], vertex)
-            for index_a, index_b in pairing
-        )
-        scored_pairings.append((max(angles), sum(angles), pairing))
-    if len(scored_pairings) < 2:
-        return {}
-    scored_pairings.sort(key=lambda item: (item[0], item[1], item[2]))
-    best_max_angle, best_total_angle, best_pairing = scored_pairings[0]
-    second_max_angle, second_total_angle, _ = scored_pairings[1]
-    angle_margin = max(5.0, min(15.0, threshold * 0.25))
-    if best_max_angle > threshold:
-        return {}
-    if (
-        second_max_angle - best_max_angle < angle_margin
-        and second_total_angle - best_total_angle < angle_margin * 2.0
-    ):
-        return {}
-    result = {}
-    for index_a, index_b in best_pairing:
-        result[edges[index_a]] = edges[index_b]
-        result[edges[index_b]] = edges[index_a]
-    return result
 
+
+# 判断两条 half-edge 的 Surface Patch 与 convexity 语义能否连续。
+# metadata_a/metadata_b: 各 Edge 的 patch_pair 与 convexity metadata。
+def _half_edge_pair_is_compatible(metadata_a, metadata_b):
+    return (
+        metadata_a["convexity"] == metadata_b["convexity"]
+        and bool(set(metadata_a["patch_pair"]) & set(metadata_b["patch_pair"]))
+    )
+
+
+# 枚举一个 Sharp vertex 的所有 matching，并按总权重、配对数与稳定 Edge ID 决定顺序。
+# edge_records: 每项为 (edge_a, edge_b, candidate_record)；返回排序后的 matching records。
+def _enumerate_vertex_matchings(edges, edge_records):
+    candidates_by_edge = {edge: [] for edge in edges}
+    for edge_a, edge_b, candidate in edge_records:
+        candidates_by_edge[edge_a].append((edge_b, candidate))
+        candidates_by_edge[edge_b].append((edge_a, candidate))
+
+    matchings = []
+
+    def visit(remaining, selected):
+        if not remaining:
+            ordered = tuple(sorted(selected, key=lambda item: item["edge_ids"]))
+            matchings.append(
+                {
+                    "selected": ordered,
+                    "score": sum(item["weight"] for item in ordered),
+                }
+            )
+            return
+        edge = min(remaining, key=lambda item: item.index)
+        next_remaining = set(remaining)
+        next_remaining.remove(edge)
+        visit(next_remaining, selected)
+        for partner, candidate in candidates_by_edge[edge]:
+            if partner not in next_remaining:
+                continue
+            paired_remaining = set(next_remaining)
+            paired_remaining.remove(partner)
+            visit(paired_remaining, selected + [candidate])
+
+    visit(set(edges), [])
+    matchings.sort(
+        key=lambda item: (
+            -item["score"],
+            -len(item["selected"]),
+            tuple(candidate["edge_ids"] for candidate in item["selected"]),
+        )
+    )
+    return matchings
+
+
+# 对任意连接数的 Sharp vertex 求确定性的 maximum-weight strand matching。
+# vertex/edges: junction Vertex 与 incident Sharp Edges；metadata: Surface Patch 上下文。
+# miter_scale_limit: Even-Thickness profile 膨胀上限；返回 pair mapping 与 VertexMatchingRecord。
+def _maximum_weight_strand_pairs(vertex, edges, metadata, miter_scale_limit=1.25):
+    pair_candidates = []
+    allowed_candidates = []
+    for index_a, edge_a in enumerate(edges):
+        for edge_b in edges[index_a + 1:]:
+            connection_angle = _connection_angle_degrees(edge_a, edge_b, vertex)
+            miter_scale = 1.0 / max(
+                math.sin(math.radians(connection_angle) * 0.5),
+                1.0e-6,
+            )
+            compatible = _half_edge_pair_is_compatible(
+                metadata[edge_a],
+                metadata[edge_b],
+            )
+            split_reasons = []
+            if not compatible:
+                split_reasons.append("SURFACE_CONTEXT_INCOMPATIBLE")
+            if miter_scale > miter_scale_limit:
+                split_reasons.append("MITER_SCALE_EXCEEDED")
+            candidate = {
+                "edge_ids": (edge_a.index, edge_b.index),
+                "connection_angle": connection_angle,
+                "miter_scale": miter_scale,
+                "allowed": not split_reasons,
+                "split_reason": "|".join(split_reasons) if split_reasons else None,
+                "weight": connection_angle if not split_reasons else 0.0,
+            }
+            pair_candidates.append(candidate)
+            if candidate["allowed"]:
+                allowed_candidates.append((edge_a, edge_b, candidate))
+
+    matchings = _enumerate_vertex_matchings(edges, allowed_candidates)
+    best = matchings[0]
+    runner_up_score = matchings[1]["score"] if len(matchings) > 1 else 0.0
+    selected_pairs = [candidate["edge_ids"] for candidate in best["selected"]]
+    selected_edge_ids = {edge_id for pair in selected_pairs for edge_id in pair}
+    result = {}
+    edges_by_id = {edge.index: edge for edge in edges}
+    for edge_id_a, edge_id_b in selected_pairs:
+        edge_a = edges_by_id[edge_id_a]
+        edge_b = edges_by_id[edge_id_b]
+        result[edge_a] = edge_b
+        result[edge_b] = edge_a
+    record = {
+        "vertex_index": vertex.index,
+        "incident_edge_ids": [edge.index for edge in edges],
+        "pair_candidates": pair_candidates,
+        "selected_pairs": selected_pairs,
+        "unmatched_edge_ids": [
+            edge.index for edge in edges if edge.index not in selected_edge_ids
+        ],
+        "ambiguity_margin": best["score"] - runner_up_score,
+    }
+    return result, record
+
+
+# 为 degree-2 Vertex 构建拓扑优先 pairing；metadata 变化只记录，不切断平滑链。
+# vertex/edges/metadata/miter_scale_limit: Vertex、两条 Sharp Edge、ownership metadata 与 miter guard。
+def _degree_two_topology_pair(vertex, edges, metadata, miter_scale_limit):
+    edge_a, edge_b = edges
+    connection_angle = _connection_angle_degrees(edge_a, edge_b, vertex)
+    miter_scale = 1.0 / max(
+        math.sin(math.radians(connection_angle) * 0.5),
+        1.0e-6,
+    )
+    split_reasons = []
+    if miter_scale > miter_scale_limit:
+        split_reasons.append("MITER_SCALE_EXCEEDED")
+    metadata_compatible = _half_edge_pair_is_compatible(
+        metadata[edge_a],
+        metadata[edge_b],
+    )
+    selected_pairs = [] if split_reasons else [(edge_a.index, edge_b.index)]
+    pair_candidates = [
+        {
+            "edge_ids": (edge_a.index, edge_b.index),
+            "connection_angle": connection_angle,
+            "miter_scale": miter_scale,
+            "allowed": not split_reasons,
+            "split_reason": "|".join(split_reasons) if split_reasons else None,
+            "metadata_compatible": metadata_compatible,
+            "warning": (
+                "SURFACE_CONTEXT_CHANGED_BUT_TOPOLOGY_CONTINUES"
+                if not split_reasons and not metadata_compatible
+                else None
+            ),
+            "patch_pairs": (
+                metadata[edge_a]["patch_pair"],
+                metadata[edge_b]["patch_pair"],
+            ),
+            "convexities": (
+                metadata[edge_a]["convexity"],
+                metadata[edge_b]["convexity"],
+            ),
+            "weight": connection_angle if not split_reasons else 0.0,
+        }
+    ]
+    result = {}
+    if selected_pairs:
+        result[edge_a] = edge_b
+        result[edge_b] = edge_a
+    record = {
+        "vertex_index": vertex.index,
+        "vertex_coordinate": tuple(vertex.co),
+        "incident_edge_ids": [edge_a.index, edge_b.index],
+        "pair_candidates": pair_candidates,
+        "selected_pairs": selected_pairs,
+        "unmatched_edge_ids": [] if selected_pairs else [edge_a.index, edge_b.index],
+        "ambiguity_margin": connection_angle if selected_pairs else 0.0,
+        "topology_priority_degree_two": True,
+    }
+    return result, record
+
+# 返回 Pair candidate 的 Edge keys，供全局组合与稳定诊断使用。
+# candidate/edges_by_id: Vertex matching candidate 与 Edge ID 查找表。
+def _candidate_edge_pair(candidate, edges_by_id):
+    edge_id_a, edge_id_b = candidate["edge_ids"]
+    return edges_by_id[edge_id_a], edges_by_id[edge_id_b]
+
+
+# 返回 matching 的几何 tie-break signature；不依赖 Mesh Edge ID。
+# matching/edges_by_id: matching record 与 Edge ID 查找表。
+def _matching_geometry_signature(matching, edges_by_id):
+    pairs = []
+    for candidate in matching["selected"]:
+        edge_a, edge_b = _candidate_edge_pair(candidate, edges_by_id)
+        pair = tuple(
+            sorted(
+                (
+                    tuple(round(value, 7) for value in candidate["vertex"].co),
+                    tuple(round(value, 7) for value in edge_a.other_vert(candidate["vertex"]).co),
+                    tuple(round(value, 7) for value in edge_b.other_vert(candidate["vertex"]).co),
+                )
+            )
+        )
+        pairs.append(pair)
+    return tuple(sorted(pairs))
+
+
+# 判断采样点是否位于 closed source Mesh 内部；ray parity 避免 corner 处 nearest Face normal 歧义。
+# source_bvh/point/tolerance: source BVH、查询点与推进容差；返回 inside Boolean。
+def _point_inside_closed_bvh(source_bvh, point, tolerance):
+    if not hasattr(source_bvh, "ray_cast"):
+        nearest = source_bvh.find_nearest(point)
+        if nearest is None:
+            return False
+        location, normal = Vector(nearest[0]), Vector(nearest[1])
+        return (point - location).dot(normal) <= tolerance
+    directions = (
+        Vector((1.0, 0.371, 0.529)).normalized(),
+        Vector((-0.417, 1.0, 0.283)).normalized(),
+        Vector((0.233, -0.619, 1.0)).normalized(),
+    )
+    inside_votes = 0
+    advance = max(tolerance * 0.25, 1.0e-7)
+    for direction in directions:
+        origin = Vector(point)
+        hit_count = 0
+        remaining_distance = 1.0e6
+        while remaining_distance > advance:
+            location, _, _, distance = source_bvh.ray_cast(
+                origin,
+                direction,
+                remaining_distance,
+            )
+            if location is None:
+                break
+            hit_count += 1
+            step = max(float(distance), 0.0) + advance
+            origin = Vector(location) + direction * advance
+            remaining_distance -= step
+        inside_votes += hit_count % 2
+    return inside_votes >= 2
+
+
+# 统计 open Strand endpoint 的 source-solid containment，优先让圆形端盖埋入 attachment body。
+# strand_records/source_bvh/clearance: 候选 strands、source Mesh BVH 与 endpoint 采样距离；返回 exposed 数和 margin。
+def _strand_endpoint_containment_score(strand_records, source_bvh, clearance):
+    if source_bvh is None or clearance <= 0.0:
+        return 0, 0.0
+    tolerance = max(clearance * 0.02, 1.0e-6)
+    exposed_endpoint_count = 0
+    containment_margin = 0.0
+    for record in strand_records:
+        for sample in record.get("endpoint_samples", ()):
+            sample = Vector(sample)
+            nearest = source_bvh.find_nearest(sample)
+            if nearest is None:
+                exposed_endpoint_count += 1
+                continue
+            location = Vector(nearest[0])
+            if not _point_inside_closed_bvh(source_bvh, sample, tolerance):
+                exposed_endpoint_count += 1
+            else:
+                containment_margin += (sample - location).length
+    return exposed_endpoint_count, containment_margin
+
+
+# 枚举所有 junction matching 组合，并在评分时保留已确定的 degree-2 拓扑连续关系。
+# vertex_edges/metadata/fixed_strand_pairs: junction 邻接、逐 Edge metadata 与固定 pairing；返回 junction pair map 与诊断。
+def _global_surface_patch_strand_pairs(
+    vertex_edges,
+    metadata,
+    miter_scale_limit,
+    fixed_strand_pairs=None,
+    source_bvh=None,
+    endpoint_clearance=0.0,
+):
+    fixed_strand_pairs = fixed_strand_pairs or {}
+    vertex_options = []
+    vertex_diagnostics = {}
+    edge_by_id = {edge.index: edge for edge in metadata}
+
+    strand_pairs = {}
+    vertex_matching_records = []
+    for vertex, edges in sorted(vertex_edges.items(), key=lambda item: item[0].index):
+        pair_candidates = []
+        allowed_candidates = []
+        for index_a, edge_a in enumerate(edges):
+            for edge_b in edges[index_a + 1:]:
+                connection_angle = _connection_angle_degrees(edge_a, edge_b, vertex)
+                miter_scale = 1.0 / max(
+                    math.sin(math.radians(connection_angle) * 0.5),
+                    1.0e-6,
+                )
+                shared_patch_ids = tuple(
+                    sorted(set(metadata[edge_a]["patch_pair"]) & set(metadata[edge_b]["patch_pair"]))
+                )
+                split_reasons = []
+                if metadata[edge_a]["convexity"] != metadata[edge_b]["convexity"] or not shared_patch_ids:
+                    split_reasons.append("SURFACE_CONTEXT_INCOMPATIBLE")
+                if miter_scale > miter_scale_limit:
+                    split_reasons.append("MITER_SCALE_EXCEEDED")
+                candidate = {
+                    "vertex": vertex,
+                    "edge_ids": (edge_a.index, edge_b.index),
+                    "connection_angle": connection_angle,
+                    "miter_scale": miter_scale,
+                    "shared_patch_ids": shared_patch_ids,
+                    "allowed": not split_reasons,
+                    "split_reason": "|".join(split_reasons) if split_reasons else None,
+                    "weight": connection_angle if not split_reasons else 0.0,
+                }
+                pair_candidates.append(candidate)
+                if candidate["allowed"]:
+                    allowed_candidates.append((edge_a, edge_b, candidate))
+        options = _enumerate_vertex_matchings(edges, allowed_candidates)
+        maximum_pair_count = max(len(option["selected"]) for option in options)
+        maximum_score = max(
+            option["score"]
+            for option in options
+            if len(option["selected"]) == maximum_pair_count
+        )
+        options = [
+            option
+            for option in options
+            if len(option["selected"]) == maximum_pair_count
+            and abs(option["score"] - maximum_score) <= 1.0e-7
+        ]
+        for option in options:
+            option["vertex"] = vertex
+            option["geometry_signature"] = _matching_geometry_signature(option, edge_by_id)
+        vertex_options.append(options)
+        vertex_diagnostics[vertex] = pair_candidates
+
+    search_space_size = math.prod(len(options) for options in vertex_options)
+    if search_space_size > 65536:
+        raise RuntimeError(
+            f"Global Surface Patch matching search budget exceeded: {search_space_size}"
+        )
+    best = None
+    for option_combination in itertools.product(*vertex_options):
+        pair_links = {
+            (vertex, edge): paired_edge
+            for vertex, pairs in fixed_strand_pairs.items()
+            for edge, paired_edge in pairs.items()
+        }
+        selected_candidates = []
+        for option in option_combination:
+            for candidate in option["selected"]:
+                edge_a, edge_b = _candidate_edge_pair(candidate, edge_by_id)
+                vertex = candidate["vertex"]
+                pair_links[(vertex, edge_a)] = edge_b
+                pair_links[(vertex, edge_b)] = edge_a
+                selected_candidates.append(candidate)
+
+        remaining = set(metadata)
+        strand_records = []
+        endpoint_half_edges = sorted(
+            (
+                (vertex, edge)
+                for edge in metadata
+                for vertex in edge.verts
+                if (vertex, edge) not in pair_links
+            ),
+            key=lambda item: (
+                tuple(round(value, 7) for value in item[0].co),
+                tuple(
+                    sorted(
+                        tuple(round(value, 7) for value in vertex.co)
+                        for vertex in item[1].verts
+                    )
+                ),
+            ),
+        )
+        pending_starts = endpoint_half_edges + [
+            (
+                min(edge.verts, key=lambda vertex: tuple(round(value, 7) for value in vertex.co)),
+                edge,
+            )
+            for edge in sorted(metadata, key=lambda item: item.index)
+        ]
+        for start, seed in pending_starts:
+            if seed not in remaining:
+                continue
+            current_vertex = start
+            current_edge = seed
+            ordered_edges = []
+            while current_edge is not None and current_edge in remaining:
+                ordered_edges.append(current_edge)
+                remaining.remove(current_edge)
+                current_vertex = current_edge.other_vert(current_vertex)
+                current_edge = pair_links.get((current_vertex, current_edge))
+            cyclic = current_vertex is start
+            common_patch_ids = set(metadata[ordered_edges[0]]["patch_pair"])
+            for edge in ordered_edges[1:]:
+                common_patch_ids &= set(metadata[edge]["patch_pair"])
+            record = {
+                "edge_count": len(ordered_edges),
+                "common_patch_ids": tuple(sorted(common_patch_ids)),
+                "cyclic": cyclic,
+                "endpoint_samples": [],
+            }
+            if not cyclic and endpoint_clearance > 0.0:
+                start_neighbor = seed.other_vert(start)
+                end_edge = ordered_edges[-1]
+                end_neighbor = end_edge.other_vert(current_vertex)
+                record["endpoint_samples"] = [
+                    tuple(
+                        start.co
+                        + (start.co - start_neighbor.co).normalized()
+                        * endpoint_clearance
+                    ),
+                    tuple(
+                        current_vertex.co
+                        + (current_vertex.co - end_neighbor.co).normalized()
+                        * endpoint_clearance
+                    ),
+                ]
+            strand_records.append(record)
+
+        unsupported_turn_count = sum(
+            max(0, record["edge_count"] - 1)
+            for record in strand_records
+            if not record["common_patch_ids"]
+        )
+        supported_turn_count = sum(
+            max(0, record["edge_count"] - 1)
+            for record in strand_records
+            if record["common_patch_ids"]
+        )
+        exposed_endpoint_count, endpoint_containment_margin = (
+            _strand_endpoint_containment_score(
+                strand_records,
+                source_bvh,
+                endpoint_clearance,
+            )
+        )
+        score = (
+            -unsupported_turn_count,
+            supported_turn_count,
+            len(selected_candidates),
+            round(sum(candidate["weight"] for candidate in selected_candidates), 7),
+            -exposed_endpoint_count,
+            round(endpoint_containment_margin, 7),
+            tuple(
+                sorted(
+                    pair
+                    for option in option_combination
+                    for pair in option["geometry_signature"]
+                )
+            ),
+        )
+        if best is None or score[:6] > best["score"][:6] or (score[:6] == best["score"][:6] and score[6] < best["score"][6]):
+            best = {
+                "score": score,
+                "options": option_combination,
+                "pair_links": pair_links,
+            }
+
+    strand_pairs = {vertex: {} for vertex in vertex_edges}
+    records = []
+    for option in best["options"]:
+        vertex = option["vertex"]
+        selected_pairs = [candidate["edge_ids"] for candidate in option["selected"]]
+        selected_edge_ids = {edge_id for pair in selected_pairs for edge_id in pair}
+        for candidate in option["selected"]:
+            edge_a, edge_b = _candidate_edge_pair(candidate, edge_by_id)
+            strand_pairs[vertex][edge_a] = edge_b
+            strand_pairs[vertex][edge_b] = edge_a
+        records.append(
+            {
+                "vertex_index": vertex.index,
+                "incident_edge_ids": [edge.index for edge in vertex_edges[vertex]],
+                "pair_candidates": [
+                    {
+                        key: value
+                        for key, value in candidate.items()
+                        if key != "vertex"
+                    }
+                    for candidate in vertex_diagnostics[vertex]
+                ],
+                "selected_pairs": selected_pairs,
+                "unmatched_edge_ids": [
+                    edge.index
+                    for edge in vertex_edges[vertex]
+                    if edge.index not in selected_edge_ids
+                ],
+                "ambiguity_margin": 0.0,
+                "global_surface_patch_matching": True,
+                "global_score": best["score"][:6],
+                "endpoint_containment_scoring": source_bvh is not None,
+            }
+        )
+    return strand_pairs, records
 
 # 从 Sharp Edge 建 FeatureGraph，并按 patch pair、convexity、degree 与 turn spike 分 Pipe Groups。
-# source_object: 输入 Mesh；threshold/spike: tangent continuity 参数；stats: 机器统计。
+# source_object: 输入 Mesh；threshold/spike: tangent continuity 参数；stats: 机器统计；miter_scale_limit: 允许的 profile 膨胀上限。
 def _build_feature_graph(
     source_object,
     chain_turn_threshold_degrees,
     chain_turn_spike_ratio,
     stats,
+    miter_scale_limit=1.25,
+    global_surface_patch_matching=False,
+    endpoint_clearance=0.0,
 ):
     bm = bmesh.new()
     bm.from_mesh(source_object.data)
@@ -332,7 +798,7 @@ def _build_feature_graph(
     face_patch, patch_count = _surface_patch_map(bm, sharp_edges)
     vertex_edges = {}
     metadata = {}
-    for edge in sharp_edges:
+    for edge in sorted(sharp_edges, key=lambda item: item.index):
         patch_pair = tuple(sorted(face_patch[face] for face in edge.link_faces))
         metadata[edge] = {
             "patch_pair": patch_pair,
@@ -342,101 +808,161 @@ def _build_feature_graph(
             vertex_edges.setdefault(vertex, []).append(edge)
     for edges in vertex_edges.values():
         edges.sort(key=lambda edge: edge.index)
-    strand_pairs = {
-        vertex: _degree_four_strand_pairs(
+    del chain_turn_threshold_degrees, chain_turn_spike_ratio
+
+    strand_pairs = {}
+    vertex_matching_records = []
+    for vertex, edges in sorted(vertex_edges.items(), key=lambda item: item[0].index):
+        if global_surface_patch_matching and len(edges) == 2:
+            pairs, record = _degree_two_topology_pair(
+                vertex,
+                edges,
+                metadata,
+                miter_scale_limit,
+            )
+            strand_pairs[vertex] = pairs
+            vertex_matching_records.append(record)
+            continue
+        pairs, record = _maximum_weight_strand_pairs(
             vertex,
             edges,
             metadata,
-            chain_turn_threshold_degrees,
+            miter_scale_limit=miter_scale_limit,
         )
-        for vertex, edges in vertex_edges.items()
-        if len(edges) == 4
-    }
-    topology_junctions = sorted(vertex.index for vertex, edges in vertex_edges.items() if len(edges) != 2)
-    turn_by_vertex = {
-        vertex: _turn_angle_degrees(edges[0], edges[1], vertex)
-        for vertex, edges in vertex_edges.items()
-        if len(edges) == 2
-    }
-    nonzero_turns = sorted(value for value in turn_by_vertex.values() if value > 1.0e-5)
-    median_turn = nonzero_turns[len(nonzero_turns) // 2] if nonzero_turns else 0.0
+        strand_pairs[vertex] = pairs
+        vertex_matching_records.append(record)
+    # Preview 的 global solver 只处理真实 junction；degree-2 topology pairing 必须保留。
+    if global_surface_patch_matching:
+        source_bvh = BVHTree.FromBMesh(bm)
+        global_pairs, global_records = _global_surface_patch_strand_pairs(
+            {
+                vertex: edges
+                for vertex, edges in vertex_edges.items()
+                if len(edges) != 2
+            },
+            metadata,
+            miter_scale_limit,
+            fixed_strand_pairs={
+                vertex: pairs
+                for vertex, pairs in strand_pairs.items()
+                if len(vertex_edges[vertex]) == 2
+            },
+            source_bvh=source_bvh,
+            endpoint_clearance=endpoint_clearance,
+        )
+        records_by_vertex = {
+            record["vertex_index"]: record
+            for record in vertex_matching_records
+        }
+        for vertex, pairs in global_pairs.items():
+            strand_pairs[vertex] = pairs
+        for record in global_records:
+            records_by_vertex[record["vertex_index"]] = record
+        vertex_matching_records = [
+            records_by_vertex[vertex.index]
+            for vertex in sorted(vertex_edges, key=lambda item: item.index)
+        ]
+    topology_junctions = sorted(
+        vertex.index for vertex, edges in vertex_edges.items() if len(edges) != 2
+    )
 
     def can_continue(vertex, edge_a, edge_b):
-        if edge_b is strand_pairs.get(vertex, {}).get(edge_a):
-            return True
-        if len(vertex_edges[vertex]) != 2:
-            return False
-        if metadata[edge_a] != metadata[edge_b]:
-            return False
-        turn = turn_by_vertex[vertex]
-        spike = turn / max(median_turn, 1.0e-6) if median_turn > 0.0 else float("inf")
-        return not (
-            turn > chain_turn_threshold_degrees
-            and spike > chain_turn_spike_ratio
-        )
+        return edge_b is strand_pairs.get(vertex, {}).get(edge_a)
 
     groups = []
     remaining = set(sharp_edges)
     while remaining:
         seed = min(remaining, key=lambda edge: edge.index)
         component = {seed}
-        stack = [seed]
-        remaining.remove(seed)
-        while stack:
-            edge = stack.pop()
-            for vertex in edge.verts:
-                for neighbor in vertex_edges[vertex]:
-                    if neighbor in remaining and can_continue(vertex, edge, neighbor):
-                        remaining.remove(neighbor)
-                        component.add(neighbor)
-                        stack.append(neighbor)
-        component_vertex_edges = {}
-        for edge in component:
-            for vertex in edge.verts:
-                component_vertex_edges.setdefault(vertex, []).append(edge)
-        endpoints = sorted(
-            (vertex for vertex, edges in component_vertex_edges.items() if len(edges) == 1),
-            key=lambda vertex: vertex.index,
+        pending_component_edges = [seed]
+        while pending_component_edges:
+            component_edge = pending_component_edges.pop()
+            for vertex in component_edge.verts:
+                paired_edge = strand_pairs.get(vertex, {}).get(component_edge)
+                if paired_edge is not None and paired_edge not in component:
+                    component.add(paired_edge)
+                    pending_component_edges.append(paired_edge)
+        endpoint_half_edges = sorted(
+            (
+                (vertex, edge)
+                for edge in component
+                for vertex in edge.verts
+                if edge not in strand_pairs.get(vertex, {})
+            ),
+            key=lambda item: (
+                tuple(round(value, 7) for value in item[0].co),
+                item[1].index,
+            ),
         )
-        cyclic = not endpoints and all(len(edges) == 2 for edges in component_vertex_edges.values())
-        if not cyclic and len(endpoints) != 2:
-            bm.free()
-            _fail("feature_group_invalid", "Pipe Group is neither an open chain nor a closed loop", stats)
-        start = endpoints[0] if endpoints else min(component_vertex_edges, key=lambda vertex: vertex.index)
+        if endpoint_half_edges:
+            start, seed = endpoint_half_edges[0]
+        else:
+            seed = min(component, key=lambda edge: edge.index)
+            start = min(seed.verts, key=lambda vertex: vertex.index)
+        current = start
+        current_edge = seed
         ordered_vertices = [start]
         ordered_edges = []
-        current = start
-        previous = None
-        while len(ordered_edges) < len(component):
-            candidates = sorted(
-                (edge for edge in component_vertex_edges[current] if edge is not previous),
-                key=lambda edge: edge.index,
-            )
-            next_edge = next((edge for edge in candidates if edge not in ordered_edges), None)
-            if next_edge is None:
-                break
-            ordered_edges.append(next_edge)
-            current = next_edge.other_vert(current)
-            previous = next_edge
+        while current_edge is not None and current_edge in component and current_edge not in ordered_edges:
+            ordered_edges.append(current_edge)
+            remaining.discard(current_edge)
+            current = current_edge.other_vert(current)
             if current is start:
                 break
             ordered_vertices.append(current)
-        if len(ordered_edges) != len(component):
+            current_edge = strand_pairs.get(current, {}).get(current_edge)
+        endpoint_half_edges = [
+            (ordered_vertices[0], ordered_edges[0])
+        ] if current is not start else []
+        if current is not start:
+            endpoint_half_edges.append((current, ordered_edges[-1]))
+        cyclic = not endpoint_half_edges
+        if not cyclic and len(endpoint_half_edges) != 2:
             bm.free()
-            _fail("feature_group_invalid", "Pipe Group traversal did not consume every Edge", stats)
-        first_edge = ordered_edges[0]
+            _fail("feature_group_invalid", "Pipe Group is neither an open chain nor a closed loop", stats)
+        edge_indices = [edge.index for edge in ordered_edges]
         group = {
             "pipe_id": len(groups),
-            "edge_indices": [edge.index for edge in ordered_edges],
+            "edge_indices": edge_indices,
             "vertex_indices": [vertex.index for vertex in ordered_vertices],
             "points": [vertex.co.copy() for vertex in ordered_vertices],
             "is_cyclic": cyclic,
-            "patch_pair": metadata[first_edge]["patch_pair"],
-            "convexity": metadata[first_edge]["convexity"],
+            "patch_pair": metadata[ordered_edges[0]]["patch_pair"],
+            "patch_pair_by_edge": [
+                metadata[edge]["patch_pair"] for edge in ordered_edges
+            ],
+            "convexity": metadata[ordered_edges[0]]["convexity"],
+            "convexity_by_edge": [
+                metadata[edge]["convexity"] for edge in ordered_edges
+            ],
+            "selected_pair_vertex_ids": [
+                vertex.index
+                for vertex in ordered_vertices
+                if len(vertex_edges[vertex]) > 1
+                and any(
+                    set(pair) <= set(edge_indices)
+                    for pair in next(
+                        record["selected_pairs"]
+                        for record in vertex_matching_records
+                        if record["vertex_index"] == vertex.index
+                    )
+                )
+            ],
             "start_feature_degree": len(vertex_edges[ordered_vertices[0]]),
-            "end_feature_degree": len(vertex_edges[ordered_vertices[0]]) if cyclic else len(vertex_edges[ordered_vertices[-1]]),
+            "end_feature_degree": (
+                len(vertex_edges[ordered_vertices[0]])
+                if cyclic
+                else len(vertex_edges[ordered_vertices[-1]])
+            ),
         }
         groups.append(group)
+        if set(ordered_edges) != component:
+            bm.free()
+            _fail(
+                "feature_group_traversal_incomplete",
+                "Pair-connected component was not consumed exactly once",
+                stats,
+            )
     groups.sort(key=lambda group: min(group["edge_indices"]))
     for pipe_id, group in enumerate(groups):
         group["pipe_id"] = pipe_id
@@ -447,6 +973,34 @@ def _build_feature_graph(
     stats["closed_pipe_count"] = sum(1 for group in groups if group["is_cyclic"])
     stats["topology_junction_count"] = len(topology_junctions)
     stats["junction_vertex_indices"] = topology_junctions
+    stats["vertex_matching"] = vertex_matching_records
+    stats["cutter_strands"] = [
+        {
+            "strand_id": group["pipe_id"],
+            "ordered_edge_ids": group["edge_indices"],
+            "cyclic": group["is_cyclic"],
+            "selected_pair_vertex_ids": group["selected_pair_vertex_ids"],
+            "unmatched_endpoints": [
+                vertex_index
+                for vertex_index in (
+                    group["vertex_indices"][:1]
+                    if group["is_cyclic"]
+                    else (
+                        group["vertex_indices"][0],
+                        group["vertex_indices"][-1],
+                    )
+                )
+                if any(
+                    record["vertex_index"] == vertex_index
+                    and record["unmatched_edge_ids"]
+                    for record in vertex_matching_records
+                )
+            ],
+            "generation_backend": "PENDING",
+            "geometry_guard": {"status": "PENDING"},
+        }
+        for group in groups
+    ]
     stats["feature_groups"] = [
         {
             key: value
@@ -589,11 +1143,103 @@ def _classify_pipe_endpoints(source_object, groups, radius):
     bm.free()
 
 
-# 使用 Blender Curve 的 ROUND bevel 生成 closed cyclic Pipe Mesh。
-# 替代手写 sweep 以消除 closed-loop seam 和 frame transport 的缝合问题。
+# 验证受控 Curve Pipe Node Group 的 exact metadata 与 dependency link。
+# node_group: 待验证的根 GeometryNodeTree；返回是否匹配发布资产。
+def _is_valid_curve_pipe_asset(node_group):
+    dependency_group = bpy.data.node_groups.get(FEATURE_CHAMFER_CURVE_DEPENDENCY)
+    dependency_nodes = [
+        node
+        for node in node_group.nodes
+        if getattr(node, "node_tree", None) is dependency_group
+    ]
+    return (
+        node_group.bl_idname == "GeometryNodeTree"
+        and node_group.get(FEATURE_CHAMFER_CURVE_ASSET_VERSION_TAG)
+        == FEATURE_CHAMFER_CURVE_ASSET_VERSION
+        and node_group.get(FEATURE_CHAMFER_CURVE_ASSET_SOURCE_TAG)
+        == FEATURE_CHAMFER_CURVE_ASSET_SOURCE
+        and node_group.get(FEATURE_CHAMFER_CURVE_ASSET_FINGERPRINT_TAG)
+        == FEATURE_CHAMFER_CURVE_FINGERPRINT
+        and dependency_group is not None
+        and dependency_group.get(FEATURE_CHAMFER_CURVE_ASSET_VERSION_TAG)
+        == FEATURE_CHAMFER_CURVE_ASSET_VERSION
+        and dependency_group.get(FEATURE_CHAMFER_CURVE_ASSET_SOURCE_TAG)
+        == FEATURE_CHAMFER_CURVE_ASSET_SOURCE
+        and dependency_group.get(FEATURE_CHAMFER_CURVE_ASSET_FINGERPRINT_TAG)
+        == FEATURE_CHAMFER_CURVE_DEPENDENCY_FINGERPRINT
+        and len(dependency_nodes) == 1
+    )
+
+
+# 按 exact name/version/fingerprint 幂等导入受控 Curve Pipe asset。
+# 无参数；返回根 GeometryNodeTree，冲突或被改写时 fail-closed。
+def ensure_feature_chamfer_curve_pipe_asset():
+    node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_CURVE_NODE)
+    if node_group is not None:
+        if not _is_valid_curve_pipe_asset(node_group):
+            raise RuntimeError(
+                f"Curve Pipe Node Group 名称冲突或 fingerprint 不匹配: "
+                f"{FEATURE_CHAMFER_CURVE_NODE}"
+            )
+        return node_group
+    if not PRESET_FILE_PATH.exists():
+        raise RuntimeError(f"Curve Pipe asset 不存在: {PRESET_FILE_PATH}")
+    bpy.ops.wm.append(
+        filepath=str(PRESET_FILE_PATH),
+        directory=str(PRESET_FILE_PATH / "NodeTree"),
+        filename=FEATURE_CHAMFER_CURVE_NODE,
+    )
+    node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_CURVE_NODE)
+    if node_group is None or not _is_valid_curve_pipe_asset(node_group):
+        raise RuntimeError("导入的 Curve Pipe asset 或 Poly-Curve Info 依赖不匹配")
+    return node_group
+
+
+# 创建只负责当前 Pipe 参数绑定的临时 GN wrapper。
+# asset/radius/resolution/fill_caps: 受控 asset 与规则圆 profile 参数。
+def _build_curve_pipe_wrapper(asset, radius, resolution, fill_caps):
+    wrapper = bpy.data.node_groups.new(
+        f"HST Curve Pipe Wrapper {radius:.8f} {resolution} {int(fill_caps)}",
+        "GeometryNodeTree",
+    )
+    wrapper.interface.new_socket(
+        name="Geometry",
+        in_out="INPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    wrapper.interface.new_socket(
+        name="Geometry",
+        in_out="OUTPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    group_input = wrapper.nodes.new("NodeGroupInput")
+    group_output = wrapper.nodes.new("NodeGroupOutput")
+    curve_circle = wrapper.nodes.new("GeometryNodeCurvePrimitiveCircle")
+    curve_circle.inputs["Resolution"].default_value = resolution
+    curve_circle.inputs["Radius"].default_value = radius
+    asset_node = wrapper.nodes.new("GeometryNodeGroup")
+    asset_node.node_tree = asset
+    asset_node.inputs["Fill Caps"].default_value = fill_caps
+    asset_node.inputs["Even-Thickness"].default_value = True
+    wrapper.links.new(group_input.outputs["Geometry"], asset_node.inputs["Curve"])
+    wrapper.links.new(curve_circle.outputs["Curve"], asset_node.inputs["Profile Curve"])
+    wrapper.links.new(asset_node.outputs["Geometry"], group_output.inputs["Geometry"])
+    return wrapper
+
+
+# 使用受控 Even-Thickness GN asset 生成 open/closed Curve Pipe Mesh。
+# Python 已完成 strand matching；Geometry Nodes 只消费有序 Curve 并生成规则截面。
 # source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
 def _build_pipe_mesh_curve(source_object, group, radius, pipe_resolution, collection):
     points = [point.copy() for point in group["points"]]
+    cyclic = group["is_cyclic"]
+    start_extension = 0.0 if cyclic else group.get("start_extension", 0.0)
+    end_extension = 0.0 if cyclic else group.get("end_extension", 0.0)
+    if not cyclic:
+        start_tangent = (points[1] - points[0]).normalized()
+        end_tangent = (points[-1] - points[-2]).normalized()
+        points[0] -= start_tangent * start_extension
+        points[-1] += end_tangent * end_extension
     curve_name = f"{source_object.name}_PipeCurve_{group['pipe_id']}"
     curve = bpy.data.curves.new(curve_name, type="CURVE")
     curve.dimensions = "3D"
@@ -601,33 +1247,47 @@ def _build_pipe_mesh_curve(source_object, group, radius, pipe_resolution, collec
     spline.points.add(len(points) - 1)
     for index, point in enumerate(points):
         spline.points[index].co = (point.x, point.y, point.z, 1.0)
-    spline.use_cyclic_u = True
-
-    curve.resolution_u = 1
-    curve.bevel_mode = "ROUND"
-    curve.bevel_depth = radius
-    # Blender ROUND bevel 分辨率：0 -> 4 边，1 -> 8 边，2 -> 16 边。
-    curve.bevel_resolution = max(0, int(round(math.log2(pipe_resolution))) - 2)
-    curve.fill_mode = "FULL"
-    curve.use_fill_caps = False
+    spline.use_cyclic_u = cyclic
 
     curve_obj = bpy.data.objects.new(curve_name, curve)
     curve_obj.matrix_world = source_object.matrix_world.copy()
     collection.objects.link(curve_obj)
 
-    bpy.ops.object.select_all(action="DESELECT")
-    curve_obj.select_set(True)
-    bpy.context.view_layer.objects.active = curve_obj
-    bpy.ops.object.convert(target="MESH")
+    node_group = ensure_feature_chamfer_curve_pipe_asset()
+    wrapper = _build_curve_pipe_wrapper(
+        node_group,
+        radius,
+        pipe_resolution,
+        not cyclic,
+    )
+    modifier = curve_obj.modifiers.new("HST Curve Pipe Even-Thickness", type="NODES")
+    modifier.node_group = wrapper
 
-    pipe = curve_obj
-    pipe.name = f"{source_object.name}_Pipe_{group['pipe_id']}_TEST"
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated_object = curve_obj.evaluated_get(depsgraph)
+    pipe_mesh = bpy.data.meshes.new_from_object(
+        evaluated_object,
+        preserve_all_data_layers=True,
+        depsgraph=depsgraph,
+    )
+    pipe = bpy.data.objects.new(
+        f"{source_object.name}_Pipe_{group['pipe_id']}_TEST",
+        pipe_mesh,
+    )
+    pipe.matrix_world = source_object.matrix_world.copy()
+    collection.objects.link(pipe)
+    bpy.data.objects.remove(curve_obj, do_unlink=True)
+    if curve.users == 0:
+        bpy.data.curves.remove(curve)
+    bpy.data.node_groups.remove(wrapper)
+
     pipe[OUTPUT_TAG] = source_object.name
     pipe[PIPE_ID_TAG] = group["pipe_id"]
-    pipe["hst_pipe_start_extension"] = 0.0
-    pipe["hst_pipe_end_extension"] = 0.0
-    pipe["hst_pipe_start_endpoint_class"] = "CYCLIC"
-    pipe["hst_pipe_end_endpoint_class"] = "CYCLIC"
+    pipe["hst_pipe_generation_backend"] = "EVEN_THICKNESS_GN"
+    pipe["hst_pipe_start_extension"] = start_extension
+    pipe["hst_pipe_end_extension"] = end_extension
+    pipe["hst_pipe_start_endpoint_class"] = group.get("start_endpoint_class", "CYCLIC")
+    pipe["hst_pipe_end_endpoint_class"] = group.get("end_endpoint_class", "CYCLIC")
     pipe[DEBUG_STAGE_TAG] = "PIPES"
     return pipe
 
@@ -717,12 +1377,16 @@ def _build_pipe_mesh_manual(source_object, group, radius, pipe_resolution, colle
     return pipe
 
 
-# 选择 Pipe 几何后端：cyclic 使用 Curve-based，open 使用手写 Mesh 以保持端盖 manifold。
+# 选择 Pipe 几何后端：正式 Phase 1 默认使用受控 Even-Thickness GN。
 # source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
 def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
-    if group["is_cyclic"]:
-        return _build_pipe_mesh_curve(source_object, group, radius, pipe_resolution, collection)
-    return _build_pipe_mesh_manual(source_object, group, radius, pipe_resolution, collection)
+    return _build_pipe_mesh_curve(
+        source_object,
+        group,
+        radius,
+        pipe_resolution,
+        collection,
+    )
 
 def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_index):
     vertices = []
@@ -925,7 +1589,7 @@ def _groove_face_indices(output, stats):
 
 # 删除 cutter Faces 并把 BoundaryGraph 的连通边界环提取为有序 BMVert 序列。
 # output: Difference 结果；cutter_face_indices: 待删除 Face 索引；stats: 机器统计。
-def _open_boundary(output, cutter_face_indices, stats):
+def _open_boundary(output, cutter_face_indices, stats, allow_non_simple=False):
     bm = bmesh.new()
     bm.from_mesh(output.data)
     bm.faces.ensure_lookup_table()
@@ -937,6 +1601,10 @@ def _open_boundary(output, cutter_face_indices, stats):
         for vertex in edge.verts:
             adjacency.setdefault(vertex, []).append(edge)
     if any(len(edges) != 2 for edges in adjacency.values()):
+        if allow_non_simple:
+            bm.to_mesh(output.data)
+            output.data.update()
+            return bm, []
         bm.free()
         _fail("ambiguous_boundary", "BoundaryGraph contains non degree-2 rail vertices", stats)
     loops = []
@@ -1231,6 +1899,629 @@ def _rail_pair_score(chain_a, chain_b):
         endpoint_cost = min(direct, reversed_cost)
     return endpoint_cost + (center_a - center_b).length * 0.25 + (count_ratio - 1.0)
 
+
+# 返回 open/cyclic coordinates 的 normalized arc-length u。
+# coordinates/cyclic: 有序坐标与闭环标记；返回与 coordinates 等长的参数。
+def _coordinate_parameters(coordinates, cyclic):
+    segment_count = len(coordinates) if cyclic else len(coordinates) - 1
+    lengths = [
+        (
+            coordinates[(index + 1) % len(coordinates)]
+            - coordinates[index]
+        ).length
+        for index in range(segment_count)
+    ]
+    total = sum(lengths)
+    cumulative = 0.0
+    parameters = []
+    for index in range(len(coordinates)):
+        parameters.append(cumulative / total if total > 1.0e-10 else 0.0)
+        if index < len(lengths):
+            cumulative += lengths[index]
+    return parameters
+
+
+# 返回 open/cyclic rail 的 normalized arc-length u。
+# vertices/cyclic: 有序 rail vertices 与闭环标记；返回与 vertices 等长的参数。
+def _rail_parameters(vertices, cyclic):
+    return _coordinate_parameters(
+        [vertex.co for vertex in vertices],
+        cyclic,
+    )
+
+
+# 返回点到 CutterStrand polyline 的最短距离。
+# point/group: 查询点与含 ordered points/cyclic 的 Feature group。
+def _point_to_feature_group_distance(point, group):
+    points = group["points"]
+    segment_count = len(points) if group["is_cyclic"] else len(points) - 1
+    distances = []
+    for index in range(segment_count):
+        start = points[index]
+        end = points[(index + 1) % len(points)]
+        closest, factor = geometry.intersect_point_line(point, start, end)
+        if factor < 0.0:
+            closest = start
+        elif factor > 1.0:
+            closest = end
+        distances.append((point - closest).length)
+    return min(distances)
+
+
+# 统计 3D polyline 的非相邻 segment 自交数量。
+# coordinates/cyclic/tolerance: 有序点、闭环标记与几何距离容差。
+def _polyline_self_intersection_count(coordinates, cyclic, tolerance):
+    if len(coordinates) < 4:
+        return 0
+    segment_count = len(coordinates) if cyclic else len(coordinates) - 1
+    intersection_count = 0
+    for first_index in range(segment_count):
+        first_start = coordinates[first_index]
+        first_end = coordinates[(first_index + 1) % len(coordinates)]
+        for second_index in range(first_index + 1, segment_count):
+            if second_index == first_index + 1:
+                continue
+            if cyclic and first_index == 0 and second_index == segment_count - 1:
+                continue
+            second_start = coordinates[second_index]
+            second_end = coordinates[(second_index + 1) % len(coordinates)]
+            closest = geometry.intersect_line_line(
+                first_start,
+                first_end,
+                second_start,
+                second_end,
+            )
+            if closest is None or (closest[0] - closest[1]).length > tolerance:
+                continue
+            midpoint = (closest[0] + closest[1]) * 0.5
+            _, first_factor = geometry.intersect_point_line(
+                midpoint,
+                first_start,
+                first_end,
+            )
+            _, second_factor = geometry.intersect_point_line(
+                midpoint,
+                second_start,
+                second_end,
+            )
+            if (
+                -1.0e-6 <= first_factor <= 1.0 + 1.0e-6
+                and -1.0e-6 <= second_factor <= 1.0 + 1.0e-6
+            ):
+                intersection_count += 1
+    return intersection_count
+
+
+# 为 RailPairRecord 计算 Phase 2 的距离、顺序、自交和采样密度 guard。
+# record/group/span/radius: rail record、owner Feature、ownership span 与 Chamfer radius。
+def _rail_pair_geometry_guard(record, group, span, radius):
+    left = [Vector(point) for point in record["rail_left"]]
+    right = [Vector(point) for point in record["rail_right"]]
+    cyclic = record["cyclic"]
+    tolerance = max(radius * 0.05, 1.0e-5)
+    intersection_tolerance = max(radius * 1.0e-4, 1.0e-7)
+    max_sample_edge = max(radius * 2.05, 1.0e-4)
+    left_lengths = [
+        (left[(index + 1) % len(left)] - left[index]).length
+        for index in range(len(left) if cyclic else len(left) - 1)
+    ]
+    right_lengths = [
+        (right[(index + 1) % len(right)] - right[index]).length
+        for index in range(len(right) if cyclic else len(right) - 1)
+    ]
+    u = record["u"]
+    u_monotonic = len(u) == len(left) and all(
+        right_parameter - left_parameter > 1.0e-10
+        for left_parameter, right_parameter in zip(u, u[1:])
+    )
+    self_intersection_count = (
+        _polyline_self_intersection_count(left, cyclic, intersection_tolerance)
+        + _polyline_self_intersection_count(right, cyclic, intersection_tolerance)
+    )
+    max_width_error = max(record["width_error"], default=float("inf"))
+    max_edge_length = max(left_lengths + right_lengths, default=0.0)
+    reasons = []
+    if record["ownership_confidence"] < 1.0:
+        reasons.append("AMBIGUOUS_OWNER")
+    if not u_monotonic:
+        reasons.append("NON_MONOTONIC_U")
+    if self_intersection_count:
+        reasons.append("SELF_INTERSECTION")
+    if max_width_error > tolerance:
+        reasons.append("RADIUS_TOLERANCE_EXCEEDED")
+    if max_edge_length > max_sample_edge:
+        reasons.append("SAMPLE_DENSITY_EXCEEDED")
+    return {
+        "status": "PASS" if not reasons else "FAIL",
+        "reasons": reasons,
+        "radius_tolerance": tolerance,
+        "max_width_error": max_width_error,
+        "u_monotonic": u_monotonic,
+        "self_intersection_count": self_intersection_count,
+        "max_edge_length": max_edge_length,
+        "max_sample_edge": max_sample_edge,
+        "owner_group_id": group["pipe_id"],
+        "owner_patch_pair": span["patch_pair"],
+    }
+
+# 按 normalized u 返回目标 rail 上与 parameter 对应的 Vertex。
+# vertices/parameters/parameter: rail points、u 数组与查询参数。
+def _rail_vertex_at_parameter(vertices, parameters, parameter):
+    return vertices[
+        min(
+            range(len(parameters)),
+            key=lambda index: abs(parameters[index] - parameter),
+        )
+    ]
+
+
+# 对齐 open/cyclic rail B 的方向和 cyclic offset，避免端点或 seam 错配。
+# chain_left/right: 待配对 Boundary chains；返回 aligned right vertices。
+def _aligned_rail_vertices(chain_left, chain_right):
+    left_vertices = chain_left["vertices"]
+    right_vertices = chain_right["vertices"]
+    candidates = []
+    if chain_left["is_cyclic"] and chain_right["is_cyclic"]:
+        for candidate in (list(right_vertices), list(reversed(right_vertices))):
+            for offset in range(len(candidate)):
+                candidates.append(candidate[offset:] + candidate[:offset])
+    else:
+        candidates = [list(right_vertices), list(reversed(right_vertices))]
+    left_u = _rail_parameters(left_vertices, chain_left["is_cyclic"])
+    best = None
+    for candidate in candidates:
+        candidate_u = _rail_parameters(candidate, chain_right["is_cyclic"])
+        cost = sum(
+            (
+                left_vertex.co
+                - _rail_vertex_at_parameter(candidate, candidate_u, parameter).co
+            ).length_squared
+            for left_vertex, parameter in zip(left_vertices, left_u)
+        )
+        if best is None or cost < best[0]:
+            best = (cost, candidate)
+    return best[1]
+
+
+# 把两条 Boundary chains 序列化为 RailPairRecord，并计算横向宽度误差。
+# group/span/chain_left/right/radius: owner strand/span、两侧 rails 与目标 Pipe radius。
+def _boolean_rail_pair_record(
+    group,
+    span,
+    chain_left,
+    chain_right,
+    radius,
+):
+    left_vertices = chain_left["vertices"]
+    right_vertices = _aligned_rail_vertices(chain_left, chain_right)
+    left_u = _rail_parameters(left_vertices, chain_left["is_cyclic"])
+    right_u = _rail_parameters(right_vertices, chain_right["is_cyclic"])
+    radial_error_samples = []
+    for index, parameter in enumerate(left_u):
+        nearest_index = min(
+            range(len(right_u)),
+            key=lambda candidate: abs(right_u[candidate] - parameter),
+        )
+        radial_error_samples.append(
+            max(
+                abs(
+                    _point_to_feature_group_distance(
+                        left_vertices[index].co,
+                        group,
+                    )
+                    - radius
+                ),
+                abs(
+                    _point_to_feature_group_distance(
+                        right_vertices[nearest_index].co,
+                        group,
+                    )
+                    - radius
+                ),
+            )
+        )
+    record = {
+        "backend": "BOOLEAN_INTERSECTION_ORACLE",
+        "group_id": group["pipe_id"],
+        "span_id": span["span_id"],
+        "source_edge_ids": span["source_edge_ids"],
+        "left_patch_id": span["patch_pair"][0],
+        "right_patch_id": span["patch_pair"][1],
+        "rail_left": [tuple(vertex.co) for vertex in left_vertices],
+        "rail_right": [tuple(vertex.co) for vertex in right_vertices],
+        "u": left_u,
+        "width_error": radial_error_samples,
+        "ownership_confidence": 1.0,
+        "cyclic": chain_left["is_cyclic"] and chain_right["is_cyclic"],
+        "left_edge_count": len(chain_left["edges"]),
+        "right_edge_count": len(chain_right["edges"]),
+    }
+    record["geometry_guard"] = _rail_pair_geometry_guard(
+        record,
+        group,
+        span,
+        radius,
+    )
+    return record
+
+# 把 CutterStrand 按连续 patch_pair 切成 rail ownership spans。
+# group: 含逐 Edge patch_pair/convexity 的 Feature group；返回有序 span records。
+def _group_patch_pair_spans(group):
+    spans = []
+    for edge_offset, (edge_id, patch_pair, convexity) in enumerate(
+        zip(
+            group["edge_indices"],
+            group["patch_pair_by_edge"],
+            group["convexity_by_edge"],
+        )
+    ):
+        patch_pair = tuple(patch_pair)
+        if (
+            not spans
+            or spans[-1]["patch_pair"] != patch_pair
+            or spans[-1]["convexity"] != convexity
+        ):
+            spans.append(
+                {
+                    "span_id": len(spans),
+                    "edge_offsets": [],
+                    "source_edge_ids": [],
+                    "patch_pair": patch_pair,
+                    "convexity": convexity,
+                }
+            )
+        spans[-1]["edge_offsets"].append(edge_offset)
+        spans[-1]["source_edge_ids"].append(edge_id)
+    if (
+        group["is_cyclic"]
+        and len(spans) > 1
+        and spans[0]["patch_pair"] == spans[-1]["patch_pair"]
+        and spans[0]["convexity"] == spans[-1]["convexity"]
+    ):
+        spans[0]["edge_offsets"] = (
+            spans[-1]["edge_offsets"] + spans[0]["edge_offsets"]
+        )
+        spans[0]["source_edge_ids"] = (
+            spans[-1]["source_edge_ids"] + spans[0]["source_edge_ids"]
+        )
+        spans.pop()
+        for span_id, span in enumerate(spans):
+            span["span_id"] = span_id
+    return spans
+
+
+# 为 span 选择局部 Boundary chain pair；拒绝明显超出 span local bounds 的全局 chains。
+# span/group/chains/radius: ownership span、Feature group、候选 rails 与目标 radius。
+def _span_chain_candidates(span, group, chains_left, chains_right, radius):
+    span_points = [
+        group["points"][index]
+        for edge_offset in span["edge_offsets"]
+        for index in (
+            edge_offset,
+            (edge_offset + 1) % len(group["points"]),
+        )
+    ]
+    minimum = Vector(
+        tuple(min(point[axis] for point in span_points) for axis in range(3))
+    )
+    maximum = Vector(
+        tuple(max(point[axis] for point in span_points) for axis in range(3))
+    )
+    margin = radius * 2.5
+
+    def chain_is_local(chain):
+        return all(
+            minimum[axis] - margin <= vertex.co[axis] <= maximum[axis] + margin
+            for vertex in chain["vertices"]
+            for axis in range(3)
+        )
+
+    return sorted(
+        (
+            _rail_pair_score(chain_left, chain_right),
+            index_left,
+            index_right,
+        )
+        for index_left, chain_left in enumerate(chains_left)
+        for index_right, chain_right in enumerate(chains_right)
+        if _rail_pair_is_valid(chain_left, chain_right)
+        and chain_is_local(chain_left)
+        and chain_is_local(chain_right)
+    )
+
+
+# 从 Boolean open boundary 提取同 owner、两 Surface Patch 的 RailPairRecords。
+# bm/groups/pipe_trees/bounds/radius: OPEN_BOUNDARY 上下文；返回 records 与 coverage summary。
+def _extract_boolean_rail_pair_records(
+    bm,
+    groups,
+    pipe_trees,
+    pipe_bounds,
+    radius,
+):
+    rails = _pipe_boundary_rails(
+        bm,
+        groups,
+        pipe_trees,
+        pipe_bounds,
+        radius,
+    )
+    records = []
+    unresolved_spans = []
+    total_span_count = 0
+    for group in groups:
+        for span in _group_patch_pair_spans(group):
+            total_span_count += 1
+            patch_left, patch_right = span["patch_pair"]
+            chains_left = rails.get(group["pipe_id"], {}).get(
+                patch_left,
+                [],
+            )
+            chains_right = rails.get(group["pipe_id"], {}).get(
+                patch_right,
+                [],
+            )
+            candidates = _span_chain_candidates(
+                span,
+                group,
+                chains_left,
+                chains_right,
+                radius,
+            )
+            if not candidates:
+                unresolved_spans.append(
+                    {
+                        "group_id": group["pipe_id"],
+                        "span_id": span["span_id"],
+                        "patch_pair": span["patch_pair"],
+                    }
+                )
+                continue
+            _, index_left, index_right = candidates[0]
+            records.append(
+                _boolean_rail_pair_record(
+                    group,
+                    span,
+                    chains_left[index_left],
+                    chains_right[index_right],
+                    radius,
+                )
+            )
+    valid_records = [
+        record for record in records if record["geometry_guard"]["status"] == "PASS"
+    ]
+    guard_failures = [
+        {
+            "group_id": record["group_id"],
+            "span_id": record["span_id"],
+            "reasons": record["geometry_guard"]["reasons"],
+        }
+        for record in records
+        if record["geometry_guard"]["status"] != "PASS"
+    ]
+    summary = {
+        "backend": "BOOLEAN_INTERSECTION_ORACLE",
+        "group_count": len(groups),
+        "span_count": total_span_count,
+        "paired_span_count": len(records),
+        "valid_span_count": len(valid_records),
+        "coverage": len(records) / total_span_count if total_span_count else 0.0,
+        "guarded_coverage": len(valid_records) / total_span_count if total_span_count else 0.0,
+        "unresolved_spans": unresolved_spans,
+        "unresolved_group_ids": sorted(
+            {span["group_id"] for span in unresolved_spans}
+        ),
+        "guard_failures": guard_failures,
+    }
+    return records, summary
+
+
+# 把点沿目标 source Face 内侧偏移并投影回该 Face triangles。
+# point/tangent/face/radius: Feature sample、strand tangent、owner Face 与偏移距离。
+def _offset_point_on_face(point, tangent, face, patch_tree, radius):
+    inward = face.normal.cross(tangent)
+    face_direction = face.calc_center_median() - point
+    if inward.dot(face_direction) < 0.0:
+        inward.negate()
+    if inward.length <= 1.0e-10:
+        return None
+    candidate = point + inward.normalized() * radius
+    nearest = patch_tree.find_nearest(candidate)
+    return Vector(nearest[0]) if nearest is not None else None
+
+
+# 为每个 Surface Patch 构建独立 BVH，避免 rail 被错误夹在单个 triangle 内。
+# bm/face_patch: source BMesh 与 Face -> patch id 映射；返回 patch id -> BVHTree。
+def _surface_patch_trees(bm, face_patch):
+    coordinates = [tuple(vertex.co) for vertex in bm.verts]
+    polygons_by_patch = {}
+    for face, patch_id in face_patch.items():
+        polygons_by_patch.setdefault(patch_id, []).append(
+            tuple(vertex.index for vertex in face.verts)
+        )
+    return {
+        patch_id: BVHTree.FromPolygons(coordinates, polygons)
+        for patch_id, polygons in polygons_by_patch.items()
+    }
+
+
+# 按 max_length 重采样 ownership span，保留每个 sample 的 source Edge owner。
+# group/span/max_length: Feature group、连续 Patch span 与最大 segment length。
+def _sample_feature_span(group, span, max_length):
+    samples = []
+    point_count = len(group["points"])
+    for edge_offset in span["edge_offsets"]:
+        start = group["points"][edge_offset]
+        end = group["points"][(edge_offset + 1) % point_count]
+        divisions = max(1, int(math.ceil((end - start).length / max_length)))
+        if not samples:
+            samples.append({"point": start.copy(), "edge_offset": edge_offset})
+        for step in range(1, divisions + 1):
+            samples.append(
+                {
+                    "point": start.lerp(end, step / divisions),
+                    "edge_offset": edge_offset,
+                }
+            )
+    cyclic = group["is_cyclic"] and len(_group_patch_pair_spans(group)) == 1
+    if cyclic and len(samples) > 1 and (
+        samples[0]["point"] - samples[-1]["point"]
+    ).length <= 1.0e-7:
+        samples.pop()
+    return samples, cyclic
+
+
+# 为重采样 Feature points 计算 open/cyclic tangent。
+# samples/cyclic: 含 point 的 sample records 与闭环标记；返回单位 tangent 数组。
+def _sample_tangents(samples, cyclic):
+    tangents = []
+    for index, sample in enumerate(samples):
+        if cyclic:
+            previous = samples[(index - 1) % len(samples)]["point"]
+            following = samples[(index + 1) % len(samples)]["point"]
+        else:
+            previous = samples[max(0, index - 1)]["point"]
+            following = samples[min(len(samples) - 1, index + 1)]["point"]
+        tangent = following - previous
+        tangents.append(tangent.normalized() if tangent.length > 1.0e-10 else Vector())
+    return tangents
+
+
+# 直接在 source Surface Patch 上按 radius 构造结构化 offset rails。
+# source_object/groups/radius: 原 Mesh、CutterStrands 与 Chamfer radius；返回 records/summary。
+def _extract_source_surface_offset_rail_records(source_object, groups, radius):
+    bm = bmesh.new()
+    bm.from_mesh(source_object.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    sharp_edges = {bm.edges[index] for index in _sharp_edge_indices(source_object)}
+    face_patch, _ = _surface_patch_map(bm, sharp_edges)
+    patch_trees = _surface_patch_trees(bm, face_patch)
+    records = []
+    unresolved_spans = []
+    total_span_count = 0
+    sample_edge_limit = max(radius * 1.5, 1.0e-4)
+    try:
+        for group in groups:
+            for span in _group_patch_pair_spans(group):
+                total_span_count += 1
+                patch_left, patch_right = span["patch_pair"]
+                samples, cyclic = _sample_feature_span(
+                    group,
+                    span,
+                    sample_edge_limit,
+                )
+                tangents = _sample_tangents(samples, cyclic)
+                left_points = []
+                right_points = []
+                valid = True
+                for sample, tangent in zip(samples, tangents):
+                    edge = bm.edges[
+                        group["edge_indices"][sample["edge_offset"]]
+                    ]
+                    face_by_patch = {
+                        face_patch[face]: face
+                        for face in edge.link_faces
+                        if face_patch[face] in {patch_left, patch_right}
+                    }
+                    if (
+                        patch_left not in face_by_patch
+                        or patch_right not in face_by_patch
+                        or tangent.length <= 1.0e-10
+                    ):
+                        valid = False
+                        break
+                    point = sample["point"]
+                    left = _offset_point_on_face(
+                        point,
+                        tangent,
+                        face_by_patch[patch_left],
+                        patch_trees[patch_left],
+                        radius,
+                    )
+                    right = _offset_point_on_face(
+                        point,
+                        tangent,
+                        face_by_patch[patch_right],
+                        patch_trees[patch_right],
+                        radius,
+                    )
+                    if left is None or right is None:
+                        valid = False
+                        break
+                    left_points.append(left)
+                    right_points.append(right)
+                if not valid or len(left_points) < 2:
+                    unresolved_spans.append(
+                        {
+                            "group_id": group["pipe_id"],
+                            "span_id": span["span_id"],
+                            "patch_pair": span["patch_pair"],
+                        }
+                    )
+                    continue
+                radial_errors = [
+                    max(
+                        abs((left - sample["point"]).length - radius),
+                        abs((right - sample["point"]).length - radius),
+                    )
+                    for left, right, sample in zip(
+                        left_points,
+                        right_points,
+                        samples,
+                    )
+                ]
+                record = {
+                    "backend": "SOURCE_SURFACE_OFFSET",
+                    "group_id": group["pipe_id"],
+                    "span_id": span["span_id"],
+                    "source_edge_ids": span["source_edge_ids"],
+                    "left_patch_id": patch_left,
+                    "right_patch_id": patch_right,
+                    "rail_left": [tuple(point) for point in left_points],
+                    "rail_right": [tuple(point) for point in right_points],
+                    "u": _coordinate_parameters(left_points, cyclic),
+                    "width_error": radial_errors,
+                    "ownership_confidence": 1.0,
+                    "cyclic": cyclic,
+                }
+                record["geometry_guard"] = _rail_pair_geometry_guard(
+                    record,
+                    group,
+                    span,
+                    radius,
+                )
+                records.append(record)
+    finally:
+        bm.free()
+    valid_records = [
+        record for record in records if record["geometry_guard"]["status"] == "PASS"
+    ]
+    guard_failures = [
+        {
+            "group_id": record["group_id"],
+            "span_id": record["span_id"],
+            "reasons": record["geometry_guard"]["reasons"],
+        }
+        for record in records
+        if record["geometry_guard"]["status"] != "PASS"
+    ]
+    summary = {
+        "backend": "SOURCE_SURFACE_OFFSET",
+        "group_count": len(groups),
+        "span_count": total_span_count,
+        "paired_span_count": len(records),
+        "valid_span_count": len(valid_records),
+        "coverage": len(records) / total_span_count if total_span_count else 0.0,
+        "guarded_coverage": len(valid_records) / total_span_count if total_span_count else 0.0,
+        "unresolved_spans": unresolved_spans,
+        "unresolved_group_ids": sorted(
+            {span["group_id"] for span in unresolved_spans}
+        ),
+        "guard_failures": guard_failures,
+    }
+    return records, summary
 
 # 模拟手工流程：同一 Pipe 两侧 rail 执行 Bridge Edge Loops，之后 Fill 剩余闭合洞。
 # bm/loops: 删除槽面后的 BoundaryGraph；groups/pipe_trees/radius: rail ownership 上下文；stats: 统计。
@@ -1569,6 +2860,24 @@ def build_pipe_chamfer(
         _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection)
         for group in groups
     ]
+    pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
+    for strand_record in stats["cutter_strands"]:
+        pipe = pipes_by_id[strand_record["strand_id"]]
+        risks = _mesh_risk_counts(pipe)
+        strand_record["generation_backend"] = pipe.get(
+            "hst_pipe_generation_backend",
+            "UNKNOWN",
+        )
+        strand_record["geometry_guard"] = {
+            "status": (
+                "PASS"
+                if not risks["non_manifold"] and not risks["zero_area"]
+                else "FAIL"
+            ),
+            **risks,
+            "vertex_count": len(pipe.data.vertices),
+            "face_count": len(pipe.data.polygons),
+        }
     stats["timings"]["pipe_build"] = time.perf_counter() - started_at - sum(stats["timings"].values())
     stats["debug_object_names"] = [pipe.name for pipe in pipes]
     stats["pipe_endpoint_extensions"] = [
@@ -1644,8 +2953,33 @@ def build_pipe_chamfer(
             ),
             stats,
         )
-    bm, loops = _open_boundary(output, cutter_face_indices, stats)
+    bm, loops = _open_boundary(
+        output,
+        cutter_face_indices,
+        stats,
+        allow_non_simple=debug_stage == "OPEN_BOUNDARY",
+    )
     stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    boolean_rail_pairs, boolean_rail_summary = _extract_boolean_rail_pair_records(
+        bm,
+        groups,
+        pipe_trees,
+        pipe_bounds,
+        radius,
+    )
+    surface_rail_pairs, surface_rail_summary = (
+        _extract_source_surface_offset_rail_records(
+            source_object,
+            groups,
+            radius,
+        )
+    )
+    stats["boolean_rail_pairs"] = boolean_rail_pairs
+    stats["surface_offset_rail_pairs"] = surface_rail_pairs
+    stats["rail_oracle_summary"] = {
+        "boolean": boolean_rail_summary,
+        "source_surface": surface_rail_summary,
+    }
     if debug_stage == "OPEN_BOUNDARY":
         bm.free()
         stats["status"] = "finished"

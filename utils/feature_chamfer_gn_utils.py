@@ -21,26 +21,33 @@ from ..const import FEATURE_CHAMFER_PREVIEW_NONE
 from ..const import FEATURE_CHAMFER_PREVIEW_STALE
 from ..const import FEATURE_CHAMFER_PREVIEW_VALID
 from ..const import FEATURE_CHAMFER_PATCHED
+from ..const import FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG
+from ..const import FEATURE_CHAMFER_CURVE_NODE
+from ..const import FEATURE_CHAMFER_CURVE_OBJECT_TAG
+from ..const import FEATURE_CHAMFER_CURVE_OWNER_TAG
 from ..const import PRESET_FILE_PATH
+from .experimental_pipe_chamfer_utils import _base_stats
+from .experimental_pipe_chamfer_utils import _build_feature_graph
+from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
 
 
 PREVIEW_NONE = FEATURE_CHAMFER_PREVIEW_NONE
 PREVIEW_VALID = FEATURE_CHAMFER_PREVIEW_VALID
 PREVIEW_STALE = FEATURE_CHAMFER_PREVIEW_STALE
 OWNER_VALUE = "HST_FEATURE_CHAMFER_GN_V1"
+CURVE_PREVIEW_BACKEND = "PYTHON_CURVE_PIPE"
 
 
 class FeatureChamferPreviewError(RuntimeError):
     """可诊断的 Feature Chamfer Preview 失败。"""
 
 
-# 验证发布资产确实是 fixture 的 pipecut/Boolean Pro 主链，而非同名替代品。
-# node_group: 待验证 GeometryNodeTree；失败时返回 False。
+# 验证发布资产保留 fixture Boolean Pro 主链和受控 nested dependencies。
+# node_group: 待验证 GeometryNodeTree；返回是否满足正式 Preview 基线。
 def _is_valid_feature_chamfer_asset(node_group):
     if node_group.get(FEATURE_CHAMFER_GN_ASSET_SOURCE_TAG) != FEATURE_CHAMFER_GN_ASSET_SOURCE:
         return False
     boolean_node = node_group.nodes.get("Boolean Pro")
-    grid_node = node_group.nodes.get("HST Junction-safe Pipe")
     group_input = next(
         (node for node in node_group.nodes if node.bl_idname == "NodeGroupInput"),
         None,
@@ -50,25 +57,16 @@ def _is_valid_feature_chamfer_asset(node_group):
         or boolean_node.bl_idname != "GeometryNodeGroup"
         or boolean_node.node_tree is None
         or not boolean_node.node_tree.name.startswith("HST Feature Chamfer :: Boolean Pro")
-        or grid_node is None
         or group_input is None
     ):
         return False
-    links = node_group.links
     return (
         any(
             link.from_node == group_input
             and link.from_socket.name == "Geometry"
             and link.to_node == boolean_node
             and link.to_socket.name == "Geometry"
-            for link in links
-        )
-        and any(
-            link.from_node == grid_node
-            and link.from_socket.name == "Mesh"
-            and link.to_node == boolean_node
-            and link.to_socket.name == "Geometry B"
-            for link in links
+            for link in node_group.links
         )
         and any(
             dependency.name.startswith("HST Feature Chamfer :: Float Boolean Edges")
@@ -79,6 +77,28 @@ def _is_valid_feature_chamfer_asset(node_group):
             for dependency in bpy.data.node_groups
         )
     )
+
+
+# 按 exact name、版本与 Boolean Pro runtime contract 导入受控 Preview 资产。
+# 无参数；返回只读基线 GeometryNodeTree，冲突时 fail-closed。
+def ensure_feature_chamfer_preview_node_group():
+    node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_GN_NODE)
+    if node_group is None:
+        if not PRESET_FILE_PATH.exists():
+            raise FeatureChamferPreviewError(f"Preview 资产不存在：{PRESET_FILE_PATH}")
+        bpy.ops.wm.append(
+            filepath=str(PRESET_FILE_PATH),
+            directory=str(PRESET_FILE_PATH / "NodeTree"),
+            filename=FEATURE_CHAMFER_GN_NODE,
+        )
+        node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_GN_NODE)
+    if node_group is None or node_group.bl_idname != "GeometryNodeTree":
+        raise FeatureChamferPreviewError("无法导入受控 Feature Chamfer Preview 资产")
+    if node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
+        raise FeatureChamferPreviewError("Feature Chamfer Preview 资产版本不匹配")
+    if not _is_valid_feature_chamfer_asset(node_group):
+        raise FeatureChamferPreviewError("Feature Chamfer Preview 资产缺少受控 Boolean Pro 主链")
+    return node_group
 
 
 # 计算 source Mesh topology、位置和 Sharp Edge 的稳定指纹。
@@ -112,6 +132,143 @@ def owned_preview_modifier(source_object):
     return modifier
 
 
+# 查找由 source Object 拥有的 Python Curve source。
+# source_object: Feature Chamfer source Mesh；返回 owned Curve Object 或 None。
+def owned_preview_curve(source_object):
+    curve_object_name = source_object.get(FEATURE_CHAMFER_CURVE_OBJECT_TAG)
+    curve_object = bpy.data.objects.get(curve_object_name) if curve_object_name else None
+    if (
+        curve_object is None
+        or curve_object.type != "CURVE"
+    ):
+        return None
+    modifier = owned_preview_modifier(source_object)
+    if modifier is not None:
+        object_info = (
+            modifier.node_group.nodes.get("HST Python CutterStrands")
+            if modifier.node_group is not None
+            else None
+        )
+        if (
+            object_info is None
+            or object_info.inputs["Object"].default_value != curve_object
+        ):
+            return None
+    return curve_object
+
+
+# 删除 source 拥有的 Curve Object 与 Curve datablock。
+# source_object: Feature Chamfer source Mesh；无返回值。
+def _remove_owned_preview_curve(source_object):
+    curve_object = owned_preview_curve(source_object)
+    if curve_object is not None:
+        _remove_preview_curve_object(curve_object)
+    if FEATURE_CHAMFER_CURVE_OBJECT_TAG in source_object:
+        del source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG]
+
+
+# 删除指定 Preview Curve Object 与无用户 Curve datablock。
+# curve_object: 待删除 Curve Object；无返回值。
+def _remove_preview_curve_object(curve_object):
+    if curve_object is None or bpy.data.objects.get(curve_object.name) != curve_object:
+        return
+    curve_data = curve_object.data
+    bpy.data.objects.remove(curve_object, do_unlink=True)
+    if curve_data.users == 0:
+        bpy.data.curves.remove(curve_data)
+
+
+# 从 FeatureGraph 的有序 strands 重建一个由 Operator 管理的多 spline Curve。
+# source_object/radius: source Mesh 与 endpoint cap containment 的采样距离；返回 Curve 与 stats。
+def _rebuild_owned_preview_curve(source_object, radius):
+    stats = _base_stats(source_object, 0.0, 8, 35.0, 3.0, 1.5, "PREVIEW")
+    groups = _build_feature_graph(
+        source_object,
+        35.0,
+        3.0,
+        stats,
+        miter_scale_limit=1.5,
+        global_surface_patch_matching=True,
+        endpoint_clearance=radius,
+    )
+    curve_data = bpy.data.curves.new(
+        f"{source_object.name}_FeatureChamferPreviewCurve",
+        type="CURVE",
+    )
+    curve_data.dimensions = "3D"
+    for group in groups:
+        spline = curve_data.splines.new("POLY")
+        spline.points.add(len(group["points"]) - 1)
+        for index, point in enumerate(group["points"]):
+            spline.points[index].co = (point.x, point.y, point.z, 1.0)
+        spline.use_cyclic_u = group["is_cyclic"]
+    curve_object = bpy.data.objects.new(curve_data.name, curve_data)
+    curve_object.matrix_world = source_object.matrix_world.copy()
+    source_object.users_collection[0].objects.link(curve_object)
+    curve_object.hide_set(True)
+    curve_object.hide_render = True
+    curve_object[FEATURE_CHAMFER_CURVE_OWNER_TAG] = source_object.name
+    curve_object[FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG] = source_fingerprint(source_object)
+    source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = curve_object.name
+    return curve_object, stats
+
+
+# 构建正式 Preview wrapper：复制受控资产，仅把 cutter seam 改为 Python Curve Pipe。
+# curve_object/radius/show_cutter: owned Curve、倒角半径与 cutter 显示开关。
+def _build_curve_preview_node_group(curve_object, radius, show_cutter):
+    base_group = ensure_feature_chamfer_preview_node_group()
+    curve_pipe_asset = ensure_feature_chamfer_curve_pipe_asset()
+    node_group = base_group.copy()
+    node_group.name = f"HST Feature Chamfer Curve Preview :: {curve_object.name}"
+    node_group[FEATURE_CHAMFER_GN_ASSET_VERSION_TAG] = FEATURE_CHAMFER_GN_ASSET_VERSION
+    node_group["hst_feature_chamfer_preview_backend"] = CURVE_PREVIEW_BACKEND
+    group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
+    boolean_node = node_group.nodes.get("Boolean Pro")
+    switch_node = node_group.nodes.get("HST Boolean Result or Cutter")
+    old_cutter_node = node_group.nodes.get("HST Junction-safe Pipe")
+    if boolean_node is None or switch_node is None or old_cutter_node is None:
+        raise FeatureChamferPreviewError("受控 Preview 资产缺少 cutter seam nodes")
+    object_info = node_group.nodes.new("GeometryNodeObjectInfo")
+    object_info.name = "HST Python CutterStrands"
+    object_info.inputs["Object"].default_value = curve_object
+    curve_circle = node_group.nodes.new("GeometryNodeCurvePrimitiveCircle")
+    curve_circle.name = "HST Four-sided Chamfer Profile"
+    curve_circle.inputs["Resolution"].default_value = 4
+    curve_pipe = node_group.nodes.new("GeometryNodeGroup")
+    curve_pipe.name = "HST Even-Thickness Curve Pipe"
+    curve_pipe.node_tree = curve_pipe_asset
+    curve_pipe.inputs["Fill Caps"].default_value = True
+    curve_pipe.inputs["Even-Thickness"].default_value = True
+    for link in list(node_group.links):
+        if (
+            link.from_node == old_cutter_node
+            and (
+                (link.to_node == boolean_node and link.to_socket.name == "Geometry B")
+                or (link.to_node == switch_node and link.to_socket.name == "True")
+            )
+        ):
+            node_group.links.remove(link)
+    node_group.links.new(group_input.outputs["Radius"], curve_circle.inputs["Radius"])
+    node_group.links.new(object_info.outputs["Geometry"], curve_pipe.inputs["Curve"])
+    node_group.links.new(curve_circle.outputs["Curve"], curve_pipe.inputs["Profile Curve"])
+    node_group.links.new(curve_pipe.outputs["Geometry"], boolean_node.inputs["Geometry B"])
+    node_group.links.new(curve_pipe.outputs["Geometry"], switch_node.inputs["True"])
+    return node_group
+
+
+# 删除本工具创建的 per-preview wrapper Node Group。
+# modifier: owned Preview modifier；无返回值。
+def _remove_owned_preview_node_group(modifier):
+    node_group = modifier.node_group if modifier is not None else None
+    if (
+        node_group is not None
+        and node_group.get("hst_feature_chamfer_preview_backend") == CURVE_PREVIEW_BACKEND
+    ):
+        modifier.node_group = None
+        if node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
+
+
 # 返回 Node Group 输入 socket 的 identifier 映射，避免硬编码 Socket_N。
 # node_group: GeometryNodeTree；返回 input display name 到 identifier 的字典。
 def _input_identifiers(node_group):
@@ -127,50 +284,12 @@ def _input_identifiers(node_group):
 def live_preview_parameters(modifier):
     identifiers = _input_identifiers(modifier.node_group)
     return {
-        "adaptivity": float(modifier[identifiers["Adaptivity"]]),
+        "adaptivity": 0.0,
         "radius": float(modifier[identifiers["Radius"]]),
-        "sample_length": float(modifier[identifiers["Sample Length"]]),
+        "sample_length": 0.0,
         "show_cutter": bool(modifier[identifiers["Show Cutter"]]),
-        "voxel_size": float(modifier[identifiers["Voxel Size"]]),
+        "voxel_size": 0.0,
     }
-
-
-# 按 exact name、类型与版本保证发布用 Node Group 可用。
-# 无参数；返回受控的 GeometryNodeTree，冲突时 fail-closed。
-def ensure_feature_chamfer_preview_node_group():
-    node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_GN_NODE)
-    if node_group is not None:
-        if node_group.bl_idname != "GeometryNodeTree":
-            raise FeatureChamferPreviewError(
-                f"Node Group 名称冲突：{FEATURE_CHAMFER_GN_NODE} 不是 GeometryNodeTree"
-            )
-        if node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
-            raise FeatureChamferPreviewError(
-                f"Node Group 名称冲突或版本不匹配：{FEATURE_CHAMFER_GN_NODE}"
-            )
-        if not _is_valid_feature_chamfer_asset(node_group):
-            raise FeatureChamferPreviewError("同名 Preview 资产不是受控 fixture/Boolean Pro 主链")
-        return node_group
-
-    if not PRESET_FILE_PATH.exists():
-        raise FeatureChamferPreviewError(f"Preview 资产不存在：{PRESET_FILE_PATH}")
-    bpy.ops.wm.append(
-        filepath=str(PRESET_FILE_PATH),
-        directory=str(PRESET_FILE_PATH / "NodeTree"),
-        filename=FEATURE_CHAMFER_GN_NODE,
-    )
-    node_group = bpy.data.node_groups.get(FEATURE_CHAMFER_GN_NODE)
-    if node_group is None:
-        raise FeatureChamferPreviewError(
-            f"无法从 Presets.blend 导入 {FEATURE_CHAMFER_GN_NODE}"
-        )
-    if node_group.bl_idname != "GeometryNodeTree":
-        raise FeatureChamferPreviewError("导入的 Preview 资产不是 GeometryNodeTree")
-    if node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
-        raise FeatureChamferPreviewError("导入的 Preview 资产版本不匹配")
-    if not _is_valid_feature_chamfer_asset(node_group):
-        raise FeatureChamferPreviewError("导入的 Preview 资产缺少 fixture/Boolean Pro 主链")
-    return node_group
 
 
 # 读取当前 Preview 状态，并把 source 或资产不一致归类为 stale。
@@ -184,12 +303,15 @@ def preview_state(source_object):
     node_group = modifier.node_group
     stale = (
         node_group is None
-        or node_group.name != FEATURE_CHAMFER_GN_NODE
+        or node_group.get("hst_feature_chamfer_preview_backend") != CURVE_PREVIEW_BACKEND
         or node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION
         or modifier.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION
         or modifier.get(FEATURE_CHAMFER_GN_FINGERPRINT_TAG) != source_fingerprint(source_object)
         or modifier.get(FEATURE_CHAMFER_GN_PARAMETERS_TAG)
         != json.dumps(live_preview_parameters(modifier), sort_keys=True)
+        or owned_preview_curve(source_object) is None
+        or owned_preview_curve(source_object).get(FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG)
+        != source_fingerprint(source_object)
     )
     state = PREVIEW_STALE if stale else PREVIEW_VALID
     source_object[FEATURE_CHAMFER_GN_STATE_TAG] = state
@@ -201,12 +323,8 @@ def preview_state(source_object):
 def ensure_gn_feature_chamfer_preview(
     source_object,
     radius,
-    sample_length,
-    voxel_size,
-    adaptivity,
     show_cutter=False,
 ):
-    node_group = ensure_feature_chamfer_preview_node_group()
     modifier = source_object.modifiers.get(FEATURE_CHAMFER_GN_MODIFIER)
     if modifier is not None and (
         modifier.type != "NODES"
@@ -215,26 +333,53 @@ def ensure_gn_feature_chamfer_preview(
         raise FeatureChamferPreviewError(
             f"Modifier 名称冲突：{FEATURE_CHAMFER_GN_MODIFIER}"
         )
-    identifiers = _input_identifiers(node_group)
-    values = {
-        "Radius": radius,
-        "Sample Length": sample_length,
-        "Voxel Size": voxel_size,
-        "Adaptivity": adaptivity,
-        "Show Cutter": show_cutter,
-    }
-    missing = [name for name in values if name not in identifiers]
-    if missing:
-        raise FeatureChamferPreviewError(
-            f"Preview 资产缺少 interface sockets：{', '.join(missing)}"
-        )
-    if modifier is None:
-        modifier = source_object.modifiers.new(FEATURE_CHAMFER_GN_MODIFIER, "NODES")
-    modifier.node_group = node_group
-    modifier.show_viewport = True
-    modifier.show_render = True
-    for name, value in values.items():
-        modifier[identifiers[name]] = value
+    curve_object = None
+    node_group = None
+    created_modifier = False
+    old_curve_object = owned_preview_curve(source_object)
+    old_node_group = modifier.node_group if modifier is not None else None
+    try:
+        curve_object, graph_stats = _rebuild_owned_preview_curve(source_object, radius)
+        node_group = _build_curve_preview_node_group(curve_object, radius, show_cutter)
+        identifiers = _input_identifiers(node_group)
+        values = {
+            "Radius": radius,
+            "Show Cutter": show_cutter,
+        }
+        missing = [name for name in values if name not in identifiers]
+        if missing:
+            raise FeatureChamferPreviewError(
+                f"Preview 资产缺少 interface sockets：{', '.join(missing)}"
+            )
+        if modifier is None:
+            modifier = source_object.modifiers.new(FEATURE_CHAMFER_GN_MODIFIER, "NODES")
+            created_modifier = True
+        modifier.node_group = node_group
+        modifier.show_viewport = True
+        modifier.show_render = True
+        for name, value in values.items():
+            modifier[identifiers[name]] = value
+    except Exception:
+        if created_modifier and modifier is not None:
+            source_object.modifiers.remove(modifier)
+        elif modifier is not None:
+            modifier.node_group = old_node_group
+        if node_group is not None and node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
+        _remove_preview_curve_object(curve_object)
+        if old_curve_object is not None:
+            source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = old_curve_object.name
+        elif FEATURE_CHAMFER_CURVE_OBJECT_TAG in source_object:
+            del source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG]
+        raise
+    if (
+        old_node_group is not None
+        and old_node_group.get("hst_feature_chamfer_preview_backend") == CURVE_PREVIEW_BACKEND
+        and old_node_group.users == 0
+    ):
+        bpy.data.node_groups.remove(old_node_group)
+    if old_curve_object is not None and old_curve_object != curve_object:
+        _remove_preview_curve_object(old_curve_object)
     parameters = live_preview_parameters(modifier)
 
     modifier[FEATURE_CHAMFER_GN_OWNER_TAG] = OWNER_VALUE
@@ -251,6 +396,8 @@ def ensure_gn_feature_chamfer_preview(
         "node_group": node_group,
         "parameters": parameters,
         "state": PREVIEW_VALID,
+        "curve_object": curve_object,
+        "feature_graph": graph_stats,
     }
 
 
@@ -260,7 +407,9 @@ def cancel_gn_feature_chamfer_preview(source_object):
     modifier = owned_preview_modifier(source_object)
     removed = modifier is not None
     if modifier is not None:
+        _remove_owned_preview_node_group(modifier)
         source_object.modifiers.remove(modifier)
+    _remove_owned_preview_curve(source_object)
     for key in (FEATURE_CHAMFER_GN_STATE_TAG, FEATURE_CHAMFER_GN_LAST_ACTION_TAG):
         if key in source_object:
             del source_object[key]
