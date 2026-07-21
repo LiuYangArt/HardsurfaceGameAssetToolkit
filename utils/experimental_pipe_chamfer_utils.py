@@ -1783,35 +1783,114 @@ def _zipper_bridge(bm, loop_a, loop_b):
     return new_faces
 
 
+# 在两条 open Rail 上求单调 correspondence，并返回与 BMesh 无关的 Strip topology。
+# rail_a/rail_b: 已验收且有序的 Rail 坐标；terminal_constraints: 可选 start/end index pairs；owner_surfaces: 保留给 owner Surface guard。
+def build_chamfer_strip(
+    rail_a,
+    rail_b,
+    terminal_constraints=None,
+    owner_surfaces=None,
+):
+    del owner_surfaces
+    if len(rail_a) < 2 or len(rail_b) < 2:
+        raise ValueError("Open Rail pair requires at least two vertices per side")
+    coordinates_a = [vertex.co.copy() if hasattr(vertex, "co") else Vector(vertex) for vertex in rail_a]
+    coordinates_b = [vertex.co.copy() if hasattr(vertex, "co") else Vector(vertex) for vertex in rail_b]
+    parameters_a = _coordinate_parameters(coordinates_a, False)
+    parameters_b = _coordinate_parameters(coordinates_b, False)
+    constraints = terminal_constraints or {}
+    required_start = tuple(constraints.get("start_pairs", [(0, 0)])[0])
+    required_end = tuple(
+        constraints.get(
+            "end_pairs",
+            [(len(coordinates_a) - 1, len(coordinates_b) - 1)],
+        )[-1]
+    )
+    if required_start != (0, 0) or required_end != (
+        len(coordinates_a) - 1,
+        len(coordinates_b) - 1,
+    ):
+        raise ValueError("Terminal constraint must bind both open Rail endpoints")
+
+    costs = {(0, 0): 0.0}
+    predecessors = {}
+    for index_a in range(len(coordinates_a)):
+        for index_b in range(len(coordinates_b)):
+            if (index_a, index_b) == (0, 0):
+                continue
+            best = None
+            for delta_a, delta_b in ((1, 0), (0, 1), (1, 1)):
+                previous = (index_a - delta_a, index_b - delta_b)
+                if previous not in costs:
+                    continue
+                width = (coordinates_a[index_a] - coordinates_b[index_b]).length
+                parameter_error = abs(parameters_a[index_a] - parameters_b[index_b])
+                if delta_a and delta_b:
+                    tangent_a = coordinates_a[index_a] - coordinates_a[index_a - 1]
+                    tangent_b = coordinates_b[index_b] - coordinates_b[index_b - 1]
+                    tangent_cost = 0.0
+                    if tangent_a.length > 1.0e-12 and tangent_b.length > 1.0e-12:
+                        tangent_cost = 1.0 - abs(tangent_a.normalized().dot(tangent_b.normalized()))
+                else:
+                    tangent_cost = 0.25
+                step_cost = width + parameter_error + tangent_cost
+                candidate = (costs[previous] + step_cost, previous)
+                if best is None or candidate < best:
+                    best = candidate
+            if best is None:
+                raise ValueError("Regular Strip has no monotonic correspondence path")
+            costs[(index_a, index_b)] = best[0]
+            predecessors[(index_a, index_b)] = best[1]
+
+    path = [required_end]
+    while path[-1] != required_start:
+        path.append(predecessors[path[-1]])
+    path.reverse()
+    faces = []
+    for current, following in zip(path, path[1:]):
+        index_a, index_b = current
+        next_a, next_b = following
+        if next_a > index_a and next_b > index_b:
+            faces.append((("A", index_a), ("A", next_a), ("B", next_b), ("B", index_b)))
+        elif next_a > index_a:
+            faces.append((("A", index_a), ("A", next_a), ("B", index_b)))
+        else:
+            faces.append((("A", index_a), ("B", next_b), ("B", index_b)))
+    return {
+        "faces": faces,
+        "path": path,
+        "diagnostics": {
+            "status": "PASS",
+            "monotonic": all(
+                next_a >= index_a
+                and next_b >= index_b
+                and (next_a > index_a or next_b > index_b)
+                for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])
+            ),
+            "crossing_count": 0,
+            "cost": costs[required_end],
+        },
+    }
+
+
 # 按 arc-length zipper 连接两条 open Rail，并保留末端作为 Junction/terminal port。
 # bm/vertices_a/vertices_b: 当前 BMesh 与两侧有序 Boundary vertices；返回新 Faces。
 def _zipper_bridge_open(bm, vertices_a, vertices_b):
-    if len(vertices_a) < 2 or len(vertices_b) < 2:
-        raise ValueError("Open Rail pair requires at least two vertices per side")
-    parameters_a = _rail_parameters(vertices_a, False)
-    parameters_b = _rail_parameters(vertices_b, False)
-    index_a = index_b = 0
+    strip = build_chamfer_strip(
+        vertices_a,
+        vertices_b,
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(len(vertices_a) - 1, len(vertices_b) - 1)],
+        },
+        owner_surfaces=None,
+    )
     new_faces = []
-    while index_a < len(vertices_a) - 1 or index_b < len(vertices_b) - 1:
-        current_a = vertices_a[index_a]
-        current_b = vertices_b[index_b]
-        next_a = parameters_a[index_a + 1] if index_a < len(vertices_a) - 1 else float("inf")
-        next_b = parameters_b[index_b + 1] if index_b < len(vertices_b) - 1 else float("inf")
-        if abs(next_a - next_b) <= 1.0e-9:
-            vertices = (
-                current_a,
-                vertices_a[index_a + 1],
-                vertices_b[index_b + 1],
-                current_b,
-            )
-            index_a += 1
-            index_b += 1
-        elif next_a < next_b:
-            vertices = (current_a, vertices_a[index_a + 1], current_b)
-            index_a += 1
-        else:
-            vertices = (current_a, vertices_b[index_b + 1], current_b)
-            index_b += 1
+    for face_indices in strip["faces"]:
+        vertices = tuple(
+            vertices_a[index] if side == "A" else vertices_b[index]
+            for side, index in face_indices
+        )
         unique_vertices = []
         for vertex in vertices:
             if not unique_vertices or vertex is not unique_vertices[-1]:

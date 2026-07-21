@@ -2118,6 +2118,47 @@ def test_feature_chamfer_owner_face_adjacency_walk_regression(
     result.add_detail(f"owner face path={record['owner_face_path']}")
 
 
+# 验证 Regular Strip seam 在两条同向 Rail 上生成单调、无凹陷的连接。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    left = [
+        Vector((0.0, 0.0, 0.0)),
+        Vector((0.0, 0.0, 0.04)),
+        Vector((0.0, 0.0, 1.44)),
+    ]
+    right = [
+        Vector((0.0, 0.014, 0.0)),
+        Vector((0.0, 0.014, 0.02)),
+        Vector((0.0, 0.014, 0.04)),
+        Vector((0.0, 0.014, 1.44)),
+    ]
+    strip = utils.build_chamfer_strip(
+        left,
+        right,
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(len(left) - 1, len(right) - 1)],
+        },
+        owner_surfaces=None,
+    )
+    ensure(strip["diagnostics"]["status"] == "PASS", f"Strip guard failed: {strip}")
+    ensure(
+        strip["diagnostics"]["monotonic"]
+        and strip["diagnostics"]["crossing_count"] == 0,
+        f"Regular Strip created crossed correspondence: {strip}",
+    )
+    ensure(
+        strip["path"][0] == (0, 0)
+        and strip["path"][-1] == (len(left) - 1, len(right) - 1),
+        f"Terminal-to-port correspondence drifted: {strip['path']}",
+    )
+    result.add_detail("Regular Strip preserved monotonic terminal correspondence")
+
+
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
     """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
@@ -3944,6 +3985,10 @@ def main():
     context.run_case(
         "feature_chamfer_owner_face_adjacency_walk_regression",
         test_feature_chamfer_owner_face_adjacency_walk_regression,
+    )
+    context.run_case(
+        "feature_chamfer_regular_strip_terminal_span_guard_regression",
+        test_feature_chamfer_regular_strip_terminal_span_guard_regression,
     )
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
