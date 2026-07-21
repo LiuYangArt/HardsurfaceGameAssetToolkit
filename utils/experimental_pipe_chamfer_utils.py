@@ -1869,6 +1869,7 @@ def build_chamfer_strip(
             faces.append((("A", index_a), ("B", next_b), ("B", index_b)))
     widths = []
     width_errors = []
+    relative_advances = []
     for path_index, (index_a, index_b) in enumerate(path):
         width = (coordinates_a[index_a] - coordinates_b[index_b]).length
         widths.append(width)
@@ -1876,12 +1877,14 @@ def build_chamfer_strip(
             continue
         if path_index == 0:
             allowed_longitudinal_advance = 0.0
+            relative_advance = 0.0
         else:
             previous_a, previous_b = path[path_index - 1]
-            allowed_longitudinal_advance = max(
-                (coordinates_a[index_a] - coordinates_a[previous_a]).length,
-                (coordinates_b[index_b] - coordinates_b[previous_b]).length,
-            )
+            advance_a = (coordinates_a[index_a] - coordinates_a[previous_a]).length
+            advance_b = (coordinates_b[index_b] - coordinates_b[previous_b]).length
+            allowed_longitudinal_advance = max(advance_a, advance_b)
+            relative_advance = abs(advance_a - advance_b)
+        relative_advances.append(relative_advance)
         width_errors.append(
             max(
                 0.0,
@@ -1895,7 +1898,19 @@ def build_chamfer_strip(
         if maximum_width_error is not None and width_errors
         else 1.0
     )
-    if maximum_width_error is not None and width_error_inlier_ratio < 0.95:
+    maximum_relative_advance = max(relative_advances, default=0.0)
+    maximum_relative_advance_limit = (
+        expected_width * 8.0
+        if expected_width is not None
+        else float("inf")
+    )
+    if (
+        maximum_width_error is not None
+        and (
+            width_error_inlier_ratio < 0.95
+            or maximum_relative_advance > maximum_relative_advance_limit
+        )
+    ):
         reasons.append("SIGNED_STRIP_WIDTH_EXCEEDED")
     return {
         "faces": faces,
@@ -1917,6 +1932,8 @@ def build_chamfer_strip(
                 (abs(width - expected_width) for width in widths),
                 default=0.0,
             ) if expected_width is not None else 0.0,
+            "maximum_relative_advance": maximum_relative_advance,
+            "maximum_relative_advance_limit": maximum_relative_advance_limit,
             "one_sided_step_count": sum(
                 (next_a == index_a) != (next_b == index_b)
                 for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])

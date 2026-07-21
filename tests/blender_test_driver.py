@@ -2181,6 +2181,29 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
         and scaled_strip["faces"] == strip["faces"],
         f"Regular Strip topology changed under uniform scale: {strip} / {scaled_strip}",
     )
+    unsafe_strip = utils.build_chamfer_strip(
+        [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((0.0, 0.0, 0.2)),
+            Vector((0.0, 0.0, 1.4)),
+        ],
+        [
+            Vector((0.0, 0.014, 0.0)),
+            Vector((0.0, 0.014, 1.4)),
+        ],
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(2, 1)],
+            "expected_width": 0.014,
+            "maximum_width_error": 0.001,
+        },
+    )
+    ensure(
+        unsafe_strip["diagnostics"]["status"] == "FAIL"
+        and unsafe_strip["diagnostics"]["maximum_relative_advance"]
+        > unsafe_strip["diagnostics"]["maximum_relative_advance_limit"],
+        f"Regular Strip accepted a single severe one-sided advance: {unsafe_strip}",
+    )
     result.add_detail("Regular Strip preserved monotonic and scale-invariant terminal correspondence")
 
 
