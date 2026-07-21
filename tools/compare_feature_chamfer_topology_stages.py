@@ -46,7 +46,7 @@ def _focus_face_record(bm):
     )
     original_attribute = bm.faces.layers.int.get("hst_pipe_original_face")
     chamfer_attribute = bm.faces.layers.int.get("hst_pipe_chamfer")
-    return {
+    record = {
         "face_index": face.index,
         "vertex_indices": [vertex.index for vertex in face.verts],
         "coordinates": [
@@ -65,6 +65,32 @@ def _focus_face_record(bm):
             if neighbor is not face
         ),
     }
+    record["neighbor_faces"] = [
+        {
+            "face_index": neighbor.index,
+            "vertex_indices": [vertex.index for vertex in neighbor.verts],
+            "coordinates": [
+                [round(value, 9) for value in vertex.co]
+                for vertex in neighbor.verts
+            ],
+            "center": [round(value, 9) for value in neighbor.calc_center_median()],
+            "area": neighbor.calc_area(),
+            "edge_lengths": sorted(
+                (edge.verts[1].co - edge.verts[0].co).length
+                for edge in neighbor.edges
+            ),
+        }
+        for neighbor in sorted(
+            {
+                neighbor
+                for edge in face.edges
+                for neighbor in edge.link_faces
+                if neighbor is not face
+            },
+            key=lambda item: item.index,
+        )
+    ]
+    return record
 
 
 output = bpy.data.objects.get(OUTPUT_OBJECT_NAME)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import bpy
 import bmesh
+from mathutils import Vector
 
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
 sys.path.insert(0, str(REPO_ROOT.parent))
@@ -40,6 +41,17 @@ bm.from_mesh(output.data)
 boundary_count = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
 non_manifold_count = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
 zero_area_count = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
+focus_point = Vector((0.613128722, 0.204837114, 0.062097311))
+focus_vertex = min(bm.verts, key=lambda vertex: (vertex.co - focus_point).length_squared)
+focus_coordinates = [round(value, 9) for value in focus_vertex.co]
+focus_neighbor_coordinates = [
+    [round(value, 9) for value in edge.other_vert(focus_vertex).co]
+    for edge in focus_vertex.link_edges
+]
+focus_edge_lengths = sorted(
+    (edge.other_vert(focus_vertex).co - focus_vertex.co).length
+    for edge in focus_vertex.link_edges
+)
 bm.free()
 summary = {
     "preview_result": sorted(preview_result),
@@ -57,6 +69,13 @@ summary = {
     "chamfer_face_count": sum(
         1 for item in chamfer_attribute.data if item.value
     ) if chamfer_attribute is not None else 0,
+    "focus_topology": {
+        "focus_vertex": focus_coordinates,
+        "neighbors": focus_neighbor_coordinates,
+        "coordinates": focus_coordinates,
+        "edge_lengths": focus_edge_lengths,
+        "minimum_incident_edge": min(focus_edge_lengths, default=0.0),
+    },
 }
 output_path = Path(os.environ["HST_OPERATOR_PROBE_PATH"])
 blend_path = output_path.with_suffix(".blend")
