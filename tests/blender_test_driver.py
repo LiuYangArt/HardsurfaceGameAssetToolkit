@@ -2142,6 +2142,8 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
         terminal_constraints={
             "start_pairs": [(0, 0)],
             "end_pairs": [(len(left) - 1, len(right) - 1)],
+            "expected_width": 0.014,
+            "maximum_width_error": 0.001,
         },
         owner_surfaces=None,
     )
@@ -2155,6 +2157,10 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
         strip["path"][0] == (0, 0)
         and strip["path"][-1] == (len(left) - 1, len(right) - 1),
         f"Terminal-to-port correspondence drifted: {strip['path']}",
+    )
+    ensure(
+        strip["diagnostics"]["maximum_width_error"] <= 0.001,
+        f"Regular Strip width guard drifted: {strip}",
     )
     result.add_detail("Regular Strip preserved monotonic terminal correspondence")
 

@@ -1799,6 +1799,8 @@ def build_chamfer_strip(
     parameters_a = _coordinate_parameters(coordinates_a, False)
     parameters_b = _coordinate_parameters(coordinates_b, False)
     constraints = terminal_constraints or {}
+    expected_width = constraints.get("expected_width")
+    maximum_width_error = constraints.get("maximum_width_error")
     required_start = tuple(constraints.get("start_pairs", [(0, 0)])[0])
     required_end = tuple(
         constraints.get(
@@ -1824,6 +1826,11 @@ def build_chamfer_strip(
                 if previous not in costs:
                     continue
                 width = (coordinates_a[index_a] - coordinates_b[index_b]).length
+                width_cost = (
+                    abs(width - expected_width)
+                    if expected_width is not None
+                    else width
+                )
                 parameter_error = abs(parameters_a[index_a] - parameters_b[index_b])
                 if delta_a and delta_b:
                     tangent_a = coordinates_a[index_a] - coordinates_a[index_a - 1]
@@ -1833,7 +1840,7 @@ def build_chamfer_strip(
                         tangent_cost = 1.0 - abs(tangent_a.normalized().dot(tangent_b.normalized()))
                 else:
                     tangent_cost = 0.25
-                step_cost = width + parameter_error + tangent_cost
+                step_cost = width_cost + parameter_error + tangent_cost
                 candidate = (costs[previous] + step_cost, previous)
                 if best is None or candidate < best:
                     best = candidate
@@ -1856,11 +1863,36 @@ def build_chamfer_strip(
             faces.append((("A", index_a), ("A", next_a), ("B", index_b)))
         else:
             faces.append((("A", index_a), ("B", next_b), ("B", index_b)))
+    widths = []
+    for path_index, (index_a, index_b) in enumerate(path):
+        previous = path[path_index - 1] if path_index else None
+        if (
+            path_index in {0, len(path) - 1}
+            or (
+                previous[0] != index_a
+                and previous[1] != index_b
+            )
+        ):
+            widths.append(
+                (coordinates_a[index_a] - coordinates_b[index_b]).length
+            )
+    width_errors = (
+        [abs(width - expected_width) for width in widths]
+        if expected_width is not None
+        else []
+    )
+    reasons = []
+    if (
+        maximum_width_error is not None
+        and max(width_errors, default=0.0) > maximum_width_error
+    ):
+        reasons.append("SIGNED_STRIP_WIDTH_EXCEEDED")
     return {
         "faces": faces,
         "path": path,
         "diagnostics": {
-            "status": "PASS",
+            "status": "PASS" if not reasons else "FAIL",
+            "reasons": reasons,
             "monotonic": all(
                 next_a >= index_a
                 and next_b >= index_b
@@ -1869,22 +1901,37 @@ def build_chamfer_strip(
             ),
             "crossing_count": 0,
             "cost": costs[required_end],
+            "expected_width": expected_width,
+            "maximum_width_error": max(width_errors, default=0.0),
         },
     }
 
 
 # 按 arc-length zipper 连接两条 open Rail，并保留末端作为 Junction/terminal port。
 # bm/vertices_a/vertices_b: 当前 BMesh 与两侧有序 Boundary vertices；返回新 Faces。
-def _zipper_bridge_open(bm, vertices_a, vertices_b):
+def _zipper_bridge_open(
+    bm,
+    vertices_a,
+    vertices_b,
+    expected_width=None,
+    maximum_width_error=None,
+):
     strip = build_chamfer_strip(
         vertices_a,
         vertices_b,
         terminal_constraints={
             "start_pairs": [(0, 0)],
             "end_pairs": [(len(vertices_a) - 1, len(vertices_b) - 1)],
+            "expected_width": expected_width,
+            "maximum_width_error": maximum_width_error,
         },
         owner_surfaces=None,
     )
+    if strip["diagnostics"]["status"] != "PASS":
+        raise ValueError(
+            "Open Rail correspondence guard failed: "
+            + ", ".join(strip["diagnostics"]["reasons"])
+        )
     new_faces = []
     for face_indices in strip["faces"]:
         vertices = tuple(
@@ -4185,7 +4232,7 @@ def _rail_pair_chains_from_record(bm, record, boundary_edge_by_source_index):
 
 # 消费 Phase 2 RailPairRecords，逐 span 生成只跨两侧真实 Boundary Rails 的 Chamfer strips。
 # bm/rail_pairs/stats: open BMesh、已验收 records 与统计；返回新 Faces。
-def _patch_regular_rail_records(bm, rail_pairs, stats):
+def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
     regular_faces = []
     patched_records = []
     original_boundary_edges = {
@@ -4291,6 +4338,8 @@ def _patch_regular_rail_records(bm, rail_pairs, stats):
                     bm,
                     chain_left["vertices"],
                     right_vertices,
+                    expected_width=radius * math.sqrt(2.0),
+                    maximum_width_error=None,
                 )
         except (IndexError, KeyError, ValueError, RuntimeError) as error:
             _fail(
@@ -4545,6 +4594,7 @@ def _patch_boundaries(
             bm,
             boolean_rail_pairs,
             stats,
+            radius,
         )
         _clean_degenerate_strip_ports(bm, radius, stats)
         _remove_overconnected_patch_faces(bm, stats)
