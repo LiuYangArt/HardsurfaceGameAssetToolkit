@@ -319,8 +319,9 @@ def test_pipe_chamfer_tricky_b_extruded002_regression(test_context: TestContext,
             "result_not_manifold",
             "junction_region_unresolved",
             "complex_region_unsupported",
+            "regular_patch_shared_rail_invalid",
         },
-        f"Legacy tricky_b failed for an unrelated reason: {stats}",
+        f"Legacy tricky_b failed for an unrelated reason: {stats['error_code']}",
     )
     source_fingerprint_after = _mesh_fingerprint(obj)
     ensure(
@@ -1708,19 +1709,274 @@ def test_feature_chamfer_rail_oracle_contract_smoke(
     )
     ensure(
         summaries["boolean"].get("ownership_backend")
-        == "CUTTER_FACE_COMPONENT_PROVENANCE"
-        and stats["boolean_rail_pairs"]
+        == "FINAL_BOOLEAN_BOUNDARY_PIPE_SURFACE"
         and all(
             record.get("ownership_backend")
-            == "CUTTER_FACE_COMPONENT_PROVENANCE"
+            == "FINAL_BOOLEAN_BOUNDARY_PIPE_SURFACE"
             for record in stats["boolean_rail_pairs"]
         ),
-        f"Boolean Rail still uses proximity ownership: {summaries['boolean']}",
+        f"Boolean Rail did not use final Boundary adjacency: {summaries['boolean']}",
+    )
+    topology = stats["boundary_rail_topology"]
+    ensure(
+        stats["boundary_degenerate_cleanup"]["zero_edge_count_before"] >= 0
+        and stats["boundary_degenerate_cleanup"]["zero_edge_count_after"] == 0,
+        f"Open Boundary degenerate cleanup failed: {stats['boundary_degenerate_cleanup']}",
+    )
+    ensure(
+        topology["adjacency_guard"]["zero_length_edge_count"] == 0
+        and topology["adjacency_guard"]["consumable_rail_guard"] == "PASS",
+        f"Final Boundary contains non-consumable zero-length Rail edges: {topology}",
+    )
+    chain_owners_by_edge = {}
+    for chain in topology["owned_chains"]:
+        for edge_index in chain["edge_indices"]:
+            chain_owners_by_edge.setdefault(edge_index, set()).add(
+                (chain["pipe_id"], chain["patch_id"])
+            )
+    ensure(
+        all(
+            set(map(tuple, segment["owner_pairs"]))
+            <= chain_owners_by_edge.get(segment["edge_index"], set())
+            for segment in topology["shared_owner_rails"]
+        ),
+        f"Multi-owner Rail edges are not consumable by every owner chain: {topology}",
+    )
+    output = bpy.data.objects[stats["output_object_name"]]
+    output_bmesh = bmesh.new()
+    output_bmesh.from_mesh(output.data)
+    boundary_edges = {
+        tuple(
+            sorted(
+                (
+                    tuple(round(value, 7) for value in edge.verts[0].co),
+                    tuple(round(value, 7) for value in edge.verts[1].co),
+                )
+            )
+        )
+        for edge in output_bmesh.edges
+        if len(edge.link_faces) == 1
+    }
+    output_bmesh.free()
+    rail_edges = set()
+    for chain in topology["owned_chains"]:
+        points = chain["coordinates"]
+        segment_count = len(points) if chain["is_cyclic"] else len(points) - 1
+        for index in range(segment_count):
+            rail_edges.add(
+                tuple(
+                    sorted(
+                        (
+                            tuple(round(value, 7) for value in points[index]),
+                            tuple(
+                                round(value, 7)
+                                for value in points[(index + 1) % len(points)]
+                            ),
+                        )
+                    )
+                )
+            )
+    rail_edges.update(
+        tuple(
+            sorted(
+                tuple(round(value, 7) for value in point)
+                for point in segment["coordinates"]
+            )
+        )
+        for segment in (
+            topology["unowned_segments"]
+            + topology["deferred_segments"]
+            + topology["shared_owner_segments"]
+        )
+    )
+    ensure(
+        topology["adjacency_guard"]["status"] == "PASS",
+        f"Final Boundary serialization lost edges: {topology}",
+    )
+    ensure(
+        not topology["adjacency_guard"]["coordinate_reconstruction"]
+        and not topology["adjacency_guard"]["centerline_sorting"],
+        f"Final Boundary Rail reintroduced coordinate reconstruction: {topology}",
+    )
+    ensure(
+        rail_edges == boundary_edges,
+        (
+            "Rail segments are not an exact partition of final Boolean Boundary Edges: "
+            f"missing={len(boundary_edges - rail_edges)}, "
+            f"extra={len(rail_edges - boundary_edges)}"
+        ),
+    )
+    ensure(
+        all(
+            record["geometry_guard"].get("sampling_backend")
+            == "FINAL_BOOLEAN_BOUNDARY_EDGES"
+            and record["geometry_guard"].get("correspondence_error_percentile")
+            == 0.95
+            for record in stats["boolean_rail_pairs"]
+        ),
+        "Boolean Rail guard did not use Boundary correspondence semantics",
+    )
+    ensure(
+        topology["unowned_edge_count"] == 0
+        or all(
+            segment["region_class"] == "REGULAR_UNOWNED"
+            for segment in topology["unowned_segments"]
+        ),
+        f"Boundary ownership classes are inconsistent: {topology}",
+    )
+    ensure(
+        all(
+            segment["region_class"] == "JUNCTION_OR_TERMINAL_DEFERRED"
+            for segment in topology["deferred_segments"]
+        ),
+        f"Deferred Boundary classes are inconsistent: {topology}",
+    )
+    ensure(
+        topology["owned_edge_count"]
+        + topology["unowned_edge_count"]
+        + topology["deferred_edge_count"]
+        == topology["boundary_edge_count"],
+        f"Boundary ownership accounting is incomplete: {topology}",
+    )
+    ensure(
+        topology["shared_owner_edge_count"]
+        == len(topology["shared_owner_segments"])
+        and all(
+            segment["region_class"] == "MULTI_OWNER_RAIL"
+            and len(segment["owner_pairs"]) >= 2
+            for segment in topology["shared_owner_segments"]
+        ),
+        f"Shared Boundary Rail ownership is incomplete: {topology}",
+    )
+    boolean_summary = summaries["boolean"]
+    consumption_guard = boolean_summary["boundary_consumption_guard"]
+    ensure(
+        consumption_guard["status"] == "PASS"
+        and consumption_guard["consumed_edge_count"]
+        == consumption_guard["boundary_edge_count"]
+        and not consumption_guard["missing_edge_indices"]
+        and not consumption_guard["extra_edge_indices"],
+        f"Boundary Rail consumption is incomplete: {consumption_guard}",
+    )
+
+    ensure(
+        not boolean_summary["unclassified_boundary_edge_indices"]
+        and all(
+            any(
+                edge_index in chain["edge_indices"]
+                and any(
+                    vertex_index in {
+                        vertex_index
+                        for segment in topology["shared_owner_rails"]
+                        for vertex_index in segment["vertex_indices"]
+                    }
+                    for vertex_index in chain["vertex_indices"]
+                )
+                for chain in topology["owned_chains"]
+            )
+            for edge_index in boolean_summary[
+                "shared_seam_chain_component_indices"
+            ]
+        ),
+        f"Overlap fragments lack shared-seam chain adjacency: {boolean_summary}",
+    )
+    ensure(
+        set(boolean_summary["shared_overlap_edge_indices"])
+        <= {
+            segment["edge_index"]
+            for segment in topology["shared_owner_rails"]
+        },
+        f"Shared overlap Rail consumption mismatch: {boolean_summary}",
+    )
+    ensure(
+        boolean_summary["classified_span_count"]
+        + boolean_summary["deferred_span_count"]
+        == boolean_summary["span_count"],
+        f"Rail span classification is incomplete: {boolean_summary}",
+    )
+    ensure(
+        boolean_summary["owned_span_count"]
+        == boolean_summary["pairable_span_count"]
+        and boolean_summary["guard_valid_span_count"]
+        == boolean_summary["valid_span_count"],
+        f"Rail A/B ownership or guard accounting is dishonest: {boolean_summary}",
+    )
+
+    ensure(
+        all(
+            record["record_type"] == "OCCLUDED_RAIL_SPAN"
+            and not record["pairing_required"]
+            and record["boundary_edge_indices"]
+            and record["occlusion_evidence"]["overlap_pipe_ids"]
+            and set(record["occlusion_evidence"]["local_endpoint_occluders"])
+            == set(record["occlusion_evidence"]["endpoint_sides"])
+            and all(
+                any(
+                    occluder["point_inside_pipe"]
+                    or occluder["surface_distance"] <= 0.08 * 1.10
+                    for occluder in occluders
+                )
+                for occluders in record["occlusion_evidence"][
+                    "local_endpoint_occluders"
+                ].values()
+            )
+            and record["geometry_guard"]["status"] == "NOT_APPLICABLE"
+            and record["geometry_guard"]["guard_type"]
+            == "OCCLUDED_ENDPOINT_CLASSIFICATION"
+            for record in boolean_summary["occluded_spans"]
+        ),
+        f"Occluded Rail span contract is incomplete: {boolean_summary}",
+    )
+    ensure(
+        all(
+            record["record_type"] == "DEFERRED_RAIL_REGION"
+            and record["geometry_guard"]["status"] == "DEFERRED"
+            for record in boolean_summary["deferred_spans"]
+        ),
+        f"Deferred RailRegionRecord contract is dishonest: {boolean_summary}",
     )
     result.add_detail(
         f"boolean={summaries['boolean']['coverage']:.3f}, "
         f"surface={summaries['source_surface']['coverage']:.3f}"
     )
+
+
+# 验证 overlap endpoint outlier 只裁掉连续前缀，core 仍引用原始 BMesh Edge。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_rail_endpoint_core_trim_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    bm = bmesh.new()
+    left_vertices = [
+        bm.verts.new(coordinate)
+        for coordinate in ((-0.03, 0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0))
+    ]
+    right_vertices = [
+        bm.verts.new(coordinate)
+        for coordinate in ((0.0, 0.0141421356, 0.0), (1.0, 0.0141421356, 0.0))
+    ]
+    left_edges = [
+        bm.edges.new((left_vertices[index], left_vertices[index + 1]))
+        for index in range(2)
+    ]
+    right_edges = [bm.edges.new((right_vertices[0], right_vertices[1]))]
+    trimmed = utils._trim_rail_pair_to_width_core(
+        {"vertices": left_vertices, "edges": left_edges, "is_cyclic": False},
+        {"vertices": right_vertices, "edges": right_edges, "is_cyclic": False},
+        0.01,
+    )
+    ensure(trimmed is not None, "Rail endpoint core trim rejected a valid core")
+    left_core, right_core, diagnostics = trimmed
+    ensure(
+        left_core["edges"] == [left_edges[1]]
+        and right_core["edges"] == right_edges
+        and diagnostics["left_trimmed_edge_count"] == 1,
+        f"Rail endpoint core trim synthesized or reordered edges: {diagnostics}",
+    )
+    bm.free()
+    result.add_detail("trimmed one endpoint edge; core kept original adjacency")
 
 
 # 验证 source-surface Rail 使用 owner Face intrinsic offset，而非 3D 欧氏距离近似。
@@ -3507,9 +3763,9 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
     result.add_detail(f"output={output.name}, faces={len(output.data.polygons)}")
 
 
-# 验证真实 junction/cyclic/end-cap fixture 的完整 FINALIZE 输出 closed manifold。
+# 验证能力不足的复杂 fixture 会安全拒绝 FINALIZE，不把失败伪装成产品成功。
 # test_context/result: 测试上下文与结果记录器。
-def test_gn_finalize_real_fixture_closed_manifold(test_context: TestContext, result: TestCaseResult):
+def test_gn_finalize_unsupported_complex_fixture_fails_closed(test_context: TestContext, result: TestCaseResult):
     load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
     source = bpy.data.objects["Extruded.002"]
     for modifier in list(source.modifiers):
@@ -3674,6 +3930,10 @@ def main():
     context.run_case("curve_pipe_asset_import_and_backend_smoke", test_curve_pipe_asset_import_and_backend_smoke)
     context.run_case("feature_chamfer_rail_oracle_contract_smoke", test_feature_chamfer_rail_oracle_contract_smoke)
     context.run_case(
+        "feature_chamfer_rail_endpoint_core_trim_regression",
+        test_feature_chamfer_rail_endpoint_core_trim_regression,
+    )
+    context.run_case(
         "feature_chamfer_source_surface_intrinsic_offset_regression",
         test_feature_chamfer_source_surface_intrinsic_offset_regression,
     )
@@ -3753,7 +4013,13 @@ def main():
         test_gn_patch_complex_region_fails_closed,
     )
     context.run_case("legacy_feature_chamfer_uses_patch_adapter", test_legacy_feature_chamfer_uses_patch_adapter)
-    context.run_case("gn_finalize_real_fixture_closed_manifold", test_gn_finalize_real_fixture_closed_manifold)
+    context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
+
+    context.run_case(
+        "gn_finalize_unsupported_complex_fixture_fails_closed",
+        test_gn_finalize_unsupported_complex_fixture_fails_closed,
+    )
+    context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
 

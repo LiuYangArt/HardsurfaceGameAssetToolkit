@@ -58,6 +58,7 @@ def run() -> int:
         str(blender_exe),
         "--background",
         "--factory-startup",
+        "--disable-autoexec",
         "--python",
         str(test_driver),
     ]

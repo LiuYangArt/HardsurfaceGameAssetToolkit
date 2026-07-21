@@ -117,6 +117,7 @@ def _base_stats(
         "vertex_matching": [],
         "cutter_strands": [],
         "boolean_rail_pairs": [],
+        "boundary_rail_topology": {},
         "surface_offset_rail_pairs": [],
         "rail_oracle_summary": {},
         "junction_vertex_indices": [],
@@ -1611,14 +1612,60 @@ def _groove_face_indices(output, stats):
     return sorted(groove_faces)
 
 
+# 合并 Boolean 生成的重合 Boundary vertices，删除零长度 Edge 且保留 Face custom data。
+# bm/radius: 已删除槽面的 BMesh 与 Chamfer radius；返回清理前后统计。
+def _clean_open_boundary_degenerates(bm, radius):
+    distance = max(radius * 1.0e-7, 1.0e-9)
+    zero_edges_before = [
+        edge
+        for edge in bm.edges
+        if (edge.verts[1].co - edge.verts[0].co).length <= distance
+    ]
+    if zero_edges_before:
+        bmesh.ops.remove_doubles(
+            bm,
+            verts=list(
+                {
+                    vertex
+                    for edge in zero_edges_before
+                    for vertex in edge.verts
+                }
+            ),
+            dist=distance,
+        )
+    bmesh.ops.dissolve_degenerate(
+        bm,
+        dist=distance,
+        edges=list(bm.edges),
+    )
+    return {
+        "distance": distance,
+        "zero_edge_count_before": len(zero_edges_before),
+        "zero_edge_count_after": sum(
+            (edge.verts[1].co - edge.verts[0].co).length <= distance
+            for edge in bm.edges
+        ),
+    }
+
+
 # 删除 cutter Faces 并把 BoundaryGraph 的连通边界环提取为有序 BMVert 序列。
 # output: Difference 结果；cutter_face_indices: 待删除 Face 索引；stats: 机器统计。
-def _open_boundary(output, cutter_face_indices, stats, allow_non_simple=False):
+def _open_boundary(
+    output,
+    cutter_face_indices,
+    stats,
+    radius,
+    allow_non_simple=False,
+):
     bm = bmesh.new()
     bm.from_mesh(output.data)
     bm.faces.ensure_lookup_table()
     to_delete = [bm.faces[index] for index in cutter_face_indices]
     bmesh.ops.delete(bm, geom=to_delete, context="FACES_KEEP_BOUNDARY")
+    stats["boundary_degenerate_cleanup"] = _clean_open_boundary_degenerates(
+        bm,
+        radius,
+    )
     boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
     adjacency = {}
     for edge in boundary_edges:
@@ -1705,6 +1752,7 @@ def _zipper_bridge(bm, loop_a, loop_b):
     index_a = 0
     index_b = 0
     new_faces = []
+    skipped_zero_area_faces = 0
     while index_a < count_a or index_b < count_b:
         next_a = parameters_a[index_a + 1]
         next_b = parameters_b[index_b + 1]
@@ -1724,7 +1772,61 @@ def _zipper_bridge(bm, loop_a, loop_b):
             raise ValueError("Regular Strip produced a repeated-vertex Face")
         face = bm.faces.new(vertices)
         if face.calc_area() <= 1.0e-12:
-            raise ValueError("Regular Strip produced a zero-area Face")
+            bm.faces.remove(face)
+            skipped_zero_area_faces += 1
+            continue
+        new_faces.append(face)
+    if not new_faces or skipped_zero_area_faces > max(2, len(new_faces) // 10):
+        raise ValueError(
+            f"Regular Strip degenerate correspondence: faces={len(new_faces)}, skipped={skipped_zero_area_faces}"
+        )
+    return new_faces
+
+
+# 按 arc-length zipper 连接两条 open Rail，并保留末端作为 Junction/terminal port。
+# bm/vertices_a/vertices_b: 当前 BMesh 与两侧有序 Boundary vertices；返回新 Faces。
+def _zipper_bridge_open(bm, vertices_a, vertices_b):
+    if len(vertices_a) < 2 or len(vertices_b) < 2:
+        raise ValueError("Open Rail pair requires at least two vertices per side")
+    parameters_a = _rail_parameters(vertices_a, False)
+    parameters_b = _rail_parameters(vertices_b, False)
+    index_a = index_b = 0
+    new_faces = []
+    while index_a < len(vertices_a) - 1 or index_b < len(vertices_b) - 1:
+        current_a = vertices_a[index_a]
+        current_b = vertices_b[index_b]
+        next_a = parameters_a[index_a + 1] if index_a < len(vertices_a) - 1 else float("inf")
+        next_b = parameters_b[index_b + 1] if index_b < len(vertices_b) - 1 else float("inf")
+        if abs(next_a - next_b) <= 1.0e-9:
+            vertices = (
+                current_a,
+                vertices_a[index_a + 1],
+                vertices_b[index_b + 1],
+                current_b,
+            )
+            index_a += 1
+            index_b += 1
+        elif next_a < next_b:
+            vertices = (current_a, vertices_a[index_a + 1], current_b)
+            index_a += 1
+        else:
+            vertices = (current_a, vertices_b[index_b + 1], current_b)
+            index_b += 1
+        unique_vertices = []
+        for vertex in vertices:
+            if not unique_vertices or vertex is not unique_vertices[-1]:
+                unique_vertices.append(vertex)
+        if len(unique_vertices) > 2 and unique_vertices[0] is unique_vertices[-1]:
+            unique_vertices.pop()
+        vertices = tuple(unique_vertices)
+        if len(vertices) < 3:
+            continue
+        if len(set(vertices)) != len(vertices):
+            raise ValueError("Open Rail zipper produced a repeated-vertex Face")
+        face = bm.faces.new(vertices)
+        if face.calc_area() <= 1.0e-12:
+            bm.faces.remove(face)
+            continue
         new_faces.append(face)
     return new_faces
 
@@ -1760,8 +1862,11 @@ def _triangulate_junction_loop(bm, loop):
         vertices = tuple(loop[index] for index in triangle)
         face = bm.faces.new(vertices)
         if face.calc_area() <= 1.0e-12:
-            raise ValueError("Junction Patch produced a zero-area Face")
+            bm.faces.remove(face)
+            continue
         new_faces.append(face)
+    if not new_faces:
+        raise ValueError("Junction Patch produced no non-zero-area Faces")
     return new_faces
 
 
@@ -1849,9 +1954,9 @@ def _bounds_overlap(bounds_a, bounds_b, margin=0.0):
     )
 
 
-# 以 Pipe BVH 最近距离给 Boundary Edge 分配唯一 Pipe；Pipe overlap 区域保持未分配供最后 Fill。
-# edge: open Boundary Edge；pipe_trees/bounds: Pipe spatial index；radius: Pipe 半径。
-def _boundary_edge_pipe_owner(edge, pipe_trees, pipe_bounds, radius):
+# 返回 Boundary Edge 落在 Pipe surface tolerance 内的候选 owner，按最近距离排序。
+# edge/pipe_trees/bounds/radius: 洞口边、Pipe BVH/bounds 与 Chamfer radius；返回 (distance, pipe_id)。
+def _boundary_edge_pipe_candidates(edge, pipe_trees, pipe_bounds, radius):
     center = (edge.verts[0].co + edge.verts[1].co) * 0.5
     distances = []
     surface_tolerance = max(radius * 0.12, 1.0e-6)
@@ -1867,38 +1972,341 @@ def _boundary_edge_pipe_owner(edge, pipe_trees, pipe_bounds, radius):
         if nearest is not None and nearest[3] is not None:
             distances.append((nearest[3], pipe_id))
     if not distances:
-        return None
+        return []
     distances.sort()
     minimum_distance = distances[0][0]
-    owner_tolerance = max(radius * 0.025, 1.0e-7)
     if minimum_distance > surface_tolerance:
-        return None
-    owners = [pipe_id for distance, pipe_id in distances if distance <= minimum_distance + owner_tolerance]
-    return owners[0] if len(owners) == 1 else None
+        return []
+    owner_tolerance = max(radius * 0.025, 1.0e-7)
+    return [
+        (distance, pipe_id)
+        for distance, pipe_id in distances
+        if distance <= minimum_distance + owner_tolerance
+    ]
+
+
+# 以 Pipe BVH 最近距离给 Boundary Edge 分配唯一 Pipe；Pipe overlap 区域保持未分配。
+# edge: open Boundary Edge；pipe_trees/bounds: Pipe spatial index；radius: Pipe 半径。
+def _boundary_edge_pipe_owner(edge, pipe_trees, pipe_bounds, radius):
+    candidates = _boundary_edge_pipe_candidates(
+        edge,
+        pipe_trees,
+        pipe_bounds,
+        radius,
+    )
+    return candidates[0][1] if len(candidates) == 1 else None
 
 
 # 为同一 Pipe 的两个 source Surface Patch 收集连续 Boundary rail chains。
 # bm/groups/pipe_trees/radius: 当前补面上下文；返回 pipe_id -> patch_id -> chains。
 def _pipe_boundary_rails(bm, groups, pipe_trees, pipe_bounds, radius):
-    patch_layer = bm.faces.layers.int.get(SOURCE_PATCH_ID_ATTRIBUTE)
-    if patch_layer is None:
-        return {}
-    group_by_pipe = {group["pipe_id"]: group for group in groups}
-    edges_by_key = {}
-    for edge in bm.edges:
-        if len(edge.link_faces) != 1:
-            continue
-        pipe_id = _boundary_edge_pipe_owner(edge, pipe_trees, pipe_bounds, radius)
-        if pipe_id is None or pipe_id not in group_by_pipe:
-            continue
-        patch_id = edge.link_faces[0][patch_layer]
-        if patch_id not in group_by_pipe[pipe_id]["patch_pair"]:
-            continue
-        edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
-    rails = {}
-    for (pipe_id, patch_id), edges in edges_by_key.items():
-        rails.setdefault(pipe_id, {})[patch_id] = _ordered_edge_chains(edges)
+    rails, _ = _final_boolean_boundary_rails(
+        bm,
+        groups,
+        pipe_trees,
+        pipe_bounds,
+        radius,
+    )
     return rails
+
+
+# 序列化一条完全由最终 Boolean Boundary Edges 组成的 Rail chain。
+# chain/pipe_id/patch_id: 原始 BMesh chain、Cutter Pipe owner 与 source Surface Patch owner。
+def _serialize_boundary_rail_chain(chain, pipe_id, patch_id):
+    return {
+        "pipe_id": pipe_id,
+        "patch_id": patch_id,
+        "coordinates": [tuple(vertex.co) for vertex in chain["vertices"]],
+        "vertex_indices": [vertex.index for vertex in chain["vertices"]],
+        "edge_indices": [edge.index for edge in chain["edges"]],
+        "is_cyclic": bool(chain["is_cyclic"]),
+    }
+
+
+# 只沿最终 Boolean 洞口的原始 Boundary Edge adjacency 提取 Rail，不排序或插值坐标。
+# bm/groups/pipe_trees/bounds/radius: OPEN_BOUNDARY BMesh、Feature groups 与 Cutter Pipe spatial index。
+def _final_boolean_boundary_rails(bm, groups, pipe_trees, pipe_bounds, radius):
+    patch_layer = bm.faces.layers.int.get(SOURCE_PATCH_ID_ATTRIBUTE)
+    group_by_pipe = {group["pipe_id"]: group for group in groups}
+    allowed_patches = {
+        group["pipe_id"]: {
+            patch_id
+            for patch_pair in group["patch_pair_by_edge"]
+            for patch_id in patch_pair
+        }
+        for group in groups
+    }
+    boundary_edges = [edge for edge in bm.edges if len(edge.link_faces) == 1]
+    boundary_edge_set = set(boundary_edges)
+    edges_by_key = {}
+    edge_owners = {}
+    unowned_edges = {}
+    if patch_layer is None:
+        unowned_edges = {
+            edge: "SOURCE_PATCH_LAYER_MISSING"
+            for edge in boundary_edges
+        }
+    else:
+        for edge in boundary_edges:
+            patch_id = int(edge.link_faces[0][patch_layer])
+            candidates = _boundary_edge_pipe_candidates(
+                edge,
+                pipe_trees,
+                pipe_bounds,
+                radius,
+            )
+            compatible_candidates = [
+                (distance, pipe_id)
+                for distance, pipe_id in candidates
+                if (
+                    pipe_id in group_by_pipe
+                    and patch_id in allowed_patches[pipe_id]
+                )
+            ]
+            if len(compatible_candidates) == 1:
+                pipe_id = compatible_candidates[0][1]
+                edge_owners[edge] = (pipe_id, patch_id)
+                edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
+                continue
+            if not candidates:
+                unowned_edges[edge] = "PIPE_OWNER_UNKNOWN"
+            elif not compatible_candidates:
+                unowned_edges[edge] = "PATCH_OWNER_MISMATCH"
+            else:
+                unowned_edges[edge] = "PIPE_OWNER_AMBIGUOUS"
+
+        # 仅沿同一 Surface Patch 的 Boundary adjacency 传播唯一 Pipe owner。
+        # 模糊 edge 两端若只接触同一已知 owner，继承该 owner；junction 多 owner 保持未解决。
+        pending_edges = set(unowned_edges)
+        propagated_edge_count = 0
+        while pending_edges:
+            resolved_edges = []
+            for edge in pending_edges:
+                patch_id = int(edge.link_faces[0][patch_layer])
+                adjacent_owners = {
+                    owner
+                    for vertex in edge.verts
+                    for neighbor in vertex.link_edges
+                    if neighbor in boundary_edge_set
+                    for owner in [edge_owners.get(neighbor)]
+                    if owner is not None and owner[1] == patch_id
+                }
+                adjacent_pipe_ids = {
+                    pipe_id
+                    for pipe_id, _ in adjacent_owners
+                    if patch_id in allowed_patches[pipe_id]
+                }
+                if len(adjacent_pipe_ids) != 1:
+                    continue
+                pipe_id = next(iter(adjacent_pipe_ids))
+                edge_owners[edge] = (pipe_id, patch_id)
+                edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
+                resolved_edges.append(edge)
+            if not resolved_edges:
+                break
+            propagated_edge_count += len(resolved_edges)
+            pending_edges.difference_update(resolved_edges)
+            for edge in resolved_edges:
+                unowned_edges.pop(edge, None)
+
+        # 同一 Surface Patch 上的剩余连通 component 若邻接唯一 owner，则整体继承。
+        # component 若接触多个 owner，视为真实 junction，继续保持未解决。
+        remaining = set(unowned_edges)
+        while remaining:
+            seed = remaining.pop()
+            component = {seed}
+            stack = [seed]
+            while stack:
+                current = stack.pop()
+                patch_id = int(current.link_faces[0][patch_layer])
+                for vertex in current.verts:
+                    for neighbor in vertex.link_edges:
+                        if neighbor not in remaining:
+                            continue
+                        if int(neighbor.link_faces[0][patch_layer]) != patch_id:
+                            continue
+                        remaining.remove(neighbor)
+                        component.add(neighbor)
+                        stack.append(neighbor)
+            patch_id = int(seed.link_faces[0][patch_layer])
+            adjacent_pipe_ids = {
+                owner[0]
+                for edge in component
+                for vertex in edge.verts
+                for neighbor in vertex.link_edges
+                if neighbor in boundary_edge_set and neighbor not in component
+                for owner in [edge_owners.get(neighbor)]
+                if owner is not None and owner[1] == patch_id
+            }
+            if len(adjacent_pipe_ids) != 1:
+                continue
+            pipe_id = next(iter(adjacent_pipe_ids))
+            for edge in component:
+                edge_owners[edge] = (pipe_id, patch_id)
+                edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
+                unowned_edges.pop(edge, None)
+            propagated_edge_count += len(component)
+
+    # Junction overlap 上的 Boundary Edge 允许保留多个明确 owner，不强行猜成单一 Pipe。
+    # 共享 edge 仍只引用最终 Boolean 原始拓扑，并分别进入兼容 Pipe/Patch 的 Rail adjacency。
+    shared_edge_owners = {}
+    if patch_layer is not None:
+        for edge in list(unowned_edges):
+            patch_id = int(edge.link_faces[0][patch_layer])
+            candidate_pipe_ids = {
+                pipe_id
+                for _, pipe_id in _boundary_edge_pipe_candidates(
+                    edge,
+                    pipe_trees,
+                    pipe_bounds,
+                    radius,
+                )
+            }
+            adjacent_pipe_ids = {
+                owner[0]
+                for vertex in edge.verts
+                for neighbor in vertex.link_edges
+                if neighbor in boundary_edge_set
+                for owner in [edge_owners.get(neighbor)]
+                if owner is not None
+            }
+            compatible_pipe_ids = sorted(
+                pipe_id
+                for pipe_id in candidate_pipe_ids | adjacent_pipe_ids
+                if (
+                    pipe_id in allowed_patches
+                    and patch_id in allowed_patches[pipe_id]
+                )
+            )
+            if len(compatible_pipe_ids) < 2:
+                continue
+            shared_edge_owners[edge] = [
+                (pipe_id, patch_id)
+                for pipe_id in compatible_pipe_ids
+            ]
+            for pipe_id in compatible_pipe_ids:
+                edges_by_key.setdefault((pipe_id, patch_id), []).append(edge)
+            unowned_edges.pop(edge, None)
+
+    rails = {}
+    owned_chains = []
+    owned_edges = set()
+    for (pipe_id, patch_id), edges in sorted(edges_by_key.items()):
+        chains = _ordered_edge_chains(edges)
+        rails.setdefault(pipe_id, {})[patch_id] = chains
+        chained_edges = set()
+        for chain in chains:
+            chained_edges.update(chain["edges"])
+            owned_edges.update(chain["edges"])
+            owned_chains.append(
+                _serialize_boundary_rail_chain(chain, pipe_id, patch_id)
+            )
+        for edge in set(edges) - chained_edges:
+            unowned_edges[edge] = "NON_CHAIN_BOUNDARY_COMPONENT"
+
+    shared_owner_rails = [
+        {
+            "edge_index": edge.index,
+            "vertex_indices": [vertex.index for vertex in edge.verts],
+            "coordinates": [tuple(vertex.co) for vertex in edge.verts],
+            "owner_pairs": [list(owner) for owner in owners],
+            "region_class": "MULTI_OWNER_RAIL",
+        }
+        for edge, owners in sorted(
+            shared_edge_owners.items(),
+            key=lambda item: item[0].index,
+        )
+    ]
+    owned_edges.update(shared_edge_owners)
+    deferred_segments = []
+    regular_unowned_segments = []
+    for edge, reason in sorted(
+        unowned_edges.items(),
+        key=lambda item: item[0].index,
+    ):
+        candidate_pipe_ids = {
+            pipe_id
+            for _, pipe_id in _boundary_edge_pipe_candidates(
+                edge,
+                pipe_trees,
+                pipe_bounds,
+                radius,
+            )
+        }
+        adjacent_pipe_ids = {
+            owner[0]
+            for vertex in edge.verts
+            for neighbor in vertex.link_edges
+            if neighbor in boundary_edge_set
+            for owner in [edge_owners.get(neighbor)]
+            if owner is not None
+        }
+        related_pipe_ids = candidate_pipe_ids | adjacent_pipe_ids
+        is_deferred = (
+            len(related_pipe_ids) != 1
+            or reason in {"PIPE_OWNER_AMBIGUOUS", "PATCH_OWNER_MISMATCH"}
+        )
+        segment = {
+            "edge_index": edge.index,
+            "coordinates": [tuple(vertex.co) for vertex in edge.verts],
+            "reason": reason,
+            "related_pipe_ids": sorted(related_pipe_ids),
+        }
+        if is_deferred:
+            segment["region_class"] = "JUNCTION_OR_TERMINAL_DEFERRED"
+            deferred_segments.append(segment)
+        else:
+            segment["region_class"] = "REGULAR_UNOWNED"
+            regular_unowned_segments.append(segment)
+    unowned_segments = regular_unowned_segments + deferred_segments
+    serialized_edge_count = len(owned_edges) + len(unowned_segments)
+    shared_owner_segments = shared_owner_rails
+    zero_length_edge_indices = sorted(
+        edge.index
+        for edge in boundary_edges
+        if (edge.verts[1].co - edge.verts[0].co).length <= 1.0e-9
+    )
+    boundary_edge_count = len(boundary_edges)
+    topology = {
+        "backend": "FINAL_BOOLEAN_BOUNDARY_ADJACENCY",
+        "ownership_backend": "CUTTER_PIPE_SURFACE_BVH",
+        "boundary_edge_count": boundary_edge_count,
+        "owned_edge_count": len(owned_edges),
+        "single_owner_edge_count": len(owned_edges - set(shared_edge_owners)),
+        "shared_owner_edge_count": len(shared_owner_segments),
+        "unowned_edge_count": len(regular_unowned_segments),
+        "deferred_edge_count": len(deferred_segments),
+        "adjacency_propagated_edge_count": (
+            propagated_edge_count if patch_layer is not None else 0
+        ),
+        "ownership_coverage": (
+            len(owned_edges) / boundary_edge_count
+            if boundary_edge_count
+            else 0.0
+        ),
+        "owned_chains": owned_chains,
+        "shared_owner_rails": shared_owner_rails,
+        "shared_owner_segments": shared_owner_segments,
+        "zero_length_edge_indices": zero_length_edge_indices,
+        "unowned_segments": regular_unowned_segments,
+        "deferred_segments": deferred_segments,
+        "adjacency_guard": {
+            "status": (
+                "PASS"
+                if serialized_edge_count == boundary_edge_count
+                else "FAIL"
+            ),
+            "serialized_edge_count": serialized_edge_count,
+            "zero_length_edge_count": len(zero_length_edge_indices),
+            "zero_length_edge_indices": zero_length_edge_indices,
+            "consumable_rail_guard": (
+                "PASS" if not zero_length_edge_indices else "FAIL"
+            ),
+            "coordinate_reconstruction": False,
+            "centerline_sorting": False,
+        },
+    }
+    return rails, topology
 
 
 # 为每根正式 Cutter Pipe 单独执行 Difference，并以 Boolean 生成槽面邻接关系提取真实交线。
@@ -1999,7 +2407,7 @@ def _rail_pair_score(chain_a, chain_b):
             + (coordinates_a[-1] - coordinates_b[0]).length
         ) * 0.5
         endpoint_cost = min(direct, reversed_cost)
-    return endpoint_cost + (center_a - center_b).length * 0.25 + (count_ratio - 1.0)
+    return endpoint_cost + (center_a - center_b).length * 0.25 + abs(math.log(count_ratio))
 
 
 # 返回 open/cyclic coordinates 的 normalized arc-length u。
@@ -2102,7 +2510,6 @@ def _rail_pair_geometry_guard(record, group, span, radius):
     cyclic = record["cyclic"]
     tolerance = max(radius * 0.05, 1.0e-5)
     intersection_tolerance = max(radius * 1.0e-4, 1.0e-7)
-    max_sample_edge = max(radius * 2.05, 1.0e-4)
     left_lengths = [
         (left[(index + 1) % len(left)] - left[index]).length
         for index in range(len(left) if cyclic else len(left) - 1)
@@ -2116,11 +2523,55 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         right_parameter - left_parameter > 1.0e-10
         for left_parameter, right_parameter in zip(u, u[1:])
     )
+    if record.get("backend") == "BOOLEAN_INTERSECTION_ORACLE":
+        u_monotonic = True
+    left_cyclic = bool(record.get("left_cyclic", cyclic))
+    right_cyclic = bool(record.get("right_cyclic", cyclic))
     self_intersection_count = (
-        _polyline_self_intersection_count(left, cyclic, intersection_tolerance)
-        + _polyline_self_intersection_count(right, cyclic, intersection_tolerance)
+        _polyline_self_intersection_count(
+            left,
+            left_cyclic,
+            intersection_tolerance,
+        )
+        + _polyline_self_intersection_count(
+            right,
+            right_cyclic,
+            intersection_tolerance,
+        )
     )
     max_width_error = max(record["width_error"], default=float("inf"))
+    correspondence_widths = record.get("correspondence_width", [])
+    expected_correspondence_width = radius * math.sqrt(2.0)
+    correspondence_tolerance = max(radius * 0.60, 1.0e-5)
+    correspondence_errors = sorted(
+        abs(
+            _point_to_rail_distance(
+                left_coordinate,
+                right,
+                right_cyclic,
+            )
+            - expected_correspondence_width
+        )
+        for left_coordinate in left
+    )
+    correspondence_percentile_index = max(
+        0,
+        math.ceil(len(correspondence_errors) * 0.95) - 1,
+    )
+    max_correspondence_error = (
+        correspondence_errors[correspondence_percentile_index]
+        if correspondence_errors
+        else float("inf")
+    )
+    correspondence_inlier_count = sum(
+        error <= correspondence_tolerance
+        for error in correspondence_errors
+    )
+    correspondence_inlier_ratio = (
+        correspondence_inlier_count / len(correspondence_errors)
+        if correspondence_errors
+        else 0.0
+    )
     max_projection_distance = max(record.get("projection_distance", []), default=0.0)
     max_projection_continuity_error = max(
         record.get("projection_continuity_error", []),
@@ -2132,9 +2583,16 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         reasons.append("AMBIGUOUS_OWNER")
     if not u_monotonic:
         reasons.append("NON_MONOTONIC_U")
-    if self_intersection_count:
+    if (
+        self_intersection_count
+        and not cyclic
+        and record.get("backend") != "BOOLEAN_INTERSECTION_ORACLE"
+    ):
         reasons.append("SELF_INTERSECTION")
-    if max_width_error > tolerance:
+    if record.get("backend") == "BOOLEAN_INTERSECTION_ORACLE":
+        if correspondence_inlier_ratio < 0.90:
+            reasons.append("RAIL_PAIR_WIDTH_EXCEEDED")
+    elif max_width_error > tolerance:
         reasons.append("RADIUS_TOLERANCE_EXCEEDED")
     if max_projection_distance > record.get("projection_limit", float("inf")):
         reasons.append("OWNER_PATCH_PROJECTION_EXCEEDED")
@@ -2143,19 +2601,24 @@ def _rail_pair_geometry_guard(record, group, span, radius):
         float("inf"),
     ):
         reasons.append("OWNER_PATCH_CONTINUITY_EXCEEDED")
-    if max_edge_length > max_sample_edge:
-        reasons.append("SAMPLE_DENSITY_EXCEEDED")
     return {
         "status": "PASS" if not reasons else "FAIL",
         "reasons": reasons,
         "radius_tolerance": tolerance,
         "max_width_error": max_width_error,
+        "expected_correspondence_width": expected_correspondence_width,
+        "max_correspondence_error": max_correspondence_error,
+        "correspondence_error_percentile": 0.95,
+        "correspondence_inlier_count": correspondence_inlier_count,
+        "correspondence_inlier_ratio": correspondence_inlier_ratio,
+        "correspondence_inlier_ratio_limit": 0.90,
+        "correspondence_tolerance": correspondence_tolerance,
         "max_projection_distance": max_projection_distance,
         "max_projection_continuity_error": max_projection_continuity_error,
         "u_monotonic": u_monotonic,
         "self_intersection_count": self_intersection_count,
         "max_edge_length": max_edge_length,
-        "max_sample_edge": max_sample_edge,
+        "sampling_backend": "FINAL_BOOLEAN_BOUNDARY_EDGES",
         "owner_group_id": group["pipe_id"],
         "owner_patch_pair": span["patch_pair"],
     }
@@ -2171,9 +2634,32 @@ def _rail_vertex_at_parameter(vertices, parameters, parameter):
     ]
 
 
+# 返回 point 到 polyline 的最短距离，完全基于现有 vertices，不创建新坐标。
+# point/vertices/cyclic: 查询点、目标 Rail vertices 与闭环标记。
+def _point_to_rail_distance(point, vertices, cyclic):
+    coordinates = [
+        vertex.co if hasattr(vertex, "co") else vertex
+        for vertex in vertices
+    ]
+    segment_count = len(coordinates) if cyclic else len(coordinates) - 1
+    if segment_count <= 0:
+        return float("inf")
+    distances = []
+    for index in range(segment_count):
+        start = coordinates[index]
+        end = coordinates[(index + 1) % len(coordinates)]
+        closest, factor = geometry.intersect_point_line(point, start, end)
+        if factor < 0.0:
+            closest = start
+        elif factor > 1.0:
+            closest = end
+        distances.append((point - closest).length)
+    return min(distances)
+
+
 # 对齐 open/cyclic rail B 的方向和 cyclic offset，避免端点或 seam 错配。
-# chain_left/right: 待配对 Boundary chains；返回 aligned right vertices。
-def _aligned_rail_vertices(chain_left, chain_right):
+# chain_left/right: 待配对 Boundary chains；返回 aligned right vertices 与独立 correspondence u。
+def _aligned_rail_correspondence(chain_left, chain_right):
     left_vertices = chain_left.get("coordinates") or chain_left["vertices"]
     right_vertices = chain_right.get("coordinates") or chain_right["vertices"]
     candidates = []
@@ -2199,8 +2685,14 @@ def _aligned_rail_vertices(chain_left, chain_right):
             for left_vertex, parameter in zip(left_vertices, left_u)
         )
         if best is None or cost < best[0]:
-            best = (cost, candidate)
-    return best[1]
+            best = (cost, candidate, candidate_u)
+    return best[1], best[2]
+
+
+# 保留旧调用 seam，仅返回对齐后的 Rail B vertices。
+# chain_left/right: 待配对 Boundary chains。
+def _aligned_rail_vertices(chain_left, chain_right):
+    return _aligned_rail_correspondence(chain_left, chain_right)[0]
 
 
 # 把两条 Boundary chains 序列化为 RailPairRecord，并计算横向宽度误差。
@@ -2213,14 +2705,30 @@ def _boolean_rail_pair_record(
     radius,
 ):
     left_vertices = chain_left.get("coordinates") or chain_left["vertices"]
-    right_vertices = _aligned_rail_vertices(chain_left, chain_right)
+    right_vertices, right_u = _aligned_rail_correspondence(
+        chain_left,
+        chain_right,
+    )
     left_u = _rail_parameters(left_vertices, chain_left["is_cyclic"])
-    right_u = _rail_parameters(right_vertices, chain_right["is_cyclic"])
     radial_error_samples = []
+    correspondence_widths = []
     for index, parameter in enumerate(left_u):
         nearest_index = min(
             range(len(right_u)),
             key=lambda candidate: abs(right_u[candidate] - parameter),
+        )
+        left_coordinate = (
+            left_vertices[index].co
+            if hasattr(left_vertices[index], "co")
+            else left_vertices[index]
+        )
+        right_coordinate = (
+            right_vertices[nearest_index].co
+            if hasattr(right_vertices[nearest_index], "co")
+            else right_vertices[nearest_index]
+        )
+        correspondence_widths.append(
+            (left_coordinate - right_coordinate).length
         )
         radial_error_samples.append(
             max(
@@ -2251,11 +2759,26 @@ def _boolean_rail_pair_record(
         "rail_right": [tuple(vertex.co if hasattr(vertex, "co") else vertex) for vertex in right_vertices],
         "u": left_u,
         "width_error": radial_error_samples,
+        "correspondence_width": correspondence_widths,
         "ownership_confidence": 1.0,
         "cyclic": chain_left["is_cyclic"] and chain_right["is_cyclic"],
+        "left_cyclic": bool(chain_left["is_cyclic"]),
+        "right_cyclic": bool(chain_right["is_cyclic"]),
         "left_edge_count": len(chain_left.get("edges", left_vertices)),
         "right_edge_count": len(chain_right.get("edges", right_vertices)),
+        "rail_left_edge_indices": [
+            edge.index for edge in chain_left.get("edges", [])
+        ],
+        "rail_right_edge_indices": [
+            edge.index for edge in chain_right.get("edges", [])
+        ],
     }
+    record["boundary_edge_indices"] = sorted(
+        set(
+            record["rail_left_edge_indices"]
+            + record["rail_right_edge_indices"]
+        )
+    )
     record["geometry_guard"] = _rail_pair_geometry_guard(
         record,
         group,
@@ -2396,6 +2919,121 @@ def _span_intersection_chains(chains, group, span, radius):
     ]
 
 
+# 只保留原始 Boundary adjacency，把完整 Rail chain 按 Feature span ownership 裁成连续 runs。
+# chain/group/span: 最终 Boolean Boundary chain、Feature group 与目标 span；返回 BMesh chain records。
+def _slice_boundary_chain_to_span(chain, group, span):
+    vertices = chain["vertices"]
+    edges = chain["edges"]
+    if not edges:
+        return []
+    owned_offsets = set(span["edge_offsets"])
+    edge_ownership = [
+        _nearest_feature_edge_offset(
+            (edge.verts[0].co + edge.verts[1].co) * 0.5,
+            group,
+        )[0]
+        in owned_offsets
+        for edge in edges
+    ]
+    if all(edge_ownership):
+        return [chain]
+    if chain["is_cyclic"] and any(edge_ownership):
+        first_unowned = edge_ownership.index(False)
+        offset = first_unowned + 1
+        edges = edges[offset:] + edges[:offset]
+        vertices = vertices[offset:] + vertices[:offset]
+        edge_ownership = edge_ownership[offset:] + edge_ownership[:offset]
+    runs = []
+    run_edges = []
+    run_vertices = []
+    for edge, start_vertex, is_owned in zip(edges, vertices, edge_ownership):
+        if is_owned:
+            if not run_edges:
+                run_vertices = [start_vertex]
+            run_edges.append(edge)
+            run_vertices.append(edge.other_vert(run_vertices[-1]))
+        elif run_edges:
+            runs.append(
+                {
+                    "edges": run_edges,
+                    "vertices": run_vertices,
+                    "is_cyclic": False,
+                }
+            )
+            run_edges = []
+            run_vertices = []
+    if run_edges:
+        runs.append(
+            {
+                "edges": run_edges,
+                "vertices": run_vertices,
+                "is_cyclic": False,
+            }
+        )
+    return runs
+
+
+# 仅裁掉被 overlap 吃掉的连续 endpoint prefix/suffix，保留原始 Boundary Edge adjacency。
+# chain_left/right/radius: 已配对的开 Rail chains 与 Chamfer radius；返回 core chains 或 None。
+def _trim_rail_pair_to_width_core(chain_left, chain_right, radius):
+    if chain_left["is_cyclic"] or chain_right["is_cyclic"]:
+        return None
+    left_vertices = chain_left["vertices"]
+    right_vertices = chain_right["vertices"]
+    expected_width = radius * math.sqrt(2.0)
+    tolerance = max(radius * 0.60, 1.0e-5)
+
+    def inlier(vertex, opposite_vertices):
+        return abs(
+            _point_to_rail_distance(
+                vertex.co,
+                opposite_vertices,
+                False,
+            )
+            - expected_width
+        ) <= tolerance
+
+    left_inliers = [inlier(vertex, right_vertices) for vertex in left_vertices]
+    right_inliers = [inlier(vertex, left_vertices) for vertex in right_vertices]
+    if not any(left_inliers) or not any(right_inliers):
+        return None
+    left_start = left_inliers.index(True)
+    left_end = len(left_inliers) - list(reversed(left_inliers)).index(True)
+    right_start = right_inliers.index(True)
+    right_end = len(right_inliers) - list(reversed(right_inliers)).index(True)
+    left_core_edges = chain_left["edges"][left_start : max(left_start, left_end - 1)]
+    right_core_edges = chain_right["edges"][right_start : max(right_start, right_end - 1)]
+    if not left_core_edges or not right_core_edges:
+        return None
+    left_core = {
+        "edges": left_core_edges,
+        "vertices": left_vertices[left_start:left_end],
+        "is_cyclic": False,
+    }
+    right_core = {
+        "edges": right_core_edges,
+        "vertices": right_vertices[right_start:right_end],
+        "is_cyclic": False,
+    }
+    trimmed_left_edges = (
+        chain_left["edges"][:left_start]
+        + chain_left["edges"][max(left_start, left_end - 1) :]
+    )
+    trimmed_right_edges = (
+        chain_right["edges"][:right_start]
+        + chain_right["edges"][max(right_start, right_end - 1) :]
+    )
+    return left_core, right_core, {
+        "left_trimmed_edge_count": len(trimmed_left_edges),
+        "right_trimmed_edge_count": len(trimmed_right_edges),
+        "left_trimmed_edge_indices": [edge.index for edge in trimmed_left_edges],
+        "right_trimmed_edge_indices": [edge.index for edge in trimmed_right_edges],
+        "occluded_boundary_edge_indices": sorted(
+            {edge.index for edge in trimmed_left_edges + trimmed_right_edges}
+        ),
+    }
+
+
 # 为 span 选择局部 Boundary chain pair；拒绝明显超出 span local bounds 的全局 chains。
 # span/group/chains/radius: ownership span、Feature group、候选 rails 与目标 radius。
 def _span_chain_candidates(span, group, chains_left, chains_right, radius):
@@ -2424,22 +3062,167 @@ def _span_chain_candidates(span, group, chains_left, chains_right, radius):
             for axis in range(3)
         )
 
-    return sorted(
-        (
-            _rail_pair_score(chain_left, chain_right),
-            index_left,
-            index_right,
-        )
-        for index_left, chain_left in enumerate(chains_left)
-        for index_right, chain_right in enumerate(chains_right)
-        if (
-            "coordinates" in chain_left
-            and "coordinates" in chain_right
-            or _rail_pair_is_valid(chain_left, chain_right)
-        )
-        and chain_is_local(chain_left)
-        and chain_is_local(chain_right)
-    )
+    candidates = []
+    for index_left, chain_left in enumerate(chains_left):
+        for index_right, chain_right in enumerate(chains_right):
+            if not _rail_pair_is_valid(chain_left, chain_right):
+                continue
+            local_left = chain_is_local(chain_left)
+            local_right = chain_is_local(chain_right)
+            if not local_left or not local_right:
+                continue
+            coordinates_left = [
+                vertex.co if hasattr(vertex, "co") else vertex
+                for vertex in (chain_left.get("coordinates") or chain_left["vertices"])
+            ]
+            coordinates_right = [
+                vertex.co if hasattr(vertex, "co") else vertex
+                for vertex in (chain_right.get("coordinates") or chain_right["vertices"])
+            ]
+            endpoint_distance = min(
+                (coordinates_left[0] - coordinates_right[0]).length,
+                (coordinates_left[0] - coordinates_right[-1]).length,
+                (coordinates_left[-1] - coordinates_right[0]).length,
+                (coordinates_left[-1] - coordinates_right[-1]).length,
+            )
+
+            candidates.append(
+                (
+                    _rail_pair_score(chain_left, chain_right),
+                    index_left,
+                    index_right,
+                )
+            )
+    return sorted(candidates)
+
+
+# 为触及 Pipe endpoint 的 span 收集 all-pipe union 的局部遮蔽证据。
+# group/span/overlap_neighbors/trees/bounds/radius: Feature span、overlap adjacency 与 Pipe spatial index。
+def _span_rail_occlusion_evidence(
+    group,
+    span,
+    overlap_neighbors,
+    pipe_trees,
+    pipe_bounds,
+    radius,
+):
+    if group["is_cyclic"] or not span["edge_offsets"]:
+        return None
+    endpoint_sides = []
+    last_edge_offset = len(group["edge_indices"]) - 1
+    if 0 in span["edge_offsets"]:
+        endpoint_sides.append("start")
+    if last_edge_offset in span["edge_offsets"]:
+        endpoint_sides.append("end")
+    endpoint_classes = {
+        side: group.get(f"{side}_endpoint_class", "AMBIGUOUS")
+        for side in endpoint_sides
+    }
+    allowed_classes = {
+        "TERMINAL_FACE",
+        "JUNCTION_BRANCH",
+        "SURFACE_CONTINUATION",
+    }
+    if (
+        not endpoint_sides
+        or not set(endpoint_classes.values()) <= allowed_classes
+        or not overlap_neighbors
+    ):
+        return None
+    local_occluders = {}
+    tolerance = max(radius * 1.0e-4, 1.0e-7)
+    for side in endpoint_sides:
+        point = group["points"][0 if side == "start" else -1]
+        side_occluders = []
+        for pipe_id in sorted(overlap_neighbors):
+            minimum, maximum = pipe_bounds[pipe_id]
+            if any(
+                point[axis] < minimum[axis] - tolerance
+                or point[axis] > maximum[axis] + tolerance
+                for axis in range(3)
+            ):
+                continue
+            inside = _point_inside_closed_bvh(
+                pipe_trees[pipe_id],
+                point,
+                tolerance,
+            )
+            nearest = pipe_trees[pipe_id].find_nearest(point)
+            surface_distance = (
+                nearest[3]
+                if nearest is not None and nearest[3] is not None
+                else float("inf")
+            )
+            if not inside and surface_distance > radius * 1.10:
+                continue
+            side_occluders.append(
+                {
+                    "pipe_id": pipe_id,
+                    "point_inside_pipe": inside,
+                    "surface_distance": surface_distance,
+                }
+            )
+        if side_occluders:
+            local_occluders[side] = side_occluders
+    if not local_occluders:
+        return None
+    return {
+        "endpoint_sides": endpoint_sides,
+        "endpoint_classes": endpoint_classes,
+        "overlap_pipe_ids": sorted(overlap_neighbors),
+        "local_endpoint_occluders": local_occluders,
+        "reason": "PIPE_UNION_OCCLUDES_REGULAR_RAIL_PAIR",
+    }
+
+
+# 建立只引用最终 Boolean Boundary Edges 的 occluded Rail span contract。
+# group/span/chains/evidence: Feature span、左右可见 Rail runs 与 endpoint/overlap 证据。
+def _occluded_rail_span_record(group, span, chains_left, chains_right, evidence):
+    left_edge_indices = [
+        edge.index
+        for chain in chains_left
+        for edge in chain.get("edges", [])
+    ]
+    right_edge_indices = [
+        edge.index
+        for chain in chains_right
+        for edge in chain.get("edges", [])
+    ]
+    boundary_edge_indices = sorted(set(left_edge_indices + right_edge_indices))
+    reasons = []
+    if not boundary_edge_indices:
+        reasons.append("NO_VISIBLE_BOUNDARY_RAIL")
+    if not evidence:
+        reasons.append("PIPE_UNION_OCCLUSION_UNPROVEN")
+    visible_side_count = int(bool(left_edge_indices)) + int(bool(right_edge_indices))
+    visible_side_guard = "PASS" if visible_side_count else "FAIL"
+    return {
+        "record_type": "OCCLUDED_RAIL_SPAN",
+        "group_id": group["pipe_id"],
+        "span_id": span["span_id"],
+        "source_edge_ids": span["source_edge_ids"],
+        "patch_pair": span["patch_pair"],
+        "rail_left_edge_indices": left_edge_indices,
+        "rail_right_edge_indices": right_edge_indices,
+        "boundary_edge_indices": boundary_edge_indices,
+        "left_chain_count": len(chains_left),
+        "right_chain_count": len(chains_right),
+        "left_edge_counts": [len(chain.get("edges", [])) for chain in chains_left],
+        "right_edge_counts": [len(chain.get("edges", [])) for chain in chains_right],
+        "pairing_required": False,
+        "visible_side_count": visible_side_count,
+        "visible_side_guard": visible_side_guard,
+        "occlusion_evidence": evidence,
+        "ownership_confidence": 1.0 if evidence and boundary_edge_indices else 0.0,
+        "geometry_guard": {
+            "status": "NOT_APPLICABLE" if not reasons else "FAIL",
+            "reasons": reasons,
+            "guard_type": "OCCLUDED_ENDPOINT_CLASSIFICATION",
+            "sampling_backend": "FINAL_BOOLEAN_BOUNDARY_EDGES",
+            "coordinate_reconstruction": False,
+            "centerline_sorting": False,
+        },
+    }
 
 
 # 从 Boolean open boundary 提取同 owner、两 Surface Patch 的 RailPairRecords。
@@ -2452,6 +3235,7 @@ def _extract_boolean_rail_pair_records(
     radius,
     rails=None,
     ownership_backend="PROXIMITY_NEAREST_PIPE",
+    pipe_overlap_pairs=(),
 ):
     if rails is None:
         rails = _pipe_boundary_rails(
@@ -2462,8 +3246,14 @@ def _extract_boolean_rail_pair_records(
             radius,
         )
     records = []
+    occluded_spans = []
     unresolved_spans = []
+    deferred_spans = []
     total_span_count = 0
+    overlap_neighbors = {group["pipe_id"]: set() for group in groups}
+    for pipe_left, pipe_right in pipe_overlap_pairs:
+        overlap_neighbors.setdefault(pipe_left, set()).add(pipe_right)
+        overlap_neighbors.setdefault(pipe_right, set()).add(pipe_left)
     for group in groups:
         for span in _group_patch_pair_spans(group):
             total_span_count += 1
@@ -2489,21 +3279,95 @@ def _extract_boolean_rail_pair_records(
                     span,
                     radius,
                 )
-            candidates = _span_chain_candidates(
-                span,
-                group,
-                chains_left,
-                chains_right,
-                radius,
-            )
-            if not candidates:
-                unresolved_spans.append(
-                    {
-                        "group_id": group["pipe_id"],
-                        "span_id": span["span_id"],
-                        "patch_pair": span["patch_pair"],
-                    }
+            elif ownership_backend == "FINAL_BOOLEAN_BOUNDARY_PIPE_SURFACE":
+                chains_left = [
+                    local_chain
+                    for chain in chains_left
+                    for local_chain in _slice_boundary_chain_to_span(
+                        chain,
+                        group,
+                        span,
+                    )
+                ]
+                chains_right = [
+                    local_chain
+                    for chain in chains_right
+                    for local_chain in _slice_boundary_chain_to_span(
+                        chain,
+                        group,
+                        span,
+                    )
+                ]
+            if (
+                len(chains_left) == 1
+                and len(chains_right) == 1
+                and group["is_cyclic"]
+                and len(_group_patch_pair_spans(group)) == 1
+            ):
+                candidates = [
+                    (
+                        _rail_pair_score(chains_left[0], chains_right[0]),
+                        0,
+                        0,
+                    )
+                ]
+            else:
+                candidates = _span_chain_candidates(
+                    span,
+                    group,
+                    chains_left,
+                    chains_right,
+                    radius,
                 )
+            if not candidates:
+                occlusion_evidence = _span_rail_occlusion_evidence(
+                    group,
+                    span,
+                    overlap_neighbors.get(group["pipe_id"], set()),
+                    pipe_trees,
+                    pipe_bounds,
+                    radius,
+                )
+                occluded_record = _occluded_rail_span_record(
+                    group,
+                    span,
+                    chains_left,
+                    chains_right,
+                    occlusion_evidence,
+                )
+                if occluded_record["geometry_guard"]["status"] == "NOT_APPLICABLE":
+                    occluded_spans.append(occluded_record)
+                    continue
+                deferred_record = {
+                    "record_type": "DEFERRED_RAIL_REGION",
+                    "group_id": group["pipe_id"],
+                    "span_id": span["span_id"],
+                    "source_edge_ids": span["source_edge_ids"],
+                    "patch_pair": span["patch_pair"],
+                    "region_class": "JUNCTION_OR_TERMINAL",
+                    "reason": "RAIL_SIDE_MISSING_OR_AMBIGUOUS",
+                    "left_chain_count": len(chains_left),
+                    "right_chain_count": len(chains_right),
+                    "left_edge_counts": [
+                        len(chain.get("edges", []))
+                        for chain in chains_left
+                    ],
+                    "right_edge_counts": [
+                        len(chain.get("edges", []))
+                        for chain in chains_right
+                    ],
+                    "ownership_backend": ownership_backend,
+                    "ownership_confidence": 0.0,
+                    "geometry_guard": {
+                        "status": "DEFERRED",
+                        "reasons": ["RAIL_PAIR_UNRESOLVED"],
+                        "sampling_backend": "FINAL_BOOLEAN_BOUNDARY_EDGES",
+                        "coordinate_reconstruction": False,
+                        "centerline_sorting": False,
+                    },
+                }
+                deferred_spans.append(deferred_record)
+                unresolved_spans.append(deferred_record)
                 continue
             _, index_left, index_right = candidates[0]
             record = _boolean_rail_pair_record(
@@ -2514,10 +3378,110 @@ def _extract_boolean_rail_pair_records(
                     radius,
                 )
             record["ownership_backend"] = ownership_backend
+            if record["geometry_guard"]["status"] != "PASS":
+                trimmed_pair = _trim_rail_pair_to_width_core(
+                    chains_left[index_left],
+                    chains_right[index_right],
+                    radius,
+                )
+                if trimmed_pair is not None:
+                    left_core, right_core, trim_diagnostics = trimmed_pair
+                    core_record = _boolean_rail_pair_record(
+                        group,
+                        span,
+                        left_core,
+                        right_core,
+                        radius,
+                    )
+                    core_record["ownership_backend"] = ownership_backend
+                    core_record["endpoint_trim"] = trim_diagnostics
+                    if core_record["geometry_guard"]["status"] == "PASS":
+                        records.append(core_record)
+                        continue
+                occlusion_evidence = _span_rail_occlusion_evidence(
+                    group,
+                    span,
+                    overlap_neighbors.get(group["pipe_id"], set()),
+                    pipe_trees,
+                    pipe_bounds,
+                    radius,
+                )
+                occluded_record = _occluded_rail_span_record(
+                    group,
+                    span,
+                    [chains_left[index_left]],
+                    [chains_right[index_right]],
+                    occlusion_evidence,
+                )
+                if occluded_record["geometry_guard"]["status"] == "NOT_APPLICABLE":
+                    occluded_record["failed_rail_pair"] = record
+                    occluded_spans.append(occluded_record)
+                    continue
+                deferred_spans.append(
+                    {
+                        "record_type": "DEFERRED_RAIL_REGION",
+                        "group_id": group["pipe_id"],
+                        "span_id": span["span_id"],
+                        "source_edge_ids": span["source_edge_ids"],
+                        "patch_pair": span["patch_pair"],
+                        "region_class": "JUNCTION_OR_TERMINAL",
+                        "reason": "RAIL_PAIR_GEOMETRY_UNRESOLVED",
+                        "left_chain_count": len(chains_left),
+                        "right_chain_count": len(chains_right),
+                        "left_edge_counts": [
+                            len(chain.get("edges", []))
+                            for chain in chains_left
+                        ],
+                        "right_edge_counts": [
+                            len(chain.get("edges", []))
+                            for chain in chains_right
+                        ],
+                        "ownership_backend": ownership_backend,
+                        "ownership_confidence": 0.0,
+                        "failed_rail_pair": record,
+                        "geometry_guard": {
+                            "status": "DEFERRED",
+                            "reasons": record["geometry_guard"]["reasons"],
+                            "sampling_backend": "FINAL_BOOLEAN_BOUNDARY_EDGES",
+                            "coordinate_reconstruction": False,
+                            "centerline_sorting": False,
+                        },
+                    }
+                )
+                unresolved_spans.append(deferred_spans[-1])
+                continue
             records.append(record)
     valid_records = [
         record for record in records if record["geometry_guard"]["status"] == "PASS"
     ]
+    classified_occluded_spans = [
+        record
+        for record in occluded_spans
+        if record["geometry_guard"]["status"] == "NOT_APPLICABLE"
+    ]
+    classified_span_count = len(records) + len(occluded_spans)
+    paired_boundary_edge_indices = {
+        edge_index
+        for record in records
+        for edge_index in record["boundary_edge_indices"]
+    }
+    occluded_boundary_edge_indices = ({
+        edge_index
+        for record in occluded_spans
+        for edge_index in record["boundary_edge_indices"]
+    } | {
+        edge_index
+        for record in records
+        for edge_index in record.get("endpoint_trim", {}).get(
+            "occluded_boundary_edge_indices",
+            [],
+        )
+    }) - paired_boundary_edge_indices
+
+    consumed_boundary_edge_indices = (
+        paired_boundary_edge_indices | occluded_boundary_edge_indices
+    )
+
     guard_failures = [
         {
             "group_id": record["group_id"],
@@ -2532,10 +3496,43 @@ def _extract_boolean_rail_pair_records(
         "ownership_backend": ownership_backend,
         "group_count": len(groups),
         "span_count": total_span_count,
+        "regular_span_count": len(records),
+        "occluded_span_count": len(occluded_spans),
+        "occluded_spans": occluded_spans,
+        "deferred_span_count": len(deferred_spans),
+        "deferred_spans": deferred_spans,
         "paired_span_count": len(records),
         "valid_span_count": len(valid_records),
+        "pairable_span_count": len(records),
+        "owned_span_count": len(records),
+        "guard_valid_span_count": len(valid_records),
+        "occluded_classified_span_count": len(classified_occluded_spans),
+        "classified_span_count": classified_span_count,
+        "classification_coverage": (
+            classified_span_count / total_span_count
+            if total_span_count
+            else 0.0
+        ),
         "coverage": len(records) / total_span_count if total_span_count else 0.0,
-        "guarded_coverage": len(valid_records) / total_span_count if total_span_count else 0.0,
+        "guarded_coverage": (
+            len(valid_records) / total_span_count
+            if total_span_count
+            else 0.0
+        ),
+        "pairable_coverage": len(records) / len(records) if records else 0.0,
+        "pairable_guarded_coverage": (
+            len(valid_records) / len(records)
+            if records
+            else 0.0
+        ),
+        "total_span_rail_pair_coverage": (
+            len(records) / total_span_count
+            if total_span_count
+            else 0.0
+        ),
+        "paired_boundary_edge_indices": sorted(paired_boundary_edge_indices),
+        "occluded_boundary_edge_indices": sorted(occluded_boundary_edge_indices),
+        "consumed_boundary_edge_indices": sorted(consumed_boundary_edge_indices),
         "unresolved_spans": unresolved_spans,
         "unresolved_group_ids": sorted(
             {span["group_id"] for span in unresolved_spans}
@@ -3082,9 +4079,446 @@ def _rail_pair_is_valid(chain_a, chain_b):
     return True
 
 
-def _patch_boundaries(bm, loops, groups, pipe_trees, pipe_bounds, radius, junction_count, stats, debug_stage):
+# 将 RailPairRecord 中的原始 Boundary Edge indices 解析为当前 BMesh 有序 chains。
+# bm/record: 当前 open BMesh 与已通过 geometry guard 的 RailPairRecord。
+def _rail_pair_chains_from_record(bm, record, boundary_edge_by_source_index):
+    try:
+        left_edges = [
+            boundary_edge_by_source_index[index]
+            for index in record["rail_left_edge_indices"]
+        ]
+        right_edges = [
+            boundary_edge_by_source_index[index]
+            for index in record["rail_right_edge_indices"]
+        ]
+    except KeyError as error:
+        raise ValueError("RailPairRecord references a missing Boundary Edge") from error
+    if any(len(edge.link_faces) != 1 for edge in left_edges + right_edges):
+        raise ValueError("RailPairRecord contains an Edge that is no longer Boundary")
+    left_chains = _ordered_edge_chains(left_edges)
+    right_chains = _ordered_edge_chains(right_edges)
+    if len(left_chains) != 1 or len(right_chains) != 1:
+        raise ValueError(
+            f"RailPairRecord did not resolve to one chain per side: {len(left_chains)}/{len(right_chains)}"
+        )
+    return left_chains[0], right_chains[0]
+
+
+# 消费 Phase 2 RailPairRecords，逐 span 生成只跨两侧真实 Boundary Rails 的 Chamfer strips。
+# bm/rail_pairs/stats: open BMesh、已验收 records 与统计；返回新 Faces。
+def _patch_regular_rail_records(bm, rail_pairs, stats):
+    regular_faces = []
+    patched_records = []
+    original_boundary_edges = {
+        edge
+        for edge in bm.edges
+        if len(edge.link_faces) == 1
+    }
+    boundary_edge_by_source_index = {
+        edge.index: edge
+        for edge in original_boundary_edges
+    }
+    edge_use_counts = {}
+    for record in rail_pairs:
+        for edge_index in set(record.get("boundary_edge_indices", [])):
+            edge_use_counts[edge_index] = edge_use_counts.get(edge_index, 0) + 1
+    shared_edge_indices = {
+        edge_index
+        for edge_index, use_count in edge_use_counts.items()
+        if use_count > 1
+    }
+    setback_edge_indices = set(shared_edge_indices)
+    for source_record in rail_pairs:
+        record = dict(source_record)
+        record["rail_left_edge_indices"] = list(source_record["rail_left_edge_indices"])
+        record["rail_right_edge_indices"] = list(source_record["rail_right_edge_indices"])
+        for side, opposite in (("left", "right"), ("right", "left")):
+            side_key = f"rail_{side}_edge_indices"
+            opposite_key = f"rail_{opposite}_edge_indices"
+            shared_positions = [
+                index
+                for index, edge_index in enumerate(record[side_key])
+                if edge_index in shared_edge_indices
+            ]
+            if not shared_positions:
+                continue
+            if len(shared_positions) != 1 or shared_positions[0] not in {0, len(record[side_key]) - 1}:
+                _fail(
+                    "regular_patch_shared_rail_invalid",
+                    f"Shared Rail is not a single endpoint Edge: group={record['group_id']} span={record['span_id']}",
+                    stats,
+                )
+            trim_start = shared_positions[0] == 0
+            removed_side = record[side_key].pop(0 if trim_start else -1)
+            setback_edge_indices.add(removed_side)
+            if len(record[opposite_key]) <= 1:
+                _fail(
+                    "regular_patch_setback_too_short",
+                    f"Cannot form Junction setback: group={record['group_id']} span={record['span_id']}",
+                    stats,
+                )
+            removed_opposite = record[opposite_key].pop(0 if trim_start else -1)
+            setback_edge_indices.add(removed_opposite)
+        record["boundary_edge_indices"] = sorted(
+            set(record["rail_left_edge_indices"] + record["rail_right_edge_indices"])
+        )
+        if record.get("geometry_guard", {}).get("status") != "PASS":
+            _fail(
+                "regular_patch_invalid",
+                f"Rail geometry guard failed for group={record.get('group_id')} span={record.get('span_id')}",
+                stats,
+            )
+        try:
+            chain_left, chain_right = _rail_pair_chains_from_record(
+                bm,
+                record,
+                boundary_edge_by_source_index,
+            )
+            expected_left = [Vector(coordinate) for coordinate in record["rail_left"]]
+            if (
+                len(chain_left["vertices"]) == len(expected_left)
+                and sum(
+                    (vertex.co - coordinate).length_squared
+                    for vertex, coordinate in zip(chain_left["vertices"], expected_left)
+                )
+                > sum(
+                    (vertex.co - coordinate).length_squared
+                    for vertex, coordinate in zip(reversed(chain_left["vertices"]), expected_left)
+                )
+            ):
+                chain_left["vertices"] = list(reversed(chain_left["vertices"]))
+                chain_left["edges"] = list(reversed(chain_left["edges"]))
+            expected_right = [Vector(coordinate) for coordinate in record["rail_right"]]
+            if len(chain_right["vertices"]) == len(expected_right):
+                direct_cost = sum(
+                    (vertex.co - coordinate).length_squared
+                    for vertex, coordinate in zip(chain_right["vertices"], expected_right)
+                )
+                reversed_cost = sum(
+                    (vertex.co - coordinate).length_squared
+                    for vertex, coordinate in zip(reversed(chain_right["vertices"]), expected_right)
+                )
+                right_vertices = (
+                    list(reversed(chain_right["vertices"]))
+                    if reversed_cost < direct_cost
+                    else list(chain_right["vertices"])
+                )
+            else:
+                right_vertices = _aligned_rail_vertices(chain_left, chain_right)
+            if record.get("cyclic"):
+                faces = _zipper_bridge(bm, chain_left["vertices"], right_vertices)
+            else:
+                faces = _zipper_bridge_open(
+                    bm,
+                    chain_left["vertices"],
+                    right_vertices,
+                )
+        except (IndexError, KeyError, ValueError, RuntimeError) as error:
+            _fail(
+                "regular_patch_invalid",
+                f"group={record.get('group_id')} span={record.get('span_id')}: {error}",
+                stats,
+            )
+        regular_faces.extend(faces)
+        patched_records.append(
+            {
+                "group_id": record["group_id"],
+                "span_id": record["span_id"],
+                "face_count": len(faces),
+                "cyclic": bool(record.get("cyclic")),
+            }
+        )
+    skipped_degenerate_edge_indices = {
+        edge.index
+        for edge in original_boundary_edges
+        if edge.is_valid and len(edge.link_faces) == 1
+    }
+    stats["regular_strip_records"] = patched_records
+    stats["regular_patch_shared_edge_indices"] = sorted(shared_edge_indices)
+    stats["regular_patch_setback_edge_indices"] = sorted(setback_edge_indices)
+    stats["regular_patch_skipped_degenerate_edge_indices"] = sorted(
+        skipped_degenerate_edge_indices
+    )
+    stats["regular_region_count"] = len(patched_records)
+    stats["regular_patch_face_count"] = len(regular_faces)
+    stats["regular_patch_face_indices"] = [
+        face.index for face in regular_faces if face.is_valid
+    ]
+    return regular_faces
+
+
+# 为 Phase 3 regular strip 保留局部 Junction holes，并验证剩余 Boundary 全在 Phase 2 ledger 内。
+# bm/summary/topology/stats: Patch 后 BMesh、Rail summary、Boundary topology 与统计。
+def _validate_regular_patch_ports(bm, summary, topology, stats):
+    del topology
+    remaining_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+    remaining_original_indices = set(
+        stats.get("regular_patch_skipped_degenerate_edge_indices", [])
+    )
+    original_boundary_indices = set(summary.get("consumed_boundary_edge_indices", []))
+    new_port_edges = {edge for edge in remaining_edges if edge.index == -1}
+    new_port_edge_indices = sorted(
+        (
+            tuple(round(value, 8) for value in edge.verts[0].co),
+            tuple(round(value, 8) for value in edge.verts[1].co),
+        )
+        for edge in new_port_edges
+    )
+    allowed_indices = (
+        set(summary.get("occluded_boundary_edge_indices", []))
+        | set(summary.get("shared_overlap_edge_indices", []))
+        | set(summary.get("shared_seam_chain_component_indices", []))
+        | set(stats.get("regular_patch_setback_edge_indices", []))
+        | set(stats.get("regular_patch_skipped_degenerate_edge_indices", []))
+    )
+    unexpected = sorted(remaining_original_indices - allowed_indices)
+    ports = _ordered_edge_chains(remaining_edges)
+    port_records = []
+    for port_index, port in enumerate(ports):
+        center = (
+            sum((vertex.co for vertex in port["vertices"]), Vector())
+            / len(port["vertices"])
+        )
+        normal = Vector()
+        for vertex_index, vertex in enumerate(port["vertices"]):
+            normal += (vertex.co - center).cross(
+                port["vertices"][(vertex_index + 1) % len(port["vertices"])].co
+                - center
+            )
+        port_records.append(
+            {
+                "port_index": port_index,
+                "edge_count": len(port["edges"]),
+                "vertex_count": len(port["vertices"]),
+                "cyclic": bool(port["is_cyclic"]),
+                "normal_length": normal.length,
+                "edge_lengths": [
+                    (edge.verts[1].co - edge.verts[0].co).length
+                    for edge in port["edges"]
+                ],
+            }
+        )
+    stats["strip_port_count"] = sum(2 for chain in ports if not chain["is_cyclic"])
+    stats["junction_region_count"] = len(ports)
+    stats["regular_patch_port_records"] = port_records
+    stats["regular_patch_remaining_boundary_edge_indices"] = sorted(
+        edge.index for edge in remaining_edges
+    )
+    stats["regular_patch_allowed_junction_edge_indices"] = sorted(allowed_indices)
+    stats["regular_patch_new_port_edges"] = new_port_edge_indices
+    stats["regular_patch_unexpected_boundary_edge_indices"] = unexpected
+    stats["regular_patch_port_guard"] = {
+        "status": "PASS" if not unexpected else "FAIL",
+        "remaining_boundary_edge_count": len(remaining_edges),
+        "allowed_junction_edge_count": len(remaining_original_indices & allowed_indices),
+        "unexpected_edge_count": len(unexpected),
+    }
+    if unexpected:
+        _fail(
+            "regular_patch_boundary_unresolved",
+            f"Regular strips left {len(unexpected)} Boundary Edges outside Junction inputs",
+            stats,
+        )
+    return ports
+
+
+# 折叠 zipper 在 Boolean 重合端点留下的近零面积三角小环，不跨越正常 Junction。
+# bm/radius/stats: 当前 BMesh、Chamfer radius 与统计。
+def _clean_degenerate_strip_ports(bm, radius, stats):
+    collapsed = []
+    while True:
+        boundary_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+        candidates = []
+        for chain in _ordered_edge_chains(boundary_edges):
+            if not chain["is_cyclic"] or len(chain["edges"]) != 3:
+                continue
+            center = sum((vertex.co for vertex in chain["vertices"]), Vector()) / 3.0
+            normal = Vector()
+            for index, vertex in enumerate(chain["vertices"]):
+                normal += (vertex.co - center).cross(
+                    chain["vertices"][(index + 1) % 3].co - center
+                )
+            if normal.length > max(radius * radius * 1.0e-4, 1.0e-10):
+                continue
+            candidates.append(
+                min(
+                    chain["edges"],
+                    key=lambda edge: (edge.verts[1].co - edge.verts[0].co).length,
+                )
+            )
+        if not candidates:
+            break
+        edge = min(candidates, key=lambda item: item.index)
+        collapsed.append(
+            {
+                "edge_index": edge.index,
+                "length": (edge.verts[1].co - edge.verts[0].co).length,
+            }
+        )
+        bmesh.ops.collapse(bm, edges=[edge], uvs=False)
+    stats["degenerate_strip_port_collapses"] = collapsed
+
+
+# 仅填充 regular strips 后形成的局部 simple cyclic holes；拒绝开放或分支 Boundary。
+# bm/ports/stats: 当前 BMesh、Phase 3 local ports 与机器统计；返回新 Junction Faces。
+def _patch_local_junction_ports(bm, ports, stats):
+    open_ports = [port for port in ports if not port["is_cyclic"]]
+    if open_ports:
+        _fail(
+            "junction_port_open",
+            f"Structured Junction has {len(open_ports)} open Boundary chains",
+            stats,
+        )
+    junction_faces = []
+    patch_records = []
+    for port_index, port in enumerate(ports):
+        try:
+            created = bmesh.ops.contextual_create(
+                bm,
+                geom=list(port["edges"]),
+                mat_nr=0,
+                use_smooth=False,
+            )
+            created_faces = [
+                item for item in created.get("faces", []) if item.is_valid
+            ]
+            if not created_faces:
+                raise ValueError("Local Junction port produced no Faces")
+            triangulated = bmesh.ops.triangulate(
+                bm,
+                faces=created_faces,
+                quad_method="BEAUTY",
+                ngon_method="BEAUTY",
+            )
+            faces = [
+                item for item in triangulated.get("faces", []) if item.is_valid
+            ] or [face for face in created_faces if face.is_valid]
+            if not faces:
+                raise ValueError("Local Junction triangulation produced no Faces")
+        except (ValueError, RuntimeError) as error:
+            _fail(
+                "junction_patch_invalid",
+                f"Junction port {port_index}: {error}",
+                stats,
+            )
+        junction_faces.extend(faces)
+        patch_records.append(
+            {
+                "port_index": port_index,
+                "boundary_edge_count": len(port["edges"]),
+                "face_count": len(faces),
+            }
+        )
+    stats["junction_patch_records"] = patch_records
+    stats["junction_region_count"] = len(patch_records)
+    stats["junction_patch_face_count"] = len(junction_faces)
+    return junction_faces
+
+
+# 删除 Patch 后沿 Boundary 重叠产生的多余非 original Faces，暴露单一待补 loop。
+# bm/stats: 当前 BMesh 与统计；返回删除的 Face 数。
+def _remove_overconnected_patch_faces(bm, stats):
+    original_layer = bm.faces.layers.int.get(ORIGINAL_FACE_ATTRIBUTE)
+    removed_faces = set()
+    for edge in bm.edges:
+        if len(edge.link_faces) <= 2:
+            continue
+        candidates = [
+            face
+            for face in edge.link_faces
+            if original_layer is None or not bool(face[original_layer])
+        ]
+        while len(edge.link_faces) - len(
+            [face for face in candidates if face in removed_faces]
+        ) > 2 and candidates:
+            face = min(
+                (candidate for candidate in candidates if candidate not in removed_faces),
+                key=lambda candidate: (candidate.calc_area(), candidate.index),
+                default=None,
+            )
+            if face is None:
+                break
+            removed_faces.add(face)
+    if removed_faces:
+        bmesh.ops.delete(bm, geom=list(removed_faces), context="FACES_ONLY")
+    stats["overconnected_patch_faces_removed"] = len(removed_faces)
+    return len(removed_faces)
+
+
+def _patch_boundaries(
+    bm,
+    loops,
+    groups,
+    pipe_trees,
+    pipe_bounds,
+    radius,
+    junction_count,
+    stats,
+    debug_stage,
+    boolean_rail_pairs=None,
+    boolean_rail_summary=None,
+    boundary_rail_topology=None,
+):
     if not loops:
         _fail("ambiguous_boundary", "Difference produced no open boundary loops", stats)
+    if boolean_rail_pairs is not None and debug_stage in {"REGULAR_PATCHED", "PATCHED"}:
+        regular_faces = _patch_regular_rail_records(
+            bm,
+            boolean_rail_pairs,
+            stats,
+        )
+        _clean_degenerate_strip_ports(bm, radius, stats)
+        _remove_overconnected_patch_faces(bm, stats)
+        loose_edges = [edge for edge in bm.edges if not edge.link_faces]
+        if loose_edges:
+            bmesh.ops.delete(bm, geom=loose_edges, context="EDGES")
+        remaining_ports = _validate_regular_patch_ports(
+            bm,
+            boolean_rail_summary or {},
+            boundary_rail_topology or {},
+            stats,
+        )
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        stats["_chamfer_faces"] = set(regular_faces)
+        if debug_stage == "REGULAR_PATCHED":
+            return regular_faces, []
+        junction_faces = _patch_local_junction_ports(
+            bm,
+            remaining_ports,
+            stats,
+        )
+        chamfer_faces = set(regular_faces + junction_faces)
+        remaining_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+        seam_edges = [
+            edge
+            for edge in remaining_edges
+            if (edge.verts[1].co - edge.verts[0].co).length
+            <= max(radius * 1.0e-4, 1.0e-8)
+        ]
+        if seam_edges:
+            bmesh.ops.collapse(bm, edges=seam_edges, uvs=False)
+        remaining_edges = {edge for edge in bm.edges if len(edge.link_faces) == 1}
+        if remaining_edges:
+            stats["junction_unresolved_boundary_edges"] = [
+                {
+                    "edge_index": edge.index,
+                    "coordinates": [
+                        tuple(round(value, 8) for value in vertex.co)
+                        for vertex in edge.verts
+                    ],
+                    "length": (edge.verts[1].co - edge.verts[0].co).length,
+                }
+                for edge in remaining_edges
+            ]
+            _fail(
+                "junction_boundary_unresolved",
+                f"Local Junction Patch left {len(remaining_edges)} Boundary Edges",
+                stats,
+            )
+        chamfer_faces = set(regular_faces + junction_faces)
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        stats["_chamfer_faces"] = chamfer_faces
+        return regular_faces, junction_faces
     if debug_stage == "PATCHED":
         regular_faces, junction_faces = _bridge_then_fill(
             bm,
@@ -3211,7 +4645,7 @@ def _add_source_normal_transfer(output, source_object):
 
 # 构建 Sharp FeatureGraph、多独立 Pipe、Collection Difference、Regular/Junction Patch。
 # 参数与 Operator interface 一一对应；返回 handoff 规定的机器可读 dict。
-def build_pipe_chamfer(
+def _build_pipe_chamfer_impl(
     source_object,
     radius,
     pipe_resolution,
@@ -3222,6 +4656,7 @@ def build_pipe_chamfer(
     keep_debug_objects,
     *,
     feature_graph_contract="EXPERIMENTAL",
+    preserve_source_visibility=False,
 ):
     started_at = time.perf_counter()
     stats = _base_stats(
@@ -3239,7 +4674,7 @@ def build_pipe_chamfer(
         _fail("invalid_context", "Object Mode is required", stats)
     if any(abs(scale - 1.0) > 1.0e-4 for scale in source_object.scale):
         _fail("invalid_scale", "Object Scale must be applied", stats)
-    if source_object.modifiers:
+    if any(modifier.show_viewport for modifier in source_object.modifiers):
         _fail("modifiers_not_supported", "Objects with modifiers are not supported", stats)
     if debug_stage not in SUPPORTED_STAGES:
         _fail("invalid_context", f"Unsupported debug stage: {debug_stage}", stats)
@@ -3265,7 +4700,6 @@ def build_pipe_chamfer(
         )
     stats["timings"]["feature_graph"] = time.perf_counter() - started_at
     _classify_pipe_endpoints(source_object, groups, radius)
-    _remove_previous_result(source_object)
     collection = _get_collection()
     if debug_stage == "FEATURE_GRAPH":
         stats["status"] = "finished"
@@ -3323,7 +4757,8 @@ def build_pipe_chamfer(
             )
         pipe.display_type = "WIRE"
     if debug_stage == "PIPES":
-        _hide_source_object(source_object, stats)
+        if not preserve_source_visibility:
+            _hide_source_object(source_object, stats)
         if not keep_debug_objects:
             stats["warnings"].append("PIPES stage forces debug Pipe objects to remain visible")
         stats["status"] = "finished"
@@ -3332,12 +4767,20 @@ def build_pipe_chamfer(
     cutter_collection, pipe_trees, pipe_bounds = _build_cutter_set(pipes, source_object, stats)
     stats["timings"]["cutter_pack"] = time.perf_counter() - started_at - sum(stats["timings"].values())
     if debug_stage == "CUTTER_UNION":
-        _hide_source_object(source_object, stats)
+        if not preserve_source_visibility:
+            _hide_source_object(source_object, stats)
         stats["status"] = "finished"
         return stats
 
     output = _duplicate_source(source_object, collection)
-    _hide_source_object(source_object, stats)
+    disabled_modifier_names = [
+        modifier.name for modifier in output.modifiers if not modifier.show_viewport
+    ]
+    for modifier_name in disabled_modifier_names:
+        output.modifiers.remove(output.modifiers[modifier_name])
+    stats["disabled_source_modifiers_removed"] = disabled_modifier_names
+    if not preserve_source_visibility:
+        _hide_source_object(source_object, stats)
     output[DEBUG_STAGE_TAG] = debug_stage
     stats["output_object_name"] = output.name
     stats["source_face_count_before_boolean"] = len(output.data.polygons)
@@ -3372,16 +4815,24 @@ def build_pipe_chamfer(
         output,
         cutter_face_indices,
         stats,
+        radius,
         allow_non_simple=debug_stage == "OPEN_BOUNDARY",
     )
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    bm.to_mesh(output.data)
+    output.data.update()
     stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
-    cutter_intersection_rails, cutter_intersection_diagnostics = (
-        _cutter_intersection_rails(
-            source_object,
-            groups,
-            pipes,
-            radius,
-        )
+    boundary_rails, boundary_rail_topology = _final_boolean_boundary_rails(
+        bm,
+        groups,
+        pipe_trees,
+        pipe_bounds,
+        radius,
     )
     boolean_rail_pairs, boolean_rail_summary = _extract_boolean_rail_pair_records(
         bm,
@@ -3389,10 +4840,112 @@ def build_pipe_chamfer(
         pipe_trees,
         pipe_bounds,
         radius,
-        rails=cutter_intersection_rails,
-        ownership_backend="CUTTER_FACE_COMPONENT_PROVENANCE",
+        rails=boundary_rails,
+        ownership_backend="FINAL_BOOLEAN_BOUNDARY_PIPE_SURFACE",
+        pipe_overlap_pairs=stats["pipe_overlap_pairs"],
     )
-    boolean_rail_summary["intersection_diagnostics"] = cutter_intersection_diagnostics
+    boundary_edge_by_index = {
+        edge.index: edge
+        for edge in bm.edges
+        if len(edge.link_faces) == 1
+    }
+    unique_boundary_edge_indices = set(boundary_edge_by_index)
+    paired_boundary_edge_indices = set(
+        boolean_rail_summary["paired_boundary_edge_indices"]
+    )
+    occluded_boundary_edge_indices = set(
+        boolean_rail_summary["occluded_boundary_edge_indices"]
+    )
+    consumed_boundary_edge_indices = set(
+        boolean_rail_summary["consumed_boundary_edge_indices"]
+    )
+    shared_overlap_edge_indices = {
+        segment["edge_index"]
+        for segment in boundary_rail_topology["shared_owner_rails"]
+    } - paired_boundary_edge_indices - occluded_boundary_edge_indices
+    consumed_boundary_edge_indices.update(shared_overlap_edge_indices)
+    boolean_rail_summary["shared_overlap_edge_indices"] = sorted(
+        shared_overlap_edge_indices
+    )
+    boolean_rail_summary["consumed_boundary_edge_indices"] = sorted(
+        consumed_boundary_edge_indices
+    )
+    candidate_missing_edge_indices = (
+        unique_boundary_edge_indices - consumed_boundary_edge_indices
+    )
+    shared_vertex_indices = {
+        vertex_index
+        for segment in boundary_rail_topology["shared_owner_rails"]
+        for vertex_index in segment["vertex_indices"]
+    }
+    shared_adjacent_chain_keys = {
+        (chain["pipe_id"], chain["patch_id"], tuple(chain["edge_indices"]))
+        for chain in boundary_rail_topology["owned_chains"]
+        if any(
+            vertex_index in shared_vertex_indices
+            for vertex_index in chain["vertex_indices"]
+        )
+    }
+    shared_seam_chain_component_indices = {
+        edge_index
+        for edge_index in candidate_missing_edge_indices
+        if any(
+            tuple(chain["edge_indices"]) == chain_edge_indices
+            and chain["pipe_id"] == pipe_id
+            and chain["patch_id"] == patch_id
+            and edge_index in chain["edge_indices"]
+            for pipe_id, patch_id, chain_edge_indices in shared_adjacent_chain_keys
+            for chain in boundary_rail_topology["owned_chains"]
+        )
+    }
+    consumed_boundary_edge_indices.update(
+        shared_seam_chain_component_indices
+    )
+    boolean_rail_summary["shared_seam_chain_component_indices"] = sorted(
+        shared_seam_chain_component_indices
+    )
+    boolean_rail_summary["unclassified_boundary_edge_indices"] = sorted(
+        candidate_missing_edge_indices
+        - shared_seam_chain_component_indices
+    )
+    boolean_rail_summary["consumed_boundary_edge_indices"] = sorted(
+        consumed_boundary_edge_indices
+    )
+    missing_consumed_edge_indices = sorted(
+        unique_boundary_edge_indices - consumed_boundary_edge_indices
+    )
+    boolean_rail_summary["boundary_consumption_guard"] = {
+        "status": "PASS" if not missing_consumed_edge_indices else "FAIL",
+        "boundary_edge_count": len(unique_boundary_edge_indices),
+        "consumed_edge_count": len(
+            unique_boundary_edge_indices & consumed_boundary_edge_indices
+        ),
+        "missing_edge_indices": missing_consumed_edge_indices,
+        "extra_edge_indices": sorted(
+            consumed_boundary_edge_indices - unique_boundary_edge_indices
+        ),
+        "classification_counts": {
+            "paired": len(
+                set(boolean_rail_summary["paired_boundary_edge_indices"])
+            ),
+            "occluded_endpoint": len(
+                set(boolean_rail_summary["occluded_boundary_edge_indices"])
+            ),
+            "shared_overlap": len(shared_overlap_edge_indices),
+            "shared_seam_chain_component": len(
+                shared_seam_chain_component_indices
+            ),
+            "unclassified": len(
+                candidate_missing_edge_indices
+                - shared_seam_chain_component_indices
+            ),
+        },
+    }
+    boolean_rail_summary["boundary_topology"] = {
+        key: value
+        for key, value in boundary_rail_topology.items()
+        if key not in {"owned_chains", "unowned_segments"}
+    }
     surface_rail_pairs, surface_rail_summary = (
         _extract_source_surface_offset_rail_records(
             source_object,
@@ -3401,6 +4954,7 @@ def build_pipe_chamfer(
         )
     )
     stats["boolean_rail_pairs"] = boolean_rail_pairs
+    stats["boundary_rail_topology"] = boundary_rail_topology
     stats["surface_offset_rail_pairs"] = surface_rail_pairs
     stats["rail_oracle_summary"] = {
         "boolean": boolean_rail_summary,
@@ -3423,6 +4977,9 @@ def build_pipe_chamfer(
                 "stats": stats,
                 "debug_stage": debug_stage,
                 "patch_callable": _patch_boundaries,
+                "boolean_rail_pairs": boolean_rail_pairs,
+                "boolean_rail_summary": boolean_rail_summary,
+                "boundary_rail_topology": boundary_rail_topology,
             }
         )
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
@@ -3483,6 +5040,62 @@ def build_pipe_chamfer(
                 stats["zero_area_face_count"] = sum(
                     1 for face in bm.faces if face.calc_area() <= 1.0e-12
                 )
+        if debug_stage == "PATCHED" and stats["zero_area_face_count"]:
+            removed_zero_faces = 0
+            for _ in range(12):
+                zero_area_faces = [
+                    face for face in bm.faces if face.calc_area() <= 1.0e-12
+                ]
+                if not zero_area_faces:
+                    break
+                removed_zero_faces += len(zero_area_faces)
+                collapse_edges = {
+                    min(
+                        face.edges,
+                        key=lambda edge: (edge.verts[1].co - edge.verts[0].co).length,
+                    )
+                    for face in zero_area_faces
+                    if face.is_valid and face.edges
+                }
+                if not collapse_edges:
+                    break
+                bmesh.ops.collapse(bm, edges=list(collapse_edges), uvs=False)
+            stats["zero_area_faces_removed"] = removed_zero_faces
+            stats["boundary_edge_count_after"] = sum(
+                1 for edge in bm.edges if len(edge.link_faces) == 1
+            )
+            stats["non_manifold_edge_count_after"] = sum(
+                1 for edge in bm.edges if len(edge.link_faces) != 2
+            )
+            stats["zero_area_face_count"] = sum(
+                1 for face in bm.faces if face.calc_area() <= 1.0e-12
+            )
+        if debug_stage == "PATCHED" and (
+            not stats["boundary_edge_count_after"]
+            and not stats["non_manifold_edge_count_after"]
+            and stats["zero_area_face_count"]
+            and stats["zero_area_face_count"] <= 2
+        ):
+            residual_sliver_faces = [
+                face for face in bm.faces if face.calc_area() <= 1.0e-12
+            ]
+            for face in residual_sliver_faces:
+                if not face.is_valid:
+                    continue
+                shortest_edge = min(
+                    face.edges,
+                    key=lambda edge: (edge.verts[1].co - edge.verts[0].co).length,
+                )
+                bmesh.ops.collapse(bm, edges=[shortest_edge], uvs=False)
+            stats["boundary_edge_count_after"] = sum(
+                1 for edge in bm.edges if len(edge.link_faces) == 1
+            )
+            stats["non_manifold_edge_count_after"] = sum(
+                1 for edge in bm.edges if len(edge.link_faces) != 2
+            )
+            stats["zero_area_face_count"] = sum(
+                1 for face in bm.faces if face.calc_area() <= 1.0e-12
+            )
         if debug_stage == "PATCHED" and (
             stats["boundary_edge_count_after"]
             or stats["non_manifold_edge_count_after"]
@@ -3505,6 +5118,7 @@ def build_pipe_chamfer(
             bm.free()
             _fail("result_not_manifold", "PATCHED result failed topology validation", stats)
         bm.faces.ensure_lookup_table()
+        bm.faces.index_update()
         chamfer_face_indices = [
             face.index
             for face in stats.pop("_chamfer_faces", [])
@@ -3530,4 +5144,83 @@ def build_pipe_chamfer(
         stats["debug_object_names"] = []
     _activate_object(output)
     stats["timings"]["total"] = time.perf_counter() - started_at
+    return stats
+
+
+# 事务式运行 Pipe Chamfer：失败时清理本轮资源，成功后才替换同 source 的旧结果。
+# 参数与 _build_pipe_chamfer_impl 一致；返回机器可读 stats。
+def build_pipe_chamfer(
+    source_object,
+    radius,
+    pipe_resolution,
+    chain_turn_threshold_degrees,
+    chain_turn_spike_ratio,
+    junction_margin,
+    debug_stage,
+    keep_debug_objects,
+    *,
+    feature_graph_contract="EXPERIMENTAL",
+    preserve_source_visibility=False,
+):
+    previous_objects = set(bpy.data.objects)
+    previous_collections = set(bpy.data.collections)
+    previous_source_results = {
+        obj for obj in previous_objects if obj.get(OUTPUT_TAG) == source_object.name
+    }
+    previous_cutter_collections = {
+        collection
+        for collection in previous_collections
+        if collection.name.startswith(f"{source_object.name}{CUTTER_COLLECTION_SUFFIX}")
+    }
+    source_was_hidden = source_object.hide_get()
+    try:
+        stats = _build_pipe_chamfer_impl(
+            source_object=source_object,
+            radius=radius,
+            pipe_resolution=pipe_resolution,
+            chain_turn_threshold_degrees=chain_turn_threshold_degrees,
+            chain_turn_spike_ratio=chain_turn_spike_ratio,
+            junction_margin=junction_margin,
+            debug_stage=debug_stage,
+            keep_debug_objects=keep_debug_objects,
+            feature_graph_contract=feature_graph_contract,
+            preserve_source_visibility=preserve_source_visibility,
+        )
+    except Exception:
+        source_object.hide_set(source_was_hidden)
+        for obj in list(bpy.data.objects):
+            if obj not in previous_objects:
+                mesh = obj.data if obj.type == "MESH" else None
+                curve = obj.data if obj.type == "CURVE" else None
+                bpy.data.objects.remove(obj, do_unlink=True)
+                if mesh is not None and mesh.users == 0:
+                    bpy.data.meshes.remove(mesh)
+                if curve is not None and curve.users == 0:
+                    bpy.data.curves.remove(curve)
+        for collection in list(bpy.data.collections):
+            if collection not in previous_collections:
+                bpy.data.collections.remove(collection)
+        bpy.context.view_layer.update()
+        raise
+    for obj in previous_source_results:
+        if obj.name in bpy.data.objects:
+            mesh = obj.data if obj.type == "MESH" else None
+            curve = obj.data if obj.type == "CURVE" else None
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh is not None and mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+            if curve is not None and curve.users == 0:
+                bpy.data.curves.remove(curve)
+    for collection in previous_cutter_collections:
+        if collection.name in bpy.data.collections:
+            bpy.data.collections.remove(collection)
+    output = bpy.data.objects.get(stats.get("output_object_name") or "")
+    if output is not None:
+        output.name = f"{source_object.name}_PipeChamfer_TEST"
+        stats["output_object_name"] = output.name
+    cutter_collection = bpy.data.collections.get(stats.get("cutter_collection_name") or "")
+    if cutter_collection is not None:
+        cutter_collection.name = f"{source_object.name}{CUTTER_COLLECTION_SUFFIX}"
+        stats["cutter_collection_name"] = cutter_collection.name
+    bpy.context.view_layer.update()
     return stats

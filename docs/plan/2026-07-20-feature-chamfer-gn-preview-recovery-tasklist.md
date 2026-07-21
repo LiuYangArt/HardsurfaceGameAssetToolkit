@@ -1,8 +1,8 @@
 # Feature Chamfer GN Preview 恢复 Tasklist
 
 > 日期：2026-07-20  
-> 目标入口：`hst.feature_chamfer_gn`，action=`PREVIEW`  
-> 当前状态：Phase 0 VERIFIED；Phase 1A PROTOTYPE；Phase 1B / Task 2 ACCEPTED（含 2.2A–C）；Phase 2 STOP（17/51）；Phase 3–6 NOT STARTED。  
+> 目标入口：`hst.feature_chamfer_gn`，首次点击 action=`PREVIEW`，再次点击 action=`FINALIZE`
+> 当前状态：Phase 0 VERIFIED；Phase 1A PROTOTYPE；Phase 1B / Task 2 ACCEPTED（含 2.2A–C）；Phase 2 VERIFIED；Phase 3–6 INTEGRATED / 自动验证通过，等待真实 UI 视觉验收。
 > 复盘：`docs/postmortem/2026-07-20-feature-chamfer-preview-integration-drift.md`  
 > 主计划：`docs/plan/2026-07-19-feature-chamfer-structured-curve-pipe-handoff.md`
 
@@ -286,10 +286,10 @@ Blender: C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe
 
 前置：Task 3 ACCEPTED。
 
-- 继续修 Rail A/B，不新增 Strip/Junction；
-- rail coverage/ownership/geometry guard 必须达到 100%；
-- 失败必须定位到 group/span/patch；
-- 达不到 100% 时保持 STOP，并只更新诊断。
+- 普通可见 span 必须形成真实 Boundary Rail A/B，且 geometry guard 达到 100%；
+- 被相邻 Pipe union 物理遮挡、无法存在第二条 Rail 的 endpoint，不伪造 Rail，必须有局部 BVH 遮挡证据并转为 Junction input；
+- 所有最终 Boolean Boundary Edge 必须进入可审计的 consumption ledger，禁止遗漏、插值、重排或跨面 chord；
+- Go 条件：pairable Rail 100% guard + occluded endpoint 100% classified + Boundary 100% consumed。满足后允许进入 Strip/Junction，但不得据此宣称 Operator 完成。
 
 当前诊断（2026-07-20，Task 4.0 Graph Alignment）：
 
@@ -306,12 +306,23 @@ Blender: C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe
 - 真实 cutter-driven probe 当前为 51 spans 中 11 paired / 0 guard-valid（21.6% coverage、0% guarded coverage）；所有 23 根 Pipe 都提取到逐 Patch 交线，但当前 chain/span 切分与 guard 仍沿用旧 Boundary rail 假设，出现 sample density、self-intersection、radius tolerance 失败；
 - cutter-driven 交线现已按最近 Feature Edge ownership 裁成 span-local runs，并以 `1.5 * radius` 最大边长重采样；真实 probe 提升到 51 spans 中 34 paired / 5 guard-valid（66.7% coverage、9.8% guarded coverage），sample-density failure 已消失；
 - 剩余 17 个 unresolved spans 集中在 group 3/4/18–22；29 个 guard failure 以 radius tolerance 为主，另有 cyclic self-intersection/ordering。当前证据说明 span 裁切方向有效，但还不能进入 Patch；
-- Phase 2 继续 `STOP`。下一步只允许纠正交线的中心线参数排序与 width guard 语义，并补 terminal 短 span 的裁切边界；不实现 Strip/Junction/Patch。
+- **2026-07-21 用户视觉拒收**：cutter-driven 交线的 centerline 参数排序与线性重采样会把非邻接 Boundary vertices 连成跨面的 chord，造成 Rail 离开切口、环形断开和丢失；该方向已撤回到 `f39383e` 后重做，上一轮 34/51 或更高 coverage 数字作废；
+- Task 4.2 当前只从最终 all-pipe Exact Boolean 的 open Boundary Edges 提取 Rail；坐标保持 Boolean 原始顶点，顺序只来自 BMesh edge adjacency，禁止 centerline sorting、线性坐标重建与独立 per-pipe Difference 交线进入正式 Rail；
+- 新真实 artifact：`tests/artifacts/feature_chamfer_rail_phase2_resolution4_probe.blend`；绿色为已归属的真实 Boundary Edges，橙色为 owner 未解决但仍是原始 Boundary Edge。3898 条洞口边全部进入 topology partition，adjacency guard=PASS；其中 3856 owned、42 unowned，ownership coverage=98.92%；
+- **用户视觉验收（2026-07-21）**：最终 Boolean Boundary Rail 已确认“跟切口一致”；该 Rail geometry/topology 层状态记为 `ACCEPTED`。后续 owner/span 工作不得重排、插值或移动这些 Boundary coordinates；
+- owner 归属续作（2026-07-21）：先用 Surface Patch compatibility 筛选 Pipe BVH candidates，再仅沿同 Patch Boundary adjacency 传播唯一 owner；真实 probe 从 3856/3898 提升到 3885/3898 single-owner Boundary edges；
+- final Boolean open Boundary 先以 `1e-7 * radius` 清理 Exact Boolean 重合顶点：真实 probe 清理前 100 条零长度 Boundary edges、清理后 0；Boundary 从 3898 条有效归一为 3798 条，未移动非重合坐标，consumable Rail guard=PASS；
+- 剩余 11 条 overlap seam 不再猜成单一 Pipe：每条保留全部 compatible Pipe/Patch owner，并真正进入每个 owner 的 `_ordered_edge_chains`。机器集合核对 11/11 的 `owner_pairs` 均由对应 Rail chains 消费；
+- span slicing 只裁分原始 Boundary edge runs。group 17/span 1 的 5 条 overlap endpoint outlier 被裁为 `endpoint_trim`，剩余 Rail core 保持原始 Edge adjacency 并通过 guard；真实 51 spans 形成 44 个可见 Rail A/B，44/44 correspondence guard PASS；
+- 其余 7 spans 为 all-pipe union 遮蔽的 endpoint：group/span 3/0、16/0、17/0、18/0、20/0、22/0、22/4。每条均记录 endpoint class、邻 Pipe BVH inside/surface-distance 和可见 Boundary edge indices；其 guard 明确为 `NOT_APPLICABLE / OCCLUDED_ENDPOINT_CLASSIFICATION`，不伪装为 Rail A/B geometry PASS；
+- 建立全 Boundary consumption ledger：3798 edges 中 paired Rail 3729、occluded endpoint 54、shared overlap 11；余下 15 条 Pipe 8/9 fragments 均位于包含 shared multi-owner seam vertex 的同一原始 Boundary chain component，归类为 `shared_seam_chain_component`。集合核对 consumed=3798、missing=0、extra=0、unclassified=0，boundary consumption guard=PASS；
+- artifact：`tests/artifacts/feature_chamfer_rail_phase2_resolution4_probe.json` 与 `.blend`。Blender 5.1.2 完整回归当前为 79/79 passed；endpoint core trim 仍由独立 BMesh 回归证明不插值、不重排 Edge；
+- **2026-07-21 产品门禁决策与接入结果**：最终需求是 PipeCut → 自动补面 → Chamfer。44 个可见 span 的 Rail A/B 为 44/44 guard PASS；其余 7 个 endpoint 由 all-pipe union 遮挡证据转为 Junction inputs；Boundary consumption 为 3798/3798。Phase 3 生成 3661 个 regular strip Faces，Phase 4 生成 89 个 local junction Faces；目标 `hst.feature_chamfer_gn` 的 `PREVIEW → FINALIZE` 已接入同一 `GN_PREVIEW_V1` Pipe backend。真实 mixed 文件 Operator probe 返回 FINISHED，独立 output 为 closed manifold：Boundary=0、non-manifold=0、zero-area=0，并保存 `tests/artifacts/feature_chamfer_operator_product_probe.blend`。当前状态 `INTEGRATED`，等待用户真实 UI 视觉验收后升级为 `ACCEPTED`。
 
 ## 禁止事项
 
 - 禁止一个 session 同时做 Task 0–4；
-- 禁止在 Phase 2 通过前实现或接入 StripPort/JunctionSolver/Finalize；
+- Phase 2 已按“可见 Rail 44/44 + 遮挡 Junction input 7/7 + Boundary 3798/3798”通过；后续 StripPort/JunctionSolver 必须消费这些真实 Boundary inputs；
 - 禁止用底层 probe、字段存在、topology clean 或测试总数宣称 Operator 完成；
 - 禁止 junction center fan、通用 Fill 或 Boolean groove 成功路径；
 - 禁止修改 `auto_load.py`；

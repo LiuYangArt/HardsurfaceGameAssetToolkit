@@ -248,6 +248,9 @@ def patch_boolean_result(
             legacy_context["junction_count"],
             legacy_context["stats"],
             legacy_context["debug_stage"],
+            legacy_context.get("boolean_rail_pairs"),
+            legacy_context.get("boolean_rail_summary"),
+            legacy_context.get("boundary_rail_topology"),
         )
     if open_mesh is None or regions is None or components is None:
         raise FeatureChamferPatchError(

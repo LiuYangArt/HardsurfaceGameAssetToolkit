@@ -6,15 +6,11 @@ import bpy
 from ..const import FEATURE_CHAMFER_GN_LAST_ACTION_TAG
 from ..const import FEATURE_CHAMFER_GN_MODIFIER
 from ..const import FEATURE_CHAMFER_GN_STATE_TAG
-from ..const import FEATURE_CHAMFER_ORIGINAL_FACE_ATTRIBUTE
 from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
-from ..const import NORMALTRANSFER_MODIFIER
-from ..utils.feature_chamfer_finalize_utils import FeatureChamferFinalizeError
-from ..utils.feature_chamfer_finalize_utils import extract_feature_chamfer_finalize_context
-from ..utils.feature_chamfer_finalize_utils import release_feature_chamfer_finalize_context
-from ..utils.feature_chamfer_patch_utils import FeatureChamferPatchError
-from ..utils.feature_chamfer_patch_utils import patch_boolean_result
+from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
+from ..utils.experimental_pipe_chamfer_utils import PipeChamferError
+from ..utils.experimental_pipe_chamfer_utils import build_pipe_chamfer
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
 from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
@@ -33,6 +29,30 @@ def _has_sharp_edge(source_object):
         and attribute.domain == "EDGE"
         and any(bool(item.value) for item in attribute.data)
     )
+
+
+# 恢复 Finalize 失败前的 Object 可见性、Preview Modifier 与选择状态。
+# context/source/modifier: Blender 上下文对象；其余参数为调用前保存的状态。
+def _restore_finalize_context(
+    context,
+    source_object,
+    preview_modifier,
+    source_was_hidden,
+    preview_show_viewport,
+    preview_show_render,
+    active_object,
+    selected_objects,
+):
+    source_object.hide_set(source_was_hidden)
+    preview_modifier.show_viewport = preview_show_viewport
+    preview_modifier.show_render = preview_show_render
+    for selected_object in tuple(context.selected_objects):
+        selected_object.select_set(False)
+    for selected_object in selected_objects:
+        if bpy.data.objects.get(selected_object.name) == selected_object:
+            selected_object.select_set(True)
+    if active_object is not None and bpy.data.objects.get(active_object.name) == active_object:
+        context.view_layer.objects.active = active_object
 
 
 # 验证 Feature Chamfer 上下文并返回 source Object。
@@ -129,39 +149,54 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             if preview_state(source_object) != PREVIEW_VALID:
                 self.report({"WARNING"}, "Feature Chamfer Preview is stale; rebuild Preview first")
                 return {"CANCELLED"}
-            finalize_context = None
-            patched_mesh = None
+            preview_parameters = live_preview_parameters(owned_preview_modifier(source_object))
+            preview_modifier = owned_preview_modifier(source_object)
+            preview_show_viewport = preview_modifier.show_viewport
+            preview_show_render = preview_modifier.show_render
+            preview_modifier.show_viewport = False
+            preview_modifier.show_render = False
+            source_was_hidden = source_object.hide_get()
+            active_object_before = context.view_layer.objects.active
+            selected_objects_before = tuple(context.selected_objects)
             try:
-                finalize_context = extract_feature_chamfer_finalize_context(source_object)
-                patched_mesh, patch_stats = patch_boolean_result(
-                    finalize_context["open_mesh"],
-                    finalize_context["boundary_regions"],
-                    finalize_context["diagnostics"]["boundary_graph"]["components"],
-                    donor_mesh=finalize_context["boolean_mesh"],
-                    groove_face_indices=finalize_context["groove_face_indices"],
+                patch_stats = build_pipe_chamfer(
+                    source_object=source_object,
+                    radius=preview_parameters["radius"],
+                    pipe_resolution=4,
+                    chain_turn_threshold_degrees=35.0,
+                    chain_turn_spike_ratio=3.0,
+                    junction_margin=1.5,
+                    debug_stage="PATCHED",
+                    keep_debug_objects=False,
+                    feature_graph_contract="GN_PREVIEW_V1",
+                    preserve_source_visibility=True,
                 )
-            except FeatureChamferFinalizeError as error:
-                release_feature_chamfer_finalize_context(finalize_context)
-                self.report({"WARNING"}, f"Finalize preflight failed [{error.error_code}]: {error}")
-                return {"CANCELLED"}
-            except FeatureChamferPatchError as error:
-                release_feature_chamfer_finalize_context(finalize_context)
+            except PipeChamferError as error:
+                _restore_finalize_context(
+                    context, source_object, preview_modifier, source_was_hidden,
+                    preview_show_viewport, preview_show_render,
+                    active_object_before, selected_objects_before,
+                )
                 self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
                 return {"CANCELLED"}
             except Exception:
-                release_feature_chamfer_finalize_context(finalize_context)
+                _restore_finalize_context(
+                    context, source_object, preview_modifier, source_was_hidden,
+                    preview_show_viewport, preview_show_render,
+                    active_object_before, selected_objects_before,
+                )
                 raise
+            output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
+            if output is None:
+                _restore_finalize_context(
+                    context, source_object, preview_modifier, source_was_hidden,
+                    preview_show_viewport, preview_show_render,
+                    active_object_before, selected_objects_before,
+                )
+                self.report({"WARNING"}, "Finalize Patch produced no output Object")
+                return {"CANCELLED"}
             try:
-                output = bpy.data.objects.new(
-                    f"{source_object.name}_FeatureChamfer",
-                    patched_mesh,
-                )
-                source_object.users_collection[0].objects.link(output)
-                output.matrix_world = source_object.matrix_world.copy()
-                patched_mesh = None
-                original_attribute = output.data.attributes.get(
-                    FEATURE_CHAMFER_ORIGINAL_FACE_ATTRIBUTE
-                )
+                output.name = f"{source_object.name}_FeatureChamfer"
                 chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
                 if chamfer_attribute is not None:
                     output.data.attributes.remove(chamfer_attribute)
@@ -170,19 +205,14 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     type="BOOLEAN",
                     domain="FACE",
                 )
-                for polygon in output.data.polygons:
-                    chamfer_attribute.data[polygon.index].value = (
-                        original_attribute is None
-                        or not bool(original_attribute.data[polygon.index].value)
-                    )
-                normal_modifier = output.modifiers.new(
-                    f"{NORMALTRANSFER_MODIFIER} Feature Chamfer",
-                    type="DATA_TRANSFER",
+                backend_chamfer_attribute = output.data.attributes.get(
+                    CHAMFER_FACE_ATTRIBUTE
                 )
-                normal_modifier.object = source_object
-                normal_modifier.use_loop_data = True
-                normal_modifier.data_types_loops = {"CUSTOM_NORMAL"}
-                normal_modifier.loop_mapping = "POLYINTERP_LNORPROJ"
+                for polygon in output.data.polygons:
+                    chamfer_attribute.data[polygon.index].value = bool(
+                        backend_chamfer_attribute
+                        and backend_chamfer_attribute.data[polygon.index].value
+                    )
                 preview_modifier = owned_preview_modifier(source_object)
                 if preview_modifier is not None:
                     preview_modifier.show_viewport = False
@@ -196,7 +226,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 context.view_layer.objects.active = output
                 self.report(
                     {"INFO"},
-                    f"Feature Chamfer finalized: {patch_stats['patch_face_count']} Patch Faces",
+                    f"Feature Chamfer finalized: {patch_stats['regular_patch_face_count']} regular Faces, {patch_stats['junction_patch_face_count']} junction Faces",
                 )
                 return {"FINISHED"}
             except Exception:
@@ -205,16 +235,13 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     bpy.data.objects.remove(output, do_unlink=True)
                     if bpy.data.meshes.get(output_mesh.name) == output_mesh:
                         bpy.data.meshes.remove(output_mesh)
-                preview_modifier = owned_preview_modifier(source_object)
-                if preview_modifier is not None:
-                    preview_modifier.show_viewport = True
-                    preview_modifier.show_render = True
+                _restore_finalize_context(
+                    context, source_object, preview_modifier, source_was_hidden,
+                    preview_show_viewport, preview_show_render,
+                    active_object_before, selected_objects_before,
+                )
                 source_object[FEATURE_CHAMFER_GN_STATE_TAG] = PREVIEW_VALID
                 raise
-            finally:
-                if patched_mesh is not None and bpy.data.meshes.get(patched_mesh.name) == patched_mesh:
-                    bpy.data.meshes.remove(patched_mesh)
-                release_feature_chamfer_finalize_context(finalize_context)
         if actual_action != "PREVIEW":
             self.report({"ERROR"}, f"Unsupported Feature Chamfer action: {actual_action}")
             return {"CANCELLED"}
