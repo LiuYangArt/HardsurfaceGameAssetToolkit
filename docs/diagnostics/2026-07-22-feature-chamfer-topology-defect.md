@@ -1,6 +1,7 @@
 # Feature Chamfer topology defect diagnosis
 
-Status: `PROTOTYPE` diagnostic evidence only. Production topology code is unchanged.
+Status: `PROTOTYPE`. Algorithm、Backend 与目标 Operator 已有证据，但截图中的
+terminal topology defect 尚未通过同机位 Visual 门禁，不能标记为 `VERIFIED`。
 
 ## Target entry contract
 
