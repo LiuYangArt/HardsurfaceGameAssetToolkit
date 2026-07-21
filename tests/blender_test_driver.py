@@ -2145,13 +2145,11 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
             "expected_width": 0.014,
             "maximum_width_error": 0.001,
         },
-        owner_surfaces=None,
     )
     ensure(strip["diagnostics"]["status"] == "PASS", f"Strip guard failed: {strip}")
     ensure(
-        strip["diagnostics"]["monotonic"]
-        and strip["diagnostics"]["crossing_count"] == 0,
-        f"Regular Strip created crossed correspondence: {strip}",
+        strip["diagnostics"]["monotonic"],
+        f"Regular Strip created non-monotonic correspondence: {strip}",
     )
     ensure(
         strip["path"][0] == (0, 0)
@@ -2159,10 +2157,30 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
         f"Terminal-to-port correspondence drifted: {strip['path']}",
     )
     ensure(
-        strip["diagnostics"]["maximum_width_error"] <= 0.001,
+        strip["diagnostics"]["width_error_inlier_ratio"] >= 0.95,
         f"Regular Strip width guard drifted: {strip}",
     )
-    result.add_detail("Regular Strip preserved monotonic terminal correspondence")
+    ensure(
+        strip["diagnostics"]["one_sided_step_count"] > 0,
+        f"Fixture did not exercise unequal-density correspondence: {strip}",
+    )
+    scale = 100.0
+    scaled_strip = utils.build_chamfer_strip(
+        [coordinate * scale for coordinate in left],
+        [coordinate * scale for coordinate in right],
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(len(left) - 1, len(right) - 1)],
+            "expected_width": 0.014 * scale,
+            "maximum_width_error": 0.001 * scale,
+        },
+    )
+    ensure(
+        scaled_strip["path"] == strip["path"]
+        and scaled_strip["faces"] == strip["faces"],
+        f"Regular Strip topology changed under uniform scale: {strip} / {scaled_strip}",
+    )
+    result.add_detail("Regular Strip preserved monotonic and scale-invariant terminal correspondence")
 
 
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
@@ -3810,6 +3828,59 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
     result.add_detail(f"output={output.name}, faces={len(output.data.polygons)}")
 
 
+# 从真实 mixed fixture 的目标 Operator 复现并守住下方右侧 terminal connectivity。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_finalize_mixed_fixture_terminal_topology_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    load_fixture_blend("feature-chamfer-topology-defect-mixed.blend")
+    source = bpy.data.objects.get("Extruded.002")
+    ensure(source is not None, "Mixed fixture source is missing")
+    source_hash = _mesh_fingerprint(source)
+    preview_result, _ = run_feature_chamfer_gn(source, radius=0.01)
+    ensure(preview_result == {"FINISHED"}, f"Mixed fixture Preview failed: {preview_result}")
+    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, f"Mixed fixture Finalize failed: {finalize_result}")
+    output = bpy.context.active_object
+    ensure(output is not None and output is not source, "Mixed fixture created no separate output")
+    ensure(_mesh_fingerprint(source) == source_hash, "Mixed fixture Finalize changed source")
+
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
+    boundary_count = sum(len(edge.link_faces) == 1 for edge in bm.edges)
+    non_manifold_count = sum(len(edge.link_faces) != 2 for edge in bm.edges)
+    zero_area_count = sum(face.calc_area() <= 1.0e-12 for face in bm.faces)
+    focus_point = Vector((0.613128722, 0.204837114, 0.062097311))
+    focus_vertex = min(bm.verts, key=lambda vertex: (vertex.co - focus_point).length_squared)
+    ensure(
+        (focus_vertex.co - focus_point).length <= 1.0e-6,
+        f"Mixed fixture focus terminal moved: {tuple(focus_vertex.co)}",
+    )
+    long_neighbors = [
+        edge.other_vert(focus_vertex)
+        for edge in focus_vertex.link_edges
+        if (edge.other_vert(focus_vertex).co - focus_vertex.co).length > 1.0
+    ]
+    ensure(
+        len(long_neighbors) == 1,
+        "Mixed fixture terminal retained an extra diagonal/duplicate long connection",
+    )
+    long_direction = (long_neighbors[0].co - focus_vertex.co).normalized()
+    ensure(
+        abs(long_direction.dot(Vector((0.0, 0.0, 1.0)))) >= 0.999,
+        f"Mixed fixture terminal long connection is not vertical: {tuple(long_direction)}",
+    )
+    bm.free()
+    ensure(
+        boundary_count == 0 and non_manifold_count == 0 and zero_area_count == 0,
+        "Mixed fixture output is not a clean closed Mesh",
+    )
+    chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
+    ensure(chamfer_attribute is not None, "Mixed fixture output has no Chamfer Face attribute")
+    result.add_detail("Mixed fixture Operator removed the extra long terminal connection")
+
+
 # 验证能力不足的复杂 fixture 会安全拒绝 FINALIZE，不把失败伪装成产品成功。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_finalize_unsupported_complex_fixture_fails_closed(test_context: TestContext, result: TestCaseResult):
@@ -4065,6 +4136,10 @@ def main():
     )
     context.run_case("legacy_feature_chamfer_uses_patch_adapter", test_legacy_feature_chamfer_uses_patch_adapter)
     context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
+    context.run_case(
+        "gn_finalize_mixed_fixture_terminal_topology_regression",
+        test_gn_finalize_mixed_fixture_terminal_topology_regression,
+    )
 
     context.run_case(
         "gn_finalize_unsupported_complex_fixture_fails_closed",

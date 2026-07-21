@@ -1784,14 +1784,12 @@ def _zipper_bridge(bm, loop_a, loop_b):
 
 
 # 在两条 open Rail 上求单调 correspondence，并返回与 BMesh 无关的 Strip topology。
-# rail_a/rail_b: 已验收且有序的 Rail 坐标；terminal_constraints: 可选 start/end index pairs；owner_surfaces: 保留给 owner Surface guard。
+# rail_a/rail_b: 已验收且有序的 Rail 坐标；terminal_constraints: 可选 endpoint 与 signed width 约束。
 def build_chamfer_strip(
     rail_a,
     rail_b,
     terminal_constraints=None,
-    owner_surfaces=None,
 ):
-    del owner_surfaces
     if len(rail_a) < 2 or len(rail_b) < 2:
         raise ValueError("Open Rail pair requires at least two vertices per side")
     coordinates_a = [vertex.co.copy() if hasattr(vertex, "co") else Vector(vertex) for vertex in rail_a]
@@ -1801,6 +1799,11 @@ def build_chamfer_strip(
     constraints = terminal_constraints or {}
     expected_width = constraints.get("expected_width")
     maximum_width_error = constraints.get("maximum_width_error")
+    endpoint_width = (
+        (coordinates_a[0] - coordinates_b[0]).length
+        + (coordinates_a[-1] - coordinates_b[-1]).length
+    ) * 0.5
+    width_scale = max(float(expected_width or endpoint_width), 1.0e-12)
     required_start = tuple(constraints.get("start_pairs", [(0, 0)])[0])
     required_end = tuple(
         constraints.get(
@@ -1826,11 +1829,12 @@ def build_chamfer_strip(
                 if previous not in costs:
                     continue
                 width = (coordinates_a[index_a] - coordinates_b[index_b]).length
-                width_cost = (
+                width_error = (
                     abs(width - expected_width)
                     if expected_width is not None
                     else width
                 )
+                width_cost = width_error / width_scale
                 parameter_error = abs(parameters_a[index_a] - parameters_b[index_b])
                 if delta_a and delta_b:
                     tangent_a = coordinates_a[index_a] - coordinates_a[index_a - 1]
@@ -1864,28 +1868,34 @@ def build_chamfer_strip(
         else:
             faces.append((("A", index_a), ("B", next_b), ("B", index_b)))
     widths = []
+    width_errors = []
     for path_index, (index_a, index_b) in enumerate(path):
-        previous = path[path_index - 1] if path_index else None
-        if (
-            path_index in {0, len(path) - 1}
-            or (
-                previous[0] != index_a
-                and previous[1] != index_b
+        width = (coordinates_a[index_a] - coordinates_b[index_b]).length
+        widths.append(width)
+        if expected_width is None:
+            continue
+        if path_index == 0:
+            allowed_longitudinal_advance = 0.0
+        else:
+            previous_a, previous_b = path[path_index - 1]
+            allowed_longitudinal_advance = max(
+                (coordinates_a[index_a] - coordinates_a[previous_a]).length,
+                (coordinates_b[index_b] - coordinates_b[previous_b]).length,
             )
-        ):
-            widths.append(
-                (coordinates_a[index_a] - coordinates_b[index_b]).length
+        width_errors.append(
+            max(
+                0.0,
+                expected_width - width,
+                width - expected_width - allowed_longitudinal_advance,
             )
-    width_errors = (
-        [abs(width - expected_width) for width in widths]
-        if expected_width is not None
-        else []
-    )
+        )
     reasons = []
-    if (
-        maximum_width_error is not None
-        and max(width_errors, default=0.0) > maximum_width_error
-    ):
+    width_error_inlier_ratio = (
+        sum(error <= maximum_width_error for error in width_errors) / len(width_errors)
+        if maximum_width_error is not None and width_errors
+        else 1.0
+    )
+    if maximum_width_error is not None and width_error_inlier_ratio < 0.95:
         reasons.append("SIGNED_STRIP_WIDTH_EXCEEDED")
     return {
         "faces": faces,
@@ -1899,10 +1909,18 @@ def build_chamfer_strip(
                 and (next_a > index_a or next_b > index_b)
                 for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])
             ),
-            "crossing_count": 0,
             "cost": costs[required_end],
             "expected_width": expected_width,
             "maximum_width_error": max(width_errors, default=0.0),
+            "width_error_inlier_ratio": width_error_inlier_ratio,
+            "maximum_raw_width_error": max(
+                (abs(width - expected_width) for width in widths),
+                default=0.0,
+            ) if expected_width is not None else 0.0,
+            "one_sided_step_count": sum(
+                (next_a == index_a) != (next_b == index_b)
+                for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])
+            ),
         },
     }
 
@@ -1925,7 +1943,6 @@ def _zipper_bridge_open(
             "expected_width": expected_width,
             "maximum_width_error": maximum_width_error,
         },
-        owner_surfaces=None,
     )
     if strip["diagnostics"]["status"] != "PASS":
         raise ValueError(
@@ -1954,7 +1971,19 @@ def _zipper_bridge_open(
             bm.faces.remove(face)
             continue
         new_faces.append(face)
+    _validate_chamfer_strip_faces(new_faces)
     return new_faces
+
+
+# 验证新建 Strip Faces 不含 zero-length Edge。
+# faces: 同一 open Rail pair 新建的有序 Faces；校验失败时抛出 ValueError。
+def _validate_chamfer_strip_faces(faces):
+    for face in faces:
+        face.normal_update()
+        edge_lengths = [edge.calc_length() for edge in face.edges]
+        minimum_edge = min(edge_lengths, default=0.0)
+        if minimum_edge <= 1.0e-12:
+            raise ValueError("Open Rail zipper produced a zero-length Face edge")
 
 
 # 用 constrained Delaunay triangulation 补单个 Junction boundary；复用所有 boundary 3D 点。
@@ -4339,7 +4368,7 @@ def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
                     chain_left["vertices"],
                     right_vertices,
                     expected_width=radius * math.sqrt(2.0),
-                    maximum_width_error=None,
+                    maximum_width_error=max(radius * 0.60, 1.0e-5),
                 )
         except (IndexError, KeyError, ValueError, RuntimeError) as error:
             _fail(

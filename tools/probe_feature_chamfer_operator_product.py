@@ -52,6 +52,29 @@ focus_edge_lengths = sorted(
     (edge.other_vert(focus_vertex).co - focus_vertex.co).length
     for edge in focus_vertex.link_edges
 )
+focus_vertical_neighbors = sorted(
+    (
+        [round(value, 9) for value in neighbor.co],
+        (neighbor.co - focus_vertex.co).length,
+    )
+    for edge in focus_vertex.link_edges
+    for neighbor in [edge.other_vert(focus_vertex)]
+    if (
+        (neighbor.co - focus_vertex.co).length > 1.0
+        and abs(
+            (neighbor.co - focus_vertex.co).normalized().dot(Vector((0.0, 0.0, 1.0)))
+        ) >= 0.999
+    )
+)
+focus_long_neighbors = sorted(
+    (
+        [round(value, 9) for value in neighbor.co],
+        (neighbor.co - focus_vertex.co).length,
+    )
+    for edge in focus_vertex.link_edges
+    for neighbor in [edge.other_vert(focus_vertex)]
+    if (neighbor.co - focus_vertex.co).length > 1.0
+)
 bm.free()
 summary = {
     "preview_result": sorted(preview_result),
@@ -75,6 +98,16 @@ summary = {
         "coordinates": focus_coordinates,
         "edge_lengths": focus_edge_lengths,
         "minimum_incident_edge": min(focus_edge_lengths, default=0.0),
+        "long_neighbor_count": len(focus_long_neighbors),
+        "long_neighbors": [
+            {"coordinates": coordinates, "length": length}
+            for coordinates, length in focus_long_neighbors
+        ],
+        "long_vertical_neighbor_count": len(focus_vertical_neighbors),
+        "long_vertical_neighbors": [
+            {"coordinates": coordinates, "length": length}
+            for coordinates, length in focus_vertical_neighbors
+        ],
     },
 }
 output_path = Path(os.environ["HST_OPERATOR_PROBE_PATH"])
@@ -100,6 +133,14 @@ if zero_area_count != 0:
     failures.append(f"Output has {zero_area_count} zero-area faces")
 if summary["chamfer_face_count"] <= 0:
     failures.append("Output has no marked chamfer faces")
+if (
+    summary["focus_topology"]["long_neighbor_count"] != 1
+    or summary["focus_topology"]["long_vertical_neighbor_count"] != 1
+):
+    failures.append(
+        "Focus terminal has an extra diagonal/duplicate long connection: "
+        f"{summary['focus_topology']['long_vertical_neighbors']}"
+    )
 if failures:
     raise RuntimeError("Feature Chamfer product probe failed: " + "; ".join(failures))
 print("HST_OPERATOR_PRODUCT_PROBE=" + json.dumps(summary, ensure_ascii=False))
