@@ -18,7 +18,8 @@
 - Feature Chamfer degree-3 maximum-weight strand matching 回归
 - Feature Chamfer Even-Thickness Curve Pipe asset exact/version/fingerprint 与 backend smoke test
 - Feature Chamfer Boolean/source-surface rail A/B 统一 RailPairRecord contract smoke test
-- Feature Chamfer open Rail 单调 correspondence / terminal constraint regression
+- Feature Chamfer open Rail 单调、scale-invariant correspondence / terminal constraint regression
+- Feature Chamfer mixed fixture 目标 Operator PREVIEW→FINALIZE terminal topology 回归
 - Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
 - decal project smoke test
 - quickweight smoke test

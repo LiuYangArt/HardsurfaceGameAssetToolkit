@@ -1,7 +1,7 @@
 # Feature Chamfer topology defect diagnosis
 
-Status: `PROTOTYPE`. Algorithm、Backend 与目标 Operator 已有证据，但截图中的
-terminal topology defect 尚未通过同机位 Visual 门禁，不能标记为 `VERIFIED`。
+Status: `VERIFIED`. Algorithm、Backend、目标 Operator 与固定近景门禁已通过；
+仍需用户在真实 Blender UI 中确认后才能标记为 `ACCEPTED`。
 
 ## Target entry contract
 
@@ -54,3 +54,32 @@ Junction triangulation, Normal Transfer, accepted Rail coordinates/order, or
 adding broad Fill. The next implementation must first add a regression that
 fails on this terminal span and a guard that rejects unstructured long terminal
 connections.
+
+## Implemented fix
+
+- Open Rail 的 greedy zipper 已替换为 terminal-constrained monotonic DP；只生成
+  相邻 index advance，不移动、不插值 Phase 2 Rail 坐标。
+- DP width cost 按 expected Chamfer width 归一化，100x scale regression 保持
+  path / Faces 不变。
+- 生产路径启用 width tolerance、95% inlier 门禁与 severe one-sided advance
+  硬门槛；异常时 `regular_patch_invalid` fail-closed。
+- 真实 mixed fixture 已纳入统一 regression，并从
+  `hst.feature_chamfer_gn` PREVIEW → FINALIZE 运行。
+
+## Verification evidence
+
+- Baseline focus terminal 有两条 `> 1.0` 的长连接：一条垂直、一条错误斜向。
+- 修复后 focus terminal 仅剩一条长连接，方向与 Z 轴点积绝对值 `>= 0.999`；
+  Boundary / non-manifold / zero-area 均为 `0`，source fingerprint unchanged。
+- Blender 5.1.2 full regression: `81/81 passed`。
+- Operator artifact:
+  `tests/artifacts/feature_chamfer_topology_verified_operator.blend`
+- Machine-readable probe:
+  `tests/artifacts/feature_chamfer_topology_verified_operator.json`
+- Fixed closeup:
+  `tests/artifacts/feature_chamfer_topology_verified_closeup.png`
+
+## Remaining gate
+
+当前状态不是 `ACCEPTED`。用户仍需在真实 UI、原始观察机位检查右侧直段与其余
+Chamfer 区域；若视觉确认通过，再升级为 `ACCEPTED`。
