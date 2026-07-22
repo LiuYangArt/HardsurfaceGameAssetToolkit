@@ -123,3 +123,16 @@ probe-only helper，未修改 `_apply_difference()`、`build_pipe_chamfer()` 或
 source Patch、Rail→JunctionPort incidence、multi-Rail 必须显式 port，以及 registry/Edge
 duplicate、unknown、missing、conflict。合同与 producer capability 均为 `PROTOTYPE`；
 当前结论仍是 `STOP`，不得进入 Phase 4。
+
+后续同拓扑 probe 发现更合适的 backend seam：把 production overlap-safe joined Cutter
+objects 同时接入**同一个** native `GeometryNodeMeshBoolean` 的 multi-input `Mesh 2`，其
+结果与正式 Collection Modifier 在 closed/open canonical topology 上完全等价；经过与
+`_open_boundary()` 相同的 degenerate cleanup 后，`Intersecting Edges` 覆盖 `12/12`
+Boundary Edge，source unchanged。artifact：
+`/tmp/hst_multi_input_boolean_witness_clean/feature_chamfer_multi_input_boolean_witness_probe.json`。
+
+这只解决“哪些 Edge 是正式 Boolean 交线”，尚未解决每条 Edge 的 plan-local
+`Pipe/Rail/Patch/JunctionPort` assignment；另外把 cutter 输入 EDGE one-hot attribute
+交给 Collection Modifier 仅传播到 `2/12`，不能作为 owner ledger。故当前仍保持
+`PROTOTYPE / STOP`，下一步必须在 multi-input node 内产生 per-cutter/per-Pipe field，
+并从目标 Operator 对两个真实对象验证，才能接 runtime。

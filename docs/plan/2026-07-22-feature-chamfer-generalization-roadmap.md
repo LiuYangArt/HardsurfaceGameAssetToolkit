@@ -239,6 +239,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > native `Intersecting Edges` 后续 probe 已让 production degree-3 的开放 Boundary 达到 `13/13` 唯一 stage witness，但 sequential Exact 与正式 Collection Exact 的 topology/Face canonical signature 不等价（open Edge `20` vs `18`）。因此只保留 probe-only producer 与 fail-closed `BoundaryWitness` 合同，未接 `_apply_difference()` 或目标 Operator；Phase 3 仍为 `PROTOTYPE / STOP`，不得进入 Phase 4。证据同上。
 
+> 单次 native multi-input Exact probe 已与正式 Collection Exact topology 等价，并在 production degree-3 cleanup 后覆盖 `12/12` Boundary Edge；但它目前只有统一交线 field，尚无 per-Pipe/Rail/Patch/Port assignment。Cutter 输入 EDGE one-hot 经 Collection Modifier 仅覆盖 `2/12`。因此仍未满足 authoritative binding Go，runtime 未接入，Phase 3 保持 `PROTOTYPE / STOP`。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

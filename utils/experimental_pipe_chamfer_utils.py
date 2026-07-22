@@ -208,6 +208,51 @@ def _initialize_boundary_witness_schema(mesh, cutters, source_patch_ids):
                 )
 
 
+# cutters: production Cutter Objects；在每条输入 EDGE 上写所属 Pipe 的 one-hot witness，并同步 schema。
+def _seed_cutter_edge_owner_witnesses(cutters):
+    cutters = tuple(cutters)
+    pipe_ids = tuple(sorted({
+        int(attribute.name.rsplit("_", 1)[1])
+        for cutter in cutters
+        for attribute in cutter.data.attributes
+        if attribute.domain == "FACE"
+        and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
+        and any(bool(item.value) for item in attribute.data)
+    }))
+    for cutter in cutters:
+        face_pipe_ids = {
+            int(attribute.name.rsplit("_", 1)[1]): {
+                polygon.index
+                for polygon in cutter.data.polygons
+                if bool(attribute.data[polygon.index].value)
+            }
+            for attribute in cutter.data.attributes
+            if attribute.domain == "FACE"
+            and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
+        }
+        edge_face_indices = {}
+        for polygon in cutter.data.polygons:
+            for loop_index in polygon.loop_indices:
+                edge_face_indices.setdefault(
+                    cutter.data.loops[loop_index].edge_index,
+                    set(),
+                ).add(polygon.index)
+        for pipe_id in pipe_ids:
+            attribute_name = _boundary_owner_witness_attribute_name(pipe_id)
+            attribute = cutter.data.attributes.get(attribute_name)
+            if attribute is None:
+                attribute = cutter.data.attributes.new(
+                    attribute_name,
+                    type="BOOLEAN",
+                    domain="EDGE",
+                )
+            owner_faces = face_pipe_ids.get(pipe_id, set())
+            for edge in cutter.data.edges:
+                attribute.data[edge.index].value = bool(
+                    edge_face_indices.get(edge.index, set()) & owner_faces
+                )
+
+
 # output: 当前一次 Exact Boolean 后的 closed Mesh；函数把 cutter/source Face 邻接写为稳定 EDGE witness 并返回统计。
 def _mark_boolean_boundary_witnesses(output):
     mesh = output.data
@@ -402,6 +447,104 @@ def _probe_sequential_exact_boundary_witnesses(
                 depsgraph=depsgraph,
             )
             return evaluated_mesh, tuple(stage_records)
+        finally:
+            if host is not None and host.name in bpy.data.objects:
+                bpy.data.objects.remove(host, do_unlink=True)
+            if mesh_to_remove is not None and mesh_to_remove.users == 0:
+                bpy.data.meshes.remove(mesh_to_remove)
+    finally:
+        if node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
+
+
+# source_object/cutters: source duplicate 与 Collection Cutter Objects；单次 multi-input Exact Difference 后返回 Mesh 与交线 attribute。
+# 该函数仅用于核对 native Boolean 与正式 Collection Modifier 的拓扑等价性，不接入 runtime。
+def _probe_multi_input_exact_boundary_witnesses(source_object, cutters):
+    cutters = tuple(cutters)
+    if not cutters:
+        return None, None
+    source_matrix = tuple(
+        tuple(round(float(value), 8) for value in row)
+        for row in source_object.matrix_world
+    )
+    if any(
+        tuple(
+            tuple(round(float(value), 8) for value in row)
+            for row in cutter.matrix_world
+        )
+        != source_matrix
+        for cutter in cutters
+    ):
+        raise RuntimeError("Multi-input Exact probe transform mismatch")
+    node_group = bpy.data.node_groups.new(
+        "HST_MultiInputExactBoundaryWitnessProbe",
+        "GeometryNodeTree",
+    )
+    try:
+        node_group.interface.new_socket(
+            name="Geometry",
+            in_out="OUTPUT",
+            socket_type="NodeSocketGeometry",
+        )
+        node_group.interface.new_socket(
+            name="Geometry",
+            in_out="INPUT",
+            socket_type="NodeSocketGeometry",
+        )
+        group_input = node_group.nodes.new("NodeGroupInput")
+        group_output = node_group.nodes.new("NodeGroupOutput")
+        boolean_node = node_group.nodes.new("GeometryNodeMeshBoolean")
+        boolean_node.operation = "DIFFERENCE"
+        boolean_node.solver = "EXACT"
+        node_group.links.new(
+            group_input.outputs["Geometry"],
+            boolean_node.inputs["Mesh 1"],
+        )
+        for cutter in cutters:
+            object_info = node_group.nodes.new("GeometryNodeObjectInfo")
+            object_info.inputs["Object"].default_value = cutter
+            object_info.transform_space = "RELATIVE"
+            node_group.links.new(
+                object_info.outputs["Geometry"],
+                boolean_node.inputs["Mesh 2"],
+            )
+        store_node = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store_node.data_type = "BOOLEAN"
+        store_node.domain = "EDGE"
+        witness_name = "hst_probe_multi_input_intersecting_edges"
+        store_node.inputs["Name"].default_value = witness_name
+        node_group.links.new(
+            boolean_node.outputs["Mesh"],
+            store_node.inputs["Geometry"],
+        )
+        node_group.links.new(
+            boolean_node.outputs["Intersecting Edges"],
+            store_node.inputs["Value"],
+        )
+        node_group.links.new(
+            store_node.outputs["Geometry"],
+            group_output.inputs["Geometry"],
+        )
+        host = None
+        mesh_to_remove = None
+        try:
+            host = source_object.copy()
+            host.data = source_object.data.copy()
+            host.name = "HST_MultiInputExactBoundaryWitnessProbeHost"
+            source_object.users_collection[0].objects.link(host)
+            mesh_to_remove = host.data
+            modifier = host.modifiers.new(
+                "HST Multi-input Exact Boundary Witness Probe",
+                "NODES",
+            )
+            modifier.node_group = node_group
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            depsgraph.update()
+            evaluated_mesh = bpy.data.meshes.new_from_object(
+                host.evaluated_get(depsgraph),
+                depsgraph=depsgraph,
+            )
+            return evaluated_mesh, witness_name
         finally:
             if host is not None and host.name in bpy.data.objects:
                 bpy.data.objects.remove(host, do_unlink=True)

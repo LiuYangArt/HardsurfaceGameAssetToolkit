@@ -5027,6 +5027,271 @@ def test_feature_chamfer_production_sequential_boolean_witness_probe(
     )
 
 
+# 验证正式 Collection Exact 是否会把 Cutter 输入 EDGE 的 per-Pipe one-hot witness 传播到最终开放 Boundary。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_collection_boolean_input_edge_witness_probe(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("CollectionBooleanInputEdgeWitness")
+    source = make_orthogonal_degree_three_feature_junction(
+        "CollectionBooleanInputEdgeWitnessSource",
+        collection,
+    )
+    source_fingerprint_before = _mesh_fingerprint(source)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    radius = 0.08
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=radius,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="CUTTER_UNION",
+        keep_debug_objects=True,
+        feature_graph_contract="GN_PREVIEW_V1",
+        preserve_source_visibility=True,
+    )
+    cutter_collection = bpy.data.collections[stats["cutter_collection_name"]]
+    cutters = tuple(cutter_collection.objects)
+    source_patch_ids = utils._source_face_patch_ids(source)
+    output = utils._duplicate_source(source, collection)
+    utils._mark_original_faces(output, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        output.data,
+        cutters,
+        source_patch_ids,
+    )
+    utils._seed_cutter_edge_owner_witnesses(cutters)
+    marker_index = utils._apply_difference(
+        output,
+        cutter_collection,
+        source_patch_ids,
+    )
+    cutter_face_indices = utils._groove_face_indices(output, stats)
+    bm, _ = utils._open_boundary(
+        output,
+        cutter_face_indices,
+        stats,
+        [],
+        radius,
+        allow_non_simple=True,
+    )
+    try:
+        owner_layer_names = tuple(sorted(
+            attribute.name
+            for attribute in output.data.attributes
+            if attribute.domain == "EDGE"
+            and attribute.name.startswith(
+                utils.BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
+            )
+        ))
+        records = []
+        missing = []
+        conflicting = []
+        for edge in bm.edges:
+            if len(edge.link_faces) != 1:
+                continue
+            witnesses = tuple(sorted(
+                layer_name
+                for layer_name in owner_layer_names
+                for layer in (
+                    bm.edges.layers.int.get(layer_name)
+                    or bm.edges.layers.bool.get(layer_name),
+                )
+                if layer is not None and bool(edge[layer])
+            ))
+            records.append({
+                "edge_index": edge.index,
+                "witnesses": witnesses,
+                "vertex_coordinates": tuple(sorted(
+                    tuple(round(float(value), 8) for value in vertex.co)
+                    for vertex in edge.verts
+                )),
+            })
+            if not witnesses:
+                missing.append(edge.index)
+            elif len(witnesses) != 1:
+                conflicting.append(edge.index)
+        artifact_path = ARTIFACT_DIR / (
+            "feature_chamfer_collection_boolean_input_edge_witness_probe.json"
+        )
+        artifact = {
+            "source_fingerprint_unchanged": (
+                _mesh_fingerprint(source) == source_fingerprint_before
+            ),
+            "boundary_edge_count": len(records),
+            "missing_boundary_edge_indices": missing,
+            "conflicting_boundary_edge_indices": conflicting,
+            "records": records,
+        }
+        artifact_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        ensure(
+            marker_index >= 0
+            and artifact["source_fingerprint_unchanged"],
+            "Collection input EDGE witness probe changed source",
+        )
+    finally:
+        bm.free()
+    result.add_detail(
+        f"PROTOTYPE/STOP: Collection input EDGE witnesses covered "
+        f"{len(records) - len(missing)}/{len(records)} Boundary Edges; "
+        f"conflicts={len(conflicting)}; artifact={artifact_path}"
+    )
+
+
+# 验证 native Mesh Boolean 的单次 multi-input Difference 是否与正式 Collection Modifier 等价并覆盖全部交线。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_multi_input_boolean_witness_probe(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("MultiInputBooleanWitness")
+    source = make_orthogonal_degree_three_feature_junction(
+        "MultiInputBooleanWitnessSource",
+        collection,
+    )
+    source_fingerprint_before = _mesh_fingerprint(source)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    radius = 0.08
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=radius,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="CUTTER_UNION",
+        keep_debug_objects=True,
+        feature_graph_contract="GN_PREVIEW_V1",
+        preserve_source_visibility=True,
+    )
+    cutter_collection = bpy.data.collections[stats["cutter_collection_name"]]
+    cutters = tuple(sorted(cutter_collection.objects, key=lambda item: item.name))
+    source_patch_ids = utils._source_face_patch_ids(source)
+    collection_output = utils._duplicate_source(source, collection)
+    utils._mark_original_faces(collection_output, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        collection_output.data,
+        cutters,
+        source_patch_ids,
+    )
+    utils._apply_difference(collection_output, cutter_collection, source_patch_ids)
+    multi_source = utils._duplicate_source(source, collection)
+    utils._mark_original_faces(multi_source, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        multi_source.data,
+        cutters,
+        source_patch_ids,
+    )
+    multi_mesh, witness_name = utils._probe_multi_input_exact_boundary_witnesses(
+        multi_source,
+        cutters,
+    )
+    ensure(multi_mesh is not None and witness_name, "Multi-input probe returned no Mesh")
+    try:
+        closed_equivalent = (
+            canonical_mesh_geometry_signature(collection_output.data)
+            == canonical_mesh_geometry_signature(multi_mesh)
+        )
+        collection_bm = open_boolean_mesh_with_witness_layers(
+            collection_output.data,
+            utils.ORIGINAL_FACE_ATTRIBUTE,
+        )
+        multi_bm = open_boolean_mesh_with_witness_layers(
+            multi_mesh,
+            utils.ORIGINAL_FACE_ATTRIBUTE,
+        )
+        try:
+            collection_cleanup = utils._clean_open_boundary_degenerates(
+                collection_bm,
+                radius,
+            )
+            multi_cleanup = utils._clean_open_boundary_degenerates(
+                multi_bm,
+                radius,
+            )
+            collection_bm.verts.index_update()
+            collection_bm.edges.index_update()
+            multi_bm.verts.index_update()
+            multi_bm.edges.index_update()
+            collection_open_mesh = bpy.data.meshes.new("MultiInputCollectionOpen")
+            multi_open_mesh = bpy.data.meshes.new("MultiInputNativeOpen")
+            collection_bm.to_mesh(collection_open_mesh)
+            multi_bm.to_mesh(multi_open_mesh)
+            open_equivalent = (
+                canonical_mesh_geometry_signature(collection_open_mesh)
+                == canonical_mesh_geometry_signature(multi_open_mesh)
+            )
+            witness_layer = (
+                multi_bm.edges.layers.int.get(witness_name)
+                or multi_bm.edges.layers.bool.get(witness_name)
+            )
+            ensure(witness_layer is not None, "Multi-input EDGE witness was lost")
+            boundary_edge_indices = [
+                edge.index for edge in multi_bm.edges if len(edge.link_faces) == 1
+            ]
+            witnessed_boundary_edge_indices = [
+                edge.index
+                for edge in multi_bm.edges
+                if len(edge.link_faces) == 1 and bool(edge[witness_layer])
+            ]
+        finally:
+            collection_bm.free()
+            multi_bm.free()
+        artifact_path = ARTIFACT_DIR / (
+            "feature_chamfer_multi_input_boolean_witness_probe.json"
+        )
+        artifact = {
+            "source_fingerprint_unchanged": (
+                _mesh_fingerprint(source) == source_fingerprint_before
+            ),
+            "closed_equivalent": closed_equivalent,
+            "open_equivalent": open_equivalent,
+            "collection_closed_counts": {
+                "vertices": len(collection_output.data.vertices),
+                "edges": len(collection_output.data.edges),
+                "faces": len(collection_output.data.polygons),
+            },
+            "multi_input_closed_counts": {
+                "vertices": len(multi_mesh.vertices),
+                "edges": len(multi_mesh.edges),
+                "faces": len(multi_mesh.polygons),
+            },
+            "collection_cleanup": collection_cleanup,
+            "multi_input_cleanup": multi_cleanup,
+            "boundary_edge_count": len(boundary_edge_indices),
+            "witnessed_boundary_edge_count": len(witnessed_boundary_edge_indices),
+            "missing_boundary_edge_indices": sorted(
+                set(boundary_edge_indices) - set(witnessed_boundary_edge_indices)
+            ),
+        }
+        artifact_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        ensure(
+            artifact["source_fingerprint_unchanged"],
+            "Multi-input witness probe changed source",
+        )
+    finally:
+        bpy.data.meshes.remove(multi_mesh)
+        if "collection_open_mesh" in locals():
+            bpy.data.meshes.remove(collection_open_mesh)
+        if "multi_open_mesh" in locals():
+            bpy.data.meshes.remove(multi_open_mesh)
+    result.add_detail(
+        f"PROTOTYPE/STOP: multi-input Exact covered "
+        f"{len(witnessed_boundary_edge_indices)}/{len(boundary_edge_indices)} "
+        f"Boundary Edges; equivalent={closed_equivalent and open_equivalent}; "
+        f"artifact={artifact_path}"
+    )
+
+
 # 从 production Pipe/Cutter Set 运行 Exact Boolean，并由 authoritative binder 验证 degree-3 junction provenance。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
@@ -7116,6 +7381,14 @@ def main():
     context.run_case(
         "feature_chamfer_production_sequential_boolean_witness_probe",
         test_feature_chamfer_production_sequential_boolean_witness_probe,
+    )
+    context.run_case(
+        "feature_chamfer_collection_boolean_input_edge_witness_probe",
+        test_feature_chamfer_collection_boolean_input_edge_witness_probe,
+    )
+    context.run_case(
+        "feature_chamfer_multi_input_boolean_witness_probe",
+        test_feature_chamfer_multi_input_boolean_witness_probe,
     )
     context.run_case(
         "feature_chamfer_intersecting_endpoint_provenance_smoke",
