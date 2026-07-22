@@ -5144,20 +5144,23 @@ def test_feature_chamfer_collection_boolean_input_edge_witness_probe(
     )
 
 
-# 验证 native Mesh Boolean 的单次 multi-input Difference 是否与正式 Collection Modifier 等价并覆盖全部交线。
-# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+# 使用 native multi-input Exact 探针验证当前 source 的 authoritative Boundary witness。
+# test_context/result/source/radius/artifact_name: 测试上下文、结果记录器、输入 Mesh、半径与 JSON 文件名；返回 artifact。
 def test_feature_chamfer_multi_input_boolean_witness_probe(
     test_context: TestContext,
     result: TestCaseResult,
+    source=None,
+    radius=0.08,
+    artifact_name="feature_chamfer_multi_input_boolean_witness_probe.json",
 ):
-    collection = make_collection("MultiInputBooleanWitness")
-    source = make_orthogonal_degree_three_feature_junction(
-        "MultiInputBooleanWitnessSource",
-        collection,
+    collection = source.users_collection[0] if source is not None else make_collection(
+        "MultiInputBooleanWitness"
+    )
+    source = source or make_orthogonal_degree_three_feature_junction(
+        "MultiInputBooleanWitnessSource", collection
     )
     source_fingerprint_before = _mesh_fingerprint(source)
     utils = test_context.addon.utils.experimental_pipe_chamfer_utils
-    radius = 0.08
     stats = utils.build_pipe_chamfer(
         source_object=source,
         radius=radius,
@@ -5212,6 +5215,9 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
     port_id_by_token = {
         record.token: record.port_id for record in endpoint_registry
     }
+    pipe_id_by_token = {
+        record.token: record.pipe_id for record in endpoint_registry
+    }
     collection_output = utils._duplicate_source(source, collection)
     utils._mark_original_faces(collection_output, source_patch_ids)
     utils._initialize_source_membership_schema(
@@ -5232,6 +5238,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         witness_name,
         owner_attribute_names,
         token_attribute_names,
+        patch_attribute_names,
     ) = (
         utils._probe_multi_input_exact_boundary_witnesses(
         multi_source,
@@ -5291,6 +5298,8 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             ]
             boundary_owner_candidates = {}
             boundary_endpoint_tokens = {}
+            boundary_compound_endpoint_records = {}
+            boundary_patch_candidates = {}
             for edge in multi_bm.edges:
                 if len(edge.link_faces) != 1:
                     continue
@@ -5304,8 +5313,13 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                     if layer is not None and bool(edge[layer])
                 })
                 boundary_owner_candidates[str(edge.index)] = owner_ids
-                boundary_endpoint_tokens[str(edge.index)] = sorted({
-                    int(attribute_name.rsplit("_", 1)[1])
+                compound_endpoint_records = sorted({
+                    tuple(
+                        int(value)
+                        for value in attribute_name.removeprefix(
+                            utils.PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX
+                        ).split("_")
+                    )
                     for attribute_name in token_attribute_names
                     for layer in (
                         multi_bm.edges.layers.int.get(attribute_name)
@@ -5313,12 +5327,114 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                     )
                     if layer is not None and bool(edge[layer])
                 })
+                boundary_compound_endpoint_records[str(edge.index)] = [
+                    {"pipe_id": pipe_id, "token": token}
+                    for pipe_id, token in compound_endpoint_records
+                ]
+                boundary_endpoint_tokens[str(edge.index)] = sorted({
+                    token
+                    for pipe_id, token in compound_endpoint_records
+                    if pipe_id in owner_ids
+                })
+                boundary_patch_candidates[str(edge.index)] = sorted({
+                    int(attribute_name.removeprefix(
+                        utils.BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
+                    ))
+                    for attribute_name in patch_attribute_names
+                    for layer in (
+                        multi_bm.edges.layers.int.get(attribute_name)
+                        or multi_bm.edges.layers.bool.get(attribute_name),
+                    )
+                    if layer is not None and bool(edge[layer])
+                })
+            boundary_witness_registry = []
+            witness_ids_by_boundary = []
+            unresolved_boundary_edge_indices = []
+            for boundary_edge_index in boundary_edge_indices:
+                edge_key = str(boundary_edge_index)
+                owner_ids = boundary_owner_candidates[edge_key]
+                patch_ids = boundary_patch_candidates[edge_key]
+                matching_port_ids = {
+                    port_id_by_token[token]
+                    for token in boundary_endpoint_tokens[edge_key]
+                    if token in port_id_by_token
+                }
+                owner_rail_sets = {
+                    witness.owner_rail_ids
+                    for pipe_id in owner_ids
+                    for witness in witnesses_by_pipe_id.get(pipe_id, ())
+                    if witness.source_patch_id in patch_ids
+                }
+                if not owner_rail_sets and matching_port_ids and len(patch_ids) == 1:
+                    owner_rail_sets = {
+                        tuple(sorted(
+                            rail.rail_id
+                            for rail in plan.rail_chains
+                            if rail.side == f"OWNER_PATCH:{patch_ids[0]}"
+                            and any(
+                                port_id in rail.endpoint_port_ids
+                                for port_id in matching_port_ids
+                            )
+                        ))
+                    } - {()}
+                if (
+                    len(owner_ids) != 1
+                    or len(patch_ids) != 1
+                    or len(owner_rail_sets) != 1
+                ):
+                    unresolved_boundary_edge_indices.append(boundary_edge_index)
+                    witness_ids_by_boundary.append(())
+                    continue
+                boundary_witness = (
+                    test_context.addon.utils.feature_chamfer_binding_utils.BoundaryWitness(
+                        witness_id=f"native-boundary-edge:{boundary_edge_index}",
+                        owner_rail_ids=next(iter(owner_rail_sets)),
+                        junction_port_id=None,
+                        source_patch_id=patch_ids[0],
+                    )
+                )
+                boundary_witness_registry.append(boundary_witness)
+                witness_ids_by_boundary.append((boundary_witness.witness_id,))
+            witness_validation = (
+                test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
+                    plan,
+                    len(boundary_edge_indices),
+                    boundary_witness_registry,
+                    witness_ids_by_boundary,
+                )
+            )
+            if witness_validation.status == "PASS":
+                first_witness_id = witness_ids_by_boundary[0][0]
+                missing_witness_ids = list(witness_ids_by_boundary)
+                missing_witness_ids[0] = ()
+                conflicting_witness_ids = list(witness_ids_by_boundary)
+                conflicting_witness_ids[0] = (
+                    first_witness_id,
+                    witness_ids_by_boundary[1][0],
+                )
+                missing_validation = (
+                    test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
+                        plan,
+                        len(boundary_edge_indices),
+                        boundary_witness_registry,
+                        missing_witness_ids,
+                    )
+                )
+                conflicting_validation = (
+                    test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
+                        plan,
+                        len(boundary_edge_indices),
+                        boundary_witness_registry,
+                        conflicting_witness_ids,
+                    )
+                )
+            else:
+                missing_validation = witness_validation
+                conflicting_validation = witness_validation
         finally:
             collection_bm.free()
             multi_bm.free()
-        artifact_path = ARTIFACT_DIR / (
-            "feature_chamfer_multi_input_boolean_witness_probe.json"
-        )
+        artifact_path = ARTIFACT_DIR / artifact_name
         artifact = {
             "source_fingerprint_unchanged": (
                 _mesh_fingerprint(source) == source_fingerprint_before
@@ -5344,6 +5460,30 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             ),
             "boundary_owner_candidates": boundary_owner_candidates,
             "boundary_endpoint_tokens": boundary_endpoint_tokens,
+            "boundary_compound_endpoint_records": (
+                boundary_compound_endpoint_records
+            ),
+            "boundary_patch_candidates": boundary_patch_candidates,
+            "boundary_witness_validation": {
+                "status": witness_validation.status,
+                "consumed_edge_count": witness_validation.consumed_edge_count,
+                "missing_edge_indices": witness_validation.missing_edge_indices,
+                "duplicate_edge_indices": witness_validation.duplicate_edge_indices,
+                "conflicting_edge_indices": witness_validation.conflicting_edge_indices,
+                "unknown_witness_ids": witness_validation.unknown_witness_ids,
+                "incompatible_witness_ids": witness_validation.incompatible_witness_ids,
+            },
+            "fail_closed_validations": {
+                "missing_status": missing_validation.status,
+                "missing_edge_indices": missing_validation.missing_edge_indices,
+                "conflict_status": conflicting_validation.status,
+                "conflicting_edge_indices": (
+                    conflicting_validation.conflicting_edge_indices
+                ),
+            },
+            "unresolved_boundary_edge_indices": (
+                unresolved_boundary_edge_indices
+            ),
             "owner_missing_boundary_edge_indices": sorted(
                 int(edge_index)
                 for edge_index, owner_ids in boundary_owner_candidates.items()
@@ -5354,6 +5494,25 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 for edge_index, owner_ids in boundary_owner_candidates.items()
                 if len(owner_ids) > 1
             ),
+            "patch_missing_boundary_edge_indices": sorted(
+                int(edge_index)
+                for edge_index, patch_ids in boundary_patch_candidates.items()
+                if not patch_ids
+            ),
+            "patch_conflicting_boundary_edge_indices": sorted(
+                int(edge_index)
+                for edge_index, patch_ids in boundary_patch_candidates.items()
+                if len(patch_ids) > 1
+            ),
+            "foreign_endpoint_token_boundary_edge_indices": sorted(
+                int(edge_index)
+                for edge_index, owner_ids in boundary_owner_candidates.items()
+                if any(
+                    record["pipe_id"] not in owner_ids
+                    or pipe_id_by_token.get(record["token"]) != record["pipe_id"]
+                    for record in boundary_compound_endpoint_records[edge_index]
+                )
+            ),
             "boundary_plan_assignments": {
                 edge_index: {
                     "owner_pipe_ids": owner_ids,
@@ -5362,18 +5521,12 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                         for token in boundary_endpoint_tokens[edge_index]
                         if token in port_id_by_token
                     }),
+                    "source_patch_ids": boundary_patch_candidates[edge_index],
                     "candidate_witness_ids": sorted({
                         witness.witness_id
                         for pipe_id in owner_ids
                         for witness in witnesses_by_pipe_id.get(pipe_id, ())
-                        if (
-                            not boundary_endpoint_tokens[edge_index]
-                            or witness.junction_port_id in {
-                                port_id_by_token[token]
-                                for token in boundary_endpoint_tokens[edge_index]
-                                if token in port_id_by_token
-                            }
-                        )
+                        if witness.source_patch_id in boundary_patch_candidates[edge_index]
                     }),
                 }
                 for edge_index, owner_ids in boundary_owner_candidates.items()
@@ -5384,8 +5537,24 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             encoding="utf-8",
         )
         ensure(
-            artifact["source_fingerprint_unchanged"],
-            "Multi-input witness probe changed source",
+            artifact["source_fingerprint_unchanged"]
+            and not artifact["foreign_endpoint_token_boundary_edge_indices"]
+            and not artifact["patch_missing_boundary_edge_indices"]
+            and not artifact["patch_conflicting_boundary_edge_indices"]
+            and not artifact["unresolved_boundary_edge_indices"]
+            and artifact["boundary_witness_validation"]["status"] == "PASS"
+            and artifact["boundary_witness_validation"]["consumed_edge_count"]
+            == artifact["boundary_edge_count"]
+            and artifact["fail_closed_validations"]["missing_status"]
+            == "boundary_witness_incomplete"
+            and tuple(artifact["fail_closed_validations"]["missing_edge_indices"])
+            == (0,)
+            and artifact["fail_closed_validations"]["conflict_status"]
+            == "boundary_witness_incomplete"
+            and tuple(
+                artifact["fail_closed_validations"]["conflicting_edge_indices"]
+            ) == (0,),
+            f"Multi-input witness probe lost Pipe-local endpoint identity: {artifact_path}",
         )
     finally:
         bpy.data.meshes.remove(multi_mesh)
@@ -5399,6 +5568,88 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         f"Boundary Edges; equivalent={closed_equivalent and open_equivalent}; "
         f"artifact={artifact_path}"
     )
+    return artifact
+
+
+# 验证两个真实目标与两个半径在 probe-only backend 上均满足 authoritative witness 门槛。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_multi_input_boolean_real_target_matrix_probe(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    records = []
+    failed = None
+    for label, fixture_name, object_name in (
+        ("simple", "feature-chamfer-product-simple.blend", "Solid 44"),
+        ("tricky", "feature-chamfer-product-tricky.blend", "Solid.004"),
+    ):
+        for radius in (0.01, 0.03):
+            load_fixture_blend(fixture_name)
+            source = bpy.data.objects.get(object_name)
+            ensure(
+                source is not None and source.type == "MESH",
+                f"Real target is missing: {fixture_name}/{object_name}",
+            )
+            cell_name = (
+                f"feature_chamfer_multi_input_{label}_"
+                f"{object_name.lower().replace(' ', '_').replace('.', '_')}_"
+                f"r{radius:.3f}.json"
+            )
+            try:
+                artifact = test_feature_chamfer_multi_input_boolean_witness_probe(
+                    test_context,
+                    result,
+                    source=source,
+                    radius=radius,
+                    artifact_name=cell_name,
+                )
+            except TestFailure as error:
+                artifact = json.loads(
+                    (ARTIFACT_DIR / cell_name).read_text(encoding="utf-8")
+                )
+                if failed is None:
+                    failed = error
+            records.append({
+                "label": label,
+                "fixture": fixture_name,
+                "object": object_name,
+                "radius": radius,
+                "artifact": str(ARTIFACT_DIR / cell_name),
+                "boundary_edge_count": artifact["boundary_edge_count"],
+                "consumed_edge_count": artifact[
+                    "boundary_witness_validation"
+                ]["consumed_edge_count"],
+                "status": artifact["boundary_witness_validation"]["status"],
+                "source_fingerprint_unchanged": artifact[
+                    "source_fingerprint_unchanged"
+                ],
+            })
+    matrix_path = ARTIFACT_DIR / (
+        "feature_chamfer_multi_input_real_target_matrix_probe.json"
+    )
+    matrix_path.write_text(
+        json.dumps(
+            {
+                "status": "PASS" if failed is None else "STOP",
+                "records": records,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if failed is not None:
+        raise TestFailure(f"Real target witness matrix remains STOP: {matrix_path}")
+    ensure(
+        len(records) == 4
+        and all(record["status"] == "PASS" for record in records)
+        and all(
+            record["boundary_edge_count"] == record["consumed_edge_count"]
+            for record in records
+        )
+        and all(record["source_fingerprint_unchanged"] for record in records),
+        f"Real target witness matrix is incomplete: {matrix_path}",
+    )
+    result.add_detail(f"PROTOTYPE/STOP: real target matrix 4/4; artifact={matrix_path}")
 
 
 # 从 production Pipe/Cutter Set 运行 Exact Boolean，并由 authoritative binder 验证 degree-3 junction provenance。
@@ -7498,6 +7749,10 @@ def main():
     context.run_case(
         "feature_chamfer_multi_input_boolean_witness_probe",
         test_feature_chamfer_multi_input_boolean_witness_probe,
+    )
+    context.run_case(
+        "feature_chamfer_multi_input_boolean_real_target_matrix_probe",
+        test_feature_chamfer_multi_input_boolean_real_target_matrix_probe,
     )
     context.run_case(
         "feature_chamfer_intersecting_endpoint_provenance_smoke",

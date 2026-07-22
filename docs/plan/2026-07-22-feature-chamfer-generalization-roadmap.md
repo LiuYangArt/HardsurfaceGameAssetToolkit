@@ -245,6 +245,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > plan assignment probe 显示现有 endpoint token 仍会在 cutter union 中跨 Pipe 污染：`8/12` Edge 可唯一命中 witness 模板，Pipe 1 的 `4/12` Edge 命中了另一 strand Port。禁止把该 token 当 authoritative port；需改 per-Pipe/per-token one-hot 并补 Patch→Rail 证据。Phase 3 状态不变。
 
+> compound `Pipe+endpoint token` 与 source Patch EDGE witness 已让合成 degree-3 达到 public validator `12/12 PASS`，并让 simple / `Solid 44` 两个 radius 达到 `287/287`、`281/281`。tricky / `Solid.004` 仍只有 `2052/2068`、`1966/1985`：其中 `10/13` 条 Boundary 没有 native Intersecting/Pipe/Patch/Port field，另有少量 JunctionPort→Patch Rail 缺口。无权威证据时继续 fail-closed；runtime 未接入，Phase 3 保持 `PROTOTYPE / STOP`。证据见 Phase 3 诊断文档。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

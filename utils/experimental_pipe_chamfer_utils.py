@@ -48,6 +48,8 @@ CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_endpoint_member_"
 SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_source_patch_member_"
 BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX = "hst_boundary_owner_witness_"
 BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX = "hst_boundary_patch_witness_"
+PROBE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX = "hst_probe_pipe_port_"
+PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX = "hst_probe_edge_pipe_port_"
 
 
 # 让 Exact Boolean 能传播所有 provenance Face attributes，源 Mesh 与 Cutter Mesh 必须共享完整 attribute schema。
@@ -110,6 +112,19 @@ def _boundary_owner_witness_attribute_name(pipe_id):
 # patch_id: source Surface Patch ID；返回 Boolean Boundary Patch 的 EDGE witness attribute 名称。
 def _boundary_patch_witness_attribute_name(patch_id):
     return f"{BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX}{int(patch_id)}"
+
+
+# pipe_id/token: plan-local Pipe 与 StrandEndpointPort token；返回探针专用复合 FACE attribute 名称。
+def _probe_compound_endpoint_attribute_name(pipe_id, token):
+    return f"{PROBE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX}{int(pipe_id)}_{int(token)}"
+
+
+# pipe_id/token: plan-local Pipe 与 StrandEndpointPort token；返回 Boolean 交线上的复合 EDGE attribute 名称。
+def _probe_edge_compound_endpoint_attribute_name(pipe_id, token):
+    return (
+        f"{PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX}"
+        f"{int(pipe_id)}_{int(token)}"
+    )
 
 
 # 在全部 Cutter objects 上补齐相同的 one-hot provenance schema，供 Collection Exact Boolean 传播。
@@ -467,7 +482,7 @@ def _probe_multi_input_exact_boundary_witnesses(
     cutters = tuple(cutters)
     per_cutter_witness_ids = per_cutter_witness_ids or {}
     if not cutters:
-        return None, None, (), ()
+        return None, None, (), (), ()
     source_matrix = tuple(
         tuple(round(float(value), 8) for value in row)
         for row in source_object.matrix_world
@@ -506,6 +521,7 @@ def _probe_multi_input_exact_boundary_witnesses(
             boolean_node.inputs["Mesh 1"],
         )
         per_cutter_store_nodes = []
+        per_cutter_compound_endpoint_names = []
         for cutter in cutters:
             object_info = node_group.nodes.new("GeometryNodeObjectInfo")
             object_info.inputs["Object"].default_value = cutter
@@ -528,6 +544,63 @@ def _probe_multi_input_exact_boundary_witnesses(
                 )
                 cutter_geometry = store_owner.outputs["Geometry"]
                 per_cutter_store_nodes.append(store_owner)
+                cutter_token_ids = tuple(sorted({
+                    int(item.value)
+                    for attribute_name in (
+                        CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+                        CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+                    )
+                    for attribute in (cutter.data.attributes.get(attribute_name),)
+                    if attribute is not None and attribute.domain == "FACE"
+                    for item in attribute.data
+                    if int(item.value) > 0
+                }))
+                for token_id in cutter_token_ids:
+                    compare_token_fields = []
+                    for token_attribute_name in (
+                        CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+                        CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+                    ):
+                        named_token = node_group.nodes.new(
+                            "GeometryNodeInputNamedAttribute"
+                        )
+                        named_token.data_type = "INT"
+                        named_token.inputs["Name"].default_value = token_attribute_name
+                        compare_token = node_group.nodes.new("FunctionNodeCompare")
+                        compare_token.data_type = "INT"
+                        compare_token.operation = "EQUAL"
+                        compare_token.inputs[3].default_value = token_id
+                        node_group.links.new(
+                            named_token.outputs["Attribute"],
+                            compare_token.inputs[2],
+                        )
+                        compare_token_fields.append(compare_token.outputs["Result"])
+                    token_union = node_group.nodes.new("FunctionNodeBooleanMath")
+                    token_union.operation = "OR"
+                    node_group.links.new(compare_token_fields[0], token_union.inputs[0])
+                    node_group.links.new(compare_token_fields[1], token_union.inputs[1])
+                    store_compound_endpoint = node_group.nodes.new(
+                        "GeometryNodeStoreNamedAttribute"
+                    )
+                    store_compound_endpoint.data_type = "BOOLEAN"
+                    store_compound_endpoint.domain = "FACE"
+                    compound_name = _probe_compound_endpoint_attribute_name(
+                        witness_id,
+                        token_id,
+                    )
+                    store_compound_endpoint.inputs["Name"].default_value = compound_name
+                    node_group.links.new(
+                        cutter_geometry,
+                        store_compound_endpoint.inputs["Geometry"],
+                    )
+                    node_group.links.new(
+                        token_union.outputs["Boolean"],
+                        store_compound_endpoint.inputs["Value"],
+                    )
+                    cutter_geometry = store_compound_endpoint.outputs["Geometry"]
+                    per_cutter_compound_endpoint_names.append(
+                        (int(witness_id), token_id, compound_name)
+                    )
             node_group.links.new(
                 cutter_geometry,
                 boolean_node.inputs["Mesh 2"],
@@ -571,54 +644,21 @@ def _probe_multi_input_exact_boundary_witnesses(
             )
             current_geometry = transfer_owner.outputs["Geometry"]
         transferred_token_attribute_names = []
-        input_token_ids = tuple(sorted({
-            int(item.value)
-            for cutter in cutters
-            for attribute_name in (
-                CUTTER_START_PORT_TOKEN_ATTRIBUTE,
-                CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+        for pipe_id, token_id, compound_name in per_cutter_compound_endpoint_names:
+            named_compound_endpoint = node_group.nodes.new(
+                "GeometryNodeInputNamedAttribute"
             )
-            for attribute in (cutter.data.attributes.get(attribute_name),)
-            if attribute is not None and attribute.domain == "FACE"
-            for item in attribute.data
-            if int(item.value) > 0
-        }))
-        for token_id in input_token_ids:
-            compare_token_fields = []
-            for token_attribute_name in (
-                CUTTER_START_PORT_TOKEN_ATTRIBUTE,
-                CUTTER_END_PORT_TOKEN_ATTRIBUTE,
-            ):
-                named_token = node_group.nodes.new(
-                    "GeometryNodeInputNamedAttribute"
-                )
-                named_token.data_type = "INT"
-                named_token.inputs["Name"].default_value = token_attribute_name
-                compare_token = node_group.nodes.new("FunctionNodeCompare")
-                compare_token.data_type = "INT"
-                compare_token.operation = "EQUAL"
-                compare_token.inputs[3].default_value = token_id
-                node_group.links.new(
-                    named_token.outputs["Attribute"],
-                    compare_token.inputs[2],
-                )
-                compare_token_fields.append(compare_token.outputs["Result"])
-            token_union = node_group.nodes.new("FunctionNodeBooleanMath")
-            token_union.operation = "OR"
-            node_group.links.new(
-                compare_token_fields[0],
-                token_union.inputs[0],
-            )
-            node_group.links.new(
-                compare_token_fields[1],
-                token_union.inputs[1],
-            )
+            named_compound_endpoint.data_type = "BOOLEAN"
+            named_compound_endpoint.inputs["Name"].default_value = compound_name
             transfer_token = node_group.nodes.new(
                 "GeometryNodeStoreNamedAttribute"
             )
             transfer_token.data_type = "BOOLEAN"
             transfer_token.domain = "EDGE"
-            transfer_name = f"hst_probe_edge_port_token_{token_id}"
+            transfer_name = _probe_edge_compound_endpoint_attribute_name(
+                pipe_id,
+                token_id,
+            )
             transfer_token.inputs["Name"].default_value = transfer_name
             node_group.links.new(
                 current_geometry,
@@ -629,11 +669,49 @@ def _probe_multi_input_exact_boundary_witnesses(
                 transfer_token.inputs["Selection"],
             )
             node_group.links.new(
-                token_union.outputs["Boolean"],
+                named_compound_endpoint.outputs["Attribute"],
                 transfer_token.inputs["Value"],
             )
             current_geometry = transfer_token.outputs["Geometry"]
             transferred_token_attribute_names.append(transfer_name)
+        transferred_patch_attribute_names = []
+        for source_patch_id in sorted({
+            int(attribute.name.removeprefix(
+                SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX
+            ))
+            for attribute in source_object.data.attributes
+            if attribute.domain == "FACE"
+            and attribute.name.startswith(SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX)
+        }):
+            source_attribute_name = _source_patch_membership_attribute_name(
+                source_patch_id
+            )
+            named_source_patch = node_group.nodes.new(
+                "GeometryNodeInputNamedAttribute"
+            )
+            named_source_patch.data_type = "BOOLEAN"
+            named_source_patch.inputs["Name"].default_value = source_attribute_name
+            transfer_patch = node_group.nodes.new(
+                "GeometryNodeStoreNamedAttribute"
+            )
+            transfer_patch.data_type = "BOOLEAN"
+            transfer_patch.domain = "EDGE"
+            transfer_name = _boundary_patch_witness_attribute_name(source_patch_id)
+            transfer_patch.inputs["Name"].default_value = transfer_name
+            node_group.links.new(
+                current_geometry,
+                transfer_patch.inputs["Geometry"],
+            )
+            node_group.links.new(
+                boolean_node.outputs["Intersecting Edges"],
+                transfer_patch.inputs["Selection"],
+            )
+            node_group.links.new(
+                named_source_patch.outputs["Attribute"],
+                transfer_patch.inputs["Value"],
+            )
+            current_geometry = transfer_patch.outputs["Geometry"]
+            transferred_patch_attribute_names.append(transfer_name)
         node_group.links.new(
             current_geometry,
             group_output.inputs["Geometry"],
@@ -665,6 +743,7 @@ def _probe_multi_input_exact_boundary_witnesses(
                     for node in per_cutter_store_nodes
                 ),
                 tuple(transferred_token_attribute_names),
+                tuple(transferred_patch_attribute_names),
             )
         finally:
             if host is not None and host.name in bpy.data.objects:

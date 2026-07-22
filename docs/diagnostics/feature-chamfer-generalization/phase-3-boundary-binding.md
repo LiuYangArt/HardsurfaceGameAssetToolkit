@@ -154,3 +154,32 @@ Pipe 1 的 `4/12` Edge token 指向另一条 strand 的 Port，因此候选 witn
 per-Pipe/per-token one-hot 或补 source Patch field 后再做 plan assignment，不能把当前
 token 当 authoritative port。artifact：
 `/tmp/hst_multi_input_plan_assignment_probe_retry/feature_chamfer_multi_input_boolean_witness_probe.json`。
+
+最新 compound witness probe 已消除合成 degree-3 的跨 Pipe token 污染：在每个 Pipe
+输入进入同一个 multi-input Boolean 前写 `Pipe+endpoint token` 复合 FACE one-hot，
+Boolean 后再以 `Intersecting Edges` 转为 EDGE field；source Patch one-hot 同样转为
+EDGE witness。合成 degree-3 结果与 Collection Exact 继续保持 closed/open canonical
+等价，`12/12` Boundary Edge 得到唯一 Pipe/Patch/Rail witness，public
+`validate_boundary_witnesses()` 为 `PASS`，移除或冲突 witness 均 fail-closed。artifact：
+
+`/tmp/hst_compound_boundary_targeted/feature_chamfer_multi_input_boolean_witness_probe.json`
+
+真实目标矩阵仍没有达到 Backend Go：
+
+| case | Boundary | validated | 结果 |
+|---|---:|---:|---|
+| simple / `Solid 44` / `0.01` | 287 | 287 | PASS |
+| simple / `Solid 44` / `0.03` | 281 | 281 | PASS |
+| tricky / `Solid.004` / `0.01` | 2068 | 2052 | STOP |
+| tricky / `Solid.004` / `0.03` | 1985 | 1966 | STOP |
+
+tricky 的剩余缺口分两类：大多数原 Pipe/Patch 不相容 Edge 已可通过该 Edge 的 compound
+Port 映射到 `Rail endpoint_port_ids`，但仍有 `10/13` 条（两个 radius）native Boolean
+Boundary 完全没有 `Intersecting Edges`、Pipe、Patch 或 Port field；另有少量单端
+JunctionPort 在当前 `ChamferPlan` 中没有对应 Patch Rail。没有权威证据时继续 fail-closed，
+没有使用坐标、BVH、nearest 或全局 Fill。矩阵 artifact：
+
+`/tmp/hst_real_target_matrix_port_rails/feature_chamfer_multi_input_real_target_matrix_probe.json`
+
+因此 Phase 3 仍是 `PROTOTYPE / STOP`：没有修改 `_apply_difference()`、
+`build_pipe_chamfer()` 或 `hst.feature_chamfer_gn` runtime；禁止进入 Phase 4。
