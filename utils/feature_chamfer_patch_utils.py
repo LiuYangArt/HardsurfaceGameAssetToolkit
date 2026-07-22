@@ -244,6 +244,7 @@ def patch_boolean_result(
             legacy_context["groups"],
             legacy_context["pipe_trees"],
             legacy_context["pipe_bounds"],
+            legacy_context["source_object"],
             legacy_context["radius"],
             legacy_context["junction_count"],
             legacy_context["stats"],

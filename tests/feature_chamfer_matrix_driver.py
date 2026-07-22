@@ -27,6 +27,30 @@ CLASSIFICATIONS = {
     "REGRESSION_FAILURE",
     "SAFETY_PASS",
 }
+PHASE_1_FAMILIES = {
+    "AMBIGUOUS_BOUNDARY_GRAPH",
+    "SHARED_RAIL_PORT_RANGE",
+    "SIGNED_STRIP_WIDTH_EXCEEDED",
+}
+PHASE_1_PIPELINE_TIMER_KEYS = {
+    "feature_graph",
+    "pipe_build",
+    "cutter_pack",
+    "boolean_apply",
+    "boundary_classify",
+    "binding",
+    "regular_strips",
+    "junction",
+    "validation",
+    "cleanup",
+    "total",
+}
+PHASE_0_CLASSIFICATION_COUNTS = {
+    "EXPECTED_UNSUPPORTED": 0,
+    "PRODUCT_SUCCESS": 2,
+    "REGRESSION_FAILURE": 1,
+    "SAFETY_PASS": 11,
+}
 FIXTURE_HASHES = {
     "feature-chamfer-product-simple.blend": (
         "1cbab4c83c4d9f77bd2b0799257953aaec32aa416994a1d8810425f3c2b94d8c"
@@ -139,6 +163,59 @@ def json_value(value):
         return [json_value(item) for item in value]
     except TypeError:
         return str(value)
+
+
+# 从 backend stats 取出 Phase 1 诊断，保持缺失状态可被门禁显式发现。
+# backend_capture: Operator runtime 捕获的 backend 调用证据。
+def phase_1_diagnostics(backend_capture):
+    stats = backend_capture.get("stats", {})
+    diagnostics = stats.get("phase_1_diagnostics", {})
+    return json_value(diagnostics) if isinstance(diagnostics, dict) else {}
+
+
+# 返回 repetition 的主失败家族和 stable diagnostic IDs。
+# repetition: 单次 Operator 运行的完整诊断。
+def phase_1_family_identity(repetition):
+    families = repetition.get("phase_1_diagnostics", {}).get("families", [])
+    primary_families = [
+        item.get("family")
+        for item in families
+        if isinstance(item, dict) and item.get("family") in PHASE_1_FAMILIES
+    ]
+    diagnostic_ids = sorted(
+        item.get("diagnostic_id")
+        for item in families
+        if isinstance(item, dict) and item.get("diagnostic_id")
+    )
+    return primary_families, diagnostic_ids
+
+
+# 校验 Phase 1 pipeline timer contract，计时值不参与稳定 signature。
+# repetition: 单次 Operator 运行的完整诊断。
+def phase_1_pipeline_timers_valid(repetition):
+    pipeline = repetition.get("phase_1_diagnostics", {}).get("pipeline", {})
+    if not PHASE_1_PIPELINE_TIMER_KEYS.issubset(pipeline) or not all(
+        isinstance(pipeline[key], (int, float)) and pipeline[key] >= 0.0
+        for key in PHASE_1_PIPELINE_TIMER_KEYS
+    ):
+        return False
+    if pipeline["total"] <= 0.0:
+        return False
+    if repetition.get("classification") == "PRODUCT_SUCCESS":
+        return all(
+            pipeline[key] > 0.0
+            for key in PHASE_1_PIPELINE_TIMER_KEYS
+            if key not in {"junction"}
+        )
+    family_names, _ = phase_1_family_identity(repetition)
+    required_positive = {
+        "AMBIGUOUS_BOUNDARY_GRAPH": {"boundary_classify", "cleanup"},
+        "SHARED_RAIL_PORT_RANGE": {"binding", "regular_strips", "cleanup"},
+        "SIGNED_STRIP_WIDTH_EXCEEDED": {"binding", "regular_strips", "cleanup"},
+    }
+    return len(family_names) == 1 and all(
+        pipeline[key] > 0.0 for key in required_positive[family_names[0]]
+    )
 
 
 # 返回从坐标、拓扑、Sharp 标记与 transform 构造的 source fingerprint。
@@ -412,6 +489,7 @@ def classify_result(
 # 返回用于跨 repetition 比较的语义 fingerprint，排除计时和 Object 显示名。
 # repetition: 单次运行的完整诊断。
 def repetition_signature(repetition):
+    primary_families, diagnostic_ids = phase_1_family_identity(repetition)
     stable_payload = {
         "classification": repetition["classification"],
         "classification_reason": repetition["classification_reason"],
@@ -423,6 +501,8 @@ def repetition_signature(repetition):
         "backend_status": repetition["backend"].get("status"),
         "backend_error_code": repetition["backend"].get("error_code"),
         "backend_error_message": repetition["backend"].get("error_message"),
+        "phase_1_primary_families": primary_families,
+        "phase_1_diagnostic_ids": diagnostic_ids,
         "source_before": repetition["source_before"]["fingerprint"],
         "source_after_preview": repetition["source_after_preview"],
         "source_after_finalize": repetition["source_after_finalize"],
@@ -594,6 +674,7 @@ def run_repetition(
             "finalize_runtime_proven": finalize_runtime_proven,
         },
         "backend": json_value(backend_capture),
+        "phase_1_diagnostics": phase_1_diagnostics(backend_capture),
         "output": output,
         "final_state": final_state,
         "unexpected_pseudo_outputs": pseudo_outputs,
@@ -626,7 +707,7 @@ def write_summary(summary):
 # 无参数；配置通过环境变量由 host runner 注入。
 def main():
     if REPETITIONS < 2:
-        raise RuntimeError("Phase 0 requires at least two repetitions")
+        raise RuntimeError("Phase 1 requires at least two repetitions")
     actual_fixture_hashes = {
         fixture_name: file_sha256(FIXTURE_DIRECTORY / fixture_name)
         for fixture_name in FIXTURE_HASHES
@@ -657,7 +738,7 @@ def main():
     ]
     summary = {
         "status": "running",
-        "phase": 0,
+        "phase": 1,
         "blender_version": bpy.app.version_string,
         "blender_version_tuple": list(bpy.app.version),
         "repository_root": str(REPO_ROOT),
@@ -724,6 +805,30 @@ def main():
             and item.get("operator", {}).get("finalize_runtime_proven", False)
             for item in case["repetitions"]
         )
+        family_identities = [
+            phase_1_family_identity(item) for item in case["repetitions"]
+        ]
+        case["phase_1_primary_family"] = (
+            family_identities[0][0][0]
+            if family_identities
+            and len(family_identities[0][0]) == 1
+            and all(
+                identity[0] == family_identities[0][0]
+                for identity in family_identities
+            )
+            else None
+        )
+        case["phase_1_diagnostic_ids_stable"] = (
+            bool(family_identities)
+            and all(identity[1] for identity in family_identities)
+            and all(
+                identity[1] == family_identities[0][1]
+                for identity in family_identities
+            )
+        )
+        case["phase_1_pipeline_timers_valid"] = all(
+            phase_1_pipeline_timers_valid(item) for item in case["repetitions"]
+        )
         (case_directory / "diagnostics.json").write_text(
             json.dumps(case, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -736,7 +841,18 @@ def main():
         )
         for classification in sorted(CLASSIFICATIONS)
     }
-    go_conditions = {
+    non_product_cases = [
+        case for case in matrix_cases if case["classification"] != "PRODUCT_SUCCESS"
+    ]
+    family_objects = {
+        family: {
+            (case["fixture"], case["object_name"])
+            for case in non_product_cases
+            if case["phase_1_primary_family"] == family
+        }
+        for family in PHASE_1_FAMILIES
+    }
+    phase_0_go_conditions = {
         "fourteen_cells_recorded": len(matrix_cases) == 14,
         "all_cells_repeated": all(
             len(case["repetitions"]) == REPETITIONS for case in matrix_cases
@@ -761,15 +877,48 @@ def main():
         ),
         "fixture_hashes_valid": fixture_hashes_valid,
     }
+    phase_1_go_conditions = {
+        "phase_0_classification_semantics_unchanged": (
+            classification_counts == PHASE_0_CLASSIFICATION_COUNTS
+        ),
+        "phase_1_each_non_product_has_one_primary_family": all(
+            all(
+                len(phase_1_family_identity(repetition)[0]) == 1
+                for repetition in case["repetitions"]
+            )
+            and case["phase_1_primary_family"] in PHASE_1_FAMILIES
+            for case in non_product_cases
+        ),
+        "phase_1_diagnostic_ids_stable": all(
+            case["phase_1_diagnostic_ids_stable"] for case in non_product_cases
+        ),
+        "phase_1_each_family_has_two_objects": all(
+            len(objects) >= 2 for objects in family_objects.values()
+        ),
+        "phase_1_pipeline_timers_valid": all(
+            case["phase_1_pipeline_timers_valid"] for case in matrix_cases
+        ),
+    }
+    go_conditions = {**phase_0_go_conditions, **phase_1_go_conditions}
     summary.update(
         status="finished",
+        phase=1,
         classification_counts=classification_counts,
+        phase_1_family_objects={
+            family: sorted(f"{fixture}:{object_name}" for fixture, object_name in objects)
+            for family, objects in sorted(family_objects.items())
+        },
         go_conditions=go_conditions,
-        phase_0_go=all(go_conditions.values()),
+        phase_0_go=all(phase_0_go_conditions.values()),
+        phase_1_go=(
+            all(phase_0_go_conditions.values())
+            and all(phase_1_go_conditions.values())
+        ),
     )
     write_summary(summary)
     print("[HST_FEATURE_CHAMFER_MATRIX_SUMMARY] " + json.dumps({
         "phase_0_go": summary["phase_0_go"],
+        "phase_1_go": summary["phase_1_go"],
         "classification_counts": classification_counts,
         "go_conditions": go_conditions,
     }, ensure_ascii=False))
@@ -778,7 +927,7 @@ def main():
         addon_module.unregister()
     except Exception:
         traceback.print_exc()
-    if not summary["phase_0_go"]:
+    if not summary["phase_1_go"]:
         raise SystemExit(1)
 
 

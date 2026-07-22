@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """实验性 Sharp FeatureGraph → 多 Pipe → Boolean → Patch 实现。"""
 
+import hashlib
 import itertools
+import json
 import math
 import time
 
@@ -45,6 +47,18 @@ SUPPORTED_STAGES = {
     "REGULAR_PATCHED",
     "PATCHED",
 }
+PHASE_1_PIPELINE_STAGES = (
+    "feature_graph",
+    "pipe_build",
+    "cutter_pack",
+    "boolean_apply",
+    "boundary_classify",
+    "binding",
+    "regular_strips",
+    "junction",
+    "validation",
+    "cleanup",
+)
 
 
 class PipeChamferError(RuntimeError):
@@ -61,6 +75,19 @@ class PipeChamferError(RuntimeError):
         self.error_code = error_code
         self.stats = dict(stats)
         self.stats.update(status="failed", error_code=error_code, error_message=message)
+
+
+class StripWidthDiagnosticError(ValueError):
+    """携带 Regular Strip width guard 诊断，供 Operator runtime 记录失败证据。
+
+    Args:
+        message: 保持既有 wrapper message 的失败说明。
+        diagnostics: 与 BMesh 临时 index 无关的 Strip correspondence 诊断。
+    """
+
+    def __init__(self, message, diagnostics):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 # 创建 handoff 规定的结构化统计，所有分支都补齐同一组字段。
@@ -124,18 +151,149 @@ def _base_stats(
         "debug_object_names": [],
         "source_hidden": False,
         "warnings": [],
-        "timings": {},
+        "timings": {
+            **{stage: 0.0 for stage in PHASE_1_PIPELINE_STAGES},
+            "total": 0.0,
+        },
+        "phase_1_diagnostics": {
+            "schema_version": 1,
+            "families": [],
+            "pipeline": {},
+        },
     }
 
 
 # 抛出稳定失败并标记已生成对象，避免 debug 产物伪装成成功结果。
 # error_code: 稳定错误码；message: 失败说明；stats: 当前机器统计。
 def _fail(error_code, message, stats):
+    active_stage = stats.pop("_phase_1_active_stage", None)
+    active_started_at = stats.pop("_phase_1_active_started_at", None)
+    if active_stage is not None and active_started_at is not None:
+        stats["timings"][active_stage] += time.perf_counter() - active_started_at
+    started_at = stats.pop("_phase_1_started_at", None)
+    if started_at is not None:
+        stats["timings"]["total"] = time.perf_counter() - started_at
+    stats["phase_1_diagnostics"]["pipeline"] = dict(stats["timings"])
     for object_name in [stats.get("output_object_name"), *stats.get("debug_object_names", [])]:
         obj = bpy.data.objects.get(object_name) if object_name else None
         if obj is not None and not obj.name.endswith("_FAILED"):
             obj.name = f"{obj.name}_FAILED"
     raise PipeChamferError(error_code, message, stats)
+
+
+# 从只含稳定 provenance 的 JSON payload 生成短诊断 ID。
+# prefix/payload: 人类可读前缀与不含临时 BMesh index 的稳定字段。
+def _stable_diagnostic_id(prefix, payload):
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:16]}"
+
+
+# 追加 Phase 1 失败家族记录，并用 stable ID 连接 graph/span/port 证据。
+# stats/family/payload: 结构化统计、主失败家族与完整 evidence。
+# identity_payload: 可选的无临时 index 身份字段；省略时使用完整 payload。
+def _record_phase_1_family(stats, family, payload, identity_payload=None):
+    stable_identity = (
+        dict(identity_payload)
+        if identity_payload is not None
+        else dict(payload)
+    )
+    stable_id = _stable_diagnostic_id(family, stable_identity)
+    record = {
+        "diagnostic_id": stable_id,
+        "family": family,
+        **payload,
+    }
+    stats["phase_1_diagnostics"]["families"].append(record)
+    return record
+
+
+# 返回 Feature group 的稳定诊断摘要，排除 source BMesh index。
+# feature_groups: stats 中的 Feature group records。
+def _stable_feature_group_evidence(feature_groups):
+    return [
+        {
+            "patch_pair": list(group.get("patch_pair", [])),
+            "patch_pair_by_edge": sorted(
+                list(patch_pair)
+                for patch_pair in group.get("patch_pair_by_edge", [])
+            ),
+            "cyclic": bool(group.get("is_cyclic")),
+            "edge_count": len(group.get("edge_indices", [])),
+            "start_feature_degree": group.get("start_feature_degree"),
+            "end_feature_degree": group.get("end_feature_degree"),
+        }
+        for group in feature_groups
+    ]
+
+
+# 返回 Source Mesh Edge 的稳定坐标 key，不依赖 Mesh/BMesh index。
+# source_object/edge_indices: 原始 Mesh 与 provenance Edge index 序列。
+def _source_edge_coordinate_keys(source_object, edge_indices):
+    mesh = source_object.data
+    return sorted(
+        [
+            sorted(
+                tuple(
+                    round(float(component), 8)
+                    for component in mesh.vertices[vertex_index].co
+                )
+                for vertex_index in mesh.edges[edge_index].vertices
+            )
+            for edge_index in edge_indices
+        ]
+    )
+
+
+# 返回 rail 坐标序列的方向无关 canonical key。
+# coordinates: Rail 上的有序坐标序列。
+def _canonical_coordinate_sequence(coordinates):
+    sequence = tuple(
+        tuple(round(float(component), 8) for component in coordinate)
+        for coordinate in coordinates
+    )
+    reversed_sequence = tuple(reversed(sequence))
+    return min(sequence, reversed_sequence)
+
+
+# 开始一个 Phase 1 pipeline stage；同一时刻只允许一个活动 stage。
+# stats/stage: 当前统计与 PHASE_1_PIPELINE_STAGES 中的阶段名。
+def _start_phase_1_stage(stats, stage):
+    if stage not in PHASE_1_PIPELINE_STAGES:
+        raise ValueError(f"Unknown Phase 1 pipeline stage: {stage}")
+    if stats.get("_phase_1_active_stage") is not None:
+        raise RuntimeError(
+            f"Phase 1 stage already active: {stats['_phase_1_active_stage']}"
+        )
+    stats["_phase_1_active_stage"] = stage
+    stats["_phase_1_active_started_at"] = time.perf_counter()
+
+
+# 结束当前 Phase 1 pipeline stage，并把耗时累加到公开诊断。
+# stats/stage: 当前统计与预期结束的阶段名。
+def _finish_phase_1_stage(stats, stage):
+    active_stage = stats.pop("_phase_1_active_stage", None)
+    active_started_at = stats.pop("_phase_1_active_started_at", None)
+    if active_stage != stage or active_started_at is None:
+        raise RuntimeError(
+            f"Phase 1 stage mismatch: expected={stage}, active={active_stage}"
+        )
+    stats["timings"][stage] += time.perf_counter() - active_started_at
+
+
+# 完成成功路径的 Phase 1 timing schema，包括 debug stage 早退。
+# stats/started_at: 当前统计与整个 backend 的开始时刻。
+def _finish_phase_1_success(stats, started_at):
+    active_stage = stats.get("_phase_1_active_stage")
+    if active_stage is not None:
+        _finish_phase_1_stage(stats, active_stage)
+    stats["timings"]["total"] = time.perf_counter() - started_at
+    stats["phase_1_diagnostics"]["pipeline"] = dict(stats["timings"])
+    stats.pop("_phase_1_started_at", None)
+    return stats
 
 
 # 获取实验 Collection；该 Collection 只承载 output 与分阶段 debug artifacts。
@@ -1648,12 +1806,211 @@ def _clean_open_boundary_degenerates(bm, radius):
     }
 
 
+# 返回 BMesh vertex 的稳定坐标 key，不依赖临时 index。
+# vertex: 待标识的 Boundary BMVert。
+def _boundary_vertex_key(vertex):
+    return tuple(round(float(component), 8) for component in vertex.co)
+
+
+# 提取 BoundaryGraph component、junction 与 maximal degree-2 run 诊断。
+# boundary_edges/radius: 当前开放 Boundary Edges 与 Chamfer radius。
+def _boundary_graph_diagnostics(boundary_edges, groups, radius):
+    adjacency = {}
+    for edge in boundary_edges:
+        for vertex in edge.verts:
+            adjacency.setdefault(vertex, []).append(edge)
+    remaining_components = set(boundary_edges)
+    components = []
+    radius_scale = max(float(radius), 1.0e-12)
+    while remaining_components:
+        seed = min(
+            remaining_components,
+            key=lambda edge: sorted(
+                _boundary_vertex_key(vertex) for vertex in edge.verts
+            ),
+        )
+        component_edges = {seed}
+        pending = [seed]
+        remaining_components.remove(seed)
+        while pending:
+            edge = pending.pop()
+            for vertex in edge.verts:
+                for neighbor in adjacency[vertex]:
+                    if neighbor in remaining_components:
+                        remaining_components.remove(neighbor)
+                        component_edges.add(neighbor)
+                        pending.append(neighbor)
+        component_vertices = {
+            vertex for edge in component_edges for vertex in edge.verts
+        }
+        degree_by_vertex = {
+            vertex: sum(edge in component_edges for edge in adjacency[vertex])
+            for vertex in component_vertices
+        }
+        degree_histogram = {}
+        for degree in degree_by_vertex.values():
+            degree_histogram[str(degree)] = degree_histogram.get(str(degree), 0) + 1
+        edge_records = sorted(
+            (
+                sorted(_boundary_vertex_key(vertex) for vertex in edge.verts),
+                (edge.verts[1].co - edge.verts[0].co).length,
+            )
+            for edge in component_edges
+        )
+        junctions = []
+        for vertex, degree in degree_by_vertex.items():
+            if degree == 2:
+                continue
+            local_neighbors = sorted(
+                _boundary_vertex_key(edge.other_vert(vertex))
+                for edge in adjacency[vertex]
+                if edge in component_edges
+            )
+            junction_payload = {
+                "vertex": _boundary_vertex_key(vertex),
+                "degree": degree,
+                "neighbors": local_neighbors,
+            }
+            junctions.append(
+                {
+                    "junction_id": _stable_diagnostic_id(
+                        "boundary-junction",
+                        junction_payload,
+                    ),
+                    **junction_payload,
+                }
+            )
+        run_edges = set(component_edges)
+        maximal_runs = []
+        while run_edges:
+            run_seed = min(
+                run_edges,
+                key=lambda edge: sorted(
+                    _boundary_vertex_key(vertex) for vertex in edge.verts
+                ),
+            )
+            current_run = {run_seed}
+            pending = [run_seed]
+            run_edges.remove(run_seed)
+            while pending:
+                edge = pending.pop()
+                for vertex in edge.verts:
+                    if degree_by_vertex[vertex] != 2:
+                        continue
+                    for neighbor in adjacency[vertex]:
+                        if neighbor in run_edges:
+                            run_edges.remove(neighbor)
+                            current_run.add(neighbor)
+                            pending.append(neighbor)
+            run_vertices = sorted(
+                {
+                    _boundary_vertex_key(vertex)
+                    for edge in current_run
+                    for vertex in edge.verts
+                }
+            )
+            run_payload = {
+                "vertices": run_vertices,
+                "edge_count": len(current_run),
+                "junction_ports": sorted(
+                    {
+                        _boundary_vertex_key(vertex)
+                        for edge in current_run
+                        for vertex in edge.verts
+                        if degree_by_vertex[vertex] != 2
+                    }
+                ),
+            }
+            maximal_runs.append(
+                {
+                    "run_id": _stable_diagnostic_id("boundary-run", run_payload),
+                    **run_payload,
+                }
+            )
+        component_payload = {
+            "vertices": sorted(
+                _boundary_vertex_key(vertex) for vertex in component_vertices
+            ),
+            "edges": [record[0] for record in edge_records],
+        }
+        total_length = sum(record[1] for record in edge_records)
+        rail_candidates = sorted(
+            (
+                {
+                    "group_id": group["pipe_id"],
+                    "distance": round(
+                        _point_to_feature_group_distance(
+                            sum(
+                                (vertex.co for vertex in component_vertices),
+                                Vector(),
+                            )
+                            / len(component_vertices),
+                            group,
+                        ),
+                        6,
+                    ),
+                    "spans": [
+                        {
+                            "span_id": span["span_id"],
+                            "owner_patch_pair": list(span["patch_pair"]),
+                            "source_edge_count": len(span["source_edge_ids"]),
+                        }
+                        for span in _group_patch_pair_spans(group)
+                    ],
+                }
+                for group in groups
+            ),
+            key=lambda item: (item["distance"], item["group_id"]),
+        )
+        selected_candidates = rail_candidates[:3]
+        for rank, candidate in enumerate(selected_candidates):
+            candidate["rank"] = rank + 1
+            candidate["status"] = "PRIMARY" if rank == 0 else "ALTERNATE"
+            candidate["distance_radius_ratio"] = (
+                candidate["distance"] / radius_scale
+            )
+        candidate_selection = (
+            "SELECTED"
+            if len(selected_candidates) == 1
+            or selected_candidates[1]["distance"]
+            - selected_candidates[0]["distance"]
+            > max(float(radius) * 0.05, 1.0e-6)
+            else "AMBIGUOUS"
+        )
+        components.append(
+            {
+                "component_id": _stable_diagnostic_id(
+                    "boundary-component",
+                    component_payload,
+                ),
+                "vertex_degree_histogram": dict(sorted(degree_histogram.items())),
+                "junctions": sorted(junctions, key=lambda item: item["vertex"]),
+                "maximal_degree_2_runs": sorted(
+                    maximal_runs,
+                    key=lambda item: item["run_id"],
+                ),
+                "endpoint_vertices": sorted(
+                    _boundary_vertex_key(vertex)
+                    for vertex, degree in degree_by_vertex.items()
+                    if degree == 1
+                ),
+                "edge_count": len(component_edges),
+                "total_length": total_length,
+                "total_length_radius_ratio": total_length / radius_scale,
+                "rail_candidate_selection": candidate_selection,
+                "rail_candidates": selected_candidates,
+            }
+        )
+    return sorted(components, key=lambda item: item["component_id"])
+
+
 # 删除 cutter Faces 并把 BoundaryGraph 的连通边界环提取为有序 BMVert 序列。
 # output: Difference 结果；cutter_face_indices: 待删除 Face 索引；stats: 机器统计。
 def _open_boundary(
     output,
     cutter_face_indices,
     stats,
+    groups,
     radius,
     allow_non_simple=False,
 ):
@@ -1676,6 +2033,22 @@ def _open_boundary(
             bm.to_mesh(output.data)
             output.data.update()
             return bm, []
+        _record_phase_1_family(
+            stats,
+            "AMBIGUOUS_BOUNDARY_GRAPH",
+            {
+                "error_subtype": "non_degree2_rail_vertices",
+                "feature_groups": _stable_feature_group_evidence(
+                    stats.get("feature_groups", [])
+                ),
+                "boundary_components": _boundary_graph_diagnostics(
+                    boundary_edges,
+                    groups,
+                    radius,
+                ),
+                "radius": float(radius),
+            },
+        )
         bm.free()
         _fail("ambiguous_boundary", "BoundaryGraph contains non degree-2 rail vertices", stats)
     loops = []
@@ -1700,6 +2073,22 @@ def _open_boundary(
                 break
             loop.append(current)
         if current is not start or len(loop) < 3:
+            _record_phase_1_family(
+                stats,
+                "AMBIGUOUS_BOUNDARY_GRAPH",
+                {
+                    "error_subtype": "non_simple_boundary",
+                    "feature_groups": _stable_feature_group_evidence(
+                        stats.get("feature_groups", [])
+                    ),
+                    "boundary_components": _boundary_graph_diagnostics(
+                        boundary_edges,
+                        groups,
+                        radius,
+                    ),
+                    "radius": float(radius),
+                },
+            )
             bm.free()
             _fail("ambiguous_boundary", "BoundaryGraph contains a non-simple boundary", stats)
         loops.append(loop)
@@ -1912,12 +2301,32 @@ def build_chamfer_strip(
         )
     ):
         reasons.append("SIGNED_STRIP_WIDTH_EXCEEDED")
+    signed_width_deviations = [
+        width - expected_width
+        for width in widths
+    ] if expected_width is not None else []
+    first_failing_sample = next(
+        (
+            path_index
+            for path_index, width_error in enumerate(width_errors)
+            if maximum_width_error is not None and width_error > maximum_width_error
+        ),
+        None,
+    )
+    candidate_switch_points = [
+        path_index + 1
+        for path_index, ((index_a, index_b), (next_a, next_b)) in enumerate(
+            zip(path, path[1:])
+        )
+        if (next_a == index_a) != (next_b == index_b)
+    ]
     return {
         "faces": faces,
         "path": path,
         "diagnostics": {
             "status": "PASS" if not reasons else "FAIL",
             "reasons": reasons,
+            "path": path,
             "monotonic": all(
                 next_a >= index_a
                 and next_b >= index_b
@@ -1934,6 +2343,11 @@ def build_chamfer_strip(
             ) if expected_width is not None else 0.0,
             "maximum_relative_advance": maximum_relative_advance,
             "maximum_relative_advance_limit": maximum_relative_advance_limit,
+            "widths": widths,
+            "signed_width_deviations": signed_width_deviations,
+            "width_errors": width_errors,
+            "first_failing_sample": first_failing_sample,
+            "candidate_switch_points": candidate_switch_points,
             "one_sided_step_count": sum(
                 (next_a == index_a) != (next_b == index_b)
                 for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])
@@ -1962,9 +2376,10 @@ def _zipper_bridge_open(
         },
     )
     if strip["diagnostics"]["status"] != "PASS":
-        raise ValueError(
+        raise StripWidthDiagnosticError(
             "Open Rail correspondence guard failed: "
-            + ", ".join(strip["diagnostics"]["reasons"])
+            + ", ".join(strip["diagnostics"]["reasons"]),
+            strip["diagnostics"],
         )
     new_faces = []
     for face_indices in strip["faces"]:
@@ -4276,9 +4691,245 @@ def _rail_pair_chains_from_record(bm, record, boundary_edge_by_source_index):
     return left_chains[0], right_chains[0]
 
 
+# 将 Strip width guard 诊断转换为稳定的 Phase 1 failure profile。
+# stats/record/diagnostics/radius: 统计、Rail pair provenance、correspondence 诊断与倒角半径。
+def _record_strip_width_failure(
+    stats,
+    record,
+    diagnostics,
+    source_object,
+    radius,
+):
+    rail_left = [Vector(coordinate) for coordinate in record.get("rail_left", [])]
+    rail_right = [Vector(coordinate) for coordinate in record.get("rail_right", [])]
+    left_length = sum(
+        (following - current).length
+        for current, following in zip(rail_left, rail_left[1:])
+    )
+    right_length = sum(
+        (following - current).length
+        for current, following in zip(rail_right, rail_right[1:])
+    )
+    radius_scale = max(float(radius), 1.0e-12)
+    maximum_width_error = float(diagnostics.get("maximum_width_error", 0.0))
+    maximum_raw_width_error = float(diagnostics.get("maximum_raw_width_error", 0.0))
+    maximum_relative_advance = float(diagnostics.get("maximum_relative_advance", 0.0))
+    payload = {
+        "group_id": record.get("group_id"),
+        "span_id": record.get("span_id"),
+        "owner_patch_pair": [
+            record.get("left_patch_id"),
+            record.get("right_patch_id"),
+        ],
+        "source_edge_ids": list(record.get("source_edge_ids", [])),
+        "rail_sample_counts": {"left": len(rail_left), "right": len(rail_right)},
+        "rail_sample_density": {
+            "left_per_radius": len(rail_left) * radius_scale / max(left_length, 1.0e-12),
+            "right_per_radius": len(rail_right) * radius_scale / max(right_length, 1.0e-12),
+        },
+        "path": [list(pair) for pair in diagnostics.get("path", [])],
+        "widths": list(diagnostics.get("widths", [])),
+        "signed_width_deviations": list(diagnostics.get("signed_width_deviations", [])),
+        "width_errors": list(diagnostics.get("width_errors", [])),
+        "first_failing_sample": diagnostics.get("first_failing_sample"),
+        "candidate_switch_points": list(diagnostics.get("candidate_switch_points", [])),
+        "maximum_width_error": maximum_width_error,
+        "maximum_width_error_radius_ratio": maximum_width_error / radius_scale,
+        "maximum_raw_width_error": maximum_raw_width_error,
+        "maximum_raw_width_error_radius_ratio": maximum_raw_width_error / radius_scale,
+        "maximum_relative_advance": maximum_relative_advance,
+        "maximum_relative_advance_radius_ratio": maximum_relative_advance / radius_scale,
+        "width_error_inlier_ratio": float(
+            diagnostics.get("width_error_inlier_ratio", 1.0)
+        ),
+    }
+    _record_phase_1_family(
+        stats,
+        "SIGNED_STRIP_WIDTH_EXCEEDED",
+        payload,
+        identity_payload={
+            "owner_patch_pair": payload["owner_patch_pair"],
+            "source_edge_keys": _source_edge_coordinate_keys(
+                source_object,
+                record.get("source_edge_ids", []),
+            ),
+            "rails": sorted(
+                [
+                    _canonical_coordinate_sequence(record.get("rail_left", [])),
+                    _canonical_coordinate_sequence(record.get("rail_right", [])),
+                ]
+            ),
+            "radius": float(radius),
+        },
+    )
+
+
+# 返回 Rail sequence 中命中 shared edges 的 maximal contiguous ranges。
+# edge_indices/shared_edge_indices: 单侧 Rail Edge IDs 与全局 multi-owner Edge IDs。
+def _shared_rail_ranges(edge_indices, shared_edge_indices):
+    ranges = []
+    current = []
+    for position, edge_index in enumerate(edge_indices):
+        if edge_index in shared_edge_indices:
+            current.append(position)
+        elif current:
+            ranges.append([current[0], current[-1]])
+            current = []
+    if current:
+        ranges.append([current[0], current[-1]])
+    return ranges
+
+
+# 记录 Shared Rail endpoint-port contract 与 multi-owner seam 冲突。
+# stats/record/side/shared_positions/shared_indices/use_counts/boundary_map/radius: 失败上下文。
+def _record_shared_rail_failure(
+    stats,
+    record,
+    side,
+    shared_positions,
+    shared_edge_indices,
+    edge_use_counts,
+    boundary_edge_by_source_index,
+    source_object,
+    radius,
+):
+    left_indices = list(record["rail_left_edge_indices"])
+    right_indices = list(record["rail_right_edge_indices"])
+    relevant_shared = sorted(
+        set(left_indices + right_indices) & set(shared_edge_indices)
+    )
+    radius_scale = max(float(radius), 1.0e-12)
+    lengths = [
+        (
+            boundary_edge_by_source_index[edge_index].verts[1].co
+            - boundary_edge_by_source_index[edge_index].verts[0].co
+        ).length
+        for edge_index in relevant_shared
+        if edge_index in boundary_edge_by_source_index
+    ]
+    seam_records = []
+    for edge_index in relevant_shared:
+        edge = boundary_edge_by_source_index.get(edge_index)
+        if edge is None:
+            continue
+        seam_records.append(
+            {
+                "edge_key": sorted(
+                    _boundary_vertex_key(vertex) for vertex in edge.verts
+                ),
+                "owner_pairs": sorted(
+                    [
+                        [candidate.get("group_id"), candidate.get("span_id")]
+                        for candidate in stats.get("boolean_rail_pairs", [])
+                        if edge_index in candidate.get("boundary_edge_indices", [])
+                    ]
+                ),
+                "use_count": edge_use_counts[edge_index],
+            }
+        )
+    payload = {
+        "group_id": record.get("group_id"),
+        "span_id": record.get("span_id"),
+        "source_edge_ids": list(record.get("source_edge_ids", [])),
+        "owner_patch_pair": [
+            record.get("left_patch_id"),
+            record.get("right_patch_id"),
+        ],
+        "junction_port": {
+            "side": side,
+            "expected_contract": "exactly_one_shared_edge_at_chain_endpoint",
+            "expected_positions": [0, "last"],
+            "actual_positions": list(shared_positions),
+            "left_contiguous_ranges": _shared_rail_ranges(
+                left_indices,
+                shared_edge_indices,
+            ),
+            "right_contiguous_ranges": _shared_rail_ranges(
+                right_indices,
+                shared_edge_indices,
+            ),
+        },
+        "rail_candidates": {
+            "left_edge_count": len(left_indices),
+            "right_edge_count": len(right_indices),
+        },
+        "multi_owner_seam": {
+            "shared_edge_count": len(relevant_shared),
+            "edges": seam_records,
+        },
+        "edge_consumption_conflicts": [
+            {
+                "edge_key": seam_record["edge_key"],
+                "owners": seam_record["owner_pairs"],
+                "use_count": seam_record["use_count"],
+            }
+            for seam_record in seam_records
+        ],
+        "shared_chain_length": sum(lengths),
+        "shared_chain_length_radius_ratio": sum(lengths) / radius_scale,
+    }
+    _record_phase_1_family(
+        stats,
+        "SHARED_RAIL_PORT_RANGE",
+        payload,
+        identity_payload={
+            "owner_patch_pair": payload["owner_patch_pair"],
+            "source_edge_keys": _source_edge_coordinate_keys(
+                source_object,
+                record.get("source_edge_ids", []),
+            ),
+            "junction_port": {
+                "side_edge_count": (
+                    len(left_indices) if side == "left" else len(right_indices)
+                ),
+                "expected_contract": payload["junction_port"][
+                    "expected_contract"
+                ],
+                "actual_positions": sorted(
+                    min(
+                        position,
+                        (
+                            len(left_indices)
+                            if side == "left"
+                            else len(right_indices)
+                        )
+                        - 1
+                        - position,
+                    )
+                    for position in shared_positions
+                ),
+                "shared_edge_keys": sorted(
+                    edge["edge_key"]
+                    for edge in payload["multi_owner_seam"]["edges"]
+                ),
+            },
+            "multi_owner_seam": {
+                "edges": sorted(
+                    [
+                        {
+                            "edge_key": edge["edge_key"],
+                            "use_count": edge["use_count"],
+                        }
+                        for edge in payload["multi_owner_seam"]["edges"]
+                    ],
+                    key=lambda item: item["edge_key"],
+                )
+            },
+            "radius": float(radius),
+        },
+    )
+
+
 # 消费 Phase 2 RailPairRecords，逐 span 生成只跨两侧真实 Boundary Rails 的 Chamfer strips。
 # bm/rail_pairs/stats: open BMesh、已验收 records 与统计；返回新 Faces。
-def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
+def _patch_regular_rail_records(
+    bm,
+    rail_pairs,
+    stats,
+    source_object,
+    radius,
+    stage_finished_callback=None,
+):
     regular_faces = []
     patched_records = []
     original_boundary_edges = {
@@ -4315,6 +4966,17 @@ def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
             if not shared_positions:
                 continue
             if len(shared_positions) != 1 or shared_positions[0] not in {0, len(record[side_key]) - 1}:
+                _record_shared_rail_failure(
+                    stats,
+                    record,
+                    side,
+                    shared_positions,
+                    shared_edge_indices,
+                    edge_use_counts,
+                    boundary_edge_by_source_index,
+                    source_object,
+                    radius,
+                )
                 _fail(
                     "regular_patch_shared_rail_invalid",
                     f"Shared Rail is not a single endpoint Edge: group={record['group_id']} span={record['span_id']}",
@@ -4387,6 +5049,19 @@ def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
                     expected_width=radius * math.sqrt(2.0),
                     maximum_width_error=max(radius * 0.60, 1.0e-5),
                 )
+        except StripWidthDiagnosticError as error:
+            _record_strip_width_failure(
+                stats,
+                record,
+                error.diagnostics,
+                source_object,
+                radius,
+            )
+            _fail(
+                "regular_patch_invalid",
+                f"group={record.get('group_id')} span={record.get('span_id')}: {error}",
+                stats,
+            )
         except (IndexError, KeyError, ValueError, RuntimeError) as error:
             _fail(
                 "regular_patch_invalid",
@@ -4402,6 +5077,8 @@ def _patch_regular_rail_records(bm, rail_pairs, stats, radius):
                 "cyclic": bool(record.get("cyclic")),
             }
         )
+    if stage_finished_callback is not None:
+        stage_finished_callback()
     skipped_degenerate_edge_indices = {
         edge.index
         for edge in original_boundary_edges
@@ -4625,6 +5302,7 @@ def _patch_boundaries(
     groups,
     pipe_trees,
     pipe_bounds,
+    source_object,
     radius,
     junction_count,
     stats,
@@ -4636,11 +5314,23 @@ def _patch_boundaries(
     if not loops:
         _fail("ambiguous_boundary", "Difference produced no open boundary loops", stats)
     if boolean_rail_pairs is not None and debug_stage in {"REGULAR_PATCHED", "PATCHED"}:
+        regular_stage_finished = False
+
+        # 在 regular strip 全部成功后把 timer 交给 junction stage。
+        # 无参数；闭包只更新当前 stats 的活动 Phase 1 stage。
+        def finish_regular_stage():
+            nonlocal regular_stage_finished
+            if not regular_stage_finished:
+                _finish_phase_1_stage(stats, "regular_strips")
+                regular_stage_finished = True
+
         regular_faces = _patch_regular_rail_records(
             bm,
             boolean_rail_pairs,
             stats,
+            source_object,
             radius,
+            stage_finished_callback=finish_regular_stage,
         )
         _clean_degenerate_strip_ports(bm, radius, stats)
         _remove_overconnected_patch_faces(bm, stats)
@@ -4657,6 +5347,7 @@ def _patch_boundaries(
         stats["_chamfer_faces"] = set(regular_faces)
         if debug_stage == "REGULAR_PATCHED":
             return regular_faces, []
+        _start_phase_1_stage(stats, "junction")
         junction_faces = _patch_local_junction_ports(
             bm,
             remaining_ports,
@@ -4693,6 +5384,7 @@ def _patch_boundaries(
         chamfer_faces = set(regular_faces + junction_faces)
         bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
         stats["_chamfer_faces"] = chamfer_faces
+        _finish_phase_1_stage(stats, "junction")
         return regular_faces, junction_faces
     if debug_stage == "PATCHED":
         regular_faces, junction_faces = _bridge_then_fill(
@@ -4843,6 +5535,7 @@ def _build_pipe_chamfer_impl(
         junction_margin,
         debug_stage,
     )
+    stats["_phase_1_started_at"] = started_at
     if source_object is None or source_object.type != "MESH":
         _fail("invalid_context", "Active Object must be a Mesh", stats)
     if source_object.mode != "OBJECT":
@@ -4857,6 +5550,7 @@ def _build_pipe_chamfer_impl(
     if source_risks["non_manifold"]:
         _fail("source_not_closed_manifold", "Source Mesh must be closed manifold", stats)
 
+    _start_phase_1_stage(stats, "feature_graph")
     if feature_graph_contract == "GN_PREVIEW_V1":
         groups = _build_preview_feature_graph(source_object, radius, stats)
     elif feature_graph_contract == "EXPERIMENTAL":
@@ -4873,13 +5567,14 @@ def _build_pipe_chamfer_impl(
             f"Unsupported FeatureGraph contract: {feature_graph_contract}",
             stats,
         )
-    stats["timings"]["feature_graph"] = time.perf_counter() - started_at
+    _finish_phase_1_stage(stats, "feature_graph")
     _classify_pipe_endpoints(source_object, groups, radius)
     collection = _get_collection()
     if debug_stage == "FEATURE_GRAPH":
         stats["status"] = "finished"
-        return stats
+        return _finish_phase_1_success(stats, started_at)
 
+    _start_phase_1_stage(stats, "pipe_build")
     pipes = [
         _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection)
         for group in groups
@@ -4902,7 +5597,7 @@ def _build_pipe_chamfer_impl(
             "vertex_count": len(pipe.data.vertices),
             "face_count": len(pipe.data.polygons),
         }
-    stats["timings"]["pipe_build"] = time.perf_counter() - started_at - sum(stats["timings"].values())
+    _finish_phase_1_stage(stats, "pipe_build")
     stats["debug_object_names"] = [pipe.name for pipe in pipes]
     stats["pipe_endpoint_extensions"] = [
         {
@@ -4937,15 +5632,20 @@ def _build_pipe_chamfer_impl(
         if not keep_debug_objects:
             stats["warnings"].append("PIPES stage forces debug Pipe objects to remain visible")
         stats["status"] = "finished"
-        return stats
+        return _finish_phase_1_success(stats, started_at)
 
-    cutter_collection, pipe_trees, pipe_bounds = _build_cutter_set(pipes, source_object, stats)
-    stats["timings"]["cutter_pack"] = time.perf_counter() - started_at - sum(stats["timings"].values())
+    _start_phase_1_stage(stats, "cutter_pack")
+    cutter_collection, pipe_trees, pipe_bounds = _build_cutter_set(
+        pipes,
+        source_object,
+        stats,
+    )
+    _finish_phase_1_stage(stats, "cutter_pack")
     if debug_stage == "CUTTER_UNION":
         if not preserve_source_visibility:
             _hide_source_object(source_object, stats)
         stats["status"] = "finished"
-        return stats
+        return _finish_phase_1_success(stats, started_at)
 
     output = _duplicate_source(source_object, collection)
     disabled_modifier_names = [
@@ -4966,14 +5666,16 @@ def _build_pipe_chamfer_impl(
         )
         stats["status"] = "finished"
         _activate_object(output)
-        return stats
+        return _finish_phase_1_success(stats, started_at)
 
+    _start_phase_1_stage(stats, "boolean_apply")
     marker_index = _apply_difference(
         output,
         cutter_collection,
         _source_face_patch_ids(source_object),
     )
-    stats["timings"]["boolean_apply"] = time.perf_counter() - started_at - sum(stats["timings"].values())
+    _finish_phase_1_stage(stats, "boolean_apply")
+    _start_phase_1_stage(stats, "boundary_classify")
     cutter_face_indices = _groove_face_indices(output, stats)
     stats["cutter_face_count"] = len(cutter_face_indices)
     if not cutter_face_indices:
@@ -4990,9 +5692,11 @@ def _build_pipe_chamfer_impl(
         output,
         cutter_face_indices,
         stats,
+        groups,
         radius,
         allow_non_simple=debug_stage == "OPEN_BOUNDARY",
     )
+    _finish_phase_1_stage(stats, "boundary_classify")
     bm.verts.index_update()
     bm.edges.index_update()
     bm.faces.index_update()
@@ -5002,6 +5706,7 @@ def _build_pipe_chamfer_impl(
     bm.to_mesh(output.data)
     output.data.update()
     stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
+    _start_phase_1_stage(stats, "binding")
     boundary_rails, boundary_rail_topology = _final_boolean_boundary_rails(
         bm,
         groups,
@@ -5135,11 +5840,13 @@ def _build_pipe_chamfer_impl(
         "boolean": boolean_rail_summary,
         "source_surface": surface_rail_summary,
     }
+    _finish_phase_1_stage(stats, "binding")
     if debug_stage == "OPEN_BOUNDARY":
         bm.free()
         stats["status"] = "finished"
     else:
         junction_count = stats["topology_junction_count"] + stats["spatial_junction_count"]
+        _start_phase_1_stage(stats, "regular_strips")
         patch_boolean_result(
             legacy_context={
                 "bm": bm,
@@ -5147,6 +5854,7 @@ def _build_pipe_chamfer_impl(
                 "groups": groups,
                 "pipe_trees": pipe_trees,
                 "pipe_bounds": pipe_bounds,
+                "source_object": source_object,
                 "radius": radius,
                 "junction_count": junction_count,
                 "stats": stats,
@@ -5157,6 +5865,7 @@ def _build_pipe_chamfer_impl(
                 "boundary_rail_topology": boundary_rail_topology,
             }
         )
+        _start_phase_1_stage(stats, "validation")
         stats["boundary_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) == 1)
         stats["non_manifold_edge_count_after"] = sum(1 for edge in bm.edges if len(edge.link_faces) != 2)
         stats["zero_area_face_count"] = sum(1 for face in bm.faces if face.calc_area() <= 1.0e-12)
@@ -5309,7 +6018,9 @@ def _build_pipe_chamfer_impl(
             stats["chamfer_face_count"] = len(chamfer_face_indices)
             stats["normal_transfer_modifier"] = NORMAL_TRANSFER_MODIFIER
         stats["status"] = "finished"
+        _finish_phase_1_stage(stats, "validation")
 
+    _start_phase_1_stage(stats, "cleanup")
     if not keep_debug_objects and debug_stage not in {"PIPES", "CUTTER_UNION"}:
         for debug_object in pipes:
             if debug_object.name in bpy.data.objects:
@@ -5318,8 +6029,8 @@ def _build_pipe_chamfer_impl(
             bpy.data.collections.remove(cutter_collection)
         stats["debug_object_names"] = []
     _activate_object(output)
-    stats["timings"]["total"] = time.perf_counter() - started_at
-    return stats
+    _finish_phase_1_stage(stats, "cleanup")
+    return _finish_phase_1_success(stats, started_at)
 
 
 # 事务式运行 Pipe Chamfer：失败时清理本轮资源，成功后才替换同 source 的旧结果。
@@ -5361,7 +6072,8 @@ def build_pipe_chamfer(
             feature_graph_contract=feature_graph_contract,
             preserve_source_visibility=preserve_source_visibility,
         )
-    except Exception:
+    except Exception as error:
+        cleanup_started_at = time.perf_counter()
         source_object.hide_set(source_was_hidden)
         for obj in list(bpy.data.objects):
             if obj not in previous_objects:
@@ -5376,6 +6088,14 @@ def build_pipe_chamfer(
             if collection not in previous_collections:
                 bpy.data.collections.remove(collection)
         bpy.context.view_layer.update()
+        if isinstance(error, PipeChamferError):
+            cleanup_elapsed = time.perf_counter() - cleanup_started_at
+            timings = error.stats.get("timings", {})
+            timings["cleanup"] = timings.get("cleanup", 0.0) + cleanup_elapsed
+            timings["total"] = timings.get("total", 0.0) + cleanup_elapsed
+            error.stats.setdefault("phase_1_diagnostics", {})["pipeline"] = dict(
+                timings
+            )
         raise
     for obj in previous_source_results:
         if obj.name in bpy.data.objects:

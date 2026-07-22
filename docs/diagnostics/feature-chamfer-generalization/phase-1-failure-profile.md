@@ -1,10 +1,38 @@
 # Feature Chamfer 通用化 Phase 1 失败剖面
 
 > 日期：2026-07-22；状态：`PROTOTYPE`；Phase 1：`GO`；产品整体：`NOT VERIFIED`。
-> 目标 Operator：`hst.feature_chamfer_gn`；动作：`PREVIEW` → `FINALIZE`。
-> 失败聚焦：mixed / `Extruded.002` / radius=0.01 的 `REGRESSION_FAILURE`。
+> 目标 Operator：`hst.feature_chamfer_gn`；动作：`INVOKE_DEFAULT` 下 `PREVIEW` → `FINALIZE`。
+> 自动证据：`tests/artifacts/feature_chamfer_matrix/results.json`；每 cell `diagnostics.json` 与 `preview.blend` / `final.blend`。
 
-## 结论
+## 入口契约与结论
+
+```text
+UI Feature Chamfer GN
+→ hst.feature_chamfer_gn
+→ invoke(action=PREVIEW / FINALIZE)
+→ GN_PREVIEW_V1 runtime
+→ 用户可见 Preview 或独立 Finalize output / 精确 fail-closed
+```
+
+两次 14-cell matrix 从该 Operator 入口运行，Phase 0 产品语义未变：2 `PRODUCT_SUCCESS`、11 `SAFETY_PASS`、1 `REGRESSION_FAILURE`。source fingerprint 全部不变，runtime path 全部得到证明。所有非产品成功 cell 各归入且仅归入一个稳定失败家族：
+
+| 主失败家族 | cells | 不同真实对象 |
+|---|---:|---:|
+| `AMBIGUOUS_BOUNDARY_GRAPH` | 4 | 2 |
+| `SIGNED_STRIP_WIDTH_EXCEEDED` | 6 | 4 |
+| `SHARED_RAIL_PORT_RANGE` | 2 | 2 |
+
+每个失败记录 stable diagnostic ID；ID 在两次 repetition 中一致。pipeline 记录 `feature_graph`、`pipe_build`、`cutter_pack`、`boolean_apply`、`boundary_classify`、`binding`、`regular_strips`、`junction`、`validation`、`cleanup`、`total`，所有值均非负。
+
+## 家族证据
+
+- `AMBIGUOUS_BOUNDARY_GRAPH`：记录 Feature groups、Boundary component stable ID、坐标 key、degree histogram、degree≠2 local graph、100% Edge coverage 的 maximal degree-2 runs、JunctionPort、endpoints、长度及 radius ratio；每个 component 以距离/radius 排序并保留 top-3 Rail candidates，绑定 span 与 owner Patch，显式标记 `SELECTED` / `AMBIGUOUS`。
+- `SHARED_RAIL_PORT_RANGE`：记录 group/span、owner Patch pair、Rail candidate counts、期望 JunctionPort 合同、实际 positions/contiguous ranges、multi-owner seam、edge consumption use count 与 radius-normalized chain length。
+- `SIGNED_STRIP_WIDTH_EXCEEDED`：记录 group/span、owner Patch pair、两侧采样数/密度、correspondence path、width/signed deviation/error 序列、first failing sample、candidate switch points 与 radius-normalized maxima；guard 和阈值未改。
+
+matrix 保留每 cell 的 `preview.blend` / `final.blend` 作为最小失败现场；结构化局部证据保存在同目录的 `diagnostics.json`。
+
+## Mixed 0.01 深入剖面
 
 mixed / `Extruded.002` / 0.01 的 `regular_patch_invalid` 不是随机失败，而是 `build_chamfer_strip`（`utils/experimental_pipe_chamfer_utils.py` 中的 open rail strip builder）在特定 rail pair 上因边界采样不均造成的“数值级退化”。同一对象在 radius=0.03 时则因另一前置 guard（`shared_rail_invalid`）而安全失败，避开了该路径。因此该 regression 不说明整个对象不可倒角，而是当前 strip builder 对长边/非均匀采样的容忍度过低，导致一个理论上可处理的 open rail pair 被误判为宽度超限。
 
@@ -79,18 +107,18 @@ mixed / `Extruded.002` / 0.03 的 `error_code` 是 `regular_patch_shared_rail_in
 2. **根因假设 B**：geometry guard 在验收 rail pair 时只看 inlier ratio 与投影连续性，未对 `max_edge_length / radius` 设限，导致 Numerically unreliable 的 pair 进入 strip builder。
 3. **根因假设 C**：`_zipper_bridge_open` 的 `expected_width` 使用固定 `radius * sqrt(2)`，但某些 rail pair 实际宽度因来源不同（open pipe 与 boolean boundary 混合）与该值差异较大，应允许按 pair 自适应宽度或 fallback 到三角化。
 
-## 建议进入 Phase 2 前必须回答的问题
+## Phase 2 尚需回答的问题
 
 - 该 group 17 span 1 的 rail pair 在 Preview 阶段是否可见？其长边对应 source mesh 的哪个 Sharp Edge / face boundary？
 - 若对 group 17 span 1 的边界边做均匀重采样（subdivide 长边），strip builder 是否通过？是否生成合法 mesh？
 - 该失败是否可以通过放宽 `maximum_relative_advance_limit` 临时绕过？对产品拓扑/视觉的影响是什么？
-- 是否应将该对象在 radius=0.01 时标记为 `EXPECTED_UNSUPPORTED`，因为存在超长边？还是需要修改算法以支持该输入？
+- 该输入仍在既有合同内，当前保持 `REGRESSION_FAILURE`，不得为提高成功率改成 `EXPECTED_UNSUPPORTED`。
 
 ## 明确未做
 
-- 未修改 `utils/experimental_pipe_chamfer_utils.py` 或任何 Feature Chamfer 实现。
-- 未修改矩阵 runner 的分类。
-- 未运行 Blender 或重新生成 artifact；本阶段只基于现有 diagnostics.json 做分析。
+- 未修改产品算法、guard threshold、fixture、`auto_load.py` 或 Operator 分类。
+- 未建立或接入 Phase 2 `ChamferPlan`，未修复任何失败家族。
+- 未进行 UI 人工验收，因此产品状态仍为 `NOT VERIFIED`，没有跨级声明。
 
 ## 验证命令
 
@@ -98,8 +126,8 @@ mixed / `Extruded.002` / 0.03 的 `error_code` 是 `regular_patch_shared_rail_in
 python tools/run_feature_chamfer_matrix.py --blender /Applications/Blender.app/Contents/MacOS/Blender --repetitions 2
 ```
 
-Phase 0 已执行并产出基线；Phase 1 仅读取 `tests/artifacts/feature_chamfer_matrix/` 下的 JSON 证据。
+Phase 1 重跑结果：`phase_0_go=true`、`phase_1_go=true`。完整回归 80/81；唯一失败仍为已冻结的 `gn_finalize_mixed_fixture_terminal_topology_regression`，对应 mixed / 0.01 的已知产品回归。
 
-## 下一阶段（Phase 2）候选入口
+## 下一阶段（Phase 2）入口
 
-根据 roadmap，Phase 2 是“建立统一 `ChamferPlan` 语义计划”。本剖面建议在进入 Phase 2 前，先对 group 17 span 1 做一个最小可复现 probe，验证“重采样长边”能否消除 `SIGNED_STRIP_WIDTH_EXCEEDED`，以决定是否把“rail boundary 重采样”作为 `ChamferPlan` 的必填步骤。
+按 roadmap 进入共享 `ChamferPlan` shadow prototype；新 plan 不驱动最终 Mesh。group 17 span 1 的长边证据作为 `StripCorrespondence` 采样合同输入，不提前修改正式 runtime 或 guard。
