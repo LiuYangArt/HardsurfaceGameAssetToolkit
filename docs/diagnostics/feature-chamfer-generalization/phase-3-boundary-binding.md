@@ -146,3 +146,11 @@ namespace 也可读。artifact：
 
 当前还缺 source Patch→Rail assignment 与两个真实目标矩阵；该 helper 仍只由测试调用，
 没有进入 `_apply_difference()` 或 Operator。状态仍为 `PROTOTYPE / STOP`。
+
+把上述 Pipe owner 与 endpoint token 映射回 `ChamferPlan` 后，又发现 token 仍不足以直接
+构造最终 `BoundaryWitness`：degree-3 fixture 中 `8/12` Edge 可唯一命中当前模板，
+Pipe 1 的 `4/12` Edge token 指向另一条 strand 的 Port，因此候选 witness 为零。该结果
+证明 token field 在 multi-input Boolean 的 cutter union 上会被共享/遮挡，必须改成
+per-Pipe/per-token one-hot 或补 source Patch field 后再做 plan assignment，不能把当前
+token 当 authoritative port。artifact：
+`/tmp/hst_multi_input_plan_assignment_probe_retry/feature_chamfer_multi_input_boolean_witness_probe.json`。

@@ -5183,6 +5183,35 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         key=lambda item: int(item[utils.PIPE_ID_TAG]),
     ))
     source_patch_ids = utils._source_face_patch_ids(source)
+    plan_stats = utils._base_stats(
+        source,
+        radius,
+        8,
+        35.0,
+        3.0,
+        1.5,
+        "FEATURE_GRAPH",
+    )
+    groups = utils._build_preview_feature_graph(source, radius, plan_stats)
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        groups,
+        radius,
+        "GN_PREVIEW_V1",
+    )
+    witnesses_by_pipe_id = utils._build_pipe_boundary_witnesses(
+        plan,
+        groups,
+        source.data,
+    )
+    _, endpoint_registry = utils._build_strand_endpoint_port_tokens(
+        plan,
+        groups,
+        source.data,
+    )
+    port_id_by_token = {
+        record.token: record.port_id for record in endpoint_registry
+    }
     collection_output = utils._duplicate_source(source, collection)
     utils._mark_original_faces(collection_output, source_patch_ids)
     utils._initialize_source_membership_schema(
@@ -5325,6 +5354,30 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 for edge_index, owner_ids in boundary_owner_candidates.items()
                 if len(owner_ids) > 1
             ),
+            "boundary_plan_assignments": {
+                edge_index: {
+                    "owner_pipe_ids": owner_ids,
+                    "endpoint_port_ids": sorted({
+                        port_id_by_token[token]
+                        for token in boundary_endpoint_tokens[edge_index]
+                        if token in port_id_by_token
+                    }),
+                    "candidate_witness_ids": sorted({
+                        witness.witness_id
+                        for pipe_id in owner_ids
+                        for witness in witnesses_by_pipe_id.get(pipe_id, ())
+                        if (
+                            not boundary_endpoint_tokens[edge_index]
+                            or witness.junction_port_id in {
+                                port_id_by_token[token]
+                                for token in boundary_endpoint_tokens[edge_index]
+                                if token in port_id_by_token
+                            }
+                        )
+                    }),
+                }
+                for edge_index, owner_ids in boundary_owner_candidates.items()
+            },
         }
         artifact_path.write_text(
             json.dumps(artifact, indent=2, sort_keys=True),

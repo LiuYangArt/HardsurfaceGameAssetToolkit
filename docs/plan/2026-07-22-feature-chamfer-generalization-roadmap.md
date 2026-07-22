@@ -243,6 +243,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > multi-input field transfer 后已在同拓扑 result 上得到 `12/12` 唯一 per-Pipe EDGE owner，endpoint token one-hot namespace 也可读；仍缺 source Patch→Rail assignment 与两个真实对象×两个半径验收。helper 仍为 test-only，Phase 3 继续 `PROTOTYPE / STOP`。
 
+> plan assignment probe 显示现有 endpoint token 仍会在 cutter union 中跨 Pipe 污染：`8/12` Edge 可唯一命中 witness 模板，Pipe 1 的 `4/12` Edge 命中了另一 strand Port。禁止把该 token 当 authoritative port；需改 per-Pipe/per-token one-hot 并补 Patch→Rail 证据。Phase 3 状态不变。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。
