@@ -3524,6 +3524,107 @@ def test_feature_chamfer_authoritative_boundary_binding_fail_closed_regression(
     result.add_detail(json.dumps(records, sort_keys=True))
 
 
+# 验证 production joined cutter 的双 component 与 source patch Face provenance 会经 Exact Boolean 传播。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boolean_component_owner_producer_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BooleanComponentOwnerProducer")
+    source = make_test_mesh("BooleanComponentOwnerSource", collection)
+    input_patch_ids = tuple(101 + index for index in range(len(source.data.polygons)))
+    expected_retained_patch_ids = {
+        input_patch_ids[index]
+        for index in (1, 3, 4, 5)
+    }
+    pipe_a = make_test_mesh("BooleanComponentOwnerPipeA", collection, location=(-0.7, 0.0, 0.0))
+    pipe_b = make_test_mesh("BooleanComponentOwnerPipeB", collection, location=(0.7, 0.0, 0.0))
+    for pipe, pipe_id in ((pipe_a, 7), (pipe_b, 8)):
+        pipe.scale = (0.35, 0.35, 0.35)
+        pipe["hst_pipe_id"] = pipe_id
+        pipe.data.transform(pipe.matrix_local)
+        pipe.matrix_world = source.matrix_world.copy()
+    cutter_collection = bpy.data.collections.new("BooleanComponentOwnerCutters")
+    bpy.context.scene.collection.children.link(cutter_collection)
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    cutter = utils._build_joined_cutter_mesh(
+        [pipe_a, pipe_b],
+        source,
+        cutter_collection,
+        0,
+    )
+    bpy.context.view_layer.update()
+    utils._mark_original_faces(source, input_patch_ids)
+    modifier = source.modifiers.new("Authoritative owner probe", type="BOOLEAN")
+    modifier.operation = "DIFFERENCE"
+    modifier.solver = "EXACT"
+    modifier.operand_type = "OBJECT"
+    modifier.object = cutter
+    with bpy.context.temp_override(
+        object=source,
+        active_object=source,
+        selected_objects=[source],
+        selected_editable_objects=[source],
+    ):
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+    component = source.data.attributes.get("hst_pipe_component_id")
+    component_present = source.data.attributes.get("hst_pipe_component_id_present")
+    original = source.data.attributes.get("hst_pipe_original_face")
+    patch = source.data.attributes.get("hst_pipe_source_patch_id")
+    source_present = source.data.attributes.get("hst_pipe_source_patch_id_present")
+    ensure(
+        all(attribute is not None and attribute.domain == "FACE" for attribute in (
+            component,
+            component_present,
+            original,
+            patch,
+            source_present,
+        )),
+        "Exact Boolean lost authoritative Face provenance attributes",
+    )
+    groove_indices = [
+        polygon.index
+        for polygon in source.data.polygons
+        if not bool(original.data[polygon.index].value)
+    ]
+    retained_indices = [
+        polygon.index
+        for polygon in source.data.polygons
+        if bool(original.data[polygon.index].value)
+    ]
+    retained_patch_ids = {
+        patch.data[index].value
+        for index in retained_indices
+    }
+    result.add_detail(
+        json.dumps(
+            {
+                "owners": [component.data[index].value for index in groove_indices],
+                "component_present_groove": [bool(component_present.data[index].value) for index in groove_indices],
+                "source_present_groove": [bool(source_present.data[index].value) for index in groove_indices],
+                "component_present_retained": [bool(component_present.data[index].value) for index in retained_indices],
+                "source_present_retained": [bool(source_present.data[index].value) for index in retained_indices],
+                "retained_patches": [patch.data[index].value for index in retained_indices],
+            },
+            sort_keys=True,
+        )
+    )
+    ensure(
+        groove_indices
+        and {component.data[index].value for index in groove_indices} == {7, 8}
+        and all(bool(component_present.data[index].value) for index in groove_indices)
+        and all(not bool(source_present.data[index].value) for index in groove_indices)
+        and all(not bool(component_present.data[index].value) for index in retained_indices)
+        and all(bool(source_present.data[index].value) for index in retained_indices)
+        and retained_indices
+        and retained_patch_ids == expected_retained_patch_ids,
+        "Exact Boolean component/source present provenance is incomplete",
+    )
+    result.add_detail(
+        f"production joined cutter preserved owners=7,8 on {len(groove_indices)} groove Faces"
+    )
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -5221,6 +5322,10 @@ def main():
     context.run_case(
         "feature_chamfer_authoritative_boundary_binding_fail_closed_regression",
         test_feature_chamfer_authoritative_boundary_binding_fail_closed_regression,
+    )
+    context.run_case(
+        "feature_chamfer_boolean_component_owner_producer_smoke",
+        test_feature_chamfer_boolean_component_owner_producer_smoke,
     )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case(

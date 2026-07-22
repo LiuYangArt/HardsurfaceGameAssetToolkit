@@ -35,6 +35,9 @@ PIPE_ID_TAG = "hst_pipe_id"
 DEBUG_STAGE_TAG = "hst_pipe_chamfer_stage"
 ORIGINAL_FACE_ATTRIBUTE = "hst_pipe_original_face"
 SOURCE_PATCH_ID_ATTRIBUTE = "hst_pipe_source_patch_id"
+CUTTER_COMPONENT_ID_ATTRIBUTE = "hst_pipe_component_id"
+CUTTER_COMPONENT_PRESENT_ATTRIBUTE = "hst_pipe_component_id_present"
+SOURCE_PATCH_PRESENT_ATTRIBUTE = "hst_pipe_source_patch_id_present"
 CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"
 NORMAL_TRANSFER_MODIFIER = "HST Pipe Chamfer Normal Transfer"
 MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
@@ -1587,6 +1590,8 @@ def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
         collection,
     )
 
+# 把一批 source-local Pipe 合并为一个不做 Boolean Union 的 Cutter Mesh，并写入每个 Face 的 Pipe owner provenance。
+# pipes: 已生成的 source-local Pipe Objects；source_object: matrix_world 来源；cutter_collection: Cutter 输出集合；cutter_index: 当前 batch 的稳定序号。
 def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_index):
     vertices = []
     faces = []
@@ -1603,12 +1608,18 @@ def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_in
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
     pipe_id_attribute = mesh.attributes.new(
-        "hst_pipe_component_id",
+        CUTTER_COMPONENT_ID_ATTRIBUTE,
         type="INT",
+        domain="FACE",
+    )
+    pipe_present_attribute = mesh.attributes.new(
+        CUTTER_COMPONENT_PRESENT_ATTRIBUTE,
+        type="BOOLEAN",
         domain="FACE",
     )
     for polygon, pipe_id in zip(mesh.polygons, face_pipe_ids):
         pipe_id_attribute.data[polygon.index].value = pipe_id
+        pipe_present_attribute.data[polygon.index].value = True
     cutter = bpy.data.objects.new(mesh.name, mesh)
     cutter.matrix_world = source_object.matrix_world.copy()
     cutter[OUTPUT_TAG] = source_object.name
@@ -1717,6 +1728,18 @@ def _mark_original_faces(output, source_patch_ids):
     )
     for polygon in output.data.polygons:
         patch_id_attribute.data[polygon.index].value = source_patch_ids[polygon.index]
+    patch_present_attribute = output.data.attributes.get(
+        SOURCE_PATCH_PRESENT_ATTRIBUTE
+    )
+    if patch_present_attribute is not None:
+        output.data.attributes.remove(patch_present_attribute)
+    patch_present_attribute = output.data.attributes.new(
+        SOURCE_PATCH_PRESENT_ATTRIBUTE,
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    for item in patch_present_attribute.data:
+        item.value = True
 
 
 # 为后续自动开口/补面阶段应用 Difference，并用 material marker 保留 cutter Face 线索。
