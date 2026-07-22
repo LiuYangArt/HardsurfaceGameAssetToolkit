@@ -74,17 +74,24 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 ## 2. 当前证据基线
 
-真实源文件位于 `C:/Users/LiuYang/Desktop/pipe-chamfer/`。原文件只读，任何测试都使用副本。
+测试输入全部随 Git 仓库分发，路径相对 repository root。agent 禁止依赖开发者 Desktop、盘符或用户名；所有 runner 必须从 `tests/fixtures/` 解析输入。
+
+| fixture（repo-relative） | SHA-256 | 说明 |
+|---|---|---|
+| `tests/fixtures/feature-chamfer-product-simple.blend` | `1CBAB4C83C4D9F77BD2B0799257953AAEC32AA416994A1D8810425F3C2B94D8C` | simple 产品矩阵源文件 |
+| `tests/fixtures/feature-chamfer-product-tricky.blend` | `C7F57A54837A04F7E52B535BB47AF0ABEB05FCA4193DAC714FB3667EFB426F02` | tricky 产品矩阵源文件 |
+| `tests/fixtures/feature-chamfer-product-tricky-b.blend` | `A4C121B6BBBFFF58B94C3B7ED11BD82FE59C88A92569389FD27593ED65BE9A35` | tricky-b 产品矩阵源文件 |
+| `tests/fixtures/feature-chamfer-topology-defect-mixed.blend` | `80DA3EE4144BA83CAB4E9BED980C8829D846369F22A694ABFE1AA513C3A3D1B8` | mixed 产品矩阵源文件；与原始样本内容一致 |
 
 | 文件 / 对象 | radius 0.01 | radius 0.03 | 当前主要失败 |
 |---|---:|---:|---|
-| `pipe-chamfer-test.blend / Extruded.002` | 未跑 | 成功 | — |
-| `pipe-chamfer-test.blend / Solid 44` | 未跑 | 失败 | `ambiguous_boundary` |
-| `pipe-chamfer-test-tricky.blend / Solid.004` | 失败 | 失败 | `ambiguous_boundary` |
-| `pipe-chamfer-test-tricky.blend / Solid.016` | 失败 | 失败 | `SIGNED_STRIP_WIDTH_EXCEEDED` |
-| `pipe-chamfer-test-tricky_b.blend / Extruded.003` | 失败 | 失败 | 0.01 width；0.03 `shared_rail_invalid` |
-| `pipe-chamfer-test-tricky_b.blend / Extruded.002` | 失败 | 失败 | `SIGNED_STRIP_WIDTH_EXCEEDED` |
-| `pipe-chamfer-mixed.blend / Extruded.002` | 成功 | 失败 | 0.03 `shared_rail_invalid` |
+| `feature-chamfer-product-simple.blend / Extruded.002` | 未跑 | 成功 | — |
+| `feature-chamfer-product-simple.blend / Solid 44` | 未跑 | 失败 | `ambiguous_boundary` |
+| `feature-chamfer-product-tricky.blend / Solid.004` | 失败 | 失败 | `ambiguous_boundary` |
+| `feature-chamfer-product-tricky.blend / Solid.016` | 失败 | 失败 | `SIGNED_STRIP_WIDTH_EXCEEDED` |
+| `feature-chamfer-product-tricky-b.blend / Extruded.003` | 失败 | 失败 | 0.01 width；0.03 `shared_rail_invalid` |
+| `feature-chamfer-product-tricky-b.blend / Extruded.002` | 失败 | 失败 | `SIGNED_STRIP_WIDTH_EXCEEDED` |
+| `feature-chamfer-topology-defect-mixed.blend / Extruded.002` | 成功 | 失败 | 0.03 `shared_rail_invalid` |
 
 已知性能样本：
 
@@ -105,7 +112,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 ## 3. 全局硬约束
 
-- 禁止修改 `auto_load.py`；禁止修改 Desktop 原始 `.blend`。
+- 禁止修改 `auto_load.py`；fixture 视为 immutable test input，测试只能另存 artifact，不得覆盖 fixture。
+- 禁止写死 Windows/macOS 本地绝对路径；文档、脚本和命令以 repository root 为基准。
 - 禁止在 production 代码中写 object name、vertex index、坐标、fixture hash 等模型特判。
 - 禁止 junction center fan、通用 Fill、全局 hole fill 或吞异常让 case 变绿。
 - 禁止通过放宽 width/radius/self-intersection 阈值掩盖错误 correspondence。
@@ -137,9 +145,9 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 ### 任务
 
-1. 对四个用户文件计算 hash，记录 Blender 版本、对象、transform、manifold、degenerate、Sharp Edge 数量和局部 feature-size。
-2. 将精确副本纳入 `tests/fixtures/`，稳定命名；不得覆盖现有 fixture，除非 hash 完全一致并有记录。
-3. 建立 product matrix runner，必须调用目标 Operator，不能直调 builder。
+1. 校验上述四个 repo fixture 的 SHA-256，记录 Blender 版本、对象、transform、manifold、degenerate、Sharp Edge 数量和局部 feature-size。
+2. 建立 product matrix runner，必须调用目标 Operator，不能直调 builder；输入路径从 repository root / runner 文件位置解析。
+3. runner 必须在 Windows 与 macOS 接受自动发现的 Blender，或通过 `--blender <path>` 显式覆盖；不得内置某台机器的 Blender 路径。
 4. 跑 7 个对象 × radius {0.01, 0.03}，至少两次；检测结果和 fingerprint 稳定性。
 5. regression 输出拆成四种产品语义。
 6. 起草 input contract：closed manifold、Sharp Edge、transform/scale、允许 junction、radius 与局部 feature size。未知项保持未决，不能先排除失败 fixture。
@@ -306,8 +314,10 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 ### 验证命令
 
-```powershell
-python .\tools\run_blender_tests.py --blender "C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
+```text
+python tools/run_blender_tests.py
+# Blender 未加入 PATH 时：
+python tools/run_blender_tests.py --blender <path-to-blender-executable>
 ```
 
 再运行 Phase 0 建立的 product matrix runner。若新增测试类别，更新 `tests/README.md`。
@@ -393,9 +403,9 @@ Commit：
 ### Phase 0 首发 Prompt
 
 ```text
-按 F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/docs/plan/2026-07-22-feature-chamfer-generalization-roadmap.md 执行 Phase 0，且只执行 Phase 0。
+按仓库内 docs/plan/2026-07-22-feature-chamfer-generalization-roadmap.md 执行 Phase 0，且只执行 Phase 0。
 
-先读取项目 AGENTS.md、tests/TESTING_POLICY.md、现有 Feature Chamfer 诊断。目标入口固定为 UI Feature Chamfer GN → hst.feature_chamfer_gn → PREVIEW/FINALIZE。建立 7 个真实对象 × radius {0.01, 0.03} 的产品矩阵，严格区分 PRODUCT_SUCCESS、EXPECTED_UNSUPPORTED、REGRESSION_FAILURE、SAFETY_PASS。不得修改算法，不得修改用户原始 blend，不得把 fail-closed 当产品成功。
+先读取项目 AGENTS.md、tests/TESTING_POLICY.md、现有 Feature Chamfer 诊断。测试文件只取自 tests/fixtures/ 中本计划列出的四个 fixture，所有路径从 repository root 解析。目标入口固定为 UI Feature Chamfer GN → hst.feature_chamfer_gn → PREVIEW/FINALIZE。建立 7 个真实对象 × radius {0.01, 0.03} 的产品矩阵，严格区分 PRODUCT_SUCCESS、EXPECTED_UNSUPPORTED、REGRESSION_FAILURE、SAFETY_PASS。不得修改算法或 fixture，不得把 fail-closed 当产品成功。
 
 达到 Phase 0 Go 条件后更新 phase-0-baseline.md，运行最小验证并 commit；未达到时只提交诊断，不进入 Phase 1。交付时使用计划中的统一格式。
 ```
@@ -403,7 +413,7 @@ Commit：
 ### 后续 Phase 通用 Prompt
 
 ```text
-按 F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/docs/plan/2026-07-22-feature-chamfer-generalization-roadmap.md 执行 Phase <N>，且只执行该 Phase。
+按仓库内 docs/plan/2026-07-22-feature-chamfer-generalization-roadmap.md 执行 Phase <N>，且只执行该 Phase。
 
 先核验 Phase <N-1> 是否有 Go 证据；没有则停止实现，只报告门禁缺口。目标入口始终是 hst.feature_chamfer_gn 的 PREVIEW→FINALIZE。禁止模型特判、通用 Fill、阈值放宽和 source mutation。先补最小失败测试，再做最小充分修改；用两个不同真实对象证明通用规则。达到 Go 后更新诊断、运行必要回归并单独 commit。交付时报告四层证据、矩阵变化、未通过门槛和明确未做范围。
 ```
