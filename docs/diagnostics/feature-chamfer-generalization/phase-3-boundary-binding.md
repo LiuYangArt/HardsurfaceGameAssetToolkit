@@ -72,3 +72,32 @@ production Even-Thickness Pipe producer 已用 GN `Curve Endpoint Selection → 
 相交 degree-3 production probe 已证明 Collection Exact Boolean 可传播 plan-local component、endpoint token 与 source Patch one-hot Face provenance；但共享 junction 仍产生未归属的 seam Boundary Edges，两个 Rail 也被切成 topology-incompatible fragments。binder 因此稳定返回 `boundary_binding_incomplete`，没有落回 BVH owner。当前证据只达到“authoritative provenance 可达且 fail-closed”，尚未满足 Y/T/X `Boundary Edge consumption=100%`，Phase 3 继续 Stop。
 
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。
+
+## 2026-07-22 Boundary witness probe
+
+结构化 edge diagnostics 已证伪上一轮把 degree-3 production fixture 的两条缺失 Edge
+强行解释为 shared `JunctionPort` seam 的方向。两条 Edge 都只有 Pipe 0 的端点 token，
+没有共享原点的直接 owner 证据；因此已删除“两条 Pipe 时使用全部 owner”的兜底，继续
+`boundary_binding_incomplete`。最新可读 artifact：
+
+`/tmp/hst_boundary_witness_index_probe/feature_chamfer_intersecting_endpoint_provenance.json`
+
+probe 结果：
+
+- Boundary `13` 条，direct/witness consumed `11` 条，未归属仍为 `7/8`；
+- Edge `7/8` 的 `candidate_owner_pipe_ids=[0]`，无 compatible shared port；
+- endpoint tokens 分别只指向 Pipe 0 `END/START`，不能替代 Boundary owner；
+- Exact Boolean source/cutter 交线可在 Boolean 后用同一 Mesh 的 Face incidence 写显式
+  EDGE owner/Patch witness；独立 smoke 标记 `8` 条，production degree-3 标记 `11` 条；
+- 缺失的两条 Edge 不与任何 cutter-derived Face 相邻，因此仍没有 witness。现有
+  Face provenance、endpoint token 与拓扑对其 owner 存在多解，必须 fail-closed。
+
+新增 witness producer 目前只是 `PROTOTYPE` 能力探针，尚未由正式 `_open_boundary()`
+或目标 Operator 的 `FinalizationBinding` runtime 消费。真实目标矩阵仍保持 Phase 2
+基线分类；`simple / Solid 44` 与 `tricky / Solid.004` 四格仍为
+`ambiguous_boundary`。Phase 3 继续 Stop，禁止接 runtime 或进入 Phase 4。
+
+下一条 Go 路径必须先解决 producer 合同：每条预期 Boundary Edge 都要有 direct
+cutter/source Face provenance，或明确的 `owner Rail set + JunctionPort + source Patch`
+witness；缺失、unknown、duplicate、conflict 全部 fail-closed。只有合成 Y/T/X 与两个
+真实目标达到 100% 单次消费后，才允许接入 `hst.feature_chamfer_gn`。

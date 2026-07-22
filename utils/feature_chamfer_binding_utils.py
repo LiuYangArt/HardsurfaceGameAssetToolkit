@@ -82,6 +82,26 @@ class BooleanRailBinding:
 
 
 @dataclass(frozen=True)
+class BoundaryEdgeBindingDiagnostic:
+    boundary_edge_index: int
+    vertex_indices: tuple[int, ...]
+    linked_face_indices: tuple[int, ...]
+    direct_owner_pipe_ids: tuple[int, ...]
+    owner_witness_pipe_ids: tuple[int, ...]
+    unknown_owner_present: bool
+    vertex_owner_pipe_ids: tuple[tuple[int, tuple[int, ...]], ...]
+    adjacent_owner_pipe_ids: tuple[int, ...]
+    candidate_owner_pipe_ids: tuple[int, ...]
+    candidate_owner_strand_ids: tuple[str, ...]
+    endpoint_tokens: tuple[int, ...]
+    endpoint_token_records: tuple[StrandEndpointPortToken, ...]
+    compatible_port_ids: tuple[str, ...]
+    retained_patch_ids: tuple[int, ...]
+    patch_witness_ids: tuple[int, ...]
+    rejection_reason: str
+
+
+@dataclass(frozen=True)
 class FinalizationBinding:
     plan_id: str
     status: str
@@ -97,6 +117,7 @@ class FinalizationBinding:
     missing_port_ids: tuple[str, ...]
     topology_incompatible_rail_ids: tuple[str, ...]
     conflicting_provenance_edge_indices: tuple[int, ...]
+    edge_diagnostics: tuple[BoundaryEdgeBindingDiagnostic, ...]
     graph: BoundaryGraphDecomposition
     coordinate_reconstruction: bool
     centerline_sorting: bool
@@ -373,6 +394,7 @@ def _plan_strands_by_pipe_id(plan, groups, source_mesh):
 # component_layer_name/source_patch_layer_name: groove Face 的 Pipe owner layer 与保留 source Face 的 Patch layer 名称。
 # endpoint_port_tokens/endpoint_token_layer_names: plan-local StrandEndpointPort token registry 与 groove Face token layers。
 # component_membership_layer_names/endpoint_membership_layer_names/source_patch_membership_layer_names: Collection Boolean 可合并的 one-hot owner/token/Patch provenance layers。
+# boundary_owner_witness_layer_names/boundary_patch_witness_layer_names: Boolean 后显式写入的 EDGE owner/Patch witness layers。
 def bind_boolean_boundary(
     plan,
     groups,
@@ -387,6 +409,8 @@ def bind_boolean_boundary(
     component_membership_layer_names=(),
     endpoint_membership_layer_names=(),
     source_patch_membership_layer_names=(),
+    boundary_owner_witness_layer_names=(),
+    boundary_patch_witness_layer_names=(),
 ):
     groove_faces = tuple(groove_faces)
     component_layer = bm.faces.layers.int.get(component_layer_name)
@@ -467,7 +491,32 @@ def bind_boolean_boundary(
         )
         if layer is not None
     )
+    boundary_owner_witness_layers = tuple(
+        (pipe_id, layer)
+        for pipe_id, layer in (
+            (
+                int(layer_name.rsplit("_", 1)[1]),
+                bm.edges.layers.int.get(layer_name)
+                or bm.edges.layers.bool.get(layer_name),
+            )
+            for layer_name in boundary_owner_witness_layer_names
+        )
+        if layer is not None
+    )
+    boundary_patch_witness_layers = tuple(
+        (patch_id, layer)
+        for patch_id, layer in (
+            (
+                int(layer_name.rsplit("_", 1)[1]),
+                bm.edges.layers.int.get(layer_name)
+                or bm.edges.layers.bool.get(layer_name),
+            )
+            for layer_name in boundary_patch_witness_layer_names
+        )
+        if layer is not None
+    )
     edge_owner_ledger = {}
+    vertex_owner_ledger = {}
     vertex_endpoint_token_ledger = {}
     observed_endpoint_tokens = set()
     for face in groove_faces:
@@ -495,6 +544,8 @@ def bind_boolean_boundary(
             }
         for edge in face.edges:
             edge_owner_ledger.setdefault(edge, set()).update(owners)
+        for vertex in face.verts:
+            vertex_owner_ledger.setdefault(vertex, set()).update(owners)
         for layer in endpoint_token_layers:
             token = int(face[layer])
             if token <= 0:
@@ -521,51 +572,187 @@ def bind_boolean_boundary(
     expected_rail_by_id = {
         rail.rail_id: rail for rail in plan.rail_chains
     }
+    plan_ports_by_id = {
+        port.port_id: port for port in plan.junction_ports
+    }
     edge_bindings = []
     unowned = []
     multi_owner = []
     missing_patch = []
     incompatible = []
+    edge_diagnostics = []
     for edge in boundary_edges:
         edge_index = boundary_edge_ids[edge]
         ledger_owners = edge_owner_ledger.get(edge, set())
-        if any(owner < 0 for owner in ledger_owners):
-            unowned.append(edge_index)
-            continue
-        owners = {
+        direct_owners = {
             owner
             for owner in ledger_owners
             if owner >= 0
         }
-        if not owners:
-            unowned.append(edge_index)
-            continue
-        if len(owners) != 1:
-            multi_owner.append(edge_index)
-            continue
-        retained_faces = tuple(edge.link_faces)
-        retained_patch_ids = {
-            patch_id
-            for patch_id, layer in source_patch_membership_layers
-            if len(retained_faces) == 1 and bool(retained_faces[0][layer])
+        witness_owners = {
+            pipe_id
+            for pipe_id, layer in boundary_owner_witness_layers
+            if bool(edge[layer])
         }
-        if source_patch_membership_layers:
-            patch_id = (
-                next(iter(retained_patch_ids))
-                if len(retained_patch_ids) == 1
-                else -1
+        owners = set(direct_owners)
+        if not direct_owners and len(witness_owners) == 1:
+            owners = set(witness_owners)
+        unknown_owner_present = any(owner < 0 for owner in ledger_owners)
+        vertex_owner_pipe_ids = tuple(
+            (
+                vertex.index,
+                tuple(sorted(
+                    owner
+                    for owner in vertex_owner_ledger.get(vertex, set())
+                    if owner >= 0
+                )),
             )
+            for vertex in sorted(edge.verts, key=lambda item: item.index)
+        )
+        vertex_owners = {
+            owner
+            for _, owner_ids in vertex_owner_pipe_ids
+            for owner in owner_ids
+        }
+        endpoint_tokens = {
+            token
+            for vertex in edge.verts
+            for token in vertex_endpoint_token_ledger.get(vertex, set())
+        }
+        token_records = tuple(
+            endpoint_tokens_by_value[token]
+            for token in sorted(endpoint_tokens)
+            if token in endpoint_tokens_by_value
+        )
+        adjacent_owner_pipe_ids = {
+            owner
+            for vertex in edge.verts
+            for adjacent_edge in vertex.link_edges
+            if adjacent_edge is not edge
+            for owner in edge_owner_ledger.get(adjacent_edge, set())
+            if owner >= 0
+        }
+        candidate_owner_pipe_ids = vertex_owners | adjacent_owner_pipe_ids
+        candidate_owner_strand_ids = {
+            strands_by_pipe_id[pipe_id].strand_id
+            for pipe_id in candidate_owner_pipe_ids
+            if pipe_id in strands_by_pipe_id
+        }
+        compatible_port_ids = {
+            port_id
+            for port_id, port in plan_ports_by_id.items()
+            if len(candidate_owner_strand_ids) >= 2
+            and candidate_owner_strand_ids <= set(port.incident_strand_ids)
+        }
+        retained_faces = tuple(edge.link_faces)
+        if source_patch_membership_layers:
+            direct_retained_patch_ids = {
+                patch_id
+                for patch_id, layer in source_patch_membership_layers
+                if len(retained_faces) == 1 and bool(retained_faces[0][layer])
+            }
         elif (
             source_patch_layer is not None
             and source_patch_present_layer is not None
             and len(retained_faces) == 1
             and bool(retained_faces[0][source_patch_present_layer])
         ):
-            patch_id = int(retained_faces[0][source_patch_layer])
+            direct_retained_patch_ids = {
+                int(retained_faces[0][source_patch_layer])
+            }
         else:
-            patch_id = -1
+            direct_retained_patch_ids = set()
+        retained_patch_ids = set(direct_retained_patch_ids)
+        witnessed_patch_ids = {
+            patch_id
+            for patch_id, layer in boundary_patch_witness_layers
+            if bool(edge[layer])
+        }
+        if not retained_patch_ids and len(witnessed_patch_ids) == 1:
+            retained_patch_ids = set(witnessed_patch_ids)
+        diagnostic_values = {
+            "boundary_edge_index": edge_index,
+            "vertex_indices": tuple(sorted(vertex.index for vertex in edge.verts)),
+            "linked_face_indices": tuple(
+                sorted(face.index for face in retained_faces)
+            ),
+            "direct_owner_pipe_ids": tuple(sorted(direct_owners)),
+            "owner_witness_pipe_ids": tuple(sorted(witness_owners)),
+            "unknown_owner_present": unknown_owner_present,
+            "vertex_owner_pipe_ids": vertex_owner_pipe_ids,
+            "adjacent_owner_pipe_ids": tuple(sorted(adjacent_owner_pipe_ids)),
+            "candidate_owner_pipe_ids": tuple(sorted(candidate_owner_pipe_ids)),
+            "candidate_owner_strand_ids": tuple(sorted(candidate_owner_strand_ids)),
+            "endpoint_tokens": tuple(sorted(endpoint_tokens)),
+            "endpoint_token_records": token_records,
+            "compatible_port_ids": tuple(sorted(compatible_port_ids)),
+            "retained_patch_ids": tuple(sorted(retained_patch_ids)),
+            "patch_witness_ids": tuple(sorted(witnessed_patch_ids)),
+        }
+        if unknown_owner_present:
+            unowned.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="unknown_owner_present",
+            ))
+            continue
+        if direct_owners and witness_owners and direct_owners != witness_owners:
+            multi_owner.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="direct_owner_witness_conflict",
+            ))
+            continue
+        if len(witness_owners) > 1:
+            multi_owner.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="conflicting_owner_witnesses",
+            ))
+            continue
+        if (
+            direct_retained_patch_ids
+            and witnessed_patch_ids
+            and direct_retained_patch_ids != witnessed_patch_ids
+        ):
+            missing_patch.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="direct_patch_witness_conflict",
+            ))
+            continue
+        if len(witnessed_patch_ids) > 1:
+            missing_patch.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="conflicting_patch_witnesses",
+            ))
+            continue
+        if not owners:
+            unowned.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="no_direct_owner",
+            ))
+            continue
+        if len(owners) != 1:
+            multi_owner.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="multiple_direct_owners",
+            ))
+            continue
+        patch_id = (
+            next(iter(retained_patch_ids))
+            if len(retained_patch_ids) == 1
+            else -1
+        )
         if patch_id < 0:
             missing_patch.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="missing_source_patch",
+            ))
             continue
         pipe_id = next(iter(owners))
         strand = strands_by_pipe_id.get(pipe_id)
@@ -585,6 +772,10 @@ def bind_boolean_boundary(
             or rail_id not in expected_rail_by_id
         ):
             incompatible.append(edge_index)
+            edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+                **diagnostic_values,
+                rejection_reason="incompatible_plan_owner",
+            ))
             continue
         edge_bindings.append(
             BooleanBoundaryEdgeBinding(
@@ -595,6 +786,10 @@ def bind_boolean_boundary(
                 rail_id=rail_id,
             )
         )
+        edge_diagnostics.append(BoundaryEdgeBindingDiagnostic(
+            **diagnostic_values,
+            rejection_reason="",
+        ))
     bindings_by_rail = {}
     for record in edge_bindings:
         bindings_by_rail.setdefault(record.rail_id, []).append(record)
@@ -718,6 +913,7 @@ def bind_boolean_boundary(
         missing_port_ids=missing_port_ids,
         topology_incompatible_rail_ids=tuple(topology_incompatible_rail_ids),
         conflicting_provenance_edge_indices=conflicting_provenance_edge_indices,
+        edge_diagnostics=tuple(edge_diagnostics),
         graph=graph,
         coordinate_reconstruction=False,
         centerline_sorting=False,

@@ -45,6 +45,8 @@ CUTTER_END_PORT_TOKEN_ATTRIBUTE = "hst_pipe_end_port_token"
 CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_component_member_"
 CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_endpoint_member_"
 SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_source_patch_member_"
+BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX = "hst_boundary_owner_witness_"
+BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX = "hst_boundary_patch_witness_"
 
 
 # 让 Exact Boolean 能传播所有 provenance Face attributes，源 Mesh 与 Cutter Mesh 必须共享完整 attribute schema。
@@ -97,6 +99,16 @@ def _endpoint_token_membership_attribute_name(token):
 # patch_id: ChamferPlan 对应的非负 Patch ID。
 def _source_patch_membership_attribute_name(patch_id):
     return f"{SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX}{int(patch_id)}"
+
+
+# pipe_id: ChamferPlan 对应 Pipe ID；返回 Boolean Boundary owner 的 EDGE witness attribute 名称。
+def _boundary_owner_witness_attribute_name(pipe_id):
+    return f"{BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX}{int(pipe_id)}"
+
+
+# patch_id: source Surface Patch ID；返回 Boolean Boundary Patch 的 EDGE witness attribute 名称。
+def _boundary_patch_witness_attribute_name(patch_id):
+    return f"{BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX}{int(patch_id)}"
 
 
 # 在全部 Cutter objects 上补齐相同的 one-hot provenance schema，供 Collection Exact Boolean 传播。
@@ -165,6 +177,118 @@ def _initialize_source_membership_schema(mesh, cutters, source_patch_ids=None):
             patch_id = int(attribute_name.rsplit("_", 1)[1])
             for polygon, source_patch_id in zip(mesh.polygons, source_patch_ids):
                 attribute.data[polygon.index].value = source_patch_id == patch_id
+
+
+# mesh/cutters/source_patch_ids: Boolean source、Cutter Set 与 source Patch IDs；函数建立同名 EDGE witness schema。
+def _initialize_boundary_witness_schema(mesh, cutters, source_patch_ids):
+    pipe_ids = sorted({
+        int(attribute.name.rsplit("_", 1)[1])
+        for cutter in cutters
+        for attribute in cutter.data.attributes
+        if attribute.domain == "FACE"
+        and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
+    })
+    patch_ids = sorted(set(int(patch_id) for patch_id in source_patch_ids))
+    attribute_names = tuple(
+        _boundary_owner_witness_attribute_name(pipe_id)
+        for pipe_id in pipe_ids
+    ) + tuple(
+        _boundary_patch_witness_attribute_name(patch_id)
+        for patch_id in patch_ids
+    )
+    for target_mesh in (mesh, *(cutter.data for cutter in cutters)):
+        for attribute_name in attribute_names:
+            attribute = target_mesh.attributes.get(attribute_name)
+            if attribute is None:
+                target_mesh.attributes.new(
+                    attribute_name,
+                    type="BOOLEAN",
+                    domain="EDGE",
+                )
+
+
+# output: 当前一次 Exact Boolean 后的 closed Mesh；函数把 cutter/source Face 邻接写为稳定 EDGE witness 并返回统计。
+def _mark_boolean_boundary_witnesses(output):
+    mesh = output.data
+    original_attribute = mesh.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    if original_attribute is None or original_attribute.domain != "FACE":
+        raise RuntimeError("Boolean Boundary witness requires original Face provenance")
+    owner_attributes = tuple(
+        (
+            int(attribute.name.rsplit("_", 1)[1]),
+            attribute,
+        )
+        for attribute in mesh.attributes
+        if attribute.domain == "FACE"
+        and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
+    )
+    patch_attributes = tuple(
+        (
+            int(attribute.name.rsplit("_", 1)[1]),
+            attribute,
+        )
+        for attribute in mesh.attributes
+        if attribute.domain == "FACE"
+        and attribute.name.startswith(SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX)
+    )
+    owner_witness_attributes = {
+        int(attribute.name.rsplit("_", 1)[1]): attribute
+        for attribute in mesh.attributes
+        if attribute.domain == "EDGE"
+        and attribute.name.startswith(BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX)
+    }
+    patch_witness_attributes = {
+        int(attribute.name.rsplit("_", 1)[1]): attribute
+        for attribute in mesh.attributes
+        if attribute.domain == "EDGE"
+        and attribute.name.startswith(BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX)
+    }
+    edge_groove_owners = {}
+    edge_source_patches = {}
+    for polygon in mesh.polygons:
+        is_original = bool(original_attribute.data[polygon.index].value)
+        memberships = {
+            membership_id
+            for membership_id, attribute in (
+                patch_attributes if is_original else owner_attributes
+            )
+            if bool(attribute.data[polygon.index].value)
+        }
+        target = edge_source_patches if is_original else edge_groove_owners
+        for loop_index in polygon.loop_indices:
+            target.setdefault(
+                mesh.loops[loop_index].edge_index,
+                set(),
+            ).update(memberships)
+    marked_edge_indices = []
+    conflicting_edge_indices = []
+    for edge_index in sorted(set(edge_groove_owners) & set(edge_source_patches)):
+        owners = edge_groove_owners[edge_index]
+        patches = edge_source_patches[edge_index]
+        if not owners or not patches:
+            continue
+        for pipe_id in owners:
+            attribute = owner_witness_attributes.get(pipe_id)
+            if attribute is None:
+                raise RuntimeError(
+                    f"Boolean Boundary owner witness schema lacks Pipe {pipe_id}"
+                )
+            attribute.data[edge_index].value = True
+        for patch_id in patches:
+            attribute = patch_witness_attributes.get(patch_id)
+            if attribute is None:
+                raise RuntimeError(
+                    f"Boolean Boundary Patch witness schema lacks Patch {patch_id}"
+                )
+            attribute.data[edge_index].value = True
+        marked_edge_indices.append(edge_index)
+        if len(owners) != 1 or len(patches) != 1:
+            conflicting_edge_indices.append(edge_index)
+    return {
+        "marked_edge_count": len(marked_edge_indices),
+        "marked_edge_indices": marked_edge_indices,
+        "conflicting_edge_indices": conflicting_edge_indices,
+    }
 
 
 CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"

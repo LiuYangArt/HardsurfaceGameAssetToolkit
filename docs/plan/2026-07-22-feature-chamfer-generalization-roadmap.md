@@ -235,6 +235,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > 2026-07-22 状态：`PROTOTYPE / STOP`。Phase 2 已在 commit `bdc0a5b` 达到 Go；Phase 3 WIP probe 虽能分解 degree≠2 BoundaryGraph，但 tricky / `Solid.004` 两个 radius cell 均留下 10 条无直接 cutter/source provenance 的 junction-only Boundary Edge。独立 Spec Audit 还确认该 probe 未把 Boundary owner 绑定到 plan FeatureStrand/JunctionPort，正式 runtime 仍会落回 BVH 最近 Pipe owner。runtime diff 已撤出，禁止进入 Phase 4。证据见 `docs/diagnostics/feature-chamfer-generalization/phase-3-boundary-binding.md`。
 
+> 后续 witness probe 仍为 `PROTOTYPE / STOP`：已增加逐 Edge owner/token/port/Patch rejection 证据，并证实 Exact Boolean 的普通 source/cutter 交线可写显式 EDGE witness；但 degree-3 production fixture 仍有 2 条、tricky / `Solid.004` 仍有 10 条 Boundary Edge 没有直接 owner 或 witness。邻接、endpoint token 与“两条 Pipe”兜底均不能唯一决定 owner，正式 runtime 仍未接入 authoritative binder。证据同上。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

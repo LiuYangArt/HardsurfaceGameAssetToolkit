@@ -3282,6 +3282,26 @@ def make_known_unknown_owner_boundary_binding_bmesh():
     return bm, groove_faces
 
 
+# 构造 EDGE witness 与 deleted/retained Face provenance 冲突的 Boundary 输入。
+# owner_witness_pipe_id/patch_witness_id: 与直接 Face provenance 对照的 witness Pipe/Patch IDs；返回 BMesh、groove Faces 与 layer names。
+def make_conflicting_boundary_witness_bmesh(
+    owner_witness_pipe_id,
+    patch_witness_id,
+):
+    bm, groove_faces = make_authoritative_boundary_binding_bmesh(
+        (7,),
+        (10, 10, 10, 11, 11, 11),
+    )
+    owner_layer_name = f"hst_boundary_owner_witness_{owner_witness_pipe_id}"
+    patch_layer_name = f"hst_boundary_patch_witness_{patch_witness_id}"
+    owner_layer = bm.edges.layers.int.new(owner_layer_name)
+    patch_layer = bm.edges.layers.int.new(patch_layer_name)
+    witness_edge = groove_faces[0].edges[0]
+    witness_edge[owner_layer] = 1
+    witness_edge[patch_layer] = 1
+    return bm, groove_faces, owner_layer_name, patch_layer_name
+
+
 # 验证 authoritative Boolean Boundary binder 只消费 Face provenance，并映射到同一 ChamferPlan。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_authoritative_boundary_binding_contract_smoke(
@@ -3651,6 +3671,42 @@ def test_feature_chamfer_authoritative_boundary_binding_fail_closed_regression(
         records.append({"case": "known-unknown-owner", "status": binding.status})
     finally:
         bm.free()
+    for label, owner_witness_pipe_id, patch_witness_id, rejection_reason in (
+        ("owner-witness-conflict", 8, 10, "direct_owner_witness_conflict"),
+        ("patch-witness-conflict", 7, 99, "direct_patch_witness_conflict"),
+    ):
+        (
+            bm,
+            groove_faces,
+            owner_layer_name,
+            patch_layer_name,
+        ) = make_conflicting_boundary_witness_bmesh(
+            owner_witness_pipe_id,
+            patch_witness_id,
+        )
+        try:
+            binding = module.bind_boolean_boundary(
+                plan,
+                [group],
+                bm,
+                groove_faces,
+                component_layer_name="hst_pipe_component_id",
+                source_patch_layer_name="hst_pipe_source_patch_id",
+                source_mesh=source.data,
+                boundary_owner_witness_layer_names=(owner_layer_name,),
+                boundary_patch_witness_layer_names=(patch_layer_name,),
+            )
+            ensure(
+                binding.status == "boundary_binding_incomplete"
+                and any(
+                    diagnostic.rejection_reason == rejection_reason
+                    for diagnostic in binding.edge_diagnostics
+                ),
+                f"{label} did not fail closed with direct provenance evidence: {binding}",
+            )
+            records.append({"case": label, "status": binding.status})
+        finally:
+            bm.free()
     bm, groove_faces = make_unowned_extra_boundary_binding_bmesh()
     try:
         binding = module.bind_boolean_boundary(
@@ -3857,6 +3913,88 @@ def test_feature_chamfer_boolean_component_owner_producer_smoke(
     )
 
 
+# 验证 Exact Boolean 后 source/cutter 交线能写入显式 EDGE witness，且不依赖坐标或 nearest Pipe。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boolean_boundary_witness_producer_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BooleanBoundaryWitness")
+    source = make_test_mesh("BooleanBoundaryWitnessSource", collection)
+    bpy.ops.mesh.primitive_cube_add(scale=(0.45, 0.45, 1.5))
+    cutter = ensure_object_in_collection(bpy.context.active_object, collection)
+    cutter.name = "BooleanBoundaryWitnessCutter"
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    cutter[utils.PIPE_ID_TAG] = 7
+    cutter.data.transform(cutter.matrix_world)
+    cutter.matrix_world.identity()
+    utils._ensure_boolean_attribute_schema(cutter.data, False)
+    component_attribute = cutter.data.attributes.new(
+        utils._component_membership_attribute_name(7),
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    for item in component_attribute.data:
+        item.value = True
+    cutter_collection = bpy.data.collections.new("BooleanBoundaryWitnessCutters")
+    bpy.context.scene.collection.children.link(cutter_collection)
+    collection.objects.unlink(cutter)
+    cutter_collection.objects.link(cutter)
+    output = utils._duplicate_source(source, collection)
+    source_patch_ids = utils._source_face_patch_ids(source)
+    utils._mark_original_faces(output, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        output.data,
+        cutter_collection.objects,
+        source_patch_ids,
+    )
+    utils._initialize_boundary_witness_schema(
+        output.data,
+        cutter_collection.objects,
+        source_patch_ids,
+    )
+    modifier = utils._add_difference_modifier(output, cutter_collection)
+    with bpy.context.temp_override(
+        object=output,
+        active_object=output,
+        selected_objects=[output],
+        selected_editable_objects=[output],
+    ):
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+    witness_stats = utils._mark_boolean_boundary_witnesses(output)
+    owner_witness = output.data.attributes.get(
+        utils._boundary_owner_witness_attribute_name(7)
+    )
+    patch_witnesses = tuple(
+        attribute
+        for attribute in output.data.attributes
+        if attribute.name.startswith(utils.BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX)
+    )
+    ensure(
+        owner_witness is not None
+        and owner_witness.domain == "EDGE"
+        and any(bool(item.value) for item in owner_witness.data),
+        "Exact Boolean produced no explicit Pipe owner EDGE witness",
+    )
+    ensure(
+        patch_witnesses
+        and any(
+            bool(item.value)
+            for attribute in patch_witnesses
+            for item in attribute.data
+        ),
+        "Exact Boolean produced no explicit source Patch EDGE witness",
+    )
+    ensure(
+        witness_stats.get("marked_edge_count", 0) > 0
+        and not witness_stats.get("conflicting_edge_indices"),
+        f"Boolean Boundary witness ledger is incomplete: {witness_stats}",
+    )
+    result.add_detail(
+        f"Exact Boolean marked {witness_stats['marked_edge_count']} source/cutter Boundary Edges"
+    )
+
+
 # 验证 production Even-Thickness Pipe 与 joined cutter 会保留 plan-local open strand endpoint tokens。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_open_endpoint_token_producer_smoke(
@@ -4018,6 +4156,11 @@ def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
         cutter_collection.objects,
         source_patch_ids,
     )
+    utils._initialize_boundary_witness_schema(
+        output.data,
+        cutter_collection.objects,
+        source_patch_ids,
+    )
     for cutter in sorted(cutter_collection.objects, key=lambda obj: obj.name):
         modifier = output.modifiers.new(
             f"Authoritative endpoint probe {cutter.name}",
@@ -4034,6 +4177,9 @@ def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
             selected_editable_objects=[output],
         ):
             bpy.ops.object.modifier_apply(modifier=modifier.name)
+    boolean_provenance_artifact = {
+        "boundary_witness": utils._mark_boolean_boundary_witnesses(output),
+    }
     groove_face_indices = utils._groove_face_indices(output, plan_stats)
     bm = bmesh.new()
     bm.from_mesh(output.data)
@@ -4049,6 +4195,56 @@ def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
             )
         )
     }
+    boolean_provenance_artifact.update({
+        "plan_id": plan.plan_id,
+        "endpoint_registry": [
+            {
+                "token": record.token,
+                "pipe_id": record.pipe_id,
+                "strand_id": record.strand_id,
+                "endpoint_role": record.endpoint_role,
+                "port_id": record.port_id,
+            }
+            for record in endpoint_registry
+        ],
+        "faces": [
+            {
+                "face_index": face.index,
+                "vertex_indices": sorted(vertex.index for vertex in face.verts),
+                "component_memberships": sorted(
+                    int(layer_name.rsplit("_", 1)[1])
+                    for layer_name in (
+                        attribute.name
+                        for attribute in output.data.attributes
+                        if attribute.name.startswith("hst_pipe_component_member_")
+                    )
+                    for layer in (
+                        bm.faces.layers.int.get(layer_name)
+                        or bm.faces.layers.bool.get(layer_name),
+                    )
+                    if layer is not None and bool(face[layer])
+                ),
+                "endpoint_memberships": sorted(
+                    int(layer_name.rsplit("_", 1)[1])
+                    for layer_name in (
+                        attribute.name
+                        for attribute in output.data.attributes
+                        if attribute.name.startswith("hst_pipe_endpoint_member_")
+                    )
+                    for layer in (
+                        bm.faces.layers.int.get(layer_name)
+                        or bm.faces.layers.bool.get(layer_name),
+                    )
+                    if layer is not None and bool(face[layer])
+                ),
+                "is_groove": face in groove_faces,
+            }
+            for face in bm.faces
+        ],
+    })
+    artifact_path = ARTIFACT_DIR / (
+        "feature_chamfer_intersecting_endpoint_provenance.json"
+    )
     try:
         binding = test_context.addon.utils.feature_chamfer_binding_utils.bind_boolean_boundary(
             plan,
@@ -4084,6 +4280,123 @@ def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
                     if attribute.name.startswith("hst_pipe_source_patch_member_")
                 )
             ),
+            boundary_owner_witness_layer_names=tuple(
+                sorted(
+                    attribute.name
+                    for attribute in output.data.attributes
+                    if attribute.name.startswith(
+                        utils.BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
+                    )
+                )
+            ),
+            boundary_patch_witness_layer_names=tuple(
+                sorted(
+                    attribute.name
+                    for attribute in output.data.attributes
+                    if attribute.name.startswith(
+                        utils.BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
+                    )
+                )
+            ),
+        )
+        boolean_provenance_artifact["binding"] = {
+            "status": binding.status,
+            "boundary_edge_count": binding.boundary_edge_count,
+            "consumed_edge_count": binding.consumed_edge_count,
+            "unowned_edge_indices": list(binding.unowned_edge_indices),
+            "topology_incompatible_rail_ids": list(
+                binding.topology_incompatible_rail_ids
+            ),
+            "edge_diagnostics": [
+                {
+                    "boundary_edge_index": diagnostic.boundary_edge_index,
+                    "vertex_indices": list(diagnostic.vertex_indices),
+                    "linked_face_indices": list(diagnostic.linked_face_indices),
+                    "direct_owner_pipe_ids": list(
+                        diagnostic.direct_owner_pipe_ids
+                    ),
+                    "owner_witness_pipe_ids": list(
+                        diagnostic.owner_witness_pipe_ids
+                    ),
+                    "unknown_owner_present": diagnostic.unknown_owner_present,
+                    "vertex_owner_pipe_ids": [
+                        [vertex_index, list(pipe_ids)]
+                        for vertex_index, pipe_ids
+                        in diagnostic.vertex_owner_pipe_ids
+                    ],
+                    "adjacent_owner_pipe_ids": list(
+                        diagnostic.adjacent_owner_pipe_ids
+                    ),
+                    "candidate_owner_pipe_ids": list(
+                        diagnostic.candidate_owner_pipe_ids
+                    ),
+                    "candidate_owner_strand_ids": list(
+                        diagnostic.candidate_owner_strand_ids
+                    ),
+                    "endpoint_tokens": list(diagnostic.endpoint_tokens),
+                    "endpoint_token_records": [
+                        {
+                            "token": record.token,
+                            "pipe_id": record.pipe_id,
+                            "strand_id": record.strand_id,
+                            "endpoint_role": record.endpoint_role,
+                            "port_id": record.port_id,
+                        }
+                        for record in diagnostic.endpoint_token_records
+                    ],
+                    "compatible_port_ids": list(
+                        diagnostic.compatible_port_ids
+                    ),
+                    "retained_patch_ids": list(
+                        diagnostic.retained_patch_ids
+                    ),
+                    "patch_witness_ids": list(
+                        diagnostic.patch_witness_ids
+                    ),
+                    "rejection_reason": diagnostic.rejection_reason,
+                }
+                for diagnostic in binding.edge_diagnostics
+            ],
+            "boundary_edge_witnesses": [
+                {
+                    "boundary_edge_index": edge_index,
+                    "mesh_edge_index": boundary_edge.index,
+                    "vertex_indices": sorted(
+                        vertex.index for vertex in boundary_edge.verts
+                    ),
+                    "owner_witnesses": sorted(
+                        int(attribute.name.rsplit("_", 1)[1])
+                        for attribute in output.data.attributes
+                        if attribute.name.startswith(
+                            utils.BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
+                        )
+                        for layer in (
+                            bm.edges.layers.int.get(attribute.name)
+                            or bm.edges.layers.bool.get(attribute.name),
+                        )
+                        if layer is not None and bool(boundary_edge[layer])
+                    ),
+                    "patch_witnesses": sorted(
+                        int(attribute.name.rsplit("_", 1)[1])
+                        for attribute in output.data.attributes
+                        if attribute.name.startswith(
+                            utils.BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
+                        )
+                        for layer in (
+                            bm.edges.layers.int.get(attribute.name)
+                            or bm.edges.layers.bool.get(attribute.name),
+                        )
+                        if layer is not None and bool(boundary_edge[layer])
+                    ),
+                }
+                for edge_index, boundary_edge in enumerate(
+                    edge for edge in bm.edges if len(edge.link_faces) == 1
+                )
+            ],
+        }
+        artifact_path.write_text(
+            json.dumps(boolean_provenance_artifact, indent=2, sort_keys=True),
+            encoding="utf-8",
         )
         ensure(
             binding.status == "boundary_binding_incomplete"
@@ -4103,7 +4416,7 @@ def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
     result.add_detail(
         (
             "degree-3 production provenance remained fail-closed with "
-            f"tokens={sorted(expected_tokens)}"
+            f"tokens={sorted(expected_tokens)}; artifact={artifact_path}"
         )
     )
 
@@ -5817,6 +6130,10 @@ def main():
     context.run_case(
         "feature_chamfer_boolean_component_owner_producer_smoke",
         test_feature_chamfer_boolean_component_owner_producer_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_boolean_boundary_witness_producer_smoke",
+        test_feature_chamfer_boolean_boundary_witness_producer_smoke,
     )
     context.run_case(
         "feature_chamfer_open_endpoint_token_producer_smoke",
