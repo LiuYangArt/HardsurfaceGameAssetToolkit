@@ -65,4 +65,6 @@ Exact Boolean production joined-cutter 双 component smoke 已证明 Blender 5.1
 
 后续 attribute-only probe 进一步证明：Curve endpoint 的 POINT token 可经受控 Even-Thickness GN 传播到 Mesh，并仅凭 token 把端点 cap/sidewall Faces 分类；FACE INT port token 也可经 Exact Boolean 传播，并在删除 groove Faces 前通过 `BMFace → BMVert` incidence 恢复到真实 Boundary vertex。probe 同时证伪了“open plan 必然对应 degree-1 Boundary endpoint”：盲槽 Boundary 仍可能是 degree-2 闭环，所以 port 必须建模为 `(strand endpoint, JunctionPort)` anchor incidence，而不是 Boundary graph endpoint。当前仍未证明相交多 Pipe 的 token namespace、cap 被遮挡后的 sidewall anchor 与 conflicting token 行为；在这些 producer/binder tests 通过前保持 Stop，禁止接正式 runtime。
 
+public binder 已据此补充 plan-local `StrandEndpointPortToken` registry：open strand 的 start/end role 与 plan `JunctionPort` 必须同时在各自 `(Pipe, Patch)` Rail 的 Boundary vertex incidence 中出现；Boundary Rail 本身允许保持 cyclic。缺 anchor、unknown token、wrong Pipe、wrong role、role/port 对调与重复 token registry 均 `boundary_binding_incomplete`。该合成 contract 仍只是 Algorithm/Backend slice；production GN endpoint token producer、Y/T/X overlap 与目标 Operator 尚未接入，Phase 3 继续 Stop。
+
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。

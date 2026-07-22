@@ -54,6 +54,14 @@ class BoundaryGraphDecomposition:
 
 
 @dataclass(frozen=True)
+class StrandEndpointPortToken:
+    token: int
+    pipe_id: int
+    endpoint_role: str
+    port_id: str
+
+
+@dataclass(frozen=True)
 class BooleanBoundaryEdgeBinding:
     boundary_edge_index: int
     pipe_id: int
@@ -361,6 +369,7 @@ def _plan_strands_by_pipe_id(plan, groups, source_mesh):
 
 # plan/groups/bm/groove_faces: shared plan、Feature groups、caller-owned disposable Boolean BMesh 与待删除 cutter Faces；函数会原地删除 groove Faces并返回 binding。
 # component_layer_name/source_patch_layer_name: groove Face 的 Pipe owner layer 与保留 source Face 的 Patch layer 名称。
+# endpoint_port_tokens/endpoint_token_layer_names: plan-local StrandEndpointPort token registry 与 groove Face token layers。
 def bind_boolean_boundary(
     plan,
     groups,
@@ -370,6 +379,8 @@ def bind_boolean_boundary(
     component_layer_name,
     source_patch_layer_name,
     source_mesh,
+    endpoint_port_tokens=(),
+    endpoint_token_layer_names=(),
 ):
     groove_faces = tuple(groove_faces)
     component_layer = bm.faces.layers.int.get(component_layer_name)
@@ -381,7 +392,41 @@ def bind_boolean_boundary(
         f"{source_patch_layer_name}_present"
     )
     strands_by_pipe_id = _plan_strands_by_pipe_id(plan, groups, source_mesh)
+    endpoint_port_tokens = tuple(endpoint_port_tokens)
+    valid_endpoint_roles = {"START", "END"}
+    endpoint_tokens_by_value = {
+        record.token: record for record in endpoint_port_tokens
+    }
+    endpoint_registry_valid = (
+        len(endpoint_tokens_by_value) == len(endpoint_port_tokens)
+        and all(
+            record.token > 0
+            and record.endpoint_role in valid_endpoint_roles
+            and record.pipe_id in strands_by_pipe_id
+            and record.port_id
+            in {
+                strands_by_pipe_id[record.pipe_id].start_port_id,
+                strands_by_pipe_id[record.pipe_id].end_port_id,
+            }
+            and (
+                record.port_id
+                == strands_by_pipe_id[record.pipe_id].start_port_id
+            )
+            == (record.endpoint_role == "START")
+            for record in endpoint_port_tokens
+        )
+    )
+    endpoint_token_layers = tuple(
+        layer
+        for layer in (
+            bm.faces.layers.int.get(layer_name)
+            for layer_name in endpoint_token_layer_names
+        )
+        if layer is not None
+    )
     edge_owner_ledger = {}
+    vertex_endpoint_token_ledger = {}
+    observed_endpoint_tokens = set()
     for face in groove_faces:
         owner = (
             int(face[component_layer])
@@ -392,6 +437,13 @@ def bind_boolean_boundary(
         )
         for edge in face.edges:
             edge_owner_ledger.setdefault(edge, set()).add(owner)
+        for layer in endpoint_token_layers:
+            token = int(face[layer])
+            if token <= 0:
+                continue
+            observed_endpoint_tokens.add(token)
+            for vertex in face.verts:
+                vertex_endpoint_token_ledger.setdefault(vertex, set()).add(token)
     bmesh.ops.delete(
         bm,
         geom=list(groove_faces),
@@ -497,9 +549,37 @@ def bind_boolean_boundary(
         topology_compatible = (
             len(graph_rails) == 1
             and len(record_edge_indices) == len(graph_edge_indices)
-            and graph_rails[0].cyclic == owner_strand.cyclic
-            and owner_strand.cyclic
         )
+        expected_endpoint_port_ids = expected_rail_by_id[rail_id].endpoint_port_ids
+        actual_endpoint_port_ids = set()
+        endpoint_roles = set()
+        rail_tokens_valid = True
+        rail_vertices = {
+            vertex
+            for edge in rail_edge_objects
+            for vertex in edge.verts
+        }
+        for vertex in rail_vertices:
+            for token in vertex_endpoint_token_ledger.get(vertex, set()):
+                endpoint = endpoint_tokens_by_value.get(token)
+                if endpoint is None or endpoint.pipe_id != records[0].pipe_id:
+                    rail_tokens_valid = False
+                    continue
+                actual_endpoint_port_ids.add(endpoint.port_id)
+                endpoint_roles.add(endpoint.endpoint_role)
+        if owner_strand.cyclic:
+            topology_compatible = (
+                topology_compatible
+                and graph_rails[0].cyclic
+                and not expected_endpoint_port_ids
+            )
+        else:
+            topology_compatible = (
+                topology_compatible
+                and set(expected_endpoint_port_ids) == actual_endpoint_port_ids
+                and endpoint_roles == {"START", "END"}
+                and rail_tokens_valid
+            )
         if not topology_compatible and rail_id not in topology_incompatible_rail_ids:
             topology_incompatible_rail_ids.append(rail_id)
         rail_bindings.append(BooleanRailBinding(
@@ -540,6 +620,8 @@ def bind_boolean_boundary(
         and not missing_rail_ids
         and not missing_port_ids
         and not topology_incompatible_rail_ids
+        and endpoint_registry_valid
+        and observed_endpoint_tokens <= set(endpoint_tokens_by_value)
     )
     return FinalizationBinding(
         plan_id=plan.plan_id,

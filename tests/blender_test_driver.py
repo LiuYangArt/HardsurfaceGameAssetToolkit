@@ -3191,6 +3191,47 @@ def make_open_rail_boundary_binding_bmesh():
     return bm, (groove_face,)
 
 
+# 构造两条 cyclic Boolean rails，并在待删除 groove Faces 上分别写入 open strand 的 start/end port token。
+# pipe_id/patch_ids: cutter owner 与两侧 source Patch；start_token/end_token: plan-local StrandEndpointPort tokens；返回 BMesh 与 groove Face refs。
+def make_open_port_anchor_binding_bmesh(
+    pipe_id,
+    patch_ids,
+    start_token,
+    end_token,
+):
+    bm = bmesh.new()
+    component_layer = bm.faces.layers.int.new("hst_pipe_component_id")
+    component_present = bm.faces.layers.int.new("hst_pipe_component_id_present")
+    patch_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id")
+    patch_present = bm.faces.layers.int.new("hst_pipe_source_patch_id_present")
+    start_port_layer = bm.faces.layers.int.new("hst_pipe_start_port_token")
+    end_port_layer = bm.faces.layers.int.new("hst_pipe_end_port_token")
+    groove_faces = []
+    for rail_index, patch_id in enumerate(patch_ids):
+        offset = float(rail_index * 3)
+        corners = (
+            bm.verts.new((offset + 0.0, 0.0, 0.0)),
+            bm.verts.new((offset + 1.0, 0.0, 0.0)),
+            bm.verts.new((offset + 1.0, 1.0, 0.0)),
+            bm.verts.new((offset + 0.0, 1.0, 0.0)),
+        )
+        apex = bm.verts.new((offset + 0.5, 0.5, 1.0))
+        start_face = bm.faces.new((corners[0], corners[1], corners[2]))
+        end_face = bm.faces.new((corners[0], corners[2], corners[3]))
+        for face in (start_face, end_face):
+            face[component_layer] = pipe_id
+            face[component_present] = 1
+        start_face[start_port_layer] = start_token
+        end_face[end_port_layer] = end_token
+        groove_faces.extend((start_face, end_face))
+        for index, corner in enumerate(corners):
+            next_corner = corners[(index + 1) % len(corners)]
+            retained_face = bm.faces.new((corner, next_corner, apex))
+            retained_face[patch_layer] = patch_id
+            retained_face[patch_present] = 1
+    return bm, tuple(groove_faces)
+
+
 # 构造同一 Boundary Edge 被两个 cutter components 删除面共同拥有的 non-manifold seam。
 # 无参数；返回 BMesh 与两个 groove Face refs，用于验证 multi-owner 必须显式 fail-closed。
 def make_multi_owner_boundary_binding_bmesh():
@@ -3319,6 +3360,188 @@ def test_feature_chamfer_authoritative_boundary_binding_contract_smoke(
     finally:
         bm.free()
     result.add_detail("deleted Face owner + retained Face patch provenance bound 6/6 Boundary Edges")
+
+
+# 验证 open FeatureStrand 用 attribute-only start/end anchor 绑定 cyclic Boolean rails，不依赖 degree-1 Boundary endpoint。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_open_port_anchor_binding_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("OpenPortAnchorBinding")
+    source = make_edge_network(
+        "OpenPortAnchorBindingSource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ((0, 1),),
+    )
+    source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [0],
+        "vertex_indices": [0, 1],
+        "is_cyclic": False,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11)],
+        "convexity_by_edge": [1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 1,
+        "end_feature_degree": 1,
+    }
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    strand = plan.feature_strands[0]
+    endpoint_tokens = (
+        module.StrandEndpointPortToken(101, 7, "START", strand.start_port_id),
+        module.StrandEndpointPortToken(202, 7, "END", strand.end_port_id),
+    )
+    bm, groove_faces = make_open_port_anchor_binding_bmesh(
+        7,
+        (10, 11),
+        101,
+        202,
+    )
+    try:
+        coordinates_before = tuple(tuple(vertex.co) for vertex in bm.verts)
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+            endpoint_port_tokens=endpoint_tokens,
+            endpoint_token_layer_names=(
+                "hst_pipe_start_port_token",
+                "hst_pipe_end_port_token",
+            ),
+        )
+        ensure(binding.status == "PASS", f"Open port anchor binding failed: {binding}")
+        ensure(
+            binding.boundary_edge_count == binding.consumed_edge_count == 8
+            and {rail.rail_id for rail in binding.rail_bindings}
+            == {rail.rail_id for rail in plan.rail_chains}
+            and all(len(rail.endpoint_port_ids) == 2 for rail in binding.rail_bindings)
+            and not binding.missing_port_ids
+            and not binding.topology_incompatible_rail_ids,
+            f"Open port anchor ledger is incomplete: {binding}",
+        )
+        ensure(
+            coordinates_before == tuple(tuple(vertex.co) for vertex in bm.verts)
+            and not binding.coordinate_reconstruction
+            and not binding.centerline_sorting
+            and not binding.moves_boundary,
+            "Open port anchor binding changed Boundary geometry",
+        )
+    finally:
+        bm.free()
+    result.add_detail("open strand start/end anchors bound two cyclic Boolean rails without degree-1 inference")
+
+
+# 验证 open anchor binder 对 unknown、wrong-pipe、wrong-role、duplicate token registry 与 missing anchor 全部 fail-closed。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_open_port_anchor_binding_fail_closed_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("OpenPortAnchorBindingFailClosed")
+    source = make_edge_network(
+        "OpenPortAnchorBindingFailClosedSource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ((0, 1),),
+    )
+    source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [0],
+        "vertex_indices": [0, 1],
+        "is_cyclic": False,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11)],
+        "convexity_by_edge": [1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 1,
+        "end_feature_degree": 1,
+    }
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    strand = plan.feature_strands[0]
+    valid_start = module.StrandEndpointPortToken(101, 7, "START", strand.start_port_id)
+    valid_end = module.StrandEndpointPortToken(202, 7, "END", strand.end_port_id)
+    cases = (
+        ("unknown-token", 101, 999, (valid_start, valid_end)),
+        (
+            "wrong-pipe",
+            101,
+            202,
+            (valid_start, module.StrandEndpointPortToken(202, 8, "END", strand.end_port_id)),
+        ),
+        (
+            "wrong-role",
+            101,
+            202,
+            (valid_start, module.StrandEndpointPortToken(202, 7, "START", strand.end_port_id)),
+        ),
+        (
+            "wrong-port-for-role",
+            101,
+            202,
+            (
+                module.StrandEndpointPortToken(101, 7, "START", strand.end_port_id),
+                module.StrandEndpointPortToken(202, 7, "END", strand.start_port_id),
+            ),
+        ),
+        (
+            "duplicate-token-registry",
+            101,
+            202,
+            (valid_start, module.StrandEndpointPortToken(101, 7, "END", strand.end_port_id)),
+        ),
+        ("missing-end-anchor", 101, 0, (valid_start, valid_end)),
+    )
+    records = []
+    for label, start_token, end_token, endpoint_tokens in cases:
+        bm, groove_faces = make_open_port_anchor_binding_bmesh(
+            7,
+            (10, 11),
+            start_token,
+            end_token,
+        )
+        try:
+            binding = module.bind_boolean_boundary(
+                plan,
+                [group],
+                bm,
+                groove_faces,
+                component_layer_name="hst_pipe_component_id",
+                source_patch_layer_name="hst_pipe_source_patch_id",
+                source_mesh=source.data,
+                endpoint_port_tokens=endpoint_tokens,
+                endpoint_token_layer_names=(
+                    "hst_pipe_start_port_token",
+                    "hst_pipe_end_port_token",
+                ),
+            )
+            ensure(
+                binding.status == "boundary_binding_incomplete",
+                f"{label} port anchor provenance did not fail closed: {binding}",
+            )
+            records.append({"case": label, "status": binding.status})
+        finally:
+            bm.free()
+    result.add_detail(json.dumps(records, sort_keys=True))
 
 
 # 验证 authoritative binder 对缺 owner、multi-owner、缺 patch 与 plan 不兼容全部 fail-closed。
@@ -5318,6 +5541,14 @@ def main():
     context.run_case(
         "feature_chamfer_authoritative_boundary_binding_contract_smoke",
         test_feature_chamfer_authoritative_boundary_binding_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_open_port_anchor_binding_contract_smoke",
+        test_feature_chamfer_open_port_anchor_binding_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_open_port_anchor_binding_fail_closed_regression",
+        test_feature_chamfer_open_port_anchor_binding_fail_closed_regression,
     )
     context.run_case(
         "feature_chamfer_authoritative_boundary_binding_fail_closed_regression",
