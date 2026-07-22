@@ -3397,8 +3397,8 @@ def test_feature_chamfer_open_port_anchor_binding_contract_smoke(
     )
     strand = plan.feature_strands[0]
     endpoint_tokens = (
-        module.StrandEndpointPortToken(101, 7, "START", strand.start_port_id),
-        module.StrandEndpointPortToken(202, 7, "END", strand.end_port_id),
+        module.StrandEndpointPortToken(101, 7, strand.strand_id, "START", strand.start_port_id),
+        module.StrandEndpointPortToken(202, 7, strand.strand_id, "END", strand.end_port_id),
     )
     bm, groove_faces = make_open_port_anchor_binding_bmesh(
         7,
@@ -3478,36 +3478,45 @@ def test_feature_chamfer_open_port_anchor_binding_fail_closed_regression(
         "GN_PREVIEW_V1",
     )
     strand = plan.feature_strands[0]
-    valid_start = module.StrandEndpointPortToken(101, 7, "START", strand.start_port_id)
-    valid_end = module.StrandEndpointPortToken(202, 7, "END", strand.end_port_id)
+    valid_start = module.StrandEndpointPortToken(101, 7, strand.strand_id, "START", strand.start_port_id)
+    valid_end = module.StrandEndpointPortToken(202, 7, strand.strand_id, "END", strand.end_port_id)
     cases = (
         ("unknown-token", 101, 999, (valid_start, valid_end)),
         (
             "wrong-pipe",
             101,
             202,
-            (valid_start, module.StrandEndpointPortToken(202, 8, "END", strand.end_port_id)),
+            (valid_start, module.StrandEndpointPortToken(202, 8, strand.strand_id, "END", strand.end_port_id)),
+        ),
+        (
+            "wrong-strand",
+            101,
+            202,
+            (
+                module.StrandEndpointPortToken(101, 7, "strand:unknown", "START", strand.start_port_id),
+                valid_end,
+            ),
         ),
         (
             "wrong-role",
             101,
             202,
-            (valid_start, module.StrandEndpointPortToken(202, 7, "START", strand.end_port_id)),
+            (valid_start, module.StrandEndpointPortToken(202, 7, strand.strand_id, "START", strand.end_port_id)),
         ),
         (
             "wrong-port-for-role",
             101,
             202,
             (
-                module.StrandEndpointPortToken(101, 7, "START", strand.end_port_id),
-                module.StrandEndpointPortToken(202, 7, "END", strand.start_port_id),
+                module.StrandEndpointPortToken(101, 7, strand.strand_id, "START", strand.end_port_id),
+                module.StrandEndpointPortToken(202, 7, strand.strand_id, "END", strand.start_port_id),
             ),
         ),
         (
             "duplicate-token-registry",
             101,
             202,
-            (valid_start, module.StrandEndpointPortToken(101, 7, "END", strand.end_port_id)),
+            (valid_start, module.StrandEndpointPortToken(101, 7, strand.strand_id, "END", strand.end_port_id)),
         ),
         ("missing-end-anchor", 101, 0, (valid_start, valid_end)),
     )

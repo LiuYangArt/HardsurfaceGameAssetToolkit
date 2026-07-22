@@ -57,6 +57,7 @@ class BoundaryGraphDecomposition:
 class StrandEndpointPortToken:
     token: int
     pipe_id: int
+    strand_id: str
     endpoint_role: str
     port_id: str
 
@@ -403,6 +404,7 @@ def bind_boolean_boundary(
             record.token > 0
             and record.endpoint_role in valid_endpoint_roles
             and record.pipe_id in strands_by_pipe_id
+            and record.strand_id == strands_by_pipe_id[record.pipe_id].strand_id
             and record.port_id
             in {
                 strands_by_pipe_id[record.pipe_id].start_port_id,
@@ -562,7 +564,11 @@ def bind_boolean_boundary(
         for vertex in rail_vertices:
             for token in vertex_endpoint_token_ledger.get(vertex, set()):
                 endpoint = endpoint_tokens_by_value.get(token)
-                if endpoint is None or endpoint.pipe_id != records[0].pipe_id:
+                if (
+                    endpoint is None
+                    or endpoint.pipe_id != records[0].pipe_id
+                    or endpoint.strand_id != records[0].owner_strand_id
+                ):
                     rail_tokens_valid = False
                     continue
                 actual_endpoint_port_ids.add(endpoint.port_id)
