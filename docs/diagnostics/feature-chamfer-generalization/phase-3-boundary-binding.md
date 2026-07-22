@@ -69,4 +69,6 @@ public binder 已据此补充 plan-local `StrandEndpointPortToken` registry：op
 
 production Even-Thickness Pipe producer 已用 GN `Curve Endpoint Selection → Store Named Attribute` 写入 start/end POINT token，并在 evaluated Pipe 上 attribute-only 提升为 FACE token，再由 joined cutter 原样复制；production helper smoke 验证两个 token 均存在。该 producer 尚未经过相交多 Pipe Exact Boolean，也尚未在正式 Finalize 中传给 binder；因此仍不能接 runtime 或宣称 open/Y/T/X 完成。
 
+相交 degree-3 production probe 已证明 Collection Exact Boolean 可传播 plan-local component、endpoint token 与 source Patch one-hot Face provenance；但共享 junction 仍产生未归属的 seam Boundary Edges，两个 Rail 也被切成 topology-incompatible fragments。binder 因此稳定返回 `boundary_binding_incomplete`，没有落回 BVH owner。当前证据只达到“authoritative provenance 可达且 fail-closed”，尚未满足 Y/T/X `Boundary Edge consumption=100%`，Phase 3 继续 Stop。
+
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。

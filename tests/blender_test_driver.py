@@ -3939,6 +3939,175 @@ def test_feature_chamfer_open_endpoint_token_producer_smoke(
     )
 
 
+# 从 production Pipe/Cutter Set 运行 Exact Boolean，并由 authoritative binder 验证 degree-3 junction provenance。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_intersecting_endpoint_provenance_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("IntersectingEndpointProvenance")
+    source = make_orthogonal_degree_three_feature_junction(
+        "IntersectingEndpointProvenanceSource",
+        collection,
+    )
+    radius = 0.08
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=radius,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="CUTTER_UNION",
+        keep_debug_objects=True,
+        feature_graph_contract="GN_PREVIEW_V1",
+        preserve_source_visibility=True,
+    )
+    ensure(
+        stats["status"] == "finished"
+        and stats["pipe_group_count"] == 2
+        and stats["spatial_junction_count"] >= 1
+        and stats["joined_cutter_batch_count"] == 2,
+        f"Production degree-3 Cutter Set did not expose intersecting Pipes: {stats}",
+    )
+    plan_stats = utils._base_stats(
+        source,
+        radius,
+        8,
+        35.0,
+        3.0,
+        1.5,
+        "FEATURE_GRAPH",
+    )
+    groups = utils._build_preview_feature_graph(source, radius, plan_stats)
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        groups,
+        radius,
+        "GN_PREVIEW_V1",
+    )
+    _, endpoint_registry = utils._build_strand_endpoint_port_tokens(
+        plan,
+        groups,
+        source.data,
+    )
+    expected_tokens = {record.token for record in endpoint_registry}
+    cutter_collection = bpy.data.collections[stats["cutter_collection_name"]]
+    cutter_tokens = {
+        int(item.value)
+        for cutter in cutter_collection.objects
+        for attribute_name in (
+            "hst_pipe_start_port_token",
+            "hst_pipe_end_port_token",
+        )
+        for attribute in (cutter.data.attributes.get(attribute_name),)
+        if attribute is not None
+        for item in attribute.data
+        if int(item.value) > 0
+    }
+    ensure(
+        cutter_tokens == expected_tokens,
+        f"Production Cutter Set endpoint namespace is incomplete: {cutter_tokens}",
+    )
+    output = utils._duplicate_source(source, collection)
+    source_patch_ids = utils._source_face_patch_ids(source)
+    utils._mark_original_faces(output, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        output.data,
+        cutter_collection.objects,
+        source_patch_ids,
+    )
+    for cutter in sorted(cutter_collection.objects, key=lambda obj: obj.name):
+        modifier = output.modifiers.new(
+            f"Authoritative endpoint probe {cutter.name}",
+            type="BOOLEAN",
+        )
+        modifier.operation = "DIFFERENCE"
+        modifier.solver = "EXACT"
+        modifier.operand_type = "OBJECT"
+        modifier.object = cutter
+        with bpy.context.temp_override(
+            object=output,
+            active_object=output,
+            selected_objects=[output],
+            selected_editable_objects=[output],
+        ):
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
+    groove_face_indices = utils._groove_face_indices(output, plan_stats)
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
+    bm.faces.ensure_lookup_table()
+    groove_faces = tuple(bm.faces[index] for index in groove_face_indices)
+    membership_counts = {
+        attribute.name: sum(bool(item.value) for item in attribute.data)
+        for attribute in output.data.attributes
+        if attribute.name.startswith(
+            (
+                "hst_pipe_component_member_",
+                "hst_pipe_endpoint_member_",
+            )
+        )
+    }
+    try:
+        binding = test_context.addon.utils.feature_chamfer_binding_utils.bind_boolean_boundary(
+            plan,
+            groups,
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+            endpoint_port_tokens=endpoint_registry,
+            endpoint_token_layer_names=(
+                "hst_pipe_start_port_token",
+                "hst_pipe_end_port_token",
+            ),
+            component_membership_layer_names=tuple(
+                sorted(
+                    attribute.name
+                    for attribute in output.data.attributes
+                    if attribute.name.startswith("hst_pipe_component_member_")
+                )
+            ),
+            endpoint_membership_layer_names=tuple(
+                sorted(
+                    attribute.name
+                    for attribute in output.data.attributes
+                    if attribute.name.startswith("hst_pipe_endpoint_member_")
+                )
+            ),
+            source_patch_membership_layer_names=tuple(
+                sorted(
+                    attribute.name
+                    for attribute in output.data.attributes
+                    if attribute.name.startswith("hst_pipe_source_patch_member_")
+                )
+            ),
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.boundary_edge_count > binding.consumed_edge_count
+            and binding.unowned_edge_indices
+            and binding.topology_incompatible_rail_ids
+            and not binding.missing_rail_ids
+            and not binding.missing_port_ids,
+            (
+                "Intersecting production endpoint provenance did not preserve "
+                "the expected fail-closed evidence: "
+                f"memberships={membership_counts}; {binding}"
+            ),
+        )
+    finally:
+        bm.free()
+    result.add_detail(
+        (
+            "degree-3 production provenance remained fail-closed with "
+            f"tokens={sorted(expected_tokens)}"
+        )
+    )
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -5652,6 +5821,10 @@ def main():
     context.run_case(
         "feature_chamfer_open_endpoint_token_producer_smoke",
         test_feature_chamfer_open_endpoint_token_producer_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_intersecting_endpoint_provenance_smoke",
+        test_feature_chamfer_intersecting_endpoint_provenance_smoke,
     )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case(

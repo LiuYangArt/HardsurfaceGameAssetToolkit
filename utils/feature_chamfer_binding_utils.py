@@ -96,6 +96,7 @@ class FinalizationBinding:
     missing_rail_ids: tuple[str, ...]
     missing_port_ids: tuple[str, ...]
     topology_incompatible_rail_ids: tuple[str, ...]
+    conflicting_provenance_edge_indices: tuple[int, ...]
     graph: BoundaryGraphDecomposition
     coordinate_reconstruction: bool
     centerline_sorting: bool
@@ -371,6 +372,7 @@ def _plan_strands_by_pipe_id(plan, groups, source_mesh):
 # plan/groups/bm/groove_faces: shared plan、Feature groups、caller-owned disposable Boolean BMesh 与待删除 cutter Faces；函数会原地删除 groove Faces并返回 binding。
 # component_layer_name/source_patch_layer_name: groove Face 的 Pipe owner layer 与保留 source Face 的 Patch layer 名称。
 # endpoint_port_tokens/endpoint_token_layer_names: plan-local StrandEndpointPort token registry 与 groove Face token layers。
+# component_membership_layer_names/endpoint_membership_layer_names/source_patch_membership_layer_names: Collection Boolean 可合并的 one-hot owner/token/Patch provenance layers。
 def bind_boolean_boundary(
     plan,
     groups,
@@ -382,6 +384,9 @@ def bind_boolean_boundary(
     source_mesh,
     endpoint_port_tokens=(),
     endpoint_token_layer_names=(),
+    component_membership_layer_names=(),
+    endpoint_membership_layer_names=(),
+    source_patch_membership_layer_names=(),
 ):
     groove_faces = tuple(groove_faces)
     component_layer = bm.faces.layers.int.get(component_layer_name)
@@ -426,22 +431,79 @@ def bind_boolean_boundary(
         )
         if layer is not None
     )
+    component_membership_layers = tuple(
+        (pipe_id, layer)
+        for pipe_id, layer in (
+            (
+                int(layer_name.rsplit("_", 1)[1]),
+                bm.faces.layers.int.get(layer_name)
+                or bm.faces.layers.bool.get(layer_name),
+            )
+            for layer_name in component_membership_layer_names
+        )
+        if layer is not None
+    )
+    endpoint_membership_layers = tuple(
+        (token, layer)
+        for token, layer in (
+            (
+                int(layer_name.rsplit("_", 1)[1]),
+                bm.faces.layers.int.get(layer_name)
+                or bm.faces.layers.bool.get(layer_name),
+            )
+            for layer_name in endpoint_membership_layer_names
+        )
+        if layer is not None
+    )
+    source_patch_membership_layers = tuple(
+        (patch_id, layer)
+        for patch_id, layer in (
+            (
+                int(layer_name.rsplit("_", 1)[1]),
+                bm.faces.layers.int.get(layer_name)
+                or bm.faces.layers.bool.get(layer_name),
+            )
+            for layer_name in source_patch_membership_layer_names
+        )
+        if layer is not None
+    )
     edge_owner_ledger = {}
     vertex_endpoint_token_ledger = {}
     observed_endpoint_tokens = set()
     for face in groove_faces:
-        owner = (
-            int(face[component_layer])
-            if component_layer is not None
-            and component_present_layer is not None
-            and bool(face[component_present_layer])
-            else -1
-        )
+        owners = {
+            pipe_id
+            for pipe_id, layer in component_membership_layers
+            if bool(face[layer])
+        }
+        if not owners and component_membership_layers:
+            legacy_owner = (
+                int(face[component_layer])
+                if component_layer is not None
+                and component_present_layer is not None
+                and bool(face[component_present_layer])
+                else -1
+            )
+            owners = {legacy_owner}
+        elif not component_membership_layers:
+            owners = {
+                int(face[component_layer])
+                if component_layer is not None
+                and component_present_layer is not None
+                and bool(face[component_present_layer])
+                else -1
+            }
         for edge in face.edges:
-            edge_owner_ledger.setdefault(edge, set()).add(owner)
+            edge_owner_ledger.setdefault(edge, set()).update(owners)
         for layer in endpoint_token_layers:
             token = int(face[layer])
             if token <= 0:
+                continue
+            observed_endpoint_tokens.add(token)
+            for vertex in face.verts:
+                vertex_endpoint_token_ledger.setdefault(vertex, set()).add(token)
+        for token, layer in endpoint_membership_layers:
+            if not bool(face[layer]):
                 continue
             observed_endpoint_tokens.add(token)
             for vertex in face.verts:
@@ -482,15 +544,26 @@ def bind_boolean_boundary(
             multi_owner.append(edge_index)
             continue
         retained_faces = tuple(edge.link_faces)
-        if (
-            source_patch_layer is None
-            or source_patch_present_layer is None
-            or len(retained_faces) != 1
-            or not bool(retained_faces[0][source_patch_present_layer])
+        retained_patch_ids = {
+            patch_id
+            for patch_id, layer in source_patch_membership_layers
+            if len(retained_faces) == 1 and bool(retained_faces[0][layer])
+        }
+        if source_patch_membership_layers:
+            patch_id = (
+                next(iter(retained_patch_ids))
+                if len(retained_patch_ids) == 1
+                else -1
+            )
+        elif (
+            source_patch_layer is not None
+            and source_patch_present_layer is not None
+            and len(retained_faces) == 1
+            and bool(retained_faces[0][source_patch_present_layer])
         ):
-            missing_patch.append(edge_index)
-            continue
-        patch_id = int(retained_faces[0][source_patch_layer])
+            patch_id = int(retained_faces[0][source_patch_layer])
+        else:
+            patch_id = -1
         if patch_id < 0:
             missing_patch.append(edge_index)
             continue
@@ -616,6 +689,7 @@ def bind_boolean_boundary(
     }
     expected_port_ids = {port.port_id for port in plan.junction_ports}
     missing_port_ids = tuple(sorted(expected_port_ids - bound_port_ids))
+    conflicting_provenance_edge_indices = tuple(sorted(set(multi_owner)))
     complete = (
         graph.status == "PASS"
         and len(edge_bindings) == len(boundary_edges)
@@ -643,6 +717,7 @@ def bind_boolean_boundary(
         missing_rail_ids=missing_rail_ids,
         missing_port_ids=missing_port_ids,
         topology_incompatible_rail_ids=tuple(topology_incompatible_rail_ids),
+        conflicting_provenance_edge_indices=conflicting_provenance_edge_indices,
         graph=graph,
         coordinate_reconstruction=False,
         centerline_sorting=False,

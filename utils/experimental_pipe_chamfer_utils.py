@@ -42,6 +42,9 @@ CUTTER_COMPONENT_PRESENT_ATTRIBUTE = "hst_pipe_component_id_present"
 SOURCE_PATCH_PRESENT_ATTRIBUTE = "hst_pipe_source_patch_id_present"
 CUTTER_START_PORT_TOKEN_ATTRIBUTE = "hst_pipe_start_port_token"
 CUTTER_END_PORT_TOKEN_ATTRIBUTE = "hst_pipe_end_port_token"
+CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_component_member_"
+CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_endpoint_member_"
+SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX = "hst_pipe_source_patch_member_"
 
 
 # 让 Exact Boolean 能传播所有 provenance Face attributes，源 Mesh 与 Cutter Mesh 必须共享完整 attribute schema。
@@ -76,6 +79,92 @@ def _ensure_boolean_attribute_schema(mesh, is_source, source_patch_ids=None):
             for item in attribute.data:
                 item.value = default_value if default_value is not None else 0
     return mesh
+
+
+# 返回 plan-local Pipe owner 的 one-hot Boolean Face attribute 名称。
+# pipe_id: ChamferPlan 对应的非负 Pipe ID。
+def _component_membership_attribute_name(pipe_id):
+    return f"{CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX}{int(pipe_id)}"
+
+
+# 返回 plan-local endpoint token 的 one-hot Boolean Face attribute 名称。
+# token: StrandEndpointPortToken 的正整数 token。
+def _endpoint_token_membership_attribute_name(token):
+    return f"{CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX}{int(token)}"
+
+
+# 返回 source Surface Patch 的 one-hot Boolean Face attribute 名称。
+# patch_id: ChamferPlan 对应的非负 Patch ID。
+def _source_patch_membership_attribute_name(patch_id):
+    return f"{SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX}{int(patch_id)}"
+
+
+# 在全部 Cutter objects 上补齐相同的 one-hot provenance schema，供 Collection Exact Boolean 传播。
+# cutters: 当前 Cutter Set Objects；函数原地创建缺失的 Boolean FACE attributes。
+def _synchronize_cutter_membership_schema(cutters):
+    attribute_names = {
+        attribute.name
+        for cutter in cutters
+        for attribute in cutter.data.attributes
+        if attribute.domain == "FACE"
+        and attribute.data_type == "BOOLEAN"
+        and attribute.name.startswith(
+            (
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX,
+            )
+        )
+    }
+    for cutter in cutters:
+        for attribute_name in sorted(attribute_names):
+            if cutter.data.attributes.get(attribute_name) is None:
+                cutter.data.attributes.new(
+                    attribute_name,
+                    type="BOOLEAN",
+                    domain="FACE",
+                )
+
+
+# 在 source duplicate 上创建与 Cutter Set 一致的 one-hot provenance schema。
+# mesh/cutters/source_patch_ids: Boolean source Mesh、已同步 Cutter Set 与 polygon 对应 Patch IDs。
+def _initialize_source_membership_schema(mesh, cutters, source_patch_ids=None):
+    source_patch_ids = tuple(source_patch_ids or ())
+    for patch_id in sorted(set(source_patch_ids)):
+        attribute_name = _source_patch_membership_attribute_name(patch_id)
+        for cutter in cutters:
+            if cutter.data.attributes.get(attribute_name) is None:
+                cutter.data.attributes.new(
+                    attribute_name,
+                    type="BOOLEAN",
+                    domain="FACE",
+                )
+    attribute_names = {
+        attribute.name
+        for cutter in cutters
+        for attribute in cutter.data.attributes
+        if attribute.domain == "FACE"
+        and attribute.data_type == "BOOLEAN"
+        and attribute.name.startswith(
+            (
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX,
+            )
+        )
+    }
+    for attribute_name in sorted(attribute_names):
+        attribute = mesh.attributes.get(attribute_name)
+        if attribute is not None:
+            mesh.attributes.remove(attribute)
+        attribute = mesh.attributes.new(
+            attribute_name,
+            type="BOOLEAN",
+            domain="FACE",
+        )
+        if attribute_name.startswith(SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX):
+            patch_id = int(attribute_name.rsplit("_", 1)[1])
+            for polygon, source_patch_id in zip(mesh.polygons, source_patch_ids):
+                attribute.data[polygon.index].value = source_patch_id == patch_id
 
 
 CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"
@@ -1832,6 +1921,14 @@ def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_in
     for polygon, pipe_id in zip(mesh.polygons, face_pipe_ids):
         pipe_id_attribute.data[polygon.index].value = pipe_id
         pipe_present_attribute.data[polygon.index].value = True
+    for pipe_id in sorted(set(face_pipe_ids)):
+        membership_attribute = mesh.attributes.new(
+            _component_membership_attribute_name(pipe_id),
+            type="BOOLEAN",
+            domain="FACE",
+        )
+        for polygon, face_pipe_id in zip(mesh.polygons, face_pipe_ids):
+            membership_attribute.data[polygon.index].value = face_pipe_id == pipe_id
     for attribute_name, face_tokens in (
         (CUTTER_START_PORT_TOKEN_ATTRIBUTE, face_start_port_tokens),
         (CUTTER_END_PORT_TOKEN_ATTRIBUTE, face_end_port_tokens),
@@ -1841,6 +1938,14 @@ def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_in
         attribute = mesh.attributes[attribute_name]
         for polygon, token in zip(mesh.polygons, face_tokens):
             attribute.data[polygon.index].value = token
+        for token in sorted({value for value in face_tokens if value > 0}):
+            membership_attribute = mesh.attributes.new(
+                _endpoint_token_membership_attribute_name(token),
+                type="BOOLEAN",
+                domain="FACE",
+            )
+            for polygon, face_token in zip(mesh.polygons, face_tokens):
+                membership_attribute.data[polygon.index].value = face_token == token
     cutter = bpy.data.objects.new(mesh.name, mesh)
     cutter.matrix_world = source_object.matrix_world.copy()
     cutter[OUTPUT_TAG] = source_object.name
@@ -1902,6 +2007,7 @@ def _build_cutter_set(pipes, source_object, stats):
         )
         for cutter_index, batch in enumerate(pipe_batches)
     ]
+    _synchronize_cutter_membership_schema(joined_cutters)
     stats["spatial_junction_count"] = len(spatial_pairs)
     stats["pipe_overlap_pairs"] = [list(pair) for pair in sorted(spatial_pairs)]
     stats["cutter_set_object_count"] = len(pipes)
@@ -1936,6 +2042,11 @@ def _mark_original_faces(output, source_patch_ids):
 # output: source duplicate；cutter_collection: 独立 Pipe 集合；source_patch_ids: 原面 Patch IDs。
 def _apply_difference(output, cutter_collection, source_patch_ids):
     _mark_original_faces(output, source_patch_ids)
+    _initialize_source_membership_schema(
+        output.data,
+        cutter_collection.objects,
+        source_patch_ids,
+    )
     base_material = bpy.data.materials.get(BASE_MATERIAL_NAME) or bpy.data.materials.new(BASE_MATERIAL_NAME)
     if len(output.data.materials) == 0:
         output.data.materials.append(base_material)
