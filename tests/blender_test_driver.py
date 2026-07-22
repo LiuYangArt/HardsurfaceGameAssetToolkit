@@ -5172,6 +5172,16 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
     )
     cutter_collection = bpy.data.collections[stats["cutter_collection_name"]]
     cutters = tuple(sorted(cutter_collection.objects, key=lambda item: item.name))
+    production_pipe_objects = tuple(sorted(
+        (
+            obj
+            for obj in bpy.data.objects
+            if obj.type == "MESH"
+            and utils.PIPE_ID_TAG in obj
+            and obj.get(utils.OUTPUT_TAG) == source.name
+        ),
+        key=lambda item: int(item[utils.PIPE_ID_TAG]),
+    ))
     source_patch_ids = utils._source_face_patch_ids(source)
     collection_output = utils._duplicate_source(source, collection)
     utils._mark_original_faces(collection_output, source_patch_ids)
@@ -5188,10 +5198,20 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         cutters,
         source_patch_ids,
     )
-    multi_mesh, witness_name = utils._probe_multi_input_exact_boundary_witnesses(
+    (
+        multi_mesh,
+        witness_name,
+        owner_attribute_names,
+        token_attribute_names,
+    ) = (
+        utils._probe_multi_input_exact_boundary_witnesses(
         multi_source,
-        cutters,
-    )
+        production_pipe_objects,
+        per_cutter_witness_ids={
+            pipe: int(pipe[utils.PIPE_ID_TAG])
+            for pipe in production_pipe_objects
+        },
+    ))
     ensure(multi_mesh is not None and witness_name, "Multi-input probe returned no Mesh")
     try:
         closed_equivalent = (
@@ -5240,6 +5260,30 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 for edge in multi_bm.edges
                 if len(edge.link_faces) == 1 and bool(edge[witness_layer])
             ]
+            boundary_owner_candidates = {}
+            boundary_endpoint_tokens = {}
+            for edge in multi_bm.edges:
+                if len(edge.link_faces) != 1:
+                    continue
+                owner_ids = sorted({
+                    int(attribute_name.rsplit("_", 1)[1])
+                    for attribute_name in owner_attribute_names
+                    for layer in (
+                        multi_bm.edges.layers.int.get(attribute_name)
+                        or multi_bm.edges.layers.bool.get(attribute_name),
+                    )
+                    if layer is not None and bool(edge[layer])
+                })
+                boundary_owner_candidates[str(edge.index)] = owner_ids
+                boundary_endpoint_tokens[str(edge.index)] = sorted({
+                    int(attribute_name.rsplit("_", 1)[1])
+                    for attribute_name in token_attribute_names
+                    for layer in (
+                        multi_bm.edges.layers.int.get(attribute_name)
+                        or multi_bm.edges.layers.bool.get(attribute_name),
+                    )
+                    if layer is not None and bool(edge[layer])
+                })
         finally:
             collection_bm.free()
             multi_bm.free()
@@ -5268,6 +5312,18 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             "witnessed_boundary_edge_count": len(witnessed_boundary_edge_indices),
             "missing_boundary_edge_indices": sorted(
                 set(boundary_edge_indices) - set(witnessed_boundary_edge_indices)
+            ),
+            "boundary_owner_candidates": boundary_owner_candidates,
+            "boundary_endpoint_tokens": boundary_endpoint_tokens,
+            "owner_missing_boundary_edge_indices": sorted(
+                int(edge_index)
+                for edge_index, owner_ids in boundary_owner_candidates.items()
+                if not owner_ids
+            ),
+            "owner_conflicting_boundary_edge_indices": sorted(
+                int(edge_index)
+                for edge_index, owner_ids in boundary_owner_candidates.items()
+                if len(owner_ids) > 1
             ),
         }
         artifact_path.write_text(

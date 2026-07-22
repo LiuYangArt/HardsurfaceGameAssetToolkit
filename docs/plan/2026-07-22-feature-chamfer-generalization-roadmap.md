@@ -241,6 +241,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > 单次 native multi-input Exact probe 已与正式 Collection Exact topology 等价，并在 production degree-3 cleanup 后覆盖 `12/12` Boundary Edge；但它目前只有统一交线 field，尚无 per-Pipe/Rail/Patch/Port assignment。Cutter 输入 EDGE one-hot 经 Collection Modifier 仅覆盖 `2/12`。因此仍未满足 authoritative binding Go，runtime 未接入，Phase 3 保持 `PROTOTYPE / STOP`。
 
+> multi-input field transfer 后已在同拓扑 result 上得到 `12/12` 唯一 per-Pipe EDGE owner，endpoint token one-hot namespace 也可读；仍缺 source Patch→Rail assignment 与两个真实对象×两个半径验收。helper 仍为 test-only，Phase 3 继续 `PROTOTYPE / STOP`。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

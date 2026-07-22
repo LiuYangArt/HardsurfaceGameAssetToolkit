@@ -136,3 +136,13 @@ Boundary Edge，source unchanged。artifact：
 交给 Collection Modifier 仅传播到 `2/12`，不能作为 owner ledger。故当前仍保持
 `PROTOTYPE / STOP`，下一步必须在 multi-input node 内产生 per-cutter/per-Pipe field，
 并从目标 Operator 对两个真实对象验证，才能接 runtime。
+
+multi-input node 内的 field transfer probe 随后补齐了这一步：每个 Pipe 先在其 Cutter
+FACE 写 one-hot owner，再从同一个 Boolean 的 `Intersecting Edges` field 把 owner 与
+plan-local endpoint token one-hot 存到结果 EDGE。degree-3 cleanup 后 `12/12` Edge
+均得到唯一 Pipe owner、owner missing/conflict 均为 `0`；四个 endpoint token 的 one-hot
+namespace 也可读。artifact：
+`/tmp/hst_multi_input_onehot_token_probe_retry/feature_chamfer_multi_input_boolean_witness_probe.json`。
+
+当前还缺 source Patch→Rail assignment 与两个真实目标矩阵；该 helper 仍只由测试调用，
+没有进入 `_apply_difference()` 或 Operator。状态仍为 `PROTOTYPE / STOP`。

@@ -459,10 +459,15 @@ def _probe_sequential_exact_boundary_witnesses(
 
 # source_object/cutters: source duplicate 与 Collection Cutter Objects；单次 multi-input Exact Difference 后返回 Mesh 与交线 attribute。
 # 该函数仅用于核对 native Boolean 与正式 Collection Modifier 的拓扑等价性，不接入 runtime。
-def _probe_multi_input_exact_boundary_witnesses(source_object, cutters):
+def _probe_multi_input_exact_boundary_witnesses(
+    source_object,
+    cutters,
+    per_cutter_witness_ids=None,
+):
     cutters = tuple(cutters)
+    per_cutter_witness_ids = per_cutter_witness_ids or {}
     if not cutters:
-        return None, None
+        return None, None, (), ()
     source_matrix = tuple(
         tuple(round(float(value), 8) for value in row)
         for row in source_object.matrix_world
@@ -500,12 +505,31 @@ def _probe_multi_input_exact_boundary_witnesses(source_object, cutters):
             group_input.outputs["Geometry"],
             boolean_node.inputs["Mesh 1"],
         )
+        per_cutter_store_nodes = []
         for cutter in cutters:
             object_info = node_group.nodes.new("GeometryNodeObjectInfo")
             object_info.inputs["Object"].default_value = cutter
             object_info.transform_space = "RELATIVE"
+            cutter_geometry = object_info.outputs["Geometry"]
+            witness_id = per_cutter_witness_ids.get(cutter)
+            if witness_id is not None:
+                store_owner = node_group.nodes.new(
+                    "GeometryNodeStoreNamedAttribute"
+                )
+                store_owner.data_type = "BOOLEAN"
+                store_owner.domain = "FACE"
+                store_owner.inputs["Name"].default_value = (
+                    f"hst_probe_multi_input_owner_{int(witness_id)}"
+                )
+                store_owner.inputs["Value"].default_value = True
+                node_group.links.new(
+                    cutter_geometry,
+                    store_owner.inputs["Geometry"],
+                )
+                cutter_geometry = store_owner.outputs["Geometry"]
+                per_cutter_store_nodes.append(store_owner)
             node_group.links.new(
-                object_info.outputs["Geometry"],
+                cutter_geometry,
                 boolean_node.inputs["Mesh 2"],
             )
         store_node = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
@@ -521,8 +545,97 @@ def _probe_multi_input_exact_boundary_witnesses(source_object, cutters):
             boolean_node.outputs["Intersecting Edges"],
             store_node.inputs["Value"],
         )
+        current_geometry = store_node.outputs["Geometry"]
+        for owner_store in per_cutter_store_nodes:
+            owner_attribute_name = owner_store.inputs["Name"].default_value
+            named_owner = node_group.nodes.new("GeometryNodeInputNamedAttribute")
+            named_owner.data_type = "BOOLEAN"
+            named_owner.inputs["Name"].default_value = owner_attribute_name
+            transfer_owner = node_group.nodes.new(
+                "GeometryNodeStoreNamedAttribute"
+            )
+            transfer_owner.data_type = "BOOLEAN"
+            transfer_owner.domain = "EDGE"
+            transfer_owner.inputs["Name"].default_value = owner_attribute_name
+            node_group.links.new(
+                current_geometry,
+                transfer_owner.inputs["Geometry"],
+            )
+            node_group.links.new(
+                boolean_node.outputs["Intersecting Edges"],
+                transfer_owner.inputs["Selection"],
+            )
+            node_group.links.new(
+                named_owner.outputs["Attribute"],
+                transfer_owner.inputs["Value"],
+            )
+            current_geometry = transfer_owner.outputs["Geometry"]
+        transferred_token_attribute_names = []
+        input_token_ids = tuple(sorted({
+            int(item.value)
+            for cutter in cutters
+            for attribute_name in (
+                CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+                CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+            )
+            for attribute in (cutter.data.attributes.get(attribute_name),)
+            if attribute is not None and attribute.domain == "FACE"
+            for item in attribute.data
+            if int(item.value) > 0
+        }))
+        for token_id in input_token_ids:
+            compare_token_fields = []
+            for token_attribute_name in (
+                CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+                CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+            ):
+                named_token = node_group.nodes.new(
+                    "GeometryNodeInputNamedAttribute"
+                )
+                named_token.data_type = "INT"
+                named_token.inputs["Name"].default_value = token_attribute_name
+                compare_token = node_group.nodes.new("FunctionNodeCompare")
+                compare_token.data_type = "INT"
+                compare_token.operation = "EQUAL"
+                compare_token.inputs[3].default_value = token_id
+                node_group.links.new(
+                    named_token.outputs["Attribute"],
+                    compare_token.inputs[2],
+                )
+                compare_token_fields.append(compare_token.outputs["Result"])
+            token_union = node_group.nodes.new("FunctionNodeBooleanMath")
+            token_union.operation = "OR"
+            node_group.links.new(
+                compare_token_fields[0],
+                token_union.inputs[0],
+            )
+            node_group.links.new(
+                compare_token_fields[1],
+                token_union.inputs[1],
+            )
+            transfer_token = node_group.nodes.new(
+                "GeometryNodeStoreNamedAttribute"
+            )
+            transfer_token.data_type = "BOOLEAN"
+            transfer_token.domain = "EDGE"
+            transfer_name = f"hst_probe_edge_port_token_{token_id}"
+            transfer_token.inputs["Name"].default_value = transfer_name
+            node_group.links.new(
+                current_geometry,
+                transfer_token.inputs["Geometry"],
+            )
+            node_group.links.new(
+                boolean_node.outputs["Intersecting Edges"],
+                transfer_token.inputs["Selection"],
+            )
+            node_group.links.new(
+                token_union.outputs["Boolean"],
+                transfer_token.inputs["Value"],
+            )
+            current_geometry = transfer_token.outputs["Geometry"]
+            transferred_token_attribute_names.append(transfer_name)
         node_group.links.new(
-            store_node.outputs["Geometry"],
+            current_geometry,
             group_output.inputs["Geometry"],
         )
         host = None
@@ -544,7 +657,15 @@ def _probe_multi_input_exact_boundary_witnesses(source_object, cutters):
                 host.evaluated_get(depsgraph),
                 depsgraph=depsgraph,
             )
-            return evaluated_mesh, witness_name
+            return (
+                evaluated_mesh,
+                witness_name,
+                tuple(
+                    node.inputs["Name"].default_value
+                    for node in per_cutter_store_nodes
+                ),
+                tuple(transferred_token_attribute_names),
+            )
         finally:
             if host is not None and host.name in bpy.data.objects:
                 bpy.data.objects.remove(host, do_unlink=True)
