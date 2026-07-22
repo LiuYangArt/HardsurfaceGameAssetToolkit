@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """两阶段 Feature Chamfer Geometry Nodes Operator。"""
 
+import json
+
 import bpy
 
 from ..const import FEATURE_CHAMFER_GN_LAST_ACTION_TAG
@@ -18,6 +20,10 @@ from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import live_preview_parameters
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
 from ..utils.feature_chamfer_gn_utils import preview_state
+from ..utils.feature_chamfer_plan_utils import read_chamfer_plan
+from ..utils.feature_chamfer_plan_utils import chamfer_plan_with_unsupported_regions
+from ..utils.feature_chamfer_plan_utils import chamfer_plan_without_unsupported_regions
+from ..utils.feature_chamfer_plan_utils import write_chamfer_plan
 
 
 # 返回 source 是否有至少一条显式 sharp_edge。
@@ -151,6 +157,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 return {"CANCELLED"}
             preview_parameters = live_preview_parameters(owned_preview_modifier(source_object))
             preview_modifier = owned_preview_modifier(source_object)
+            preview_chamfer_plan = read_chamfer_plan(preview_modifier)
             preview_show_viewport = preview_modifier.show_viewport
             preview_show_render = preview_modifier.show_render
             preview_modifier.show_viewport = False
@@ -170,8 +177,16 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     keep_debug_objects=False,
                     feature_graph_contract="GN_PREVIEW_V1",
                     preserve_source_visibility=True,
+                    expected_chamfer_plan=preview_chamfer_plan,
                 )
             except PipeChamferError as error:
+                failed_chamfer_plan = chamfer_plan_with_unsupported_regions(
+                    preview_chamfer_plan,
+                    error.stats.get("phase_1_diagnostics", {}).get("families", []),
+                    fallback_reason_code=error.error_code,
+                )
+                write_chamfer_plan(source_object, failed_chamfer_plan)
+                write_chamfer_plan(preview_modifier, failed_chamfer_plan)
                 _restore_finalize_context(
                     context, source_object, preview_modifier, source_was_hidden,
                     preview_show_viewport, preview_show_render,
@@ -187,6 +202,11 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 )
                 raise
             output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
+            context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+                patch_stats,
+                ensure_ascii=False,
+                default=str,
+            )
             if output is None:
                 _restore_finalize_context(
                     context, source_object, preview_modifier, source_was_hidden,
@@ -196,6 +216,9 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 self.report({"WARNING"}, "Finalize Patch produced no output Object")
                 return {"CANCELLED"}
             try:
+                complete_chamfer_plan = chamfer_plan_without_unsupported_regions(
+                    preview_chamfer_plan
+                )
                 output.name = f"{source_object.name}_FeatureChamfer"
                 chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
                 if chamfer_attribute is not None:
@@ -220,6 +243,9 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 source_object[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
                 output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
                 output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
+                write_chamfer_plan(source_object, complete_chamfer_plan)
+                write_chamfer_plan(preview_modifier, complete_chamfer_plan)
+                write_chamfer_plan(output, complete_chamfer_plan)
                 for selected_object in tuple(context.selected_objects):
                     selected_object.select_set(False)
                 output.select_set(True)

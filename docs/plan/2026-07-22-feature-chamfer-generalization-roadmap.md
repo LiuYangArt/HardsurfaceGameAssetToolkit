@@ -198,6 +198,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 **状态目标：** `PROTOTYPE`；严禁先宣称 Operator 已修复；**目标 Operator：** 保持产品行为，只并行构建和核对 plan。
 
+> 2026-07-22 状态：`PROTOTYPE / GO`。14 cells × 3 repetitions 的 plan ID 与 PREVIEW/FINALIZE provenance 一致；产品分类保持 2 / 11 / 1。证据见 `docs/diagnostics/feature-chamfer-generalization/phase-2-chamfer-plan-seam.md`。
+
 **用户操作：** PREVIEW 与 FINALIZE 各运行一次。
 **预期可见变化：** 无；artifact 中出现相同 plan ID/provenance。
 

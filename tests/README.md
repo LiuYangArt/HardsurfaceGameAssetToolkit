@@ -55,6 +55,7 @@
 - Feature Chamfer GN Task 2.2C：正式 Preview 使用 resolution=4 四边 profile，Radius 直接驱动主轴尺寸，保持 Even-Thickness、Boolean Pro 与 closed-manifold cutter
 - Feature Chamfer GN 参数 socket 更新、Curve Pipe cutter closed-manifold smoke test
 - Feature Chamfer GN topology/live 参数 stale 与无 Sharp 时 Cancel 生命周期回归
+- Feature Chamfer GN PREVIEW/FINALIZE shared immutable ChamferPlan、JunctionPort、cyclic metadata、Boundary binding 与 retry shadow contract 回归
 - Feature Chamfer GN endpoint/junction extension、Python tracked Boolean provenance 与 Boundary region classification
 - Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
@@ -143,17 +144,17 @@ python .\tools\run_blender_tests.py
 通用化 roadmap 使用独立矩阵 runner，结果语义与完整回归的 pass/fail 分开：
 
 ```powershell
-python .\tools\run_feature_chamfer_matrix.py --repetitions 2
+python .\tools\run_feature_chamfer_matrix.py --repetitions 3
 ```
 
 Blender 未加入 PATH 时：
 
 ```powershell
-python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --repetitions 2
+python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --repetitions 3
 ```
 
 - 固定运行 `tests/fixtures/` 中 7 个对象 × radius `{0.01, 0.03}`。
-- 每个 cell 从目标 `hst.feature_chamfer_gn` PREVIEW→FINALIZE 开始。
+- 每个 cell 从目标 `hst.feature_chamfer_gn` PREVIEW→FINALIZE 开始，并重复 3 次验证 shared plan determinism。
 - 分类为 `PRODUCT_SUCCESS`、`EXPECTED_UNSUPPORTED`、`REGRESSION_FAILURE`、`SAFETY_PASS`；fail-closed 不计产品成功。
 - 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。

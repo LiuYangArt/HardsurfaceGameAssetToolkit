@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Blender-side Feature Chamfer Phase 0 product matrix driver。"""
+"""Blender-side Feature Chamfer product matrix driver。"""
 
 import hashlib
 import importlib.util
@@ -218,6 +218,39 @@ def phase_1_pipeline_timers_valid(repetition):
     )
 
 
+# 读取 Blender ID Property 中由目标 Operator 保存的 Phase 2 shadow plan 摘要。
+# addon_module/id_block: 已注册插件与 Object/Modifier；返回可序列化摘要或缺失状态。
+def phase_2_plan_summary(addon_module, id_block):
+    if id_block is None:
+        return {"exists": False}
+    plan = addon_module.utils.feature_chamfer_plan_utils.read_chamfer_plan(id_block)
+    if plan is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "mode": plan.mode,
+        "plan_id": plan.plan_id,
+        "source_fingerprint": plan.source_fingerprint,
+        "input_contract": plan.input_contract,
+        "provenance": list(plan.provenance),
+        "is_complete": plan.is_complete,
+        "feature_strand_count": len(plan.feature_strands),
+        "junction_port_count": len(plan.junction_ports),
+        "rail_chain_count": len(plan.rail_chains),
+        "strip_correspondence_count": len(plan.strip_correspondences),
+        "unsupported_region_count": len(plan.unsupported_regions),
+        "unsupported_regions": [
+            {
+                "region_id": region.region_id,
+                "reason_code": region.reason_code,
+                "owner_strand_ids": list(region.owner_strand_ids),
+                "evidence_ids": list(region.evidence_ids),
+            }
+            for region in plan.unsupported_regions
+        ],
+    }
+
+
 # 返回从坐标、拓扑、Sharp 标记与 transform 构造的 source fingerprint。
 # source_object: 产品矩阵中的原始 Mesh Object。
 def source_fingerprint(source_object):
@@ -407,6 +440,17 @@ def install_finalize_capture(addon_module, capture):
         capture["called"] = True
         capture["feature_graph_contract"] = kwargs.get("feature_graph_contract")
         capture["debug_stage"] = kwargs.get("debug_stage")
+        expected_plan = kwargs.get("expected_chamfer_plan")
+        if expected_plan is not None:
+            capture["expected_chamfer_plan"] = {
+                "mode": expected_plan.mode,
+                "plan_id": expected_plan.plan_id,
+                "source_fingerprint": expected_plan.source_fingerprint,
+                "input_contract": expected_plan.input_contract,
+                "provenance": list(expected_plan.provenance),
+                "is_complete": expected_plan.is_complete,
+                "unsupported_region_count": len(expected_plan.unsupported_regions),
+            }
         try:
             stats = original_builder(*args, **kwargs)
         except addon_module.utils.experimental_pipe_chamfer_utils.PipeChamferError as error:
@@ -503,6 +547,12 @@ def repetition_signature(repetition):
         "backend_error_message": repetition["backend"].get("error_message"),
         "phase_1_primary_families": primary_families,
         "phase_1_diagnostic_ids": diagnostic_ids,
+        "phase_2_preview_plan_id": repetition.get("phase_2_plan", {})
+        .get("preview", {})
+        .get("plan_id"),
+        "phase_2_finalize_plan_id": repetition.get("phase_2_plan", {})
+        .get("finalize", {})
+        .get("plan_id"),
         "source_before": repetition["source_before"]["fingerprint"],
         "source_after_preview": repetition["source_after_preview"],
         "source_after_finalize": repetition["source_after_finalize"],
@@ -575,6 +625,7 @@ def run_repetition(
     preview_seconds = time.perf_counter() - preview_started
     source_fingerprint_after_preview = source_fingerprint(source_object)
     preview_modifier = source_object.modifiers.get("HST Feature Chamfer GN Preview")
+    preview_plan = phase_2_plan_summary(addon_module, preview_modifier)
     preview_runtime_proven = (
         source_object.get(addon_module.const.FEATURE_CHAMFER_GN_LAST_ACTION_TAG)
         == "PREVIEW"
@@ -618,6 +669,10 @@ def run_repetition(
         else None
     )
     output = output_diagnostics(output_object)
+    finalize_plan = phase_2_plan_summary(
+        addon_module,
+        output_object if output_object is not None else preview_modifier,
+    )
     final_state = (
         "PRODUCT_OUTPUT"
         if output_object is not None
@@ -675,6 +730,22 @@ def run_repetition(
         },
         "backend": json_value(backend_capture),
         "phase_1_diagnostics": phase_1_diagnostics(backend_capture),
+        "phase_2_plan": {
+            "preview": preview_plan,
+            "finalize": finalize_plan,
+            "shared_semantics": (
+                preview_plan.get("exists", False)
+                and bool(finalize_plan)
+                and preview_plan.get("plan_id") == finalize_plan.get("plan_id")
+                and preview_plan.get("provenance") == finalize_plan.get("provenance")
+            ),
+        },
+        "phase_2_boundary_binding": json_value(
+            backend_capture.get("stats", {}).get(
+                "chamfer_plan_boundary_binding",
+                {},
+            )
+        ),
         "output": output,
         "final_state": final_state,
         "unexpected_pseudo_outputs": pseudo_outputs,
@@ -706,8 +777,8 @@ def write_summary(summary):
 # 执行 14-cell matrix 两次，验证稳定性、source 不变与正式 runtime path。
 # 无参数；配置通过环境变量由 host runner 注入。
 def main():
-    if REPETITIONS < 2:
-        raise RuntimeError("Phase 1 requires at least two repetitions")
+    if REPETITIONS < 3:
+        raise RuntimeError("Phase 2 requires at least three repetitions")
     actual_fixture_hashes = {
         fixture_name: file_sha256(FIXTURE_DIRECTORY / fixture_name)
         for fixture_name in FIXTURE_HASHES
@@ -738,7 +809,7 @@ def main():
     ]
     summary = {
         "status": "running",
-        "phase": 1,
+        "phase": 2,
         "blender_version": bpy.app.version_string,
         "blender_version_tuple": list(bpy.app.version),
         "repository_root": str(REPO_ROOT),
@@ -829,6 +900,17 @@ def main():
         case["phase_1_pipeline_timers_valid"] = all(
             phase_1_pipeline_timers_valid(item) for item in case["repetitions"]
         )
+        phase_2_plan_ids = [
+            item.get("phase_2_plan", {}).get("preview", {}).get("plan_id")
+            for item in case["repetitions"]
+        ]
+        case["phase_2_plan_ids_stable"] = (
+            all(phase_2_plan_ids) and len(set(phase_2_plan_ids)) == 1
+        )
+        case["phase_2_shared_plan_semantics"] = all(
+            item.get("phase_2_plan", {}).get("shared_semantics", False)
+            for item in case["repetitions"]
+        )
         (case_directory / "diagnostics.json").write_text(
             json.dumps(case, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -899,10 +981,73 @@ def main():
             case["phase_1_pipeline_timers_valid"] for case in matrix_cases
         ),
     }
-    go_conditions = {**phase_0_go_conditions, **phase_1_go_conditions}
+    phase_2_go_conditions = {
+        "phase_2_three_repetitions": REPETITIONS >= 3,
+        "phase_2_classification_semantics_unchanged": (
+            classification_counts == PHASE_0_CLASSIFICATION_COUNTS
+        ),
+        "phase_2_plan_ids_stable": all(
+            case["phase_2_plan_ids_stable"] for case in matrix_cases
+        ),
+        "phase_2_preview_finalize_share_plan_semantics": all(
+            case["phase_2_shared_plan_semantics"] for case in matrix_cases
+        ),
+        "phase_2_shadow_mode_only": all(
+            repetition.get("phase_2_plan", {}).get("preview", {}).get("mode")
+            == "SHADOW"
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+        ),
+        "phase_2_failed_fixtures_have_unsupported_plan": all(
+            repetition.get("classification") == "PRODUCT_SUCCESS"
+            or (
+                repetition.get("phase_2_plan", {})
+                .get("finalize", {})
+                .get("is_complete")
+                is False
+                and repetition.get("phase_2_plan", {})
+                .get("finalize", {})
+                .get("unsupported_region_count", 0)
+                > 0
+            )
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+        ),
+        "phase_2_success_boundary_binding_complete": all(
+            repetition.get("classification") != "PRODUCT_SUCCESS"
+            or (
+                repetition.get("phase_2_boundary_binding", {}).get("status")
+                == "PASS"
+                and repetition.get("phase_2_boundary_binding", {}).get(
+                    "bound_rail_count",
+                    0,
+                )
+                > 0
+                and not repetition.get("phase_2_boundary_binding", {}).get(
+                    "missing_from_plan_binding"
+                )
+                and not repetition.get("phase_2_boundary_binding", {}).get(
+                    "extra_in_plan_binding"
+                )
+                and not repetition.get("phase_2_boundary_binding", {}).get(
+                    "missing_expected_rail_ids"
+                )
+                and not repetition.get("phase_2_boundary_binding", {}).get(
+                    "missing_correspondence_rail_ids"
+                )
+            )
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+        ),
+    }
+    go_conditions = {
+        **phase_0_go_conditions,
+        **phase_1_go_conditions,
+        **phase_2_go_conditions,
+    }
     summary.update(
         status="finished",
-        phase=1,
+        phase=2,
         classification_counts=classification_counts,
         phase_1_family_objects={
             family: sorted(f"{fixture}:{object_name}" for fixture, object_name in objects)
@@ -914,11 +1059,17 @@ def main():
             all(phase_0_go_conditions.values())
             and all(phase_1_go_conditions.values())
         ),
+        phase_2_go=(
+            all(phase_0_go_conditions.values())
+            and all(phase_1_go_conditions.values())
+            and all(phase_2_go_conditions.values())
+        ),
     )
     write_summary(summary)
     print("[HST_FEATURE_CHAMFER_MATRIX_SUMMARY] " + json.dumps({
         "phase_0_go": summary["phase_0_go"],
         "phase_1_go": summary["phase_1_go"],
+        "phase_2_go": summary["phase_2_go"],
         "classification_counts": classification_counts,
         "go_conditions": go_conditions,
     }, ensure_ascii=False))
@@ -927,7 +1078,7 @@ def main():
         addon_module.unregister()
     except Exception:
         traceback.print_exc()
-    if not summary["phase_1_go"]:
+    if not summary["phase_2_go"]:
         raise SystemExit(1)
 
 

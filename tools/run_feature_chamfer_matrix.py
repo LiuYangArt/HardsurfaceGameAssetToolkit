@@ -41,11 +41,11 @@ def run(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--blender", help="Path to the Blender executable")
     parser.add_argument("--artifact-dir", help="Product matrix artifact directory")
-    parser.add_argument("--repetitions", type=int, default=2)
+    parser.add_argument("--repetitions", type=int, default=3)
     args = parser.parse_args(argv)
 
-    if args.repetitions < 2:
-        parser.error("Phase 0 requires at least two repetitions per matrix cell")
+    if args.repetitions < 3:
+        parser.error("Phase 2 requires at least three repetitions per matrix cell")
 
     repo_root = Path(__file__).resolve().parent.parent
     blender_executable = find_blender(args.blender)

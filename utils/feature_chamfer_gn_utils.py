@@ -29,6 +29,12 @@ from ..const import PRESET_FILE_PATH
 from .experimental_pipe_chamfer_utils import _base_stats
 from .experimental_pipe_chamfer_utils import _build_preview_feature_graph
 from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
+from .feature_chamfer_plan_utils import build_chamfer_plan
+from .feature_chamfer_plan_utils import feature_strand_points
+from .feature_chamfer_plan_utils import PLAN_ID_PROPERTY
+from .feature_chamfer_plan_utils import PLAN_PROPERTY
+from .feature_chamfer_plan_utils import read_chamfer_plan
+from .feature_chamfer_plan_utils import write_chamfer_plan
 
 
 PREVIEW_NONE = FEATURE_CHAMFER_PREVIEW_NONE
@@ -183,17 +189,24 @@ def _remove_preview_curve_object(curve_object):
 def _rebuild_owned_preview_curve(source_object, radius):
     stats = _base_stats(source_object, 0.0, 8, 35.0, 3.0, 1.5, "PREVIEW")
     groups = _build_preview_feature_graph(source_object, radius, stats)
+    chamfer_plan = build_chamfer_plan(
+        source_object,
+        groups,
+        radius,
+        "GN_PREVIEW_V1",
+    )
     curve_data = bpy.data.curves.new(
         f"{source_object.name}_FeatureChamferPreviewCurve",
         type="CURVE",
     )
     curve_data.dimensions = "3D"
-    for group in groups:
+    for feature_strand in chamfer_plan.feature_strands:
+        points = feature_strand_points(feature_strand)
         spline = curve_data.splines.new("POLY")
-        spline.points.add(len(group["points"]) - 1)
-        for index, point in enumerate(group["points"]):
-            spline.points[index].co = (point.x, point.y, point.z, 1.0)
-        spline.use_cyclic_u = group["is_cyclic"]
+        spline.points.add(len(points) - 1)
+        for index, point in enumerate(points):
+            spline.points[index].co = (*point, 1.0)
+        spline.use_cyclic_u = feature_strand.cyclic
     curve_object = bpy.data.objects.new(curve_data.name, curve_data)
     curve_object.matrix_world = source_object.matrix_world.copy()
     source_object.users_collection[0].objects.link(curve_object)
@@ -202,7 +215,7 @@ def _rebuild_owned_preview_curve(source_object, radius):
     curve_object[FEATURE_CHAMFER_CURVE_OWNER_TAG] = source_object.name
     curve_object[FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG] = source_fingerprint(source_object)
     source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = curve_object.name
-    return curve_object, stats
+    return curve_object, stats, chamfer_plan
 
 
 # 构建正式 Preview wrapper：复制受控资产，仅把 cutter seam 改为 Python Curve Pipe。
@@ -284,7 +297,7 @@ def live_preview_parameters(modifier):
     }
 
 
-# 读取当前 Preview 状态，并把 source 或资产不一致归类为 stale。
+# 读取当前 Preview 状态，并把 source、资产或 plan 不一致归类为 stale。
 # source_object: Preview 所属 Mesh；Modifier sockets 是 live 参数真源。
 def preview_state(source_object):
     if source_object.get(FEATURE_CHAMFER_GN_STATE_TAG) == FEATURE_CHAMFER_PATCHED:
@@ -293,6 +306,12 @@ def preview_state(source_object):
     if modifier is None:
         return PREVIEW_NONE
     node_group = modifier.node_group
+    try:
+        source_plan = read_chamfer_plan(source_object)
+        modifier_plan = read_chamfer_plan(modifier)
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        source_plan = None
+        modifier_plan = None
     stale = (
         node_group is None
         or node_group.get("hst_feature_chamfer_preview_backend") != CURVE_PREVIEW_BACKEND
@@ -304,6 +323,9 @@ def preview_state(source_object):
         or owned_preview_curve(source_object) is None
         or owned_preview_curve(source_object).get(FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG)
         != source_fingerprint(source_object)
+        or source_plan is None
+        or modifier_plan is None
+        or source_plan != modifier_plan
     )
     state = PREVIEW_STALE if stale else PREVIEW_VALID
     source_object[FEATURE_CHAMFER_GN_STATE_TAG] = state
@@ -330,9 +352,24 @@ def ensure_gn_feature_chamfer_preview(
     created_modifier = False
     old_curve_object = owned_preview_curve(source_object)
     old_node_group = modifier.node_group if modifier is not None else None
+    old_modifier_reference = modifier
+    old_source_plan_properties = {
+        property_name: source_object.get(property_name)
+        for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY)
+        if property_name in source_object
+    }
+    old_modifier_plan_properties = {
+        property_name: modifier.get(property_name)
+        for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY)
+        if modifier is not None and property_name in modifier
+    }
     try:
-        curve_object, graph_stats = _rebuild_owned_preview_curve(source_object, radius)
+        curve_object, graph_stats, chamfer_plan = _rebuild_owned_preview_curve(
+            source_object,
+            radius,
+        )
         node_group = _build_curve_preview_node_group(curve_object, radius, show_cutter)
+        write_chamfer_plan(source_object, chamfer_plan)
         identifiers = _input_identifiers(node_group)
         values = {
             "Radius": radius,
@@ -351,6 +388,7 @@ def ensure_gn_feature_chamfer_preview(
         modifier.show_render = True
         for name, value in values.items():
             modifier[identifiers[name]] = value
+        write_chamfer_plan(modifier, chamfer_plan)
     except Exception:
         if created_modifier and modifier is not None:
             source_object.modifiers.remove(modifier)
@@ -363,6 +401,17 @@ def ensure_gn_feature_chamfer_preview(
             source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = old_curve_object.name
         elif FEATURE_CHAMFER_CURVE_OBJECT_TAG in source_object:
             del source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG]
+        for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY):
+            if property_name in source_object:
+                del source_object[property_name]
+        for property_name, value in old_source_plan_properties.items():
+            source_object[property_name] = value
+        if old_modifier_reference is not None:
+            for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY):
+                if property_name in old_modifier_reference:
+                    del old_modifier_reference[property_name]
+            for property_name, value in old_modifier_plan_properties.items():
+                old_modifier_reference[property_name] = value
         raise
     if (
         old_node_group is not None
@@ -390,6 +439,7 @@ def ensure_gn_feature_chamfer_preview(
         "state": PREVIEW_VALID,
         "curve_object": curve_object,
         "feature_graph": graph_stats,
+        "plan": chamfer_plan,
     }
 
 
@@ -402,7 +452,12 @@ def cancel_gn_feature_chamfer_preview(source_object):
         _remove_owned_preview_node_group(modifier)
         source_object.modifiers.remove(modifier)
     _remove_owned_preview_curve(source_object)
-    for key in (FEATURE_CHAMFER_GN_STATE_TAG, FEATURE_CHAMFER_GN_LAST_ACTION_TAG):
+    for key in (
+        FEATURE_CHAMFER_GN_STATE_TAG,
+        FEATURE_CHAMFER_GN_LAST_ACTION_TAG,
+        PLAN_PROPERTY,
+        PLAN_ID_PROPERTY,
+    ):
         if key in source_object:
             del source_object[key]
     return removed

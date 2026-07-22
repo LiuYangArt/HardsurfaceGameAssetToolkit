@@ -2553,6 +2553,281 @@ def run_feature_chamfer_gn(source, action="PREVIEW", **properties):
     return result, modifier
 
 
+# 验证目标 Operator 的 Preview 与 Finalize 共享 immutable ChamferPlan shadow contract。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_shared_chamfer_plan_shadow_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNSharedChamferPlan")
+    source = make_test_mesh("GNSharedChamferPlanSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.08,
+    )
+    ensure(preview_result == {"FINISHED"}, "Shared ChamferPlan Preview failed")
+    ensure(modifier is not None, "Shared ChamferPlan Preview modifier is missing")
+    plan_module = test_context.addon.utils.feature_chamfer_plan_utils
+    preview_plan = plan_module.read_chamfer_plan(modifier)
+    ensure(preview_plan is not None, "Preview did not persist a ChamferPlan")
+    ensure(preview_plan.is_complete, "Supported Preview plan is incomplete")
+    ensure(preview_plan.feature_strands, "Preview plan has no FeatureStrands")
+    ensure(
+        len({port.port_id for port in preview_plan.junction_ports})
+        == len(preview_plan.junction_ports),
+        "Preview plan contains duplicate JunctionPort IDs",
+    )
+    ensure(preview_plan.rail_chains, "Preview plan has no RailChains")
+    ensure(
+        preview_plan.strip_correspondences,
+        "Preview plan has no StripCorrespondences",
+    )
+    ensure(
+        preview_plan.unsupported_regions == (),
+        "Supported Preview plan unexpectedly contains UnsupportedRegions",
+    )
+    ensure(
+        preview_plan.sharp_edge_count
+        == sum(len(strand.ordered_edge_keys) for strand in preview_plan.feature_strands),
+        "ChamferPlan Sharp Edge coverage ledger is incomplete",
+    )
+    ensure(
+        all(
+            correspondence.left_rail_id != correspondence.right_rail_id
+            for correspondence in preview_plan.strip_correspondences
+        ),
+        "ChamferPlan StripCorrespondence reuses one rail for both sides",
+    )
+    ensure(
+        preview_plan.plan_id == plan_module.chamfer_plan_fingerprint(preview_plan),
+        "Preview plan ID does not match its immutable payload",
+    )
+    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    ensure(finalize_result == {"FINISHED"}, "Shared ChamferPlan Finalize failed")
+    output = bpy.context.active_object
+    finalize_plan = plan_module.read_chamfer_plan(output)
+    ensure(finalize_plan is not None, "Finalize output did not persist a ChamferPlan")
+    ensure(
+        finalize_plan.plan_id == preview_plan.plan_id,
+        "Preview and Finalize did not share the same ChamferPlan ID",
+    )
+    ensure(
+        finalize_plan.provenance == preview_plan.provenance,
+        "Preview and Finalize ChamferPlan provenance diverged",
+    )
+    boundary_binding = json.loads(
+        bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}")
+    ).get("chamfer_plan_boundary_binding", {})
+    ensure(
+        boundary_binding.get("plan_id") == preview_plan.plan_id
+        and boundary_binding.get("backend")
+        == "FINAL_BOOLEAN_BOUNDARY_SHADOW_BINDING",
+        f"Finalize did not emit shared-plan Boundary binding: {boundary_binding}",
+    )
+    ensure(
+        boundary_binding.get("status") == "PASS"
+        and boundary_binding.get("bound_rail_count", 0) > 0
+        and boundary_binding.get("consumed_edge_count")
+        == boundary_binding.get("boundary_edge_count")
+        and not boundary_binding.get("missing_edge_indices")
+        and not boundary_binding.get("extra_edge_indices")
+        and not boundary_binding.get("unclassified_edge_indices")
+        and not boundary_binding.get("missing_from_plan_binding")
+        and not boundary_binding.get("extra_in_plan_binding")
+        and not boundary_binding.get("missing_expected_rail_ids")
+        and not boundary_binding.get("missing_correspondence_rail_ids")
+        and boundary_binding.get("bound_expected_rail_count")
+        == boundary_binding.get("expected_rail_count")
+        and boundary_binding.get("bound_strip_correspondence_count")
+        == boundary_binding.get("strip_correspondence_count")
+        and boundary_binding.get("all_bound_ports_exist"),
+        f"Shared-plan Boundary coverage is incomplete: {boundary_binding}",
+    )
+    ensure(
+        not boundary_binding.get("coordinate_reconstruction")
+        and not boundary_binding.get("centerline_sorting")
+        and not boundary_binding.get("moves_boundary"),
+        f"Boundary binding changed geometry semantics: {boundary_binding}",
+    )
+    result.add_detail(f"plan_id={preview_plan.plan_id}")
+
+
+# 验证 ChamferPlan 会把穿过 strand 内部的 Feature junction 记录为显式 JunctionPort。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_chamfer_plan_internal_junction_port_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    fixtures = (
+        ("DegreeThree", make_orthogonal_degree_three_feature_junction, 3, 2),
+        ("DegreeFour", make_crossing_feature_strands, 4, 2),
+    )
+    plan_module = test_context.addon.utils.feature_chamfer_plan_utils
+    for label, fixture_builder, expected_degree, expected_strand_count in fixtures:
+        collection = make_collection(f"GNPlan{label}Junction")
+        source = fixture_builder(f"GNPlan{label}JunctionSource", collection)
+        preview_result, modifier = run_feature_chamfer_gn(
+            source,
+            action="PREVIEW",
+            radius=0.05,
+        )
+        ensure(preview_result == {"FINISHED"}, f"{label} plan Preview failed")
+        plan = plan_module.read_chamfer_plan(modifier)
+        junction_port = max(
+            plan.junction_ports,
+            key=lambda port: port.feature_degree,
+            default=None,
+        )
+        ensure(junction_port is not None, f"{label} internal junction port is missing")
+        ensure(
+            junction_port.feature_degree == expected_degree,
+            f"{label} Feature degree is wrong: {junction_port}",
+        )
+        ensure(
+            len(junction_port.incident_strand_ids) == expected_strand_count,
+            f"{label} strand incidence is incomplete: {junction_port}",
+        )
+        ensure(
+            all(
+                junction_port.port_id in rail.endpoint_port_ids
+                for rail in plan.rail_chains
+                if rail.owner_strand_id in junction_port.incident_strand_ids
+            ),
+            f"{label} rail-to-junction coverage is incomplete: {junction_port}",
+        )
+    result.add_detail("degree-3/4 internal junction ports preserve Feature degree and incidence")
+
+
+# 验证重合但未焊接的 Sharp vertices 不会被静默合并成同一个 JunctionPort。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_chamfer_plan_disconnected_coincident_ports_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNPlanCoincidentPorts")
+    source = make_edge_network(
+        "GNPlanCoincidentPortsSource",
+        collection,
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        ((0, 1), (2, 3)),
+    )
+    sharp_attribute = source.data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for item in sharp_attribute.data:
+        item.value = True
+    groups = [
+        {
+            "edge_indices": [0],
+            "vertex_indices": [0, 1],
+            "is_cyclic": False,
+            "patch_pair_by_edge": [(0, 1)],
+            "convexity_by_edge": [1],
+            "selected_pair_vertex_ids": [],
+            "start_feature_degree": 1,
+            "end_feature_degree": 1,
+        },
+        {
+            "edge_indices": [1],
+            "vertex_indices": [2, 3],
+            "is_cyclic": False,
+            "patch_pair_by_edge": [(2, 3)],
+            "convexity_by_edge": [1],
+            "selected_pair_vertex_ids": [],
+            "start_feature_degree": 1,
+            "end_feature_degree": 1,
+        },
+    ]
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        groups,
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    coincident_ports = [
+        port
+        for port in plan.junction_ports
+        if port.vertex_key.startswith("0.00000000,0.00000000,0.00000000#")
+    ]
+    ensure(len(coincident_ports) == 2, f"Coincident ports were merged: {coincident_ports}")
+    ensure(
+        all(port.feature_degree == 1 for port in coincident_ports),
+        f"Coincident terminal degrees were combined: {coincident_ports}",
+    )
+    result.add_detail("two disconnected coincident vertices remain distinct ports")
+
+
+# 验证 cyclic canonicalization 保持每条 Edge 与相邻 Vertex segment 的 metadata 对齐。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_chamfer_plan_cyclic_metadata_alignment_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNPlanCyclicAlignment")
+    source = make_edge_network(
+        "GNPlanCyclicAlignmentSource",
+        collection,
+        ((2.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ((0, 1), (1, 2), (2, 0)),
+    )
+    sharp_attribute = source.data.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for item in sharp_attribute.data:
+        item.value = True
+    group = {
+        "edge_indices": [0, 1, 2],
+        "vertex_indices": [0, 1, 2],
+        "is_cyclic": True,
+        "patch_pair_by_edge": [(10, 11), (20, 21), (30, 31)],
+        "convexity_by_edge": [1, -1, 1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 2,
+        "end_feature_degree": 2,
+    }
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    strand = plan.feature_strands[0]
+    expected_owner_by_edge = {
+        "|".join(
+            sorted(
+                ",".join(
+                    f"{float(component):.8f}"
+                    for component in source.data.vertices[vertex_index].co
+                )
+                for vertex_index in source.data.edges[edge_index].vertices
+            )
+        ): owner_pair
+        for edge_index, owner_pair in enumerate(group["patch_pair_by_edge"])
+    }
+    ensure(
+        all(
+            expected_owner_by_edge[edge_key] == owner_pair
+            for edge_key, owner_pair in zip(
+                strand.ordered_edge_keys,
+                strand.owner_surface_pairs,
+            )
+        ),
+        f"Cyclic owner metadata drifted across canonicalization: {strand}",
+    )
+    result.add_detail("cyclic Edge/Vertex/owner metadata remained aligned")
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -3409,6 +3684,40 @@ def test_gn_finalize_rejects_stale_preview(test_context: TestContext, result: Te
     )
 
 
+# 验证缺失或损坏的 plan payload 会让 Preview stale，不能绕过 Finalize 对照。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_rejects_invalid_plan_payload_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNInvalidPlan")
+    plan_module = test_context.addon.utils.feature_chamfer_plan_utils
+    for suffix, corrupt_payload in (
+        ("Missing", None),
+        ("Corrupt", "{not-json"),
+    ):
+        source = make_test_mesh(f"GNInvalidPlan{suffix}", collection)
+        mark_all_edges_sharp(source)
+        preview_result, modifier = run_feature_chamfer_gn(source)
+        ensure(preview_result == {"FINISHED"}, f"{suffix} plan Preview failed")
+        if corrupt_payload is None:
+            del modifier[plan_module.PLAN_PROPERTY]
+        else:
+            modifier[plan_module.PLAN_PROPERTY] = corrupt_payload
+        finalize_result, kept_modifier = run_feature_chamfer_gn(
+            source,
+            action="FINALIZE",
+        )
+        ensure(finalize_result == {"CANCELLED"}, f"{suffix} plan was not rejected")
+        ensure(kept_modifier == modifier, f"{suffix} rejection removed Preview")
+        ensure(
+            source.get(test_context.const.FEATURE_CHAMFER_GN_STATE_TAG)
+            == "PREVIEW_STALE",
+            f"{suffix} invalid plan did not mark Preview stale",
+        )
+    result.add_detail("missing/corrupt plan payloads fail closed before Finalize")
+
+
 # 验证用户直接修改 Modifier socket 后 Preview 变 stale，必须重新 Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_preview_modifier_parameter_change_marks_stale(test_context: TestContext, result: TestCaseResult):
@@ -3945,6 +4254,41 @@ def test_gn_finalize_unsupported_complex_fixture_fails_closed(test_context: Test
     result.add_detail("Complex fixture stayed in PREVIEW_VALID with no pseudo Finalize output")
 
 
+# 验证失败后的重复 FINALIZE 仍保留原家族，而非退化为 plan mismatch。
+# test_context/result: 测试上下文与结果记录器。
+def test_gn_finalize_retry_preserves_plan_diagnostic_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
+    source = bpy.data.objects["Extruded.002"]
+    for modifier in list(source.modifiers):
+        source.modifiers.remove(modifier)
+    preview_result, modifier = run_feature_chamfer_gn(source, radius=0.03)
+    ensure(preview_result == {"FINISHED"}, "Retry diagnostic Preview failed")
+    first_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    first_plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
+        modifier
+    )
+    second_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+    second_plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
+        modifier
+    )
+    ensure(
+        first_result == {"CANCELLED"} and second_result == {"CANCELLED"},
+        "Repeated unsupported Finalize did not fail closed",
+    )
+    ensure(
+        first_plan.unsupported_regions == second_plan.unsupported_regions
+        and all(
+            region.reason_code != "chamfer_plan_mismatch"
+            for region in second_plan.unsupported_regions
+        ),
+        f"Repeated Finalize replaced the stable diagnostic family: {second_plan}",
+    )
+    result.add_detail("repeated Finalize preserved the original UnsupportedRegion family")
+
+
 # 验证 Preview 与 Finalize 各占一个 Undo step，撤销 Finalize 后回到可调整 Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestCaseResult):
@@ -4146,7 +4490,27 @@ def main():
         "gn_preview_operator_builds_coplanar_bracket_strands",
         test_gn_preview_operator_builds_coplanar_bracket_strands,
     )
+    context.run_case(
+        "gn_shared_chamfer_plan_shadow_contract_smoke",
+        test_gn_shared_chamfer_plan_shadow_contract_smoke,
+    )
+    context.run_case(
+        "gn_chamfer_plan_internal_junction_port_contract_smoke",
+        test_gn_chamfer_plan_internal_junction_port_contract_smoke,
+    )
+    context.run_case(
+        "gn_chamfer_plan_disconnected_coincident_ports_regression",
+        test_gn_chamfer_plan_disconnected_coincident_ports_regression,
+    )
+    context.run_case(
+        "gn_chamfer_plan_cyclic_metadata_alignment_regression",
+        test_gn_chamfer_plan_cyclic_metadata_alignment_regression,
+    )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
+    context.run_case(
+        "gn_finalize_rejects_invalid_plan_payload_regression",
+        test_gn_finalize_rejects_invalid_plan_payload_regression,
+    )
     context.run_case("gn_preview_modifier_parameter_change_marks_stale", test_gn_preview_modifier_parameter_change_marks_stale)
     context.run_case(
         "gn_preview_radius_rebuilds_owned_curve_without_orphans",
@@ -4168,6 +4532,10 @@ def main():
     context.run_case(
         "gn_finalize_unsupported_complex_fixture_fails_closed",
         test_gn_finalize_unsupported_complex_fixture_fails_closed,
+    )
+    context.run_case(
+        "gn_finalize_retry_preserves_plan_diagnostic_regression",
+        test_gn_finalize_retry_preserves_plan_diagnostic_regression,
     )
     context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)

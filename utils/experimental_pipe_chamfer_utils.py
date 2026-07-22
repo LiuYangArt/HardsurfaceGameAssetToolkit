@@ -24,6 +24,7 @@ from mathutils import Vector
 from mathutils import geometry
 from mathutils.bvhtree import BVHTree
 from .feature_chamfer_patch_utils import patch_boolean_result
+from .feature_chamfer_plan_utils import build_chamfer_plan
 
 
 COLLECTION_NAME = "HST_Experimental_PipeChamfer"
@@ -257,6 +258,30 @@ def _canonical_coordinate_sequence(coordinates):
     )
     reversed_sequence = tuple(reversed(sequence))
     return min(sequence, reversed_sequence)
+
+
+# 返回 BoundaryGraph 诊断的稳定身份，排除 BVH 距离等数值噪声和临时 group ID。
+# components: _boundary_graph_diagnostics 的完整 evidence；返回可 hash payload。
+def _stable_boundary_component_identity(components):
+    return [
+        {
+            "component_id": component["component_id"],
+            "vertex_degree_histogram": component["vertex_degree_histogram"],
+            "junctions": [
+                {
+                    "vertex": junction["vertex"],
+                    "degree": junction["degree"],
+                }
+                for junction in component["junctions"]
+            ],
+            "maximal_degree_2_run_ids": sorted(
+                run["run_id"] for run in component["maximal_degree_2_runs"]
+            ),
+            "endpoint_vertices": component["endpoint_vertices"],
+            "edge_count": component["edge_count"],
+        }
+        for component in components
+    ]
 
 
 # 开始一个 Phase 1 pipeline stage；同一时刻只允许一个活动 stage。
@@ -2033,20 +2058,30 @@ def _open_boundary(
             bm.to_mesh(output.data)
             output.data.update()
             return bm, []
-        _record_phase_1_family(
-            stats,
-            "AMBIGUOUS_BOUNDARY_GRAPH",
-            {
+        boundary_components = _boundary_graph_diagnostics(
+            boundary_edges,
+            groups,
+            radius,
+        )
+        family_payload = {
                 "error_subtype": "non_degree2_rail_vertices",
                 "feature_groups": _stable_feature_group_evidence(
                     stats.get("feature_groups", [])
                 ),
-                "boundary_components": _boundary_graph_diagnostics(
-                    boundary_edges,
-                    groups,
-                    radius,
-                ),
+                "boundary_components": boundary_components,
                 "radius": float(radius),
+            }
+        _record_phase_1_family(
+            stats,
+            "AMBIGUOUS_BOUNDARY_GRAPH",
+            family_payload,
+            identity_payload={
+                "error_subtype": family_payload["error_subtype"],
+                "feature_groups": family_payload["feature_groups"],
+                "boundary_components": _stable_boundary_component_identity(
+                    boundary_components
+                ),
+                "radius": family_payload["radius"],
             },
         )
         bm.free()
@@ -2073,20 +2108,30 @@ def _open_boundary(
                 break
             loop.append(current)
         if current is not start or len(loop) < 3:
-            _record_phase_1_family(
-                stats,
-                "AMBIGUOUS_BOUNDARY_GRAPH",
-                {
+            boundary_components = _boundary_graph_diagnostics(
+                boundary_edges,
+                groups,
+                radius,
+            )
+            family_payload = {
                     "error_subtype": "non_simple_boundary",
                     "feature_groups": _stable_feature_group_evidence(
                         stats.get("feature_groups", [])
                     ),
-                    "boundary_components": _boundary_graph_diagnostics(
-                        boundary_edges,
-                        groups,
-                        radius,
-                    ),
+                    "boundary_components": boundary_components,
                     "radius": float(radius),
+                }
+            _record_phase_1_family(
+                stats,
+                "AMBIGUOUS_BOUNDARY_GRAPH",
+                family_payload,
+                identity_payload={
+                    "error_subtype": family_payload["error_subtype"],
+                    "feature_groups": family_payload["feature_groups"],
+                    "boundary_components": _stable_boundary_component_identity(
+                        boundary_components
+                    ),
+                    "radius": family_payload["radius"],
                 },
             )
             bm.free()
@@ -2894,6 +2939,123 @@ def _final_boolean_boundary_rails(bm, groups, pipe_trees, pipe_bounds, radius):
         },
     }
     return rails, topology
+
+
+# 把现有 Finalize Rail topology 对照 immutable plan，生成只读 Boundary binding ledger。
+# plan/groups/topology/summary: shared plan、Feature groups、实际 Boundary rails 与消费摘要；返回机器证据。
+def _chamfer_plan_boundary_binding(plan, source_object, groups, topology, summary):
+    strand_by_edges = {
+        tuple(sorted(strand.ordered_edge_keys)): strand
+        for strand in plan.feature_strands
+    }
+    group_to_strand = {}
+    for group in groups:
+        group_edge_keys = tuple(
+            sorted(
+                "|".join(
+                    sorted(
+                        ",".join(
+                            f"{float(component):.8f}"
+                            for component in source_object.data.vertices[vertex_index].co
+                        )
+                        for vertex_index in source_object.data.edges[edge_index].vertices
+                    )
+                )
+                for edge_index in group["edge_indices"]
+            )
+        )
+        strand = strand_by_edges.get(group_edge_keys)
+        if strand is not None:
+            group_to_strand[group["pipe_id"]] = strand
+    plan_rails = {rail.rail_id: rail for rail in plan.rail_chains}
+    plan_ports = {port.port_id for port in plan.junction_ports}
+    bindings = []
+    for chain in topology["owned_chains"]:
+        strand = group_to_strand.get(chain["pipe_id"])
+        if strand is None:
+            continue
+        rail_id = f"rail:{strand.strand_id}:patch:{chain['patch_id']}"
+        expected_rail = plan_rails.get(rail_id)
+        if expected_rail is None:
+            continue
+        bindings.append(
+            {
+                "rail_id": rail_id,
+                "owner_strand_id": strand.strand_id,
+                "owner_patch_id": chain["patch_id"],
+                "boundary_edge_indices": list(chain["edge_indices"]),
+                "boundary_vertex_indices": list(chain["vertex_indices"]),
+                "endpoint_port_ids": list(expected_rail.endpoint_port_ids),
+                "endpoint_ports_exist": all(
+                    port_id in plan_ports for port_id in expected_rail.endpoint_port_ids
+                ),
+            }
+        )
+    consumption_guard = summary["boundary_consumption_guard"]
+    bound_boundary_edge_indices = sorted(
+        {
+            edge_index
+            for binding in bindings
+            for edge_index in binding["boundary_edge_indices"]
+        }
+    )
+    consumed_boundary_edge_indices = set(summary["consumed_boundary_edge_indices"])
+    bound_boundary_edges = set(bound_boundary_edge_indices)
+    plan_rail_ids = set(plan_rails)
+    bound_rail_ids = {binding["rail_id"] for binding in bindings}
+    correspondence_rail_ids = {
+        rail_id
+        for correspondence in plan.strip_correspondences
+        for rail_id in (correspondence.left_rail_id, correspondence.right_rail_id)
+    }
+    return {
+        "plan_id": plan.plan_id,
+        "backend": "FINAL_BOOLEAN_BOUNDARY_SHADOW_BINDING",
+        "boundary_edge_count": consumption_guard["boundary_edge_count"],
+        "consumed_edge_count": consumption_guard["consumed_edge_count"],
+        "missing_edge_indices": list(consumption_guard["missing_edge_indices"]),
+        "extra_edge_indices": list(consumption_guard["extra_edge_indices"]),
+        "unclassified_edge_indices": list(
+            summary["unclassified_boundary_edge_indices"]
+        ),
+        "bound_rail_count": len(bindings),
+        "bound_boundary_edge_indices": bound_boundary_edge_indices,
+        "missing_from_plan_binding": sorted(
+            consumed_boundary_edge_indices - bound_boundary_edges
+        ),
+        "extra_in_plan_binding": sorted(
+            bound_boundary_edges - consumed_boundary_edge_indices
+        ),
+        "expected_rail_count": len(plan_rail_ids),
+        "bound_expected_rail_count": len(plan_rail_ids & bound_rail_ids),
+        "missing_expected_rail_ids": sorted(plan_rail_ids - bound_rail_ids),
+        "strip_correspondence_count": len(plan.strip_correspondences),
+        "bound_strip_correspondence_count": sum(
+            correspondence.left_rail_id in bound_rail_ids
+            and correspondence.right_rail_id in bound_rail_ids
+            for correspondence in plan.strip_correspondences
+        ),
+        "missing_correspondence_rail_ids": sorted(
+            correspondence_rail_ids - bound_rail_ids
+        ),
+        "bindings": bindings,
+        "all_bound_ports_exist": all(
+            binding["endpoint_ports_exist"] for binding in bindings
+        ),
+        "coordinate_reconstruction": False,
+        "centerline_sorting": False,
+        "moves_boundary": False,
+        "status": (
+            "PASS"
+            if bindings
+            and not consumed_boundary_edge_indices - bound_boundary_edges
+            and not bound_boundary_edges - consumed_boundary_edge_indices
+            and not plan_rail_ids - bound_rail_ids
+            and not correspondence_rail_ids - bound_rail_ids
+            and all(binding["endpoint_ports_exist"] for binding in bindings)
+            else "FAIL"
+        ),
+    }
 
 
 # 为每根正式 Cutter Pipe 单独执行 Difference，并以 Boolean 生成槽面邻接关系提取真实交线。
@@ -5524,6 +5686,7 @@ def _build_pipe_chamfer_impl(
     *,
     feature_graph_contract="EXPERIMENTAL",
     preserve_source_visibility=False,
+    expected_chamfer_plan=None,
 ):
     started_at = time.perf_counter()
     stats = _base_stats(
@@ -5567,6 +5730,31 @@ def _build_pipe_chamfer_impl(
             f"Unsupported FeatureGraph contract: {feature_graph_contract}",
             stats,
         )
+    if feature_graph_contract == "GN_PREVIEW_V1":
+        chamfer_plan = build_chamfer_plan(
+            source_object,
+            groups,
+            radius,
+            feature_graph_contract,
+        )
+        stats["chamfer_plan"] = {
+            "mode": chamfer_plan.mode,
+            "plan_id": chamfer_plan.plan_id,
+            "source_fingerprint": chamfer_plan.source_fingerprint,
+            "input_contract": chamfer_plan.input_contract,
+            "provenance": list(chamfer_plan.provenance),
+            "is_complete": chamfer_plan.is_complete,
+            "unsupported_region_count": len(chamfer_plan.unsupported_regions),
+        }
+        if (
+            expected_chamfer_plan is not None
+            and chamfer_plan.plan_id != expected_chamfer_plan.plan_id
+        ):
+            _fail(
+                "chamfer_plan_mismatch",
+                "Preview and Finalize ChamferPlan semantics do not match",
+                stats,
+            )
     _finish_phase_1_stage(stats, "feature_graph")
     _classify_pipe_endpoints(source_object, groups, radius)
     collection = _get_collection()
@@ -5840,6 +6028,14 @@ def _build_pipe_chamfer_impl(
         "boolean": boolean_rail_summary,
         "source_surface": surface_rail_summary,
     }
+    if expected_chamfer_plan is not None:
+        stats["chamfer_plan_boundary_binding"] = _chamfer_plan_boundary_binding(
+            expected_chamfer_plan,
+            source_object,
+            groups,
+            boundary_rail_topology,
+            boolean_rail_summary,
+        )
     _finish_phase_1_stage(stats, "binding")
     if debug_stage == "OPEN_BOUNDARY":
         bm.free()
@@ -6047,6 +6243,7 @@ def build_pipe_chamfer(
     *,
     feature_graph_contract="EXPERIMENTAL",
     preserve_source_visibility=False,
+    expected_chamfer_plan=None,
 ):
     previous_objects = set(bpy.data.objects)
     previous_collections = set(bpy.data.collections)
@@ -6071,6 +6268,7 @@ def build_pipe_chamfer(
             keep_debug_objects=keep_debug_objects,
             feature_graph_contract=feature_graph_contract,
             preserve_source_visibility=preserve_source_visibility,
+            expected_chamfer_plan=expected_chamfer_plan,
         )
     except Exception as error:
         cleanup_started_at = time.perf_counter()
