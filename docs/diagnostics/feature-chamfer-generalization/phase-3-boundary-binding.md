@@ -63,4 +63,6 @@ probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，
 
 Exact Boolean production joined-cutter 双 component smoke 已证明 Blender 5.1.2 会把 cutter Face 的 `component_id + present` 与 source Face 的 `patch_id + present` 传播到结果；这只是 producer 可行性证据。cutter-cutter overlap / multi-owner seam 与正式 runtime handoff 尚未验证，Phase 3 状态不变。
 
+后续 attribute-only probe 进一步证明：Curve endpoint 的 POINT token 可经受控 Even-Thickness GN 传播到 Mesh，并仅凭 token 把端点 cap/sidewall Faces 分类；FACE INT port token 也可经 Exact Boolean 传播，并在删除 groove Faces 前通过 `BMFace → BMVert` incidence 恢复到真实 Boundary vertex。probe 同时证伪了“open plan 必然对应 degree-1 Boundary endpoint”：盲槽 Boundary 仍可能是 degree-2 闭环，所以 port 必须建模为 `(strand endpoint, JunctionPort)` anchor incidence，而不是 Boundary graph endpoint。当前仍未证明相交多 Pipe 的 token namespace、cap 被遮挡后的 sidewall anchor 与 conflicting token 行为；在这些 producer/binder tests 通过前保持 Stop，禁止接正式 runtime。
+
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。
