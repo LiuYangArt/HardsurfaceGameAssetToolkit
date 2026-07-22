@@ -138,6 +138,26 @@ python .\tools\run_blender_tests.py
 - 终端打印每个测试用例的通过/失败状态
 - 详细结果写入：`tests/artifacts/results.json`
 
+## Feature Chamfer 产品矩阵
+
+通用化 roadmap 使用独立矩阵 runner，结果语义与完整回归的 pass/fail 分开：
+
+```powershell
+python .\tools\run_feature_chamfer_matrix.py --repetitions 2
+```
+
+Blender 未加入 PATH 时：
+
+```powershell
+python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --repetitions 2
+```
+
+- 固定运行 `tests/fixtures/` 中 7 个对象 × radius `{0.01, 0.03}`。
+- 每个 cell 从目标 `hst.feature_chamfer_gn` PREVIEW→FINALIZE 开始。
+- 分类为 `PRODUCT_SUCCESS`、`EXPECTED_UNSUPPORTED`、`REGRESSION_FAILURE`、`SAFETY_PASS`；fail-closed 不计产品成功。
+- 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
+- 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
+
 ## 设计原则
 
 - 优先测高风险回归点，而不是追求所有功能一次性全覆盖

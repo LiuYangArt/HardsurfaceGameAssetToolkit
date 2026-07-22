@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Headless Blender regression test runner for HardsurfaceGameAssetToolkit."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
