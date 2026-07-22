@@ -63,6 +63,37 @@ class StrandEndpointPortToken:
 
 
 @dataclass(frozen=True)
+class BoundaryWitness:
+    witness_id: str
+    owner_rail_ids: tuple[str, ...]
+    junction_port_id: str | None
+    source_patch_id: int
+    expected_consumption_count: int = 1
+
+
+@dataclass(frozen=True)
+class BoundaryWitnessAssignment:
+    boundary_edge_index: int
+    witness: BoundaryWitness
+
+
+@dataclass(frozen=True)
+class BoundaryWitnessValidation:
+    status: str
+    consumed_edge_count: int
+    missing_edge_indices: tuple[int, ...]
+    duplicate_edge_indices: tuple[int, ...]
+    conflicting_edge_indices: tuple[int, ...]
+    duplicate_witness_ids: tuple[str, ...]
+    unknown_witness_ids: tuple[str, ...]
+    unknown_rail_ids: tuple[str, ...]
+    unknown_port_ids: tuple[str, ...]
+    unknown_patch_ids: tuple[int, ...]
+    incompatible_witness_ids: tuple[str, ...]
+    assignments: tuple[BoundaryWitnessAssignment, ...]
+
+
+@dataclass(frozen=True)
 class BooleanBoundaryEdgeBinding:
     boundary_edge_index: int
     pipe_id: int
@@ -122,6 +153,212 @@ class FinalizationBinding:
     coordinate_reconstruction: bool
     centerline_sorting: bool
     moves_boundary: bool
+
+
+# plan: ChamferPlan；返回 Rail、Port、Strand 与 Patch 的 plan-local 索引。
+def _boundary_witness_plan_indices(plan):
+    rails_by_id = {rail.rail_id: rail for rail in plan.rail_chains}
+    ports_by_id = {port.port_id: port for port in plan.junction_ports}
+    strands_by_id = {
+        strand.strand_id: strand for strand in plan.feature_strands
+    }
+    known_patch_ids = {
+        patch_id
+        for strand in plan.feature_strands
+        for owner_pair in strand.owner_surface_pairs
+        for patch_id in owner_pair
+    }
+    return rails_by_id, ports_by_id, strands_by_id, known_patch_ids
+
+
+# witness/plan_indices: 单条 BoundaryWitness 与 ChamferPlan 索引；返回未知引用与语义不相容证据。
+def _boundary_witness_semantic_evidence(witness, plan_indices):
+    rails_by_id, ports_by_id, strands_by_id, known_patch_ids = plan_indices
+    unknown_rail_ids = set(witness.owner_rail_ids) - set(rails_by_id)
+    unknown_port_ids = (
+        {witness.junction_port_id} - set(ports_by_id)
+        if witness.junction_port_id is not None
+        else set()
+    )
+    unknown_patch_ids = (
+        {witness.source_patch_id}
+        if witness.source_patch_id not in known_patch_ids
+        else set()
+    )
+    incompatible = (
+        not witness.witness_id
+        or not witness.owner_rail_ids
+        or len(witness.owner_rail_ids) != len(set(witness.owner_rail_ids))
+        or not isinstance(witness.expected_consumption_count, int)
+        or isinstance(witness.expected_consumption_count, bool)
+        or witness.expected_consumption_count <= 0
+    )
+    known_rails = tuple(
+        rails_by_id[rail_id]
+        for rail_id in witness.owner_rail_ids
+        if rail_id in rails_by_id
+    )
+    expected_side = f"OWNER_PATCH:{witness.source_patch_id}"
+    if any(
+        rail.side != expected_side
+        or rail.owner_strand_id not in strands_by_id
+        for rail in known_rails
+    ):
+        incompatible = True
+    if len(witness.owner_rail_ids) > 1 and witness.junction_port_id is None:
+        incompatible = True
+    port = ports_by_id.get(witness.junction_port_id)
+    if port is not None and any(
+        rail.owner_strand_id not in port.incident_strand_ids
+        or port.port_id not in rail.endpoint_port_ids
+        for rail in known_rails
+    ):
+        incompatible = True
+    return (
+        unknown_rail_ids,
+        unknown_port_ids,
+        unknown_patch_ids,
+        incompatible,
+    )
+
+
+# plan/boundary_edge_count/witness_registry/witness_ids_by_edge: plan-local witness 合同与每条 Boundary Edge 的 producer witness IDs；返回 exactly-once 验证。
+def validate_boundary_witnesses(
+    plan,
+    boundary_edge_count,
+    witness_registry,
+    witness_ids_by_edge,
+):
+    witness_registry = tuple(witness_registry)
+    witness_ids_by_edge = tuple(tuple(ids) for ids in witness_ids_by_edge)
+    witness_counts = {}
+    for witness in witness_registry:
+        witness_counts[witness.witness_id] = (
+            witness_counts.get(witness.witness_id, 0) + 1
+        )
+    duplicate_witness_ids = {
+        witness_id for witness_id, count in witness_counts.items() if count != 1
+    }
+    witness_by_id = {
+        witness.witness_id: witness
+        for witness in witness_registry
+        if witness.witness_id not in duplicate_witness_ids
+    }
+    plan_indices = _boundary_witness_plan_indices(plan)
+    missing_edge_indices = []
+    duplicate_edge_indices = []
+    conflicting_edge_indices = []
+    unknown_witness_ids = set()
+    unknown_rail_ids = set()
+    unknown_port_ids = set()
+    unknown_patch_ids = set()
+    incompatible_witness_ids = set()
+    invalid_witness_ids = set()
+    assignments = []
+    consumption_counts = {}
+    referenced_witness_ids = {
+        witness_id
+        for witness_ids in witness_ids_by_edge[:int(boundary_edge_count)]
+        for witness_id in witness_ids
+    }
+    for witness_id, witness in witness_by_id.items():
+        (
+            invalid_rails,
+            invalid_ports,
+            invalid_patches,
+            incompatible,
+        ) = _boundary_witness_semantic_evidence(witness, plan_indices)
+        unknown_rail_ids.update(invalid_rails)
+        unknown_port_ids.update(invalid_ports)
+        unknown_patch_ids.update(invalid_patches)
+        if invalid_rails or invalid_ports or invalid_patches:
+            invalid_witness_ids.add(witness_id)
+        if incompatible:
+            incompatible_witness_ids.add(witness_id)
+    for edge_index in range(int(boundary_edge_count)):
+        witness_ids = (
+            witness_ids_by_edge[edge_index]
+            if edge_index < len(witness_ids_by_edge)
+            else ()
+        )
+        if not witness_ids:
+            missing_edge_indices.append(edge_index)
+            continue
+        if len(witness_ids) != len(set(witness_ids)):
+            duplicate_edge_indices.append(edge_index)
+            continue
+        resolved = []
+        for witness_id in witness_ids:
+            witness = witness_by_id.get(witness_id)
+            if witness_id in duplicate_witness_ids:
+                continue
+            if witness is None:
+                unknown_witness_ids.add(witness_id)
+                continue
+            if (
+                witness_id in incompatible_witness_ids
+                or witness_id in invalid_witness_ids
+            ):
+                continue
+            resolved.append(witness)
+        if len(resolved) != 1 or len(witness_ids) != 1:
+            conflicting_edge_indices.append(edge_index)
+            continue
+        witness = resolved[0]
+        assignments.append(BoundaryWitnessAssignment(edge_index, witness))
+        consumption_counts[witness.witness_id] = (
+            consumption_counts.get(witness.witness_id, 0) + 1
+        )
+    for witness_id, witness in witness_by_id.items():
+        if (
+            witness_id in referenced_witness_ids
+            and witness_id not in incompatible_witness_ids
+            and consumption_counts.get(witness_id, 0)
+            != witness.expected_consumption_count
+        ):
+            incompatible_witness_ids.add(witness_id)
+            conflicting_edge_indices.extend(
+                assignment.boundary_edge_index
+                for assignment in assignments
+                if assignment.witness.witness_id == witness_id
+            )
+    conflicting_edge_indices = set(conflicting_edge_indices)
+    valid_assignments = tuple(
+        assignment
+        for assignment in assignments
+        if assignment.boundary_edge_index not in conflicting_edge_indices
+        and assignment.witness.witness_id not in incompatible_witness_ids
+    )
+    status = (
+        "PASS"
+        if len(valid_assignments) == boundary_edge_count
+        and not missing_edge_indices
+        and not duplicate_edge_indices
+        and not conflicting_edge_indices
+        and not duplicate_witness_ids
+        and not unknown_witness_ids
+        and not unknown_rail_ids
+        and not unknown_port_ids
+        and not unknown_patch_ids
+        and not incompatible_witness_ids
+        else "boundary_witness_incomplete"
+    )
+    return BoundaryWitnessValidation(
+        status=status,
+        consumed_edge_count=(
+            boundary_edge_count if status == "PASS" else len(valid_assignments)
+        ),
+        missing_edge_indices=tuple(sorted(set(missing_edge_indices))),
+        duplicate_edge_indices=tuple(sorted(set(duplicate_edge_indices))),
+        conflicting_edge_indices=tuple(sorted(conflicting_edge_indices)),
+        duplicate_witness_ids=tuple(sorted(duplicate_witness_ids)),
+        unknown_witness_ids=tuple(sorted(unknown_witness_ids)),
+        unknown_rail_ids=tuple(sorted(unknown_rail_ids)),
+        unknown_port_ids=tuple(sorted(unknown_port_ids)),
+        unknown_patch_ids=tuple(sorted(unknown_patch_ids)),
+        incompatible_witness_ids=tuple(sorted(incompatible_witness_ids)),
+        assignments=valid_assignments,
+    )
 
 
 # vertex/vertex_ids: Boundary BMVert 与当前输入的本地 identity 映射；返回 traversal 排序 key。

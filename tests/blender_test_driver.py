@@ -58,6 +58,13 @@ class TestContext:
         self.results = []
 
     def run_case(self, name, callback):
+        requested_cases = {
+            case_name.strip()
+            for case_name in os.environ.get("HST_TEST_CASES", "").split(",")
+            if case_name.strip()
+        }
+        if requested_cases and name not in requested_cases:
+            return
         result = TestCaseResult(name)
         try:
             reset_scene()
@@ -140,6 +147,57 @@ def mesh_topology_hash(obj):
         tuple(tuple(edge.vertices) for edge in obj.data.edges),
         tuple(tuple(polygon.vertices) for polygon in obj.data.polygons),
     )
+
+
+# mesh/decimal_places: 待比较的 Mesh 与坐标量化精度；返回不依赖临时 index、Face winding 与起点的 canonical 几何签名。
+def canonical_mesh_geometry_signature(mesh, decimal_places=8):
+    coordinates = tuple(
+        tuple(round(float(value), decimal_places) for value in vertex.co)
+        for vertex in mesh.vertices
+    )
+    vertices = tuple(sorted(coordinates))
+    edges = tuple(sorted(
+        tuple(sorted((coordinates[edge.vertices[0]], coordinates[edge.vertices[1]])))
+        for edge in mesh.edges
+    ))
+    faces = tuple(sorted(
+        tuple(sorted(coordinates[vertex_index] for vertex_index in polygon.vertices))
+        for polygon in mesh.polygons
+    ))
+    return vertices, edges, faces
+
+
+# mesh/decimal_places: Mesh 与坐标量化精度；返回忽略共线细分 Edge 的 Face 几何签名。
+def canonical_mesh_face_signature(mesh, decimal_places=8):
+    coordinates = tuple(
+        tuple(round(float(value), decimal_places) for value in vertex.co)
+        for vertex in mesh.vertices
+    )
+    return tuple(sorted(
+        tuple(sorted(coordinates[vertex_index] for vertex_index in polygon.vertices))
+        for polygon in mesh.polygons
+    ))
+
+
+# mesh: 已完成 Exact Difference 的 closed Mesh；删除非 original Faces 后返回 BMesh 与原 EDGE witness layers。
+def open_boolean_mesh_with_witness_layers(mesh, original_attribute_name):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    original_layer = (
+        bm.faces.layers.int.get(original_attribute_name)
+        or bm.faces.layers.bool.get(original_attribute_name)
+    )
+    ensure(original_layer is not None, "Sequential Boolean lost original Face provenance")
+    groove_faces = [face for face in bm.faces if not bool(face[original_layer])]
+    ensure(groove_faces, "Sequential Boolean produced no groove Faces")
+    bmesh.ops.delete(bm, geom=groove_faces, context="FACES_KEEP_BOUNDARY")
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    return bm
 
 
 def select_edge_indices_in_edit_mode(obj, edge_indices):
@@ -2983,6 +3041,286 @@ def test_feature_chamfer_boundary_graph_binding_contract_smoke(
     result.add_detail(f"open/cyclic/Y/T/X binding contract artifact={artifact_path}")
 
 
+# 验证 plan-local BoundaryWitness 合同可覆盖 JunctionPort multi-Rail seam，且逐 Edge 恰好消费一次。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_boundary_witness_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BoundaryWitnessContract")
+    source = make_orthogonal_degree_three_feature_junction(
+        "BoundaryWitnessContractSource",
+        collection,
+    )
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(preview_result == {"FINISHED"}, "BoundaryWitness plan Preview failed")
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
+        modifier
+    )
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    junction_port = max(plan.junction_ports, key=lambda port: port.feature_degree)
+    owner_rail_ids = tuple(sorted(
+        rail.rail_id
+        for rail in plan.rail_chains
+        if rail.owner_strand_id in junction_port.incident_strand_ids
+        and junction_port.port_id in rail.endpoint_port_ids
+    ))
+    source_patch_id = next(
+        patch_id
+        for rail in plan.rail_chains
+        if rail.rail_id in owner_rail_ids
+        for strand in plan.feature_strands
+        if strand.strand_id == rail.owner_strand_id
+        for owner_pair in strand.owner_surface_pairs
+        for patch_id in owner_pair
+    )
+    witnesses = tuple(
+        module.BoundaryWitness(
+            witness_id=f"junction-witness:{edge_index}",
+            owner_rail_ids=owner_rail_ids,
+            junction_port_id=junction_port.port_id,
+            source_patch_id=source_patch_id,
+        )
+        for edge_index in range(3)
+    )
+    validation = module.validate_boundary_witnesses(
+        plan,
+        3,
+        witnesses,
+        tuple((witness.witness_id,) for witness in witnesses),
+    )
+    ensure(
+        validation.status == "PASS"
+        and validation.consumed_edge_count == 3
+        and len(validation.assignments) == 3
+        and not validation.missing_edge_indices
+        and not validation.duplicate_edge_indices
+        and not validation.conflicting_edge_indices,
+        f"BoundaryWitness exactly-once contract failed: {validation}",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_boundary_witness_contract.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "plan_id": plan.plan_id,
+                "junction_port_id": junction_port.port_id,
+                "owner_rail_ids": owner_rail_ids,
+                "source_patch_id": source_patch_id,
+                "status": validation.status,
+                "consumed_edge_count": validation.consumed_edge_count,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"BoundaryWitness consumed 3/3 Junction seam Edges; artifact={artifact_path}"
+    )
+
+
+# 验证缺失、重复、冲突或未知 BoundaryWitness 必须 fail-closed。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_boundary_witness_fail_closed_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BoundaryWitnessFailClosed")
+    source = make_orthogonal_degree_three_feature_junction(
+        "BoundaryWitnessFailClosedSource",
+        collection,
+    )
+    preview_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(preview_result == {"FINISHED"}, "BoundaryWitness fail-closed Preview failed")
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
+        modifier
+    )
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    port = max(plan.junction_ports, key=lambda item: item.feature_degree)
+    rail = next(
+        rail
+        for rail in plan.rail_chains
+        if rail.owner_strand_id in port.incident_strand_ids
+        and port.port_id in rail.endpoint_port_ids
+    )
+    source_patch_id = int(rail.side.removeprefix("OWNER_PATCH:"))
+    other_rail = next(
+        candidate
+        for candidate in plan.rail_chains
+        if candidate.owner_strand_id in port.incident_strand_ids
+        and port.port_id in candidate.endpoint_port_ids
+        and candidate.rail_id != rail.rail_id
+        and candidate.side == rail.side
+    )
+    terminal_port = next(
+        candidate
+        for candidate in plan.junction_ports
+        if candidate.feature_degree == 1
+        and rail.owner_strand_id not in candidate.incident_strand_ids
+    )
+    valid = module.BoundaryWitness(
+        "valid",
+        (rail.rail_id,),
+        port.port_id,
+        source_patch_id,
+    )
+    cases = (
+        ("missing", (valid,), (("valid",), ())),
+        ("duplicate-edge", (valid,), (("valid", "valid"), ("valid",))),
+        (
+            "conflicting-edge",
+            (
+                valid,
+                module.BoundaryWitness(
+                    "other",
+                    (rail.rail_id,),
+                    port.port_id,
+                    source_patch_id,
+                ),
+            ),
+            (("valid", "other"), ("valid",)),
+        ),
+        ("unknown-witness", (valid,), (("unknown",), ("valid",))),
+        (
+            "unknown-rail",
+            (
+                module.BoundaryWitness(
+                    "bad-rail",
+                    ("rail:unknown",),
+                    port.port_id,
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("bad-rail",), ("valid",)),
+        ),
+        (
+            "unknown-port",
+            (
+                module.BoundaryWitness(
+                    "bad-port",
+                    (rail.rail_id,),
+                    "port:unknown",
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("bad-port",), ("valid",)),
+        ),
+        (
+            "unknown-patch",
+            (
+                module.BoundaryWitness(
+                    "bad-patch",
+                    (rail.rail_id,),
+                    port.port_id,
+                    999999,
+                ),
+                valid,
+            ),
+            (("bad-patch",), ("valid",)),
+        ),
+        (
+            "duplicate-registry",
+            (
+                module.BoundaryWitness(
+                    "duplicated-id",
+                    (rail.rail_id,),
+                    port.port_id,
+                    source_patch_id,
+                ),
+                module.BoundaryWitness(
+                    "duplicated-id",
+                    (rail.rail_id,),
+                    port.port_id,
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("duplicated-id",), ("valid",)),
+        ),
+        (
+            "empty-owner-rails",
+            (
+                module.BoundaryWitness(
+                    "empty-owner-rails",
+                    (),
+                    port.port_id,
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("empty-owner-rails",), ("valid",)),
+        ),
+        (
+            "rail-patch-mismatch",
+            (
+                module.BoundaryWitness(
+                    "rail-patch-mismatch",
+                    (rail.rail_id,),
+                    port.port_id,
+                    source_patch_id + 1,
+                ),
+                valid,
+            ),
+            (("rail-patch-mismatch",), ("valid",)),
+        ),
+        (
+            "rail-port-incidence-mismatch",
+            (
+                module.BoundaryWitness(
+                    "rail-port-incidence-mismatch",
+                    (rail.rail_id,),
+                    terminal_port.port_id,
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("rail-port-incidence-mismatch",), ("valid",)),
+        ),
+        (
+            "multi-rail-missing-port",
+            (
+                module.BoundaryWitness(
+                    "multi-rail-missing-port",
+                    (rail.rail_id, other_rail.rail_id),
+                    None,
+                    source_patch_id,
+                ),
+                valid,
+            ),
+            (("multi-rail-missing-port",), ("valid",)),
+        ),
+    )
+    records = []
+    for label, registry, witness_ids_by_edge in cases:
+        validation = module.validate_boundary_witnesses(
+            plan,
+            2,
+            registry,
+            witness_ids_by_edge,
+        )
+        ensure(
+            validation.status == "boundary_witness_incomplete",
+            f"{label} BoundaryWitness did not fail closed: {validation}",
+        )
+        records.append({
+            "case": label,
+            "status": validation.status,
+            "duplicate_witness_ids": validation.duplicate_witness_ids,
+            "incompatible_witness_ids": validation.incompatible_witness_ids,
+        })
+    result.add_detail(json.dumps(records, sort_keys=True))
+
+
 # 验证 public decomposition 不依赖 caller 预先更新 BMesh 临时 index。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_boundary_graph_dirty_index_regression(
@@ -3995,6 +4333,292 @@ def test_feature_chamfer_boolean_boundary_witness_producer_smoke(
     )
 
 
+# 验证 Blender Exact Mesh Boolean 公开的 Intersecting Edges field 能写入真实 EDGE attribute。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_exact_boolean_intersecting_edges_capability_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    del test_context
+    node_group = bpy.data.node_groups.new(
+        "FeatureChamferExactBooleanIntersectingEdgesCapability",
+        "GeometryNodeTree",
+    )
+    try:
+        boolean_node = node_group.nodes.new("GeometryNodeMeshBoolean")
+        boolean_node.operation = "DIFFERENCE"
+        boolean_node.solver = "EXACT"
+        input_sockets = tuple(
+            {
+                "name": socket.name,
+                "identifier": socket.identifier,
+                "type": socket.type,
+                "socket_type": socket.bl_idname,
+            }
+            for socket in boolean_node.inputs
+        )
+        output_sockets = tuple(
+            {
+                "name": socket.name,
+                "identifier": socket.identifier,
+                "type": socket.type,
+                "socket_type": socket.bl_idname,
+            }
+            for socket in boolean_node.outputs
+        )
+        intersecting_sockets = tuple(
+            socket
+            for socket in boolean_node.outputs
+            if "Intersecting" in socket.name or "Intersecting" in socket.identifier
+        )
+        artifact_path = ARTIFACT_DIR / "feature_chamfer_exact_boolean_socket_probe.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "blender_version": bpy.app.version_string,
+                    "inputs": input_sockets,
+                    "outputs": output_sockets,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        ensure(
+            intersecting_sockets,
+            f"Exact Mesh Boolean exposes no Intersecting Edges field: {output_sockets}",
+        )
+        intersecting_socket_name = intersecting_sockets[0].name
+    finally:
+        bpy.data.node_groups.remove(node_group)
+    result.add_detail(
+        f"Exact Boolean intersecting socket={intersecting_socket_name}; artifact={artifact_path}"
+    )
+
+
+# 用临时 Geometry Nodes 跑真实 Exact Difference，并验证 Intersecting Edges 可写成 EDGE witness。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_exact_boolean_intersecting_edges_evaluated_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    del test_context
+    collection = make_collection("ExactBooleanIntersectingEdgesEvaluated")
+    node_group = bpy.data.node_groups.new(
+        "FeatureChamferExactBooleanIntersectingEdgesEvaluated",
+        "GeometryNodeTree",
+    )
+    node_group.interface.new_socket(
+        name="Geometry",
+        in_out="OUTPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    group_output = node_group.nodes.new("NodeGroupOutput")
+    source_cube = node_group.nodes.new("GeometryNodeMeshCube")
+    source_cube.inputs["Size"].default_value = (2.0, 2.0, 2.0)
+    cutter_cube = node_group.nodes.new("GeometryNodeMeshCube")
+    cutter_cube.inputs["Size"].default_value = (1.5, 1.5, 3.0)
+    transform_cutter = node_group.nodes.new("GeometryNodeTransform")
+    transform_cutter.inputs["Translation"].default_value = (0.75, 0.0, 0.0)
+    boolean_node = node_group.nodes.new("GeometryNodeMeshBoolean")
+    boolean_node.operation = "DIFFERENCE"
+    boolean_node.solver = "EXACT"
+    store_witness = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+    store_witness.data_type = "BOOLEAN"
+    store_witness.domain = "EDGE"
+    witness_attribute_name = "hst_probe_exact_intersecting_edge"
+    store_witness.inputs["Name"].default_value = witness_attribute_name
+    node_group.links.new(source_cube.outputs["Mesh"], boolean_node.inputs["Mesh 1"])
+    node_group.links.new(cutter_cube.outputs["Mesh"], transform_cutter.inputs["Geometry"])
+    node_group.links.new(transform_cutter.outputs["Geometry"], boolean_node.inputs["Mesh 2"])
+    node_group.links.new(boolean_node.outputs["Mesh"], store_witness.inputs["Geometry"])
+    node_group.links.new(
+        boolean_node.outputs["Intersecting Edges"],
+        store_witness.inputs["Value"],
+    )
+    node_group.links.new(store_witness.outputs["Geometry"], group_output.inputs["Geometry"])
+    host = make_test_mesh(
+        "ExactBooleanIntersectingEdgesHost",
+        collection,
+        location=(5.0, 0.0, 0.0),
+    )
+    modifier = host.modifiers.new("Exact Boolean Intersecting Edges Probe", "NODES")
+    modifier.node_group = node_group
+    evaluated_mesh = None
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        depsgraph.update()
+        evaluated_mesh = bpy.data.meshes.new_from_object(
+            host.evaluated_get(depsgraph),
+            depsgraph=depsgraph,
+        )
+        witness_attribute = evaluated_mesh.attributes.get(witness_attribute_name)
+        witnessed_edge_indices = (
+            [
+                edge.index
+                for edge in evaluated_mesh.edges
+                if witness_attribute is not None
+                and bool(witness_attribute.data[edge.index].value)
+            ]
+        )
+        artifact_path = ARTIFACT_DIR / (
+            "feature_chamfer_exact_boolean_intersecting_edges_evaluated.json"
+        )
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "blender_version": bpy.app.version_string,
+                    "vertex_count": len(evaluated_mesh.vertices),
+                    "edge_count": len(evaluated_mesh.edges),
+                    "face_count": len(evaluated_mesh.polygons),
+                    "witness_attribute_present": witness_attribute is not None,
+                    "witness_domain": (
+                        witness_attribute.domain if witness_attribute is not None else None
+                    ),
+                    "witnessed_edge_indices": witnessed_edge_indices,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        ensure(
+            witness_attribute is not None
+            and witness_attribute.domain == "EDGE"
+            and witnessed_edge_indices,
+            "Exact Boolean Intersecting Edges did not evaluate into an EDGE witness",
+        )
+    finally:
+        if evaluated_mesh is not None:
+            bpy.data.meshes.remove(evaluated_mesh)
+        host.modifiers.remove(modifier)
+        bpy.data.node_groups.remove(node_group)
+    result.add_detail(
+        f"Exact Difference wrote {len(witnessed_edge_indices)} EDGE witnesses; artifact={artifact_path}"
+    )
+
+
+# 验证连续 Exact Difference 后，前一阶段 Intersecting Edges witness 仍能在最终 Mesh 中读取。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_exact_boolean_witness_chain_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    del test_context
+    collection = make_collection("ExactBooleanWitnessChain")
+    node_group = bpy.data.node_groups.new(
+        "FeatureChamferExactBooleanWitnessChain",
+        "GeometryNodeTree",
+    )
+    node_group.interface.new_socket(
+        name="Geometry",
+        in_out="OUTPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    group_output = node_group.nodes.new("NodeGroupOutput")
+    source_cube = node_group.nodes.new("GeometryNodeMeshCube")
+    source_cube.inputs["Size"].default_value = (2.0, 2.0, 2.0)
+
+    first_cutter = node_group.nodes.new("GeometryNodeMeshCube")
+    first_cutter.inputs["Size"].default_value = (1.2, 1.2, 3.0)
+    first_transform = node_group.nodes.new("GeometryNodeTransform")
+    first_transform.inputs["Translation"].default_value = (0.75, 0.0, 0.0)
+    first_boolean = node_group.nodes.new("GeometryNodeMeshBoolean")
+    first_boolean.operation = "DIFFERENCE"
+    first_boolean.solver = "EXACT"
+    first_store = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+    first_store.data_type = "BOOLEAN"
+    first_store.domain = "EDGE"
+    first_witness_name = "hst_probe_exact_intersecting_edge_stage_1"
+    first_store.inputs["Name"].default_value = first_witness_name
+
+    second_cutter = node_group.nodes.new("GeometryNodeMeshCube")
+    second_cutter.inputs["Size"].default_value = (1.2, 3.0, 1.2)
+    second_transform = node_group.nodes.new("GeometryNodeTransform")
+    second_transform.inputs["Translation"].default_value = (0.0, 0.75, 0.0)
+    second_boolean = node_group.nodes.new("GeometryNodeMeshBoolean")
+    second_boolean.operation = "DIFFERENCE"
+    second_boolean.solver = "EXACT"
+    second_store = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+    second_store.data_type = "BOOLEAN"
+    second_store.domain = "EDGE"
+    second_witness_name = "hst_probe_exact_intersecting_edge_stage_2"
+    second_store.inputs["Name"].default_value = second_witness_name
+
+    node_group.links.new(source_cube.outputs["Mesh"], first_boolean.inputs["Mesh 1"])
+    node_group.links.new(first_cutter.outputs["Mesh"], first_transform.inputs["Geometry"])
+    node_group.links.new(first_transform.outputs["Geometry"], first_boolean.inputs["Mesh 2"])
+    node_group.links.new(first_boolean.outputs["Mesh"], first_store.inputs["Geometry"])
+    node_group.links.new(first_boolean.outputs["Intersecting Edges"], first_store.inputs["Value"])
+    node_group.links.new(first_store.outputs["Geometry"], second_boolean.inputs["Mesh 1"])
+    node_group.links.new(second_cutter.outputs["Mesh"], second_transform.inputs["Geometry"])
+    node_group.links.new(second_transform.outputs["Geometry"], second_boolean.inputs["Mesh 2"])
+    node_group.links.new(second_boolean.outputs["Mesh"], second_store.inputs["Geometry"])
+    node_group.links.new(second_boolean.outputs["Intersecting Edges"], second_store.inputs["Value"])
+    node_group.links.new(second_store.outputs["Geometry"], group_output.inputs["Geometry"])
+
+    host = make_test_mesh("ExactBooleanWitnessChainHost", collection)
+    modifier = host.modifiers.new("Exact Boolean Witness Chain Probe", "NODES")
+    modifier.node_group = node_group
+    evaluated_mesh = None
+    try:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        depsgraph.update()
+        evaluated_mesh = bpy.data.meshes.new_from_object(
+            host.evaluated_get(depsgraph),
+            depsgraph=depsgraph,
+        )
+        witness_indices_by_stage = {}
+        for stage_name, attribute_name in (
+            ("stage_1", first_witness_name),
+            ("stage_2", second_witness_name),
+        ):
+            attribute = evaluated_mesh.attributes.get(attribute_name)
+            witness_indices_by_stage[stage_name] = [
+                edge.index
+                for edge in evaluated_mesh.edges
+                if attribute is not None and bool(attribute.data[edge.index].value)
+            ]
+        shared_edge_indices = sorted(
+            set(witness_indices_by_stage["stage_1"])
+            & set(witness_indices_by_stage["stage_2"])
+        )
+        artifact_path = ARTIFACT_DIR / "feature_chamfer_exact_boolean_witness_chain.json"
+        artifact_path.write_text(
+            json.dumps(
+                {
+                    "blender_version": bpy.app.version_string,
+                    "vertex_count": len(evaluated_mesh.vertices),
+                    "edge_count": len(evaluated_mesh.edges),
+                    "face_count": len(evaluated_mesh.polygons),
+                    "witness_indices_by_stage": witness_indices_by_stage,
+                    "shared_edge_indices": shared_edge_indices,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        ensure(
+            witness_indices_by_stage["stage_1"]
+            and witness_indices_by_stage["stage_2"],
+            "Sequential Exact Boolean did not preserve both stage witness sets",
+        )
+        ensure(
+            not shared_edge_indices,
+            f"One final Edge was ambiguously claimed by both Boolean stages: {shared_edge_indices}",
+        )
+    finally:
+        if evaluated_mesh is not None:
+            bpy.data.meshes.remove(evaluated_mesh)
+        host.modifiers.remove(modifier)
+        bpy.data.node_groups.remove(node_group)
+    result.add_detail(
+        f"Sequential Exact Boolean preserved {len(witness_indices_by_stage['stage_1'])}/"
+        f"{len(witness_indices_by_stage['stage_2'])} unique witnesses; artifact={artifact_path}"
+    )
+
+
 # 验证 production Even-Thickness Pipe 与 joined cutter 会保留 plan-local open strand endpoint tokens。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_open_endpoint_token_producer_smoke(
@@ -4074,6 +4698,332 @@ def test_feature_chamfer_open_endpoint_token_producer_smoke(
     )
     result.add_detail(
         f"open endpoint producer preserved tokens={tokens_by_pipe_id[7]} on joined cutter Faces"
+    )
+
+
+# 验证 production plan→Pipe producer 能建立显式 owner Rail/JunctionPort/Patch witness registry。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_pipe_boundary_witness_registry_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("PipeBoundaryWitnessRegistry")
+    source = make_orthogonal_degree_three_feature_junction(
+        "PipeBoundaryWitnessRegistrySource",
+        collection,
+    )
+    radius = 0.05
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils._base_stats(source, radius, 8, 35.0, 3.0, 1.5, "FEATURE_GRAPH")
+    groups = utils._build_preview_feature_graph(source, radius, stats)
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        groups,
+        radius,
+        "GN_PREVIEW_V1",
+    )
+    witnesses_by_pipe_id = utils._build_pipe_boundary_witnesses(
+        plan,
+        groups,
+        source.data,
+    )
+    witness_ids = [
+        witness.witness_id
+        for witnesses in witnesses_by_pipe_id.values()
+        for witness in witnesses
+    ]
+    ensure(
+        set(witnesses_by_pipe_id) == {int(group["pipe_id"]) for group in groups}
+        and len(witness_ids) == len(set(witness_ids))
+        and all(
+            witness.owner_rail_ids
+            and witness.junction_port_id
+            and witness.source_patch_id >= 0
+            for witnesses in witnesses_by_pipe_id.values()
+            for witness in witnesses
+        ),
+        f"Pipe BoundaryWitness registry is incomplete: {witnesses_by_pipe_id}",
+    )
+    known_rails = {rail.rail_id for rail in plan.rail_chains}
+    known_ports = {port.port_id for port in plan.junction_ports}
+    ensure(
+        all(
+            set(witness.owner_rail_ids) <= known_rails
+            and witness.junction_port_id in known_ports
+            for witnesses in witnesses_by_pipe_id.values()
+            for witness in witnesses
+        ),
+        f"Pipe BoundaryWitness registry diverged from ChamferPlan: {witnesses_by_pipe_id}",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_pipe_boundary_witness_registry.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "plan_id": plan.plan_id,
+                "witnesses_by_pipe_id": {
+                    str(pipe_id): [
+                        {
+                            "witness_id": witness.witness_id,
+                            "owner_rail_ids": witness.owner_rail_ids,
+                            "junction_port_id": witness.junction_port_id,
+                            "source_patch_id": witness.source_patch_id,
+                        }
+                        for witness in witnesses
+                    ]
+                    for pipe_id, witnesses in witnesses_by_pipe_id.items()
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"Pipe producer registered {len(witness_ids)} BoundaryWitness records; artifact={artifact_path}"
+    )
+
+
+# 验证 production Cutter Set 的 sequential Exact Intersecting Edges 能覆盖开放 Boundary，且与正式 Collection Difference 几何等价。
+# test_context/result: 已注册 add-on 的测试上下文与结果记录器。
+def test_feature_chamfer_production_sequential_boolean_witness_probe(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("ProductionSequentialBooleanWitness")
+    source = make_orthogonal_degree_three_feature_junction(
+        "ProductionSequentialBooleanWitnessSource",
+        collection,
+    )
+    source_fingerprint_before = _mesh_fingerprint(source)
+    radius = 0.08
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    stats = utils.build_pipe_chamfer(
+        source_object=source,
+        radius=radius,
+        pipe_resolution=8,
+        chain_turn_threshold_degrees=35.0,
+        chain_turn_spike_ratio=3.0,
+        junction_margin=1.5,
+        debug_stage="CUTTER_UNION",
+        keep_debug_objects=True,
+        feature_graph_contract="GN_PREVIEW_V1",
+        preserve_source_visibility=True,
+    )
+    ensure(
+        stats["status"] == "finished"
+        and stats["joined_cutter_batch_count"] >= 2,
+        f"Production Cutter Set was not built: {stats}",
+    )
+    cutter_collection = bpy.data.collections[stats["cutter_collection_name"]]
+    cutters = tuple(sorted(cutter_collection.objects, key=lambda item: item.name))
+    production_pipe_objects = tuple(sorted(
+        (
+            obj
+            for obj in bpy.data.objects
+            if obj.type == "MESH"
+            and utils.PIPE_ID_TAG in obj
+            and obj.get(utils.OUTPUT_TAG) == source.name
+        ),
+        key=lambda item: int(item[utils.PIPE_ID_TAG]),
+    ))
+    ensure(
+        len(production_pipe_objects) == stats["pipe_group_count"],
+        "Production Pipe objects are unavailable for per-Pipe stage probe",
+    )
+    source_patch_ids = utils._source_face_patch_ids(source)
+
+    collection_output = utils._duplicate_source(source, collection)
+    utils._mark_original_faces(collection_output, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        collection_output.data,
+        cutters,
+        source_patch_ids,
+    )
+    utils._apply_difference(collection_output, cutter_collection, source_patch_ids)
+
+    sequential_source = utils._duplicate_source(source, collection)
+    utils._mark_original_faces(sequential_source, source_patch_ids)
+    utils._initialize_source_membership_schema(
+        sequential_source.data,
+        cutters,
+        source_patch_ids,
+    )
+    sequential_mesh, stage_records = (
+        utils._probe_sequential_exact_boundary_witnesses(
+            sequential_source,
+            production_pipe_objects,
+            pipe_ids_by_cutter={
+                pipe: (int(pipe[utils.PIPE_ID_TAG]),)
+                for pipe in production_pipe_objects
+            },
+        )
+    )
+    ensure(sequential_mesh is not None and stage_records, "Sequential probe returned no Mesh")
+    try:
+        closed_equivalent = (
+            canonical_mesh_geometry_signature(collection_output.data)
+            == canonical_mesh_geometry_signature(sequential_mesh)
+        )
+        closed_equivalent_1e7 = (
+            canonical_mesh_geometry_signature(collection_output.data, 7)
+            == canonical_mesh_geometry_signature(sequential_mesh, 7)
+        )
+        closed_faces_equivalent = (
+            canonical_mesh_face_signature(collection_output.data)
+            == canonical_mesh_face_signature(sequential_mesh)
+        )
+        stage_witness_counts = {}
+        shared_witness_edges = []
+        witness_names_by_edge = {}
+        for record in stage_records:
+            attribute_name = record["witness_attribute_name"]
+            attribute = sequential_mesh.attributes.get(attribute_name)
+            ensure(
+                attribute is not None
+                and attribute.domain == "EDGE"
+                and len(attribute.data) == len(sequential_mesh.edges),
+                f"Sequential stage lost EDGE witness: {record}",
+            )
+            witnessed_edges = [
+                edge.index
+                for edge in sequential_mesh.edges
+                if bool(attribute.data[edge.index].value)
+            ]
+            stage_witness_counts[str(record["stage_index"])] = len(witnessed_edges)
+            for edge_index in witnessed_edges:
+                witness_names_by_edge.setdefault(edge_index, []).append(attribute_name)
+        shared_witness_edges = sorted(
+            edge_index
+            for edge_index, attribute_names in witness_names_by_edge.items()
+            if len(attribute_names) != 1
+        )
+
+        collection_bm = open_boolean_mesh_with_witness_layers(
+            collection_output.data,
+            utils.ORIGINAL_FACE_ATTRIBUTE,
+        )
+        sequential_bm = open_boolean_mesh_with_witness_layers(
+            sequential_mesh,
+            utils.ORIGINAL_FACE_ATTRIBUTE,
+        )
+        try:
+            collection_open_mesh = bpy.data.meshes.new(
+                "ProductionSequentialBooleanCollectionOpen"
+            )
+            sequential_open_mesh = bpy.data.meshes.new(
+                "ProductionSequentialBooleanSequentialOpen"
+            )
+            collection_bm.to_mesh(collection_open_mesh)
+            sequential_bm.to_mesh(sequential_open_mesh)
+            open_equivalent = (
+                canonical_mesh_geometry_signature(collection_open_mesh)
+                == canonical_mesh_geometry_signature(sequential_open_mesh)
+            )
+            open_equivalent_1e7 = (
+                canonical_mesh_geometry_signature(collection_open_mesh, 7)
+                == canonical_mesh_geometry_signature(sequential_open_mesh, 7)
+            )
+            open_faces_equivalent = (
+                canonical_mesh_face_signature(collection_open_mesh)
+                == canonical_mesh_face_signature(sequential_open_mesh)
+            )
+            boundary_records = []
+            missing_boundary_edge_indices = []
+            conflicting_boundary_edge_indices = []
+            for edge in sequential_bm.edges:
+                if len(edge.link_faces) != 1:
+                    continue
+                witness_names = tuple(sorted(
+                    record["witness_attribute_name"]
+                    for record in stage_records
+                    for layer in (
+                        sequential_bm.edges.layers.int.get(
+                            record["witness_attribute_name"]
+                        )
+                        or sequential_bm.edges.layers.bool.get(
+                            record["witness_attribute_name"]
+                        ),
+                    )
+                    if layer is not None and bool(edge[layer])
+                ))
+                boundary_records.append({
+                    "edge_index": edge.index,
+                    "vertex_coordinates": tuple(sorted(
+                        tuple(round(float(value), 8) for value in vertex.co)
+                        for vertex in edge.verts
+                    )),
+                    "witness_attribute_names": witness_names,
+                })
+                if not witness_names:
+                    missing_boundary_edge_indices.append(edge.index)
+                elif len(witness_names) != 1:
+                    conflicting_boundary_edge_indices.append(edge.index)
+        finally:
+            collection_bm.free()
+            sequential_bm.free()
+
+        artifact_path = ARTIFACT_DIR / (
+            "feature_chamfer_production_sequential_boolean_witness_probe.json"
+        )
+        artifact = {
+            "source_fingerprint_unchanged": (
+                _mesh_fingerprint(source) == source_fingerprint_before
+            ),
+            "closed_equivalent": closed_equivalent,
+            "closed_equivalent_1e7": closed_equivalent_1e7,
+            "closed_faces_equivalent": closed_faces_equivalent,
+            "open_equivalent": open_equivalent,
+            "open_equivalent_1e7": open_equivalent_1e7,
+            "open_faces_equivalent": open_faces_equivalent,
+            "collection_closed_counts": {
+                "vertices": len(collection_output.data.vertices),
+                "edges": len(collection_output.data.edges),
+                "faces": len(collection_output.data.polygons),
+            },
+            "sequential_closed_counts": {
+                "vertices": len(sequential_mesh.vertices),
+                "edges": len(sequential_mesh.edges),
+                "faces": len(sequential_mesh.polygons),
+            },
+            "collection_open_counts": {
+                "vertices": len(collection_open_mesh.vertices),
+                "edges": len(collection_open_mesh.edges),
+                "faces": len(collection_open_mesh.polygons),
+            },
+            "sequential_open_counts": {
+                "vertices": len(sequential_open_mesh.vertices),
+                "edges": len(sequential_open_mesh.edges),
+                "faces": len(sequential_open_mesh.polygons),
+            },
+            "stage_records": stage_records,
+            "stage_witness_counts": stage_witness_counts,
+            "shared_closed_witness_edge_indices": shared_witness_edges,
+            "boundary_edge_count": len(boundary_records),
+            "missing_boundary_edge_indices": missing_boundary_edge_indices,
+            "conflicting_boundary_edge_indices": conflicting_boundary_edge_indices,
+            "boundary_records": boundary_records,
+        }
+        artifact_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        ensure(
+            artifact["source_fingerprint_unchanged"]
+            and not shared_witness_edges
+            and not missing_boundary_edge_indices
+            and not conflicting_boundary_edge_indices,
+            f"Production sequential witness coverage is incomplete: {artifact_path}",
+        )
+    finally:
+        bpy.data.meshes.remove(sequential_mesh)
+        if "collection_open_mesh" in locals():
+            bpy.data.meshes.remove(collection_open_mesh)
+        if "sequential_open_mesh" in locals():
+            bpy.data.meshes.remove(sequential_open_mesh)
+    result.add_detail(
+        f"PROTOTYPE/STOP: sequential Exact covered {len(boundary_records)}/"
+        f"{len(boundary_records)} Boundary Edges but geometry_equivalent="
+        f"{closed_equivalent and open_equivalent}; artifact={artifact_path}"
     )
 
 
@@ -6104,6 +7054,14 @@ def main():
         test_feature_chamfer_boundary_graph_binding_contract_smoke,
     )
     context.run_case(
+        "feature_chamfer_boundary_witness_contract_smoke",
+        test_feature_chamfer_boundary_witness_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_boundary_witness_fail_closed_regression",
+        test_feature_chamfer_boundary_witness_fail_closed_regression,
+    )
+    context.run_case(
         "feature_chamfer_boundary_graph_dirty_index_regression",
         test_feature_chamfer_boundary_graph_dirty_index_regression,
     )
@@ -6136,8 +7094,28 @@ def main():
         test_feature_chamfer_boolean_boundary_witness_producer_smoke,
     )
     context.run_case(
+        "feature_chamfer_exact_boolean_intersecting_edges_capability_smoke",
+        test_feature_chamfer_exact_boolean_intersecting_edges_capability_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_exact_boolean_intersecting_edges_evaluated_smoke",
+        test_feature_chamfer_exact_boolean_intersecting_edges_evaluated_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_exact_boolean_witness_chain_regression",
+        test_feature_chamfer_exact_boolean_witness_chain_regression,
+    )
+    context.run_case(
         "feature_chamfer_open_endpoint_token_producer_smoke",
         test_feature_chamfer_open_endpoint_token_producer_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_pipe_boundary_witness_registry_smoke",
+        test_feature_chamfer_pipe_boundary_witness_registry_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_production_sequential_boolean_witness_probe",
+        test_feature_chamfer_production_sequential_boolean_witness_probe,
     )
     context.run_case(
         "feature_chamfer_intersecting_endpoint_provenance_smoke",

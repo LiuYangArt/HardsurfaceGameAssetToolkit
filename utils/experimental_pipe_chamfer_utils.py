@@ -23,6 +23,7 @@ from mathutils import Matrix
 from mathutils import Vector
 from mathutils import geometry
 from mathutils.bvhtree import BVHTree
+from .feature_chamfer_binding_utils import BoundaryWitness
 from .feature_chamfer_binding_utils import StrandEndpointPortToken
 from .feature_chamfer_binding_utils import _plan_strands_by_pipe_id
 from .feature_chamfer_patch_utils import patch_boolean_result
@@ -290,6 +291,125 @@ def _mark_boolean_boundary_witnesses(output):
         "conflicting_edge_indices": conflicting_edge_indices,
     }
 
+# 用 sequential GeometryNodeMeshBoolean Exact Difference 建立探针，将每个 cutter 的 Intersecting Edges 保存为 EDGE witness attribute。
+# source_object/cutters: source duplicate 与 cutter batch Object 列表；返回 evaluated_mesh 与包含 Pipe IDs 的 stage records。
+# 该函数仅用于诊断，不修改 source_object，也不接入正式 runtime path。
+def _probe_sequential_exact_boundary_witnesses(
+    source_object,
+    cutters,
+    pipe_ids_by_cutter=None,
+):
+    if not cutters:
+        return None, ()
+    cutters = tuple(cutters)
+    pipe_ids_by_cutter = pipe_ids_by_cutter or {}
+    source_matrix = tuple(
+        tuple(round(float(value), 8) for value in row)
+        for row in source_object.matrix_world
+    )
+    for cutter in cutters:
+        cutter_matrix = tuple(
+            tuple(round(float(value), 8) for value in row)
+            for row in cutter.matrix_world
+        )
+        if cutter_matrix != source_matrix:
+            raise RuntimeError(
+                f"Sequential Boolean probe transform mismatch: {cutter.name}"
+            )
+    node_group = bpy.data.node_groups.new(
+        "HST_SeqExactBoundaryWitnessProbe",
+        "GeometryNodeTree",
+    )
+    try:
+        node_group.interface.new_socket(
+            name="Geometry",
+            in_out="OUTPUT",
+            socket_type="NodeSocketGeometry",
+        )
+        node_group.interface.new_socket(
+            name="Geometry",
+            in_out="INPUT",
+            socket_type="NodeSocketGeometry",
+        )
+        group_input = node_group.nodes.new("NodeGroupInput")
+        group_output = node_group.nodes.new("NodeGroupOutput")
+        group_input.location = (-400.0, 0.0)
+        group_output.location = (400.0, 0.0)
+
+        stage_records = []
+        current_geometry = group_input.outputs["Geometry"]
+        for stage_index, cutter in enumerate(cutters):
+            boolean_node = node_group.nodes.new("GeometryNodeMeshBoolean")
+            boolean_node.operation = "DIFFERENCE"
+            boolean_node.solver = "EXACT"
+            boolean_node.location = (float(stage_index * 300), 0.0)
+
+            object_info = node_group.nodes.new("GeometryNodeObjectInfo")
+            object_info.inputs["Object"].default_value = cutter
+            object_info.transform_space = "RELATIVE"
+            object_info.location = (float(stage_index * 300), -200.0)
+
+            store_node = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+            store_node.data_type = "BOOLEAN"
+            store_node.domain = "EDGE"
+            witness_name = f"hst_probe_sequential_stage_{stage_index}"
+            store_node.inputs["Name"].default_value = witness_name
+            pipe_ids = tuple(pipe_ids_by_cutter.get(cutter, ())) or tuple(sorted({
+                int(attribute.name.rsplit("_", 1)[1])
+                for attribute in cutter.data.attributes
+                if attribute.domain == "FACE"
+                and attribute.name.startswith(
+                    CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX
+                )
+                and any(bool(item.value) for item in attribute.data)
+            }))
+            stage_records.append({
+                "stage_index": stage_index,
+                "cutter_name": cutter.name,
+                "pipe_ids": pipe_ids,
+                "witness_attribute_name": witness_name,
+            })
+            store_node.location = (float(stage_index * 300 + 150), 0.0)
+
+            node_group.links.new(current_geometry, boolean_node.inputs["Mesh 1"])
+            node_group.links.new(
+                object_info.outputs["Geometry"], boolean_node.inputs["Mesh 2"]
+            )
+            node_group.links.new(boolean_node.outputs["Mesh"], store_node.inputs["Geometry"])
+            node_group.links.new(
+                boolean_node.outputs["Intersecting Edges"], store_node.inputs["Value"]
+            )
+            current_geometry = store_node.outputs["Geometry"]
+
+        node_group.links.new(current_geometry, group_output.inputs["Geometry"])
+
+        host = None
+        mesh_to_remove = None
+        try:
+            host = source_object.copy()
+            host.data = source_object.data.copy()
+            host.name = "HST_SeqExactBoundaryWitnessProbeHost"
+            source_object.users_collection[0].objects.link(host)
+            mesh_to_remove = host.data
+            modifier = host.modifiers.new(
+                "HST SeqExact Boundary Witness Probe", "NODES"
+            )
+            modifier.node_group = node_group
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            depsgraph.update()
+            evaluated_mesh = bpy.data.meshes.new_from_object(
+                host.evaluated_get(depsgraph),
+                depsgraph=depsgraph,
+            )
+            return evaluated_mesh, tuple(stage_records)
+        finally:
+            if host is not None and host.name in bpy.data.objects:
+                bpy.data.objects.remove(host, do_unlink=True)
+            if mesh_to_remove is not None and mesh_to_remove.users == 0:
+                bpy.data.meshes.remove(mesh_to_remove)
+    finally:
+        if node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
 
 CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"
 NORMAL_TRANSFER_MODIFIER = "HST Pipe Chamfer Normal Transfer"
@@ -2008,6 +2128,55 @@ def _build_strand_endpoint_port_tokens(plan, groups, source_mesh):
             next_token += 1
         tokens_by_pipe_id[pipe_id] = endpoint_tokens
     return tokens_by_pipe_id, tuple(registry)
+
+
+# plan/groups/source_mesh: shared plan、Feature groups 与 source Mesh；返回每个 Pipe 的 authoritative BoundaryWitness 模板。
+def _build_pipe_boundary_witnesses(plan, groups, source_mesh):
+    strands_by_pipe_id = _plan_strands_by_pipe_id(plan, groups, source_mesh)
+    if len(strands_by_pipe_id) != len(groups):
+        raise RuntimeError("ChamferPlan Pipe→FeatureStrand witness mapping is incomplete")
+    ports_by_strand_id = {
+        strand.strand_id: tuple(
+            sorted(
+                port.port_id
+                for port in plan.junction_ports
+                if strand.strand_id in port.incident_strand_ids
+            )
+        )
+        for strand in plan.feature_strands
+    }
+    witnesses_by_pipe_id = {}
+    for pipe_id, strand in sorted(strands_by_pipe_id.items()):
+        owner_rail_ids = tuple(sorted(
+            rail.rail_id
+            for rail in plan.rail_chains
+            if rail.owner_strand_id == strand.strand_id
+        ))
+        patch_ids = tuple(sorted({
+            patch_id
+            for owner_pair in strand.owner_surface_pairs
+            for patch_id in owner_pair
+        }))
+        port_ids = ports_by_strand_id[strand.strand_id]
+        witnesses_by_pipe_id[pipe_id] = tuple(
+            BoundaryWitness(
+                witness_id=(
+                    f"boolean-stage:pipe:{pipe_id}:port:{port_id or 'NONE'}:"
+                    f"patch:{patch_id}"
+                ),
+                owner_rail_ids=tuple(
+                    rail.rail_id
+                    for rail in plan.rail_chains
+                    if rail.rail_id in owner_rail_ids
+                    and rail.side == f"OWNER_PATCH:{patch_id}"
+                ),
+                junction_port_id=port_id,
+                source_patch_id=patch_id,
+            )
+            for port_id in (port_ids or (None,))
+            for patch_id in patch_ids
+        )
+    return witnesses_by_pipe_id
 
 
 # 把一批 source-local Pipe 合并为一个不做 Boolean Union 的 Cutter Mesh，并写入每个 Face 的 Pipe owner provenance。

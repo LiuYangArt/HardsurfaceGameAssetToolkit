@@ -237,6 +237,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > 后续 witness probe 仍为 `PROTOTYPE / STOP`：已增加逐 Edge owner/token/port/Patch rejection 证据，并证实 Exact Boolean 的普通 source/cutter 交线可写显式 EDGE witness；但 degree-3 production fixture 仍有 2 条、tricky / `Solid.004` 仍有 10 条 Boundary Edge 没有直接 owner 或 witness。邻接、endpoint token 与“两条 Pipe”兜底均不能唯一决定 owner，正式 runtime 仍未接入 authoritative binder。证据同上。
 
+> native `Intersecting Edges` 后续 probe 已让 production degree-3 的开放 Boundary 达到 `13/13` 唯一 stage witness，但 sequential Exact 与正式 Collection Exact 的 topology/Face canonical signature 不等价（open Edge `20` vs `18`）。因此只保留 probe-only producer 与 fail-closed `BoundaryWitness` 合同，未接 `_apply_difference()` 或目标 Operator；Phase 3 仍为 `PROTOTYPE / STOP`，不得进入 Phase 4。证据同上。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

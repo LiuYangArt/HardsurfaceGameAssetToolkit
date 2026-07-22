@@ -101,3 +101,25 @@ probe 结果：
 cutter/source Face provenance，或明确的 `owner Rail set + JunctionPort + source Patch`
 witness；缺失、unknown、duplicate、conflict 全部 fail-closed。只有合成 Y/T/X 与两个
 真实目标达到 100% 单次消费后，才允许接入 `hst.feature_chamfer_gn`。
+
+## 2026-07-22 native Intersecting Edges producer probe
+
+Blender 5.1.2 的 native `GeometryNodeMeshBoolean` `EXACT` 已确认公开
+`Intersecting Edges` field，并能把每个 sequential Difference stage 的交线写入唯一
+EDGE Boolean attribute。production degree-3 Cutter Set 的 per-Pipe probe 得到：
+
+- 最终开放 Boundary `13/13` 条均有且仅有一个 stage witness；缺失 `0`、冲突 `0`；
+- stage 0/1 在 closed Mesh 分别保留 `12/11` 条 witness，交集为空；
+- source fingerprint 未变化；witness 不依赖坐标、排序或 BVH 最近 owner；
+- artifact：`/tmp/hst_phase3_native_witness_delivery_final_retry/feature_chamfer_production_sequential_boolean_witness_probe.json`。
+
+该方案仍被等价性硬门禁挡住：正式 Collection Difference 与 sequential Difference
+虽然都有 `21 Vertex / 13 Face`，但 closed Edge 为 `32 / 34`；删除 groove Faces 后
+都是 `15 Vertex / 4 Face`，open Edge 为 `18 / 20`，canonical Face/Edge signature 也
+不相同。因 roadmap 禁止用未证明等价的 Boolean backend 替换正式结果，本轮只保留
+probe-only helper，未修改 `_apply_difference()`、`build_pipe_chamfer()` 或目标 Operator。
+
+同时新增 plan-local `BoundaryWitness` fail-closed 合同，验证 owner Rail 非空、Rail→
+source Patch、Rail→JunctionPort incidence、multi-Rail 必须显式 port，以及 registry/Edge
+duplicate、unknown、missing、conflict。合同与 producer capability 均为 `PROTOTYPE`；
+当前结论仍是 `STOP`，不得进入 Phase 4。

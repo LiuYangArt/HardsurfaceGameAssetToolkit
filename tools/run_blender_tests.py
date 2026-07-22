@@ -47,6 +47,12 @@ def run() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--blender", help="Path to blender.exe")
     parser.add_argument("--artifact-dir", help="Artifact output directory")
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="Run only the named test case; repeat for multiple cases",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parent.parent
@@ -64,6 +70,8 @@ def run() -> int:
     env["HST_ADDON_ROOT"] = str(repo_root)
     env["HST_TEST_ARTIFACT_DIR"] = str(artifact_dir)
     env["HST_TEST_RESULTS"] = str(results_path)
+    if args.cases:
+        env["HST_TEST_CASES"] = ",".join(args.cases)
 
     command = [
         str(blender_exe),
