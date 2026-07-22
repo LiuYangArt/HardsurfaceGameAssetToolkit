@@ -2828,6 +2828,236 @@ def test_gn_chamfer_plan_cyclic_metadata_alignment_regression(
     result.add_detail("cyclic Edge/Vertex/owner metadata remained aligned")
 
 
+# 从 literal Boundary graph 建 BMesh，调用 public binding seam 并返回 binding 与原坐标。
+# module/vertices/edges/plan_id: binding module、literal topology 与 plan ID；返回 binding evidence。
+def bind_literal_boundary_graph(module, vertices, edges, plan_id, *, update_indices=True):
+    bm = bmesh.new()
+    try:
+        bm_vertices = [bm.verts.new(coordinate) for coordinate in vertices]
+        bm.verts.ensure_lookup_table()
+        for start_index, end_index in edges:
+            bm.edges.new((bm_vertices[start_index], bm_vertices[end_index]))
+        if update_indices:
+            bm.edges.index_update()
+            bm.verts.index_update()
+        original_coordinates = tuple(tuple(vertex.co) for vertex in bm.verts)
+        binding = module.bind_boundary_graph(plan_id, tuple(bm.edges))
+        return binding, original_coordinates, tuple(tuple(vertex.co) for vertex in bm.verts)
+    finally:
+        bm.free()
+
+
+# 验证 public BoundaryGraph decomposition 正确处理 open/cyclic/Y/T/X，且每条 Edge 恰好消费一次。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boundary_graph_binding_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    fixtures = (
+        (
+            "open",
+            ((0, 0, 0), (1, 0, 0), (2, 0, 0)),
+            ((0, 1), (1, 2)),
+            (1, 1),
+            1,
+            2,
+            0,
+        ),
+        (
+            "cyclic",
+            ((0, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ((0, 1), (1, 2), (2, 0)),
+            (),
+            1,
+            0,
+            1,
+        ),
+        (
+            "Y",
+            ((0, 0, 0), (-1, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ((0, 1), (0, 2), (0, 3)),
+            (1, 1, 1, 3),
+            3,
+            6,
+            0,
+        ),
+        (
+            "T",
+            ((0, 0, 0), (-1, 0, 0), (1, 0, 0), (0, 1, 0), (0, 2, 0)),
+            ((0, 1), (0, 2), (0, 3), (3, 4)),
+            (1, 1, 1, 3),
+            3,
+            6,
+            0,
+        ),
+        (
+            "X",
+            ((0, 0, 0), (-1, 0, 0), (1, 0, 0), (0, -1, 0), (0, 1, 0)),
+            ((0, 1), (0, 2), (0, 3), (0, 4)),
+            (1, 1, 1, 1, 4),
+            4,
+            8,
+            0,
+        ),
+    )
+    records = []
+    for label, vertices, edges, expected_degrees, expected_runs, expected_ports, expected_cyclic in fixtures:
+        plan_id = f"synthetic:{label}"
+        binding, coordinates_before, coordinates_after = bind_literal_boundary_graph(
+            module,
+            vertices,
+            edges,
+            plan_id,
+        )
+        consumed = [
+            edge_index
+            for strand in binding.rail_strands
+            for edge_index in strand.ordered_edge_indices
+        ]
+        ensure(binding.plan_id == plan_id and binding.status == "PASS", f"{label} binding failed")
+        ensure(
+            binding.boundary_edge_count == len(edges)
+            and binding.consumed_edge_count == len(edges)
+            and sorted(consumed) == list(range(len(edges)))
+            and len(set(consumed)) == len(edges)
+            and not binding.missing_edge_indices
+            and not binding.duplicate_edge_indices,
+            f"{label} Boundary Edge consumption is incomplete: {binding}",
+        )
+        ensure(
+            tuple(sorted(junction.boundary_degree for junction in binding.junctions))
+            == expected_degrees,
+            f"{label} junction degrees mismatch: {binding.junctions}",
+        )
+        ensure(
+            len(binding.rail_strands) == expected_runs
+            and len(binding.ports) == expected_ports
+            and sum(strand.cyclic for strand in binding.rail_strands) == expected_cyclic,
+            f"{label} maximal run/port decomposition mismatch: {binding}",
+        )
+        port_by_id = {port.port_id: port for port in binding.ports}
+        junction_by_id = {
+            junction.junction_id: junction for junction in binding.junctions
+        }
+        ensure(
+            all(
+                port.junction_id in junction_by_id
+                and port.port_id in junction_by_id[port.junction_id].port_ids
+                and port.rail_strand_id
+                in {
+                    strand.strand_id
+                    for strand in binding.rail_strands
+                    if port.junction_id in strand.endpoint_junction_ids
+                }
+                for port in binding.ports
+            )
+            and all(
+                port_id in port_by_id
+                and port_by_id[port_id].junction_id == junction.junction_id
+                for junction in binding.junctions
+                for port_id in junction.port_ids
+            ),
+            f"{label} Junction/Port/Rail references are not bidirectional: {binding}",
+        )
+        ensure(
+            coordinates_before == coordinates_after
+            and not binding.coordinate_reconstruction
+            and not binding.centerline_sorting
+            and not binding.moves_boundary,
+            f"{label} binding changed Boundary coordinates or semantics",
+        )
+        records.append(
+            {
+                "fixture": label,
+                "edge_count": binding.boundary_edge_count,
+                "rail_count": len(binding.rail_strands),
+                "junction_degrees": [
+                    junction.boundary_degree for junction in binding.junctions
+                ],
+                "port_count": len(binding.ports),
+            }
+        )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_phase_3_boundary_graph_contract.json"
+    artifact_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+    result.add_detail(f"open/cyclic/Y/T/X binding contract artifact={artifact_path}")
+
+
+# 验证 public decomposition 不依赖 caller 预先更新 BMesh 临时 index。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boundary_graph_dirty_index_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    signatures = []
+    for repetition in range(3):
+        binding, coordinates_before, coordinates_after = bind_literal_boundary_graph(
+            module,
+            ((0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)),
+            ((0, 1), (2, 3)),
+            f"synthetic:dirty-index-coincident:{repetition}",
+            update_indices=False,
+        )
+        signatures.append(
+            tuple(
+                (
+                    strand.ordered_edge_indices,
+                    strand.ordered_vertex_indices,
+                    strand.endpoint_junction_ids,
+                )
+                for strand in binding.rail_strands
+            )
+        )
+        ensure(
+            binding.status == "PASS"
+            and binding.boundary_edge_count == 2
+            and binding.consumed_edge_count == 2
+            and not binding.missing_edge_indices
+            and not binding.duplicate_edge_indices,
+            f"Dirty BMesh indices changed coincident topology identity: {binding}",
+        )
+        ensure(
+            coordinates_before == coordinates_after,
+            "Dirty-index decomposition changed Boundary coordinates",
+        )
+    ensure(
+        signatures == [
+            (((0,), (0, 1), ("boundary-junction:0", "boundary-junction:1")), ((1,), (2, 3), ("boundary-junction:2", "boundary-junction:3")))
+        ] * 3,
+        f"Coincident dirty-index topology produced unstable IDs: {signatures}",
+    )
+    result.add_detail("dirty BMesh indices preserved coincident topology identity")
+
+
+# 验证 public decomposition 对重复 BMEdge refs fail-closed，不把输入 multiplicity 静默折叠为 PASS。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boundary_graph_duplicate_input_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    bm = bmesh.new()
+    try:
+        start = bm.verts.new((0, 0, 0))
+        end = bm.verts.new((1, 0, 0))
+        edge = bm.edges.new((start, end))
+        binding = module.bind_boundary_graph(
+            "synthetic:duplicate-input",
+            (edge, edge),
+        )
+        ensure(
+            binding.status == "FAIL"
+            and binding.boundary_edge_count == 2
+            and binding.consumed_edge_count == 1
+            and binding.duplicate_edge_indices == (1,),
+            f"Duplicate Boundary Edge refs were not rejected: {binding}",
+        )
+    finally:
+        bm.free()
+    result.add_detail("duplicate BMEdge refs fail closed at the public seam")
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -4505,6 +4735,18 @@ def main():
     context.run_case(
         "gn_chamfer_plan_cyclic_metadata_alignment_regression",
         test_gn_chamfer_plan_cyclic_metadata_alignment_regression,
+    )
+    context.run_case(
+        "feature_chamfer_boundary_graph_binding_contract_smoke",
+        test_feature_chamfer_boundary_graph_binding_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_boundary_graph_dirty_index_regression",
+        test_feature_chamfer_boundary_graph_dirty_index_regression,
+    )
+    context.run_case(
+        "feature_chamfer_boundary_graph_duplicate_input_regression",
+        test_feature_chamfer_boundary_graph_duplicate_input_regression,
     )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case(

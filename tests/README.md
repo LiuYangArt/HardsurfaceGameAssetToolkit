@@ -56,6 +56,7 @@
 - Feature Chamfer GN 参数 socket 更新、Curve Pipe cutter closed-manifold smoke test
 - Feature Chamfer GN topology/live 参数 stale 与无 Sharp 时 Cancel 生命周期回归
 - Feature Chamfer GN PREVIEW/FINALIZE shared immutable ChamferPlan、JunctionPort、cyclic metadata、Boundary binding 与 retry shadow contract 回归
+- Feature Chamfer Phase 3 public BoundaryGraph open/cyclic/Y/T/X maximal degree-2 decomposition、dirty-index identity 与重复 Edge fail-closed 回归
 - Feature Chamfer GN endpoint/junction extension、Python tracked Boolean provenance 与 Boundary region classification
 - Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归

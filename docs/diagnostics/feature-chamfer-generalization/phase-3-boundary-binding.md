@@ -48,7 +48,7 @@ probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，
 - 无直接 provenance 的 component 曾把邻接 owner union 赋给每条 Edge，多 owner junction 会被伪装成已分类；
 - binding 只读取 `plan_id`，未映射到 plan `FeatureStrand`、`JunctionPort`、`RailChain` 或 `StripCorrespondence`；
 - patch runtime 仍由 `_final_boolean_boundary_rails()` 的 BVH 最近 Pipe 路径驱动，新 binding 只是 stats 旁路；
-- 测试缺少 public binder 的 cyclic/open/Y/T/X contract，Operator gate 也没有锁定精确 2 PASS / 2 fail-closed 结果。
+- WIP probe 当时缺少 public binder 的 cyclic/open/Y/T/X contract，Operator gate 也没有锁定精确 2 PASS / 2 fail-closed 结果。
 
 因此本轮没有 authoritative binding artifact；`/tmp/hst_phase3_stop_final` 只保留 WIP probe 诊断，不能作为 Go 证据。
 
@@ -57,6 +57,6 @@ probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，
 1. 在同一 BMesh 内用 `BMEdge` identity 保留删除槽面前后的 cutter/source provenance，禁止坐标 key。
 2. 建立 cutter component → plan `FeatureStrand/JunctionPort` 显式映射；无 owner 或多 owner ambiguity 必须 fail-closed。
 3. 让正式 patch runtime 消费 `FinalizationBinding`，不得落回 BVH/centroid owner。
-4. 先补 public binder 的 cyclic/open/Y/T/X 合成测试，再从目标 Operator 验证两个真实对象与两个 radius。
+4. public `bind_boundary_graph` 已补 cyclic/open/Y/T/X、dirty-index、重复 Edge fail-closed 与 Junction/Port/Rail 双向引用 contract；下一步扩展为含 owner provenance 的 `bind_boolean_boundary`，再从目标 Operator 验证两个真实对象与两个 radius。
 
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。
