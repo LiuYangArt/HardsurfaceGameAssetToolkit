@@ -59,4 +59,6 @@ probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，
 3. 让正式 patch runtime 消费 `FinalizationBinding`，不得落回 BVH/centroid owner。
 4. public `bind_boundary_graph` 已补 cyclic/open/Y/T/X、dirty-index、重复 Edge fail-closed 与 Junction/Port/Rail 双向引用 contract；下一步扩展为含 owner provenance 的 `bind_boolean_boundary`，再从目标 Operator 验证两个真实对象与两个 radius。
 
+2026-07-22 后续子切片：public `bind_boolean_boundary` 已能在 disposable 同一 BMesh 上，以 deleted cutter Face 的 component-present/owner layer 与 retained source Face 的 patch-present/ID layer，权威绑定 cyclic Rail；缺 owner、known+unknown、multi-owner、缺 patch、未知 Pipe、额外 Boundary、缺预期 Rail、断裂 Rail 均 `boundary_binding_incomplete`。open Rail 因尚无 Boundary endpoint → plan `JunctionPort` provenance，当前明确 fail-closed，未冒充通用 binding；正式 Operator 仍未接入且 Boolean runtime 尚无 component owner producer。
+
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。

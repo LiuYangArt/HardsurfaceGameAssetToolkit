@@ -3058,6 +3058,472 @@ def test_feature_chamfer_boundary_graph_duplicate_input_regression(
     result.add_detail("duplicate BMEdge refs fail closed at the public seam")
 
 
+# 构造两条 cyclic rails 的双 tetrahedron Boolean BMesh。
+# pipe_ids/patch_ids: 两个待删除 groove Faces 的 owner Pipe IDs 与六个保留 Face Patch IDs；返回 BMesh 与 groove Face refs。
+def make_authoritative_boundary_binding_bmesh(pipe_ids, patch_ids):
+    bm = bmesh.new()
+    mesh = bpy.data.meshes.new("AuthoritativeBoundaryBindingMesh")
+    mesh.from_pydata(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (3.0, 0.0, 0.0),
+            (4.0, 0.0, 0.0),
+            (3.0, 1.0, 0.0),
+            (3.0, 0.0, 1.0),
+        ),
+        (),
+        (
+            (0, 1, 2),
+            (1, 0, 3),
+            (2, 1, 3),
+            (0, 2, 3),
+            (4, 5, 6),
+            (5, 4, 7),
+            (6, 5, 7),
+            (4, 6, 7),
+        ),
+    )
+    mesh.update()
+    bm.from_mesh(mesh)
+    bpy.data.meshes.remove(mesh)
+    component_layer = bm.faces.layers.int.new("hst_pipe_component_id")
+    patch_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id")
+    component_present_layer = bm.faces.layers.int.new("hst_pipe_component_id_present")
+    patch_present_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id_present")
+    bm.faces.ensure_lookup_table()
+    groove_faces = (bm.faces[0], bm.faces[4])
+    retained_faces = tuple(bm.faces[1:4]) + tuple(bm.faces[5:8])
+    owner_pipe_ids = (
+        tuple(pipe_ids)
+        if len(pipe_ids) == 2
+        else (int(pipe_ids[0]), int(pipe_ids[0]))
+    )
+    owner_patch_ids = (
+        tuple(patch_ids)
+        if len(patch_ids) == 6
+        else tuple(patch_ids) + tuple(patch_ids)
+    )
+    for groove_face, pipe_id in zip(groove_faces, owner_pipe_ids):
+        groove_face[component_layer] = pipe_id
+        groove_face[component_present_layer] = int(pipe_id >= 0)
+    for face, patch_id in zip(retained_faces, owner_patch_ids):
+        face[component_layer] = -1
+        face[patch_layer] = int(patch_id)
+        face[patch_present_layer] = int(patch_id >= 0)
+    return bm, groove_faces
+
+
+# 构造含额外无 deleted-Face provenance 的开放 Edge，用于验证 Boundary 全集不能自裁剪。
+# 无参数；返回 BMesh 与 groove Face refs。
+def make_unowned_extra_boundary_binding_bmesh():
+    bm, groove_faces = make_authoritative_boundary_binding_bmesh(
+        (7,),
+        (10, 10, 10, 11, 11, 11),
+    )
+    loose_start = bm.verts.new((3.0, 0.0, 0.0))
+    loose_end = bm.verts.new((4.0, 0.0, 0.0))
+    loose_tip = bm.verts.new((3.0, 1.0, 0.0))
+    bm.faces.new((loose_start, loose_end, loose_tip))
+    return bm, groove_faces
+
+
+# 把同一 Patch rail 拆成两个 disconnected runs，验证 binder 不会全局分桶后伪造连续 Rail。
+# 无参数；返回 BMesh 与 groove Face refs。
+def make_disconnected_rail_boundary_binding_bmesh():
+    bm = bmesh.new()
+    mesh = bpy.data.meshes.new("DisconnectedRailBoundaryBindingMesh")
+    mesh.from_pydata(
+        (
+            (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+            (3.0, 0.0, 0.0), (4.0, 0.0, 0.0), (3.0, 1.0, 0.0), (3.0, 0.0, 1.0),
+        ),
+        (),
+        (
+            (0, 1, 2), (1, 0, 3), (2, 1, 3), (0, 2, 3),
+            (4, 5, 6), (5, 4, 7), (6, 5, 7), (4, 6, 7),
+        ),
+    )
+    mesh.update()
+    bm.from_mesh(mesh)
+    bpy.data.meshes.remove(mesh)
+    component_layer = bm.faces.layers.int.new("hst_pipe_component_id")
+    patch_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id")
+    component_present = bm.faces.layers.int.new("hst_pipe_component_id_present")
+    patch_present = bm.faces.layers.int.new("hst_pipe_source_patch_id_present")
+    bm.faces.ensure_lookup_table()
+    groove_faces = (bm.faces[0], bm.faces[4])
+    for groove_face in groove_faces:
+        groove_face[component_layer] = 7
+        groove_face[component_present] = 1
+    for face in tuple(bm.faces[1:4]) + tuple(bm.faces[5:8]):
+        face[patch_layer] = 10
+        face[patch_present] = 1
+    return bm, groove_faces
+
+
+# 构造单条 open Boundary rail 的 disposable BMesh。
+# 无参数；返回 BMesh 与一个 groove Face ref，用于锁定 open endpoint provenance 门禁。
+def make_open_rail_boundary_binding_bmesh():
+    bm = bmesh.new()
+    mesh = bpy.data.meshes.new("OpenRailBoundaryBindingMesh")
+    mesh.from_pydata(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        (),
+        ((0, 1, 2), (1, 0, 2)),
+    )
+    mesh.update()
+    bm.from_mesh(mesh)
+    bpy.data.meshes.remove(mesh)
+    component_layer = bm.faces.layers.int.new("hst_pipe_component_id")
+    patch_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id")
+    component_present = bm.faces.layers.int.new("hst_pipe_component_id_present")
+    patch_present = bm.faces.layers.int.new("hst_pipe_source_patch_id_present")
+    bm.faces.ensure_lookup_table()
+    groove_face = bm.faces[0]
+    retained_face = bm.faces[1]
+    groove_face[component_layer] = 7
+    groove_face[component_present] = 1
+    retained_face[patch_layer] = 10
+    retained_face[patch_present] = 1
+    return bm, (groove_face,)
+
+
+# 构造同一 Boundary Edge 被两个 cutter components 删除面共同拥有的 non-manifold seam。
+# 无参数；返回 BMesh 与两个 groove Face refs，用于验证 multi-owner 必须显式 fail-closed。
+def make_multi_owner_boundary_binding_bmesh():
+    bm = bmesh.new()
+    mesh = bpy.data.meshes.new("MultiOwnerBoundaryBindingMesh")
+    mesh.from_pydata(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ),
+        (),
+        ((0, 1, 2), (1, 0, 3), (0, 1, 4)),
+    )
+    mesh.update()
+    bm.from_mesh(mesh)
+    bpy.data.meshes.remove(mesh)
+    component_layer = bm.faces.layers.int.new("hst_pipe_component_id")
+    patch_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id")
+    component_present_layer = bm.faces.layers.int.new("hst_pipe_component_id_present")
+    patch_present_layer = bm.faces.layers.int.new("hst_pipe_source_patch_id_present")
+    bm.faces.ensure_lookup_table()
+    retained_face = bm.faces[0]
+    groove_faces = (bm.faces[1], bm.faces[2])
+    retained_face[component_layer] = -1
+    retained_face[patch_layer] = 10
+    retained_face[patch_present_layer] = 1
+    groove_faces[0][patch_present_layer] = 0
+    groove_faces[1][patch_present_layer] = 0
+    groove_faces[0][component_layer] = 7
+    groove_faces[1][component_layer] = 8
+    groove_faces[0][component_present_layer] = 1
+    groove_faces[1][component_present_layer] = 1
+    return bm, groove_faces
+
+
+# 构造同一 Edge 的 {known, unknown} cutter owner ledger，unknown 不能被过滤成唯一 owner。
+# 无参数；返回 BMesh 与两个 groove Face refs。
+def make_known_unknown_owner_boundary_binding_bmesh():
+    bm, groove_faces = make_multi_owner_boundary_binding_bmesh()
+    component_layer = bm.faces.layers.int.get("hst_pipe_component_id")
+    component_present = bm.faces.layers.int.get("hst_pipe_component_id_present")
+    groove_faces[0][component_layer] = 7
+    groove_faces[0][component_present] = 1
+    groove_faces[1][component_present] = 0
+    return bm, groove_faces
+
+
+# 验证 authoritative Boolean Boundary binder 只消费 Face provenance，并映射到同一 ChamferPlan。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_authoritative_boundary_binding_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("AuthoritativeBoundaryBinding")
+    source = make_edge_network(
+        "AuthoritativeBoundaryBindingSource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.5, 1.0, 0.0)),
+        ((0, 1), (1, 2), (2, 0)),
+    )
+    source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [0, 1, 2],
+        "vertex_indices": [0, 1, 2],
+        "is_cyclic": True,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11), (10, 11), (10, 11)],
+        "convexity_by_edge": [1, 1, 1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 2,
+        "end_feature_degree": 2,
+    }
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    bm, groove_faces = make_authoritative_boundary_binding_bmesh(
+        (7,),
+        (10, 10, 10, 11, 11, 11),
+    )
+    try:
+        coordinates_before = tuple(tuple(vertex.co) for vertex in bm.verts)
+        binding = test_context.addon.utils.feature_chamfer_binding_utils.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(binding.status == "PASS", f"Authoritative binding failed: {binding}")
+        ensure(binding.plan_id == plan.plan_id, "Authoritative binding changed plan ID")
+        ensure(
+            binding.boundary_edge_count == binding.consumed_edge_count == 6
+            and not binding.unowned_edge_indices
+            and not binding.multi_owner_edge_indices
+            and not binding.incompatible_edge_indices,
+            f"Authoritative Edge ledger is incomplete: {binding}",
+        )
+        ensure(
+            {record.pipe_id for record in binding.edge_bindings} == {7}
+            and {record.owner_strand_id for record in binding.edge_bindings}
+            == {plan.feature_strands[0].strand_id}
+            and {record.source_patch_id for record in binding.edge_bindings} == {10, 11},
+            f"Face provenance did not map to plan ownership: {binding.edge_bindings}",
+        )
+        ensure(
+            {rail.rail_id for rail in binding.rail_bindings}
+            == {rail.rail_id for rail in plan.rail_chains},
+            f"Authoritative Rail bindings diverged from plan: {binding.rail_bindings}",
+        )
+        ensure(
+            coordinates_before == tuple(tuple(vertex.co) for vertex in bm.verts)
+            and not binding.coordinate_reconstruction
+            and not binding.centerline_sorting
+            and not binding.moves_boundary,
+            "Authoritative binding moved or reconstructed Boundary geometry",
+        )
+    finally:
+        bm.free()
+    result.add_detail("deleted Face owner + retained Face patch provenance bound 6/6 Boundary Edges")
+
+
+# 验证 authoritative binder 对缺 owner、multi-owner、缺 patch 与 plan 不兼容全部 fail-closed。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_authoritative_boundary_binding_fail_closed_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_binding_utils
+    cases = (
+        ("missing-owner", -1, (10, 10, 10, 11, 11, 11), "unowned_edge_indices"),
+        ("missing-patch", 7, (-1, 10, 10, 11, 11, 11), "missing_patch_edge_indices"),
+        ("incompatible-patch", 7, (99, 10, 10, 11, 11, 11), "incompatible_edge_indices"),
+        ("unknown-pipe", 99, (10, 10, 10, 11, 11, 11), "incompatible_edge_indices"),
+    )
+    collection = make_collection("AuthoritativeBoundaryBindingFailClosed")
+    source = make_edge_network(
+        "AuthoritativeBoundaryBindingFailClosedSource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.5, 1.0, 0.0)),
+        ((0, 1), (1, 2), (2, 0)),
+    )
+    source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [0, 1, 2],
+        "vertex_indices": [0, 1, 2],
+        "is_cyclic": True,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11), (10, 11), (10, 11)],
+        "convexity_by_edge": [1, 1, 1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 2,
+        "end_feature_degree": 2,
+    }
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    records = []
+    for label, pipe_id, patch_ids, evidence_field in cases:
+        bm, groove_faces = make_authoritative_boundary_binding_bmesh((pipe_id,), patch_ids)
+        try:
+            binding = module.bind_boolean_boundary(
+                plan,
+                [group],
+                bm,
+                groove_faces,
+                component_layer_name="hst_pipe_component_id",
+                source_patch_layer_name="hst_pipe_source_patch_id",
+                source_mesh=source.data,
+            )
+            ensure(
+                binding.status == "boundary_binding_incomplete"
+                and getattr(binding, evidence_field),
+                f"{label} did not fail closed with evidence: {binding}",
+            )
+            records.append({"case": label, "status": binding.status})
+        finally:
+            bm.free()
+    bm, groove_faces = make_multi_owner_boundary_binding_bmesh()
+    try:
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.multi_owner_edge_indices,
+            f"multi-owner seam did not fail closed with owner evidence: {binding}",
+        )
+        records.append({"case": "multi-owner", "status": binding.status})
+    finally:
+        bm.free()
+    bm, groove_faces = make_known_unknown_owner_boundary_binding_bmesh()
+    try:
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.unowned_edge_indices,
+            f"known + unknown owner was collapsed to false unique ownership: {binding}",
+        )
+        records.append({"case": "known-unknown-owner", "status": binding.status})
+    finally:
+        bm.free()
+    bm, groove_faces = make_unowned_extra_boundary_binding_bmesh()
+    try:
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.boundary_edge_count == 9
+            and binding.unowned_edge_indices,
+            f"unledgered Boundary Edges were hidden from the binding universe: {binding}",
+        )
+        records.append({"case": "unowned-extra-boundary", "status": binding.status})
+    finally:
+        bm.free()
+    bm, groove_faces = make_authoritative_boundary_binding_bmesh((7,), (10, 10, 10, 10, 10, 10))
+    try:
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.missing_rail_ids,
+            f"missing expected Rail side was accepted: {binding}",
+        )
+        records.append({"case": "missing-expected-rail", "status": binding.status})
+    finally:
+        bm.free()
+    bm, groove_faces = make_disconnected_rail_boundary_binding_bmesh()
+    try:
+        binding = module.bind_boolean_boundary(
+            plan,
+            [group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.topology_incompatible_rail_ids,
+            f"disconnected Rail runs were merged into a false Rail: {binding}",
+        )
+        records.append({"case": "disconnected-rail", "status": binding.status})
+    finally:
+        bm.free()
+    open_source = make_edge_network(
+        "AuthoritativeOpenBoundarySource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ((0, 1),),
+    )
+    open_source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    open_group = {
+        "pipe_id": 7,
+        "edge_indices": [0],
+        "vertex_indices": [0, 1],
+        "is_cyclic": False,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11)],
+        "convexity_by_edge": [1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 1,
+        "end_feature_degree": 1,
+    }
+    open_plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        open_source,
+        [open_group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    bm, groove_faces = make_open_rail_boundary_binding_bmesh()
+    try:
+        binding = module.bind_boolean_boundary(
+            open_plan,
+            [open_group],
+            bm,
+            groove_faces,
+            component_layer_name="hst_pipe_component_id",
+            source_patch_layer_name="hst_pipe_source_patch_id",
+            source_mesh=open_source.data,
+        )
+        ensure(
+            binding.status == "boundary_binding_incomplete"
+            and binding.topology_incompatible_rail_ids,
+            f"open Rail passed without endpoint → JunctionPort provenance: {binding}",
+        )
+        records.append({"case": "open-port-provenance-missing", "status": binding.status})
+    finally:
+        bm.free()
+    result.add_detail(json.dumps(records, sort_keys=True))
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -4747,6 +5213,14 @@ def main():
     context.run_case(
         "feature_chamfer_boundary_graph_duplicate_input_regression",
         test_feature_chamfer_boundary_graph_duplicate_input_regression,
+    )
+    context.run_case(
+        "feature_chamfer_authoritative_boundary_binding_contract_smoke",
+        test_feature_chamfer_authoritative_boundary_binding_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_authoritative_boundary_binding_fail_closed_regression",
+        test_feature_chamfer_authoritative_boundary_binding_fail_closed_regression,
     )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case(

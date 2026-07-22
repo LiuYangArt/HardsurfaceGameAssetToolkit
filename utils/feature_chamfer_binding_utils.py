@@ -6,6 +6,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import bpy
+import bmesh
+
+from .feature_chamfer_plan_utils import _edge_key as plan_edge_key
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,46 @@ class BoundaryGraphDecomposition:
     rail_strands: tuple[BoundaryRailStrand, ...]
     junctions: tuple[BoundaryJunction, ...]
     ports: tuple[BoundaryJunctionPort, ...]
+    coordinate_reconstruction: bool
+    centerline_sorting: bool
+    moves_boundary: bool
+
+
+@dataclass(frozen=True)
+class BooleanBoundaryEdgeBinding:
+    boundary_edge_index: int
+    pipe_id: int
+    owner_strand_id: str
+    source_patch_id: int
+    rail_id: str
+
+
+@dataclass(frozen=True)
+class BooleanRailBinding:
+    rail_id: str
+    owner_strand_id: str
+    source_patch_id: int
+    boundary_edge_indices: tuple[int, ...]
+    boundary_rail_strand_ids: tuple[str, ...]
+    endpoint_port_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FinalizationBinding:
+    plan_id: str
+    status: str
+    boundary_edge_count: int
+    consumed_edge_count: int
+    edge_bindings: tuple[BooleanBoundaryEdgeBinding, ...]
+    rail_bindings: tuple[BooleanRailBinding, ...]
+    unowned_edge_indices: tuple[int, ...]
+    multi_owner_edge_indices: tuple[int, ...]
+    missing_patch_edge_indices: tuple[int, ...]
+    incompatible_edge_indices: tuple[int, ...]
+    missing_rail_ids: tuple[str, ...]
+    missing_port_ids: tuple[str, ...]
+    topology_incompatible_rail_ids: tuple[str, ...]
+    graph: BoundaryGraphDecomposition
     coordinate_reconstruction: bool
     centerline_sorting: bool
     moves_boundary: bool
@@ -284,6 +327,235 @@ def bind_boundary_graph(plan_id, boundary_edges):
         rail_strands=tuple(rail_strands),
         junctions=junctions,
         ports=tuple(ports),
+        coordinate_reconstruction=False,
+        centerline_sorting=False,
+        moves_boundary=False,
+    )
+
+
+# plan/groups/source_mesh: shared plan、Feature groups 与 source Mesh；返回 Pipe ID 到 FeatureStrand 的显式映射。
+def _plan_strands_by_pipe_id(plan, groups, source_mesh):
+    strands_by_edge_keys = {}
+    for strand in plan.feature_strands:
+        key = frozenset(strand.ordered_edge_keys)
+        if key in strands_by_edge_keys:
+            return {}
+        strands_by_edge_keys[key] = strand
+    mapping = {}
+    for group in groups:
+        pipe_id = int(group["pipe_id"])
+        if pipe_id in mapping:
+            return {}
+        edge_keys = frozenset(
+            plan_edge_key(source_mesh, edge_index)
+            for edge_index in group["edge_indices"]
+        )
+        strand = strands_by_edge_keys.get(edge_keys)
+        if strand is None:
+            return {}
+        mapping[pipe_id] = strand
+    if set(mapping.values()) != set(plan.feature_strands):
+        return {}
+    return mapping
+
+
+# plan/groups/bm/groove_faces: shared plan、Feature groups、caller-owned disposable Boolean BMesh 与待删除 cutter Faces；函数会原地删除 groove Faces并返回 binding。
+# component_layer_name/source_patch_layer_name: groove Face 的 Pipe owner layer 与保留 source Face 的 Patch layer 名称。
+def bind_boolean_boundary(
+    plan,
+    groups,
+    bm,
+    groove_faces,
+    *,
+    component_layer_name,
+    source_patch_layer_name,
+    source_mesh,
+):
+    groove_faces = tuple(groove_faces)
+    component_layer = bm.faces.layers.int.get(component_layer_name)
+    source_patch_layer = bm.faces.layers.int.get(source_patch_layer_name)
+    component_present_layer = bm.faces.layers.int.get(
+        f"{component_layer_name}_present"
+    )
+    source_patch_present_layer = bm.faces.layers.int.get(
+        f"{source_patch_layer_name}_present"
+    )
+    strands_by_pipe_id = _plan_strands_by_pipe_id(plan, groups, source_mesh)
+    edge_owner_ledger = {}
+    for face in groove_faces:
+        owner = (
+            int(face[component_layer])
+            if component_layer is not None
+            and component_present_layer is not None
+            and bool(face[component_present_layer])
+            else -1
+        )
+        for edge in face.edges:
+            edge_owner_ledger.setdefault(edge, set()).add(owner)
+    bmesh.ops.delete(
+        bm,
+        geom=list(groove_faces),
+        context="FACES_KEEP_BOUNDARY",
+    )
+    boundary_edges = tuple(edge for edge in bm.edges if len(edge.link_faces) == 1)
+    boundary_edge_ids = {
+        edge: index for index, edge in enumerate(boundary_edges)
+    }
+    graph = bind_boundary_graph(plan.plan_id, boundary_edges)
+    expected_rail_by_id = {
+        rail.rail_id: rail for rail in plan.rail_chains
+    }
+    edge_bindings = []
+    unowned = []
+    multi_owner = []
+    missing_patch = []
+    incompatible = []
+    for edge in boundary_edges:
+        edge_index = boundary_edge_ids[edge]
+        ledger_owners = edge_owner_ledger.get(edge, set())
+        if any(owner < 0 for owner in ledger_owners):
+            unowned.append(edge_index)
+            continue
+        owners = {
+            owner
+            for owner in ledger_owners
+            if owner >= 0
+        }
+        if not owners:
+            unowned.append(edge_index)
+            continue
+        if len(owners) != 1:
+            multi_owner.append(edge_index)
+            continue
+        retained_faces = tuple(edge.link_faces)
+        if (
+            source_patch_layer is None
+            or source_patch_present_layer is None
+            or len(retained_faces) != 1
+            or not bool(retained_faces[0][source_patch_present_layer])
+        ):
+            missing_patch.append(edge_index)
+            continue
+        patch_id = int(retained_faces[0][source_patch_layer])
+        if patch_id < 0:
+            missing_patch.append(edge_index)
+            continue
+        pipe_id = next(iter(owners))
+        strand = strands_by_pipe_id.get(pipe_id)
+        rail_id = (
+            f"rail:{strand.strand_id}:patch:{patch_id}"
+            if strand is not None
+            else ""
+        )
+        if (
+            strand is None
+            or patch_id
+            not in {
+                owner_patch
+                for pair in strand.owner_surface_pairs
+                for owner_patch in pair
+            }
+            or rail_id not in expected_rail_by_id
+        ):
+            incompatible.append(edge_index)
+            continue
+        edge_bindings.append(
+            BooleanBoundaryEdgeBinding(
+                boundary_edge_index=edge_index,
+                pipe_id=pipe_id,
+                owner_strand_id=strand.strand_id,
+                source_patch_id=patch_id,
+                rail_id=rail_id,
+            )
+        )
+    bindings_by_rail = {}
+    for record in edge_bindings:
+        bindings_by_rail.setdefault(record.rail_id, []).append(record)
+    edge_objects_by_index = dict(enumerate(boundary_edges))
+    topology_incompatible_rail_ids = []
+    rail_bindings = []
+    for rail_id, records in sorted(bindings_by_rail.items()):
+        rail_edge_objects = tuple(
+            edge_objects_by_index[index]
+            for index in sorted(
+                record.boundary_edge_index for record in records
+            )
+        )
+        rail_graph = bind_boundary_graph(plan.plan_id, rail_edge_objects)
+        graph_rails = rail_graph.rail_strands
+        owner_strand = next(
+            strand
+            for strand in plan.feature_strands
+            if strand.strand_id == records[0].owner_strand_id
+        )
+        if owner_strand.cyclic and expected_rail_by_id[rail_id].endpoint_port_ids:
+            topology_incompatible_rail_ids.append(rail_id)
+        record_edge_indices = {
+            record.boundary_edge_index for record in records
+        }
+        graph_edge_indices = set(range(len(rail_edge_objects)))
+        topology_compatible = (
+            len(graph_rails) == 1
+            and len(record_edge_indices) == len(graph_edge_indices)
+            and graph_rails[0].cyclic == owner_strand.cyclic
+            and owner_strand.cyclic
+        )
+        if not topology_compatible and rail_id not in topology_incompatible_rail_ids:
+            topology_incompatible_rail_ids.append(rail_id)
+        rail_bindings.append(BooleanRailBinding(
+            rail_id=rail_id,
+            owner_strand_id=records[0].owner_strand_id,
+            source_patch_id=records[0].source_patch_id,
+            boundary_edge_indices=(
+                tuple(
+                    sorted(record_edge_indices)[local_index]
+                    for local_index in graph_rails[0].ordered_edge_indices
+                )
+                if len(graph_rails) == 1
+                else tuple(record.boundary_edge_index for record in records)
+            ),
+            boundary_rail_strand_ids=tuple(
+                graph_rail.strand_id for graph_rail in graph_rails
+            ),
+            endpoint_port_ids=expected_rail_by_id[rail_id].endpoint_port_ids,
+        ))
+    rail_bindings = tuple(rail_bindings)
+    bound_rail_ids = set(bindings_by_rail)
+    expected_rail_ids = set(expected_rail_by_id)
+    missing_rail_ids = tuple(sorted(expected_rail_ids - bound_rail_ids))
+    bound_port_ids = {
+        port_id
+        for rail in rail_bindings
+        for port_id in rail.endpoint_port_ids
+    }
+    expected_port_ids = {port.port_id for port in plan.junction_ports}
+    missing_port_ids = tuple(sorted(expected_port_ids - bound_port_ids))
+    complete = (
+        graph.status == "PASS"
+        and len(edge_bindings) == len(boundary_edges)
+        and not unowned
+        and not multi_owner
+        and not missing_patch
+        and not incompatible
+        and not missing_rail_ids
+        and not missing_port_ids
+        and not topology_incompatible_rail_ids
+    )
+    return FinalizationBinding(
+        plan_id=plan.plan_id,
+        status="PASS" if complete else "boundary_binding_incomplete",
+        boundary_edge_count=len(boundary_edges),
+        consumed_edge_count=len(edge_bindings),
+        edge_bindings=tuple(edge_bindings),
+        rail_bindings=rail_bindings,
+        unowned_edge_indices=tuple(unowned),
+        multi_owner_edge_indices=tuple(multi_owner),
+        missing_patch_edge_indices=tuple(missing_patch),
+        incompatible_edge_indices=tuple(incompatible),
+        missing_rail_ids=missing_rail_ids,
+        missing_port_ids=missing_port_ids,
+        topology_incompatible_rail_ids=tuple(topology_incompatible_rail_ids),
+        graph=graph,
         coordinate_reconstruction=False,
         centerline_sorting=False,
         moves_boundary=False,
