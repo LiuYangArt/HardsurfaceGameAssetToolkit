@@ -23,6 +23,8 @@ from mathutils import Matrix
 from mathutils import Vector
 from mathutils import geometry
 from mathutils.bvhtree import BVHTree
+from .feature_chamfer_binding_utils import StrandEndpointPortToken
+from .feature_chamfer_binding_utils import _plan_strands_by_pipe_id
 from .feature_chamfer_patch_utils import patch_boolean_result
 from .feature_chamfer_plan_utils import build_chamfer_plan
 
@@ -38,6 +40,44 @@ SOURCE_PATCH_ID_ATTRIBUTE = "hst_pipe_source_patch_id"
 CUTTER_COMPONENT_ID_ATTRIBUTE = "hst_pipe_component_id"
 CUTTER_COMPONENT_PRESENT_ATTRIBUTE = "hst_pipe_component_id_present"
 SOURCE_PATCH_PRESENT_ATTRIBUTE = "hst_pipe_source_patch_id_present"
+CUTTER_START_PORT_TOKEN_ATTRIBUTE = "hst_pipe_start_port_token"
+CUTTER_END_PORT_TOKEN_ATTRIBUTE = "hst_pipe_end_port_token"
+
+
+# 让 Exact Boolean 能传播所有 provenance Face attributes，源 Mesh 与 Cutter Mesh 必须共享完整 attribute schema。
+# 先创建全部 attributes 为默认值，调用者随后覆盖具体值。
+# mesh: 目标 Mesh；is_source: True 表示 source duplicate，False 表示 cutter；source_patch_ids: source 的 Patch ID 列表（仅 is_source 时有效）。
+def _ensure_boolean_attribute_schema(mesh, is_source, source_patch_ids=None):
+    for attribute_name, attribute_type, default_value in (
+        (ORIGINAL_FACE_ATTRIBUTE, "BOOLEAN", True if is_source else False),
+        (SOURCE_PATCH_ID_ATTRIBUTE, "INT", 0 if not is_source else None),
+        (SOURCE_PATCH_PRESENT_ATTRIBUTE, "BOOLEAN", True if is_source else False),
+        (CUTTER_COMPONENT_ID_ATTRIBUTE, "INT", 0 if is_source else None),
+        (CUTTER_COMPONENT_PRESENT_ATTRIBUTE, "BOOLEAN", False if is_source else None),
+        (CUTTER_START_PORT_TOKEN_ATTRIBUTE, "INT", 0),
+        (CUTTER_END_PORT_TOKEN_ATTRIBUTE, "INT", 0),
+    ):
+        attribute = mesh.attributes.get(attribute_name)
+        if attribute is not None:
+            mesh.attributes.remove(attribute)
+        attribute = mesh.attributes.new(
+            attribute_name,
+            type=attribute_type,
+            domain="FACE",
+        )
+        if (
+            attribute_name == SOURCE_PATCH_ID_ATTRIBUTE
+            and is_source
+            and source_patch_ids is not None
+        ):
+            for polygon in mesh.polygons:
+                attribute.data[polygon.index].value = source_patch_ids[polygon.index]
+        else:
+            for item in attribute.data:
+                item.value = default_value if default_value is not None else 0
+    return mesh
+
+
 CHAMFER_FACE_ATTRIBUTE = "hst_pipe_chamfer"
 NORMAL_TRANSFER_MODIFIER = "HST Pipe Chamfer Normal Transfer"
 MARKER_MATERIAL_NAME = "HST_PipeChamfer_Marker"
@@ -1399,7 +1439,44 @@ def ensure_feature_chamfer_curve_pipe_asset():
 
 # 创建只负责当前 Pipe 参数绑定的临时 GN wrapper。
 # asset/radius/resolution/fill_caps: 受控 asset 与规则圆 profile 参数。
-def _build_curve_pipe_wrapper(asset, radius, resolution, fill_caps):
+# 在 Curve endpoint 的 POINT domain 写入 plan-local StrandEndpointPort token。
+# wrapper/geometry_socket: 当前 Node Group 与待标记 Curve socket；endpoint_role: START/END；attribute_name/token: Named Attribute 与正整数 token。
+def _store_curve_endpoint_token(
+    wrapper,
+    geometry_socket,
+    endpoint_role,
+    attribute_name,
+    token,
+):
+    endpoint_selection = wrapper.nodes.new("GeometryNodeCurveEndpointSelection")
+    endpoint_selection.inputs["Start Size"].default_value = int(
+        endpoint_role == "START"
+    )
+    endpoint_selection.inputs["End Size"].default_value = int(
+        endpoint_role == "END"
+    )
+    store_attribute = wrapper.nodes.new("GeometryNodeStoreNamedAttribute")
+    store_attribute.data_type = "INT"
+    store_attribute.domain = "POINT"
+    store_attribute.inputs["Name"].default_value = attribute_name
+    store_attribute.inputs["Value"].default_value = token
+    wrapper.links.new(geometry_socket, store_attribute.inputs["Geometry"])
+    wrapper.links.new(
+        endpoint_selection.outputs["Selection"],
+        store_attribute.inputs["Selection"],
+    )
+    return store_attribute.outputs["Geometry"]
+
+
+# 创建只负责当前 Pipe 参数与 endpoint provenance 的临时 GN wrapper。
+# asset/radius/resolution/fill_caps: 受控 asset 与规则圆 profile 参数；endpoint_port_tokens: START/END plan-local tokens。
+def _build_curve_pipe_wrapper(
+    asset,
+    radius,
+    resolution,
+    fill_caps,
+    endpoint_port_tokens=None,
+):
     wrapper = bpy.data.node_groups.new(
         f"HST Curve Pipe Wrapper {radius:.8f} {resolution} {int(fill_caps)}",
         "GeometryNodeTree",
@@ -1423,7 +1500,22 @@ def _build_curve_pipe_wrapper(asset, radius, resolution, fill_caps):
     asset_node.node_tree = asset
     asset_node.inputs["Fill Caps"].default_value = fill_caps
     asset_node.inputs["Even-Thickness"].default_value = True
-    wrapper.links.new(group_input.outputs["Geometry"], asset_node.inputs["Curve"])
+    curve_geometry = group_input.outputs["Geometry"]
+    endpoint_port_tokens = endpoint_port_tokens or {}
+    for endpoint_role, attribute_name in (
+        ("START", CUTTER_START_PORT_TOKEN_ATTRIBUTE),
+        ("END", CUTTER_END_PORT_TOKEN_ATTRIBUTE),
+    ):
+        token = int(endpoint_port_tokens.get(endpoint_role.lower(), 0))
+        if token > 0:
+            curve_geometry = _store_curve_endpoint_token(
+                wrapper,
+                curve_geometry,
+                endpoint_role,
+                attribute_name,
+                token,
+            )
+    wrapper.links.new(curve_geometry, asset_node.inputs["Curve"])
     wrapper.links.new(curve_circle.outputs["Curve"], asset_node.inputs["Profile Curve"])
     wrapper.links.new(asset_node.outputs["Geometry"], group_output.inputs["Geometry"])
     return wrapper
@@ -1432,7 +1524,67 @@ def _build_curve_pipe_wrapper(asset, radius, resolution, fill_caps):
 # 使用受控 Even-Thickness GN asset 生成 open/closed Curve Pipe Mesh。
 # Python 已完成 strand matching；Geometry Nodes 只消费有序 Curve 并生成规则截面。
 # source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
-def _build_pipe_mesh_curve(source_object, group, radius, pipe_resolution, collection):
+# 把 Curve POINT endpoint token 提升为 Pipe FACE token，使 Exact Boolean 可传播 provenance。
+# mesh: evaluated Pipe Mesh；endpoint_port_tokens: START/END token 字典；函数原地替换同名 POINT attribute。
+def _promote_pipe_endpoint_tokens_to_faces(mesh, endpoint_port_tokens):
+    for endpoint_role, attribute_name in (
+        ("start", CUTTER_START_PORT_TOKEN_ATTRIBUTE),
+        ("end", CUTTER_END_PORT_TOKEN_ATTRIBUTE),
+    ):
+        token = int(endpoint_port_tokens.get(endpoint_role, 0))
+        if token <= 0:
+            continue
+        point_attribute = mesh.attributes.get(attribute_name)
+        if point_attribute is None or point_attribute.domain != "POINT":
+            raise RuntimeError(
+                f"Curve Pipe lost {endpoint_role} JunctionPort POINT provenance"
+            )
+        point_tokens = [int(item.value) for item in point_attribute.data]
+        if not set(point_tokens) <= {0, token}:
+            raise RuntimeError(
+                f"Curve Pipe produced conflicting {endpoint_role} JunctionPort tokens"
+            )
+        face_tokens = [
+            token
+            if any(point_tokens[vertex_index] == token for vertex_index in polygon.vertices)
+            else 0
+            for polygon in mesh.polygons
+        ]
+        mesh.attributes.remove(point_attribute)
+        face_attribute = mesh.attributes.new(
+            attribute_name,
+            type="INT",
+            domain="FACE",
+        )
+        for polygon, face_token in zip(mesh.polygons, face_tokens):
+            face_attribute.data[polygon.index].value = face_token
+        if not any(face_tokens):
+            raise RuntimeError(
+                f"Curve Pipe produced no {endpoint_role} JunctionPort Faces"
+            )
+
+
+# 删除当前 Pipe Curve 临时对象、datablock 与 wrapper，供成功和异常路径共同调用。
+# curve_obj/curve/wrapper: 当前 build call 独占的临时 Blender datablocks；无返回值。
+def _remove_pipe_curve_build_data(curve_obj, curve, wrapper):
+    if curve_obj is not None and bpy.data.objects.get(curve_obj.name) == curve_obj:
+        bpy.data.objects.remove(curve_obj, do_unlink=True)
+    if curve is not None and curve.users == 0:
+        bpy.data.curves.remove(curve)
+    if wrapper is not None and wrapper.users == 0:
+        bpy.data.node_groups.remove(wrapper)
+
+
+# 使用受控 Even-Thickness GN asset 生成带 endpoint provenance 的 open/closed Curve Pipe Mesh。
+# source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置；endpoint_port_tokens: START/END plan-local tokens。
+def _build_pipe_mesh_curve(
+    source_object,
+    group,
+    radius,
+    pipe_resolution,
+    collection,
+    endpoint_port_tokens=None,
+):
     points = [point.copy() for point in group["points"]]
     cyclic = group["is_cyclic"]
     start_extension = 0.0 if cyclic else group.get("start_extension", 0.0)
@@ -1455,33 +1607,43 @@ def _build_pipe_mesh_curve(source_object, group, radius, pipe_resolution, collec
     curve_obj.matrix_world = source_object.matrix_world.copy()
     collection.objects.link(curve_obj)
 
-    node_group = ensure_feature_chamfer_curve_pipe_asset()
-    wrapper = _build_curve_pipe_wrapper(
-        node_group,
-        radius,
-        pipe_resolution,
-        not cyclic,
-    )
-    modifier = curve_obj.modifiers.new("HST Curve Pipe Even-Thickness", type="NODES")
-    modifier.node_group = wrapper
+    wrapper = None
+    pipe_mesh = None
+    try:
+        node_group = ensure_feature_chamfer_curve_pipe_asset()
+        wrapper = _build_curve_pipe_wrapper(
+            node_group,
+            radius,
+            pipe_resolution,
+            not cyclic,
+            endpoint_port_tokens,
+        )
+        modifier = curve_obj.modifiers.new("HST Curve Pipe Even-Thickness", type="NODES")
+        modifier.node_group = wrapper
 
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    evaluated_object = curve_obj.evaluated_get(depsgraph)
-    pipe_mesh = bpy.data.meshes.new_from_object(
-        evaluated_object,
-        preserve_all_data_layers=True,
-        depsgraph=depsgraph,
-    )
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated_object = curve_obj.evaluated_get(depsgraph)
+        pipe_mesh = bpy.data.meshes.new_from_object(
+            evaluated_object,
+            preserve_all_data_layers=True,
+            depsgraph=depsgraph,
+        )
+        _promote_pipe_endpoint_tokens_to_faces(
+            pipe_mesh,
+            endpoint_port_tokens or {},
+        )
+    except Exception:
+        if pipe_mesh is not None and pipe_mesh.users == 0:
+            bpy.data.meshes.remove(pipe_mesh)
+        _remove_pipe_curve_build_data(curve_obj, curve, wrapper)
+        raise
     pipe = bpy.data.objects.new(
         f"{source_object.name}_Pipe_{group['pipe_id']}_TEST",
         pipe_mesh,
     )
     pipe.matrix_world = source_object.matrix_world.copy()
     collection.objects.link(pipe)
-    bpy.data.objects.remove(curve_obj, do_unlink=True)
-    if curve.users == 0:
-        bpy.data.curves.remove(curve)
-    bpy.data.node_groups.remove(wrapper)
+    _remove_pipe_curve_build_data(curve_obj, curve, wrapper)
 
     pipe[OUTPUT_TAG] = source_object.name
     pipe[PIPE_ID_TAG] = group["pipe_id"]
@@ -1579,16 +1741,61 @@ def _build_pipe_mesh_manual(source_object, group, radius, pipe_resolution, colle
     return pipe
 
 
-# 选择 Pipe 几何后端：正式 Phase 1 默认使用受控 Even-Thickness GN。
-# source_object: transform 来源；group: Pipe Group；radius/resolution: 截面参数；collection: 输出位置。
-def _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection):
+# 选择 Pipe 几何后端并传递 endpoint provenance。
+# source_object/group/radius/pipe_resolution/collection: Pipe 构建上下文；endpoint_port_tokens: START/END plan-local tokens。
+def _build_pipe_mesh(
+    source_object,
+    group,
+    radius,
+    pipe_resolution,
+    collection,
+    endpoint_port_tokens=None,
+):
     return _build_pipe_mesh_curve(
         source_object,
         group,
         radius,
         pipe_resolution,
         collection,
+        endpoint_port_tokens,
     )
+
+
+# 为 open ChamferPlan strands 分配 deterministic plan-local endpoint tokens，并按 Pipe ID 建索引。
+# plan/groups/source_mesh: shared plan、Feature groups 与 source Mesh；返回 Pipe token 字典和 immutable registry。
+def _build_strand_endpoint_port_tokens(plan, groups, source_mesh):
+    strands_by_pipe_id = _plan_strands_by_pipe_id(plan, groups, source_mesh)
+    if len(strands_by_pipe_id) != len(groups):
+        raise RuntimeError("ChamferPlan Pipe→FeatureStrand endpoint mapping is incomplete")
+    tokens_by_pipe_id = {}
+    registry = []
+    next_token = 1
+    for pipe_id, strand in sorted(strands_by_pipe_id.items()):
+        if strand.cyclic:
+            continue
+        endpoint_tokens = {}
+        for endpoint_role, port_id in (
+            ("START", strand.start_port_id),
+            ("END", strand.end_port_id),
+        ):
+            if port_id is None:
+                raise RuntimeError(
+                    f"Open FeatureStrand lacks {endpoint_role} JunctionPort"
+                )
+            endpoint_tokens[endpoint_role.lower()] = next_token
+            registry.append(
+                StrandEndpointPortToken(
+                    next_token,
+                    pipe_id,
+                    strand.strand_id,
+                    endpoint_role,
+                    port_id,
+                )
+            )
+            next_token += 1
+        tokens_by_pipe_id[pipe_id] = endpoint_tokens
+    return tokens_by_pipe_id, tuple(registry)
+
 
 # 把一批 source-local Pipe 合并为一个不做 Boolean Union 的 Cutter Mesh，并写入每个 Face 的 Pipe owner provenance。
 # pipes: 已生成的 source-local Pipe Objects；source_object: matrix_world 来源；cutter_collection: Cutter 输出集合；cutter_index: 当前 batch 的稳定序号。
@@ -1596,6 +1803,8 @@ def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_in
     vertices = []
     faces = []
     face_pipe_ids = []
+    face_start_port_tokens = []
+    face_end_port_tokens = []
     for pipe in pipes:
         vertex_offset = len(vertices)
         vertices.extend(vertex.co.copy() for vertex in pipe.data.vertices)
@@ -1604,22 +1813,34 @@ def _build_joined_cutter_mesh(pipes, source_object, cutter_collection, cutter_in
                 tuple(vertex_offset + vertex_index for vertex_index in polygon.vertices)
             )
             face_pipe_ids.append(int(pipe[PIPE_ID_TAG]))
+            for attribute_name, target in (
+                (CUTTER_START_PORT_TOKEN_ATTRIBUTE, face_start_port_tokens),
+                (CUTTER_END_PORT_TOKEN_ATTRIBUTE, face_end_port_tokens),
+            ):
+                attribute = pipe.data.attributes.get(attribute_name)
+                target.append(
+                    int(attribute.data[polygon.index].value)
+                    if attribute is not None and attribute.domain == "FACE"
+                    else 0
+                )
     mesh = bpy.data.meshes.new(f"{source_object.name}{CUTTER_OBJECT_SUFFIX}_{cutter_index}")
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
-    pipe_id_attribute = mesh.attributes.new(
-        CUTTER_COMPONENT_ID_ATTRIBUTE,
-        type="INT",
-        domain="FACE",
-    )
-    pipe_present_attribute = mesh.attributes.new(
-        CUTTER_COMPONENT_PRESENT_ATTRIBUTE,
-        type="BOOLEAN",
-        domain="FACE",
-    )
+    _ensure_boolean_attribute_schema(mesh, False)
+    pipe_id_attribute = mesh.attributes[CUTTER_COMPONENT_ID_ATTRIBUTE]
+    pipe_present_attribute = mesh.attributes[CUTTER_COMPONENT_PRESENT_ATTRIBUTE]
     for polygon, pipe_id in zip(mesh.polygons, face_pipe_ids):
         pipe_id_attribute.data[polygon.index].value = pipe_id
         pipe_present_attribute.data[polygon.index].value = True
+    for attribute_name, face_tokens in (
+        (CUTTER_START_PORT_TOKEN_ATTRIBUTE, face_start_port_tokens),
+        (CUTTER_END_PORT_TOKEN_ATTRIBUTE, face_end_port_tokens),
+    ):
+        if not any(face_tokens):
+            continue
+        attribute = mesh.attributes[attribute_name]
+        for polygon, token in zip(mesh.polygons, face_tokens):
+            attribute.data[polygon.index].value = token
     cutter = bpy.data.objects.new(mesh.name, mesh)
     cutter.matrix_world = source_object.matrix_world.copy()
     cutter[OUTPUT_TAG] = source_object.name
@@ -1708,38 +1929,7 @@ def _add_difference_modifier(output, cutter_collection):
 # 在 Boolean Apply 前写入原面标记与 Surface Patch ID provenance。
 # output: source duplicate；source_patch_ids: polygon index 对应的 Patch ID。
 def _mark_original_faces(output, source_patch_ids):
-    attribute = output.data.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
-    if attribute is not None:
-        output.data.attributes.remove(attribute)
-    attribute = output.data.attributes.new(
-        ORIGINAL_FACE_ATTRIBUTE,
-        type="BOOLEAN",
-        domain="FACE",
-    )
-    for item in attribute.data:
-        item.value = True
-    patch_id_attribute = output.data.attributes.get(SOURCE_PATCH_ID_ATTRIBUTE)
-    if patch_id_attribute is not None:
-        output.data.attributes.remove(patch_id_attribute)
-    patch_id_attribute = output.data.attributes.new(
-        SOURCE_PATCH_ID_ATTRIBUTE,
-        type="INT",
-        domain="FACE",
-    )
-    for polygon in output.data.polygons:
-        patch_id_attribute.data[polygon.index].value = source_patch_ids[polygon.index]
-    patch_present_attribute = output.data.attributes.get(
-        SOURCE_PATCH_PRESENT_ATTRIBUTE
-    )
-    if patch_present_attribute is not None:
-        output.data.attributes.remove(patch_present_attribute)
-    patch_present_attribute = output.data.attributes.new(
-        SOURCE_PATCH_PRESENT_ATTRIBUTE,
-        type="BOOLEAN",
-        domain="FACE",
-    )
-    for item in patch_present_attribute.data:
-        item.value = True
+    _ensure_boolean_attribute_schema(output.data, True, source_patch_ids)
 
 
 # 为后续自动开口/补面阶段应用 Difference，并用 material marker 保留 cutter Face 线索。
@@ -5778,6 +5968,26 @@ def _build_pipe_chamfer_impl(
                 "Preview and Finalize ChamferPlan semantics do not match",
                 stats,
             )
+        endpoint_tokens_by_pipe_id, endpoint_port_token_registry = (
+            _build_strand_endpoint_port_tokens(
+                chamfer_plan,
+                groups,
+                source_object.data,
+            )
+        )
+        stats["strand_endpoint_port_tokens"] = [
+            {
+                "token": record.token,
+                "pipe_id": record.pipe_id,
+                "strand_id": record.strand_id,
+                "endpoint_role": record.endpoint_role,
+                "port_id": record.port_id,
+            }
+            for record in endpoint_port_token_registry
+        ]
+    else:
+        endpoint_tokens_by_pipe_id = {}
+        endpoint_port_token_registry = ()
     _finish_phase_1_stage(stats, "feature_graph")
     _classify_pipe_endpoints(source_object, groups, radius)
     collection = _get_collection()
@@ -5787,7 +5997,14 @@ def _build_pipe_chamfer_impl(
 
     _start_phase_1_stage(stats, "pipe_build")
     pipes = [
-        _build_pipe_mesh(source_object, group, radius, pipe_resolution, collection)
+        _build_pipe_mesh(
+            source_object,
+            group,
+            radius,
+            pipe_resolution,
+            collection,
+            endpoint_tokens_by_pipe_id.get(group["pipe_id"]),
+        )
         for group in groups
     ]
     pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}

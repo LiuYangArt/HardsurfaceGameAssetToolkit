@@ -67,4 +67,6 @@ Exact Boolean production joined-cutter 双 component smoke 已证明 Blender 5.1
 
 public binder 已据此补充 plan-local `StrandEndpointPortToken` registry：open strand 的 start/end role 与 plan `JunctionPort` 必须同时在各自 `(Pipe, Patch)` Rail 的 Boundary vertex incidence 中出现；Boundary Rail 本身允许保持 cyclic。缺 anchor、unknown token、wrong Pipe、wrong role、role/port 对调与重复 token registry 均 `boundary_binding_incomplete`。该合成 contract 仍只是 Algorithm/Backend slice；production GN endpoint token producer、Y/T/X overlap 与目标 Operator 尚未接入，Phase 3 继续 Stop。
 
+production Even-Thickness Pipe producer 已用 GN `Curve Endpoint Selection → Store Named Attribute` 写入 start/end POINT token，并在 evaluated Pipe 上 attribute-only 提升为 FACE token，再由 joined cutter 原样复制；production helper smoke 验证两个 token 均存在。该 producer 尚未经过相交多 Pipe Exact Boolean，也尚未在正式 Finalize 中传给 binder；因此仍不能接 runtime 或宣称 open/Y/T/X 完成。
+
 当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。

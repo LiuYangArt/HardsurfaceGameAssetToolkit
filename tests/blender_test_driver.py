@@ -3857,6 +3857,88 @@ def test_feature_chamfer_boolean_component_owner_producer_smoke(
     )
 
 
+# 验证 production Even-Thickness Pipe 与 joined cutter 会保留 plan-local open strand endpoint tokens。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_open_endpoint_token_producer_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("OpenEndpointTokenProducer")
+    source = make_edge_network(
+        "OpenEndpointTokenProducerSource",
+        collection,
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ((0, 1),),
+    )
+    source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [0],
+        "vertex_indices": [0, 1],
+        "points": [Vector((0.0, 0.0, 0.0)), Vector((1.0, 0.0, 0.0))],
+        "is_cyclic": False,
+        "patch_pair": (10, 11),
+        "patch_pair_by_edge": [(10, 11)],
+        "convexity_by_edge": [1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 1,
+        "end_feature_degree": 1,
+        "start_extension": 0.0,
+        "end_extension": 0.0,
+    }
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+    )
+    tokens_by_pipe_id, registry = utils._build_strand_endpoint_port_tokens(
+        plan,
+        [group],
+        source.data,
+    )
+    pipe = utils._build_pipe_mesh(
+        source,
+        group,
+        0.05,
+        4,
+        collection,
+        tokens_by_pipe_id[7],
+    )
+    cutter_collection = bpy.data.collections.new("OpenEndpointTokenCutters")
+    bpy.context.scene.collection.children.link(cutter_collection)
+    cutter = utils._build_joined_cutter_mesh(
+        [pipe],
+        source,
+        cutter_collection,
+        0,
+    )
+    start_attribute = cutter.data.attributes.get("hst_pipe_start_port_token")
+    end_attribute = cutter.data.attributes.get("hst_pipe_end_port_token")
+    ensure(
+        len(registry) == 2
+        and {record.endpoint_role for record in registry} == {"START", "END"}
+        and all(
+            attribute is not None and attribute.domain == "FACE"
+            for attribute in (start_attribute, end_attribute)
+        ),
+        "Production Curve Pipe lost endpoint Face attributes",
+    )
+    start_values = [item.value for item in start_attribute.data]
+    end_values = [item.value for item in end_attribute.data]
+    ensure(
+        {value for value in start_values if value} == {tokens_by_pipe_id[7]["start"]}
+        and {value for value in end_values if value} == {tokens_by_pipe_id[7]["end"]}
+        and any(start_values)
+        and any(end_values),
+        "Production Curve Pipe lost plan-local endpoint Face tokens",
+    )
+    result.add_detail(
+        f"open endpoint producer preserved tokens={tokens_by_pipe_id[7]} on joined cutter Faces"
+    )
+
+
 # 返回 Node Group input socket display name 对应的 modifier identifier。
 # node_group/name: GeometryNodeTree 与 input display name。
 def node_input_identifier(node_group, name):
@@ -5566,6 +5648,10 @@ def main():
     context.run_case(
         "feature_chamfer_boolean_component_owner_producer_smoke",
         test_feature_chamfer_boolean_component_owner_producer_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_open_endpoint_token_producer_smoke",
+        test_feature_chamfer_open_endpoint_token_producer_smoke,
     )
     context.run_case("gn_finalize_rejects_stale_preview", test_gn_finalize_rejects_stale_preview)
     context.run_case(

@@ -59,6 +59,7 @@
 - Feature Chamfer Phase 3 public BoundaryGraph open/cyclic/Y/T/X maximal degree-2 decomposition、dirty-index identity 与重复 Edge fail-closed 回归
 - Feature Chamfer Phase 3 cyclic-only authoritative Boolean Boundary Face provenance、plan owner/rail mapping；open JunctionPort provenance、incomplete/multi-owner 均 fail-closed
 - Feature Chamfer Phase 3 open strand 的 attribute-only start/end `JunctionPort` anchor binding；cyclic Boolean Rail 可 PASS，unknown/wrong/missing/duplicate token 均 fail-closed
+- Feature Chamfer Phase 3 production Even-Thickness Pipe → joined cutter 的 plan-local open endpoint FACE token producer smoke
 - Feature Chamfer Phase 3 Exact Boolean cutter component/present 与 source patch/present Face attribute propagation smoke（非 runtime integration）
 - Feature Chamfer GN endpoint/junction extension、Python tracked Boolean provenance 与 Boundary region classification
 - Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
