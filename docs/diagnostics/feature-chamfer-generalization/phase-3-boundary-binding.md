@@ -1,0 +1,62 @@
+# Phase 3 — BoundaryGraph / JunctionPort Binding
+
+> 日期：2026-07-22；状态：`PROTOTYPE / STOP`；目标 Operator：`hst.feature_chamfer_gn`。
+
+## 入口与阶段门禁
+
+```text
+UI Feature Chamfer GN
+→ hst.feature_chamfer_gn
+→ PREVIEW / FINALIZE
+→ Exact Boolean result
+→ authoritative BoundaryGraph / JunctionPort binding
+→ existing regular-strip / junction runtime
+```
+
+- 用户操作：对 simple / `Solid 44` 与 tricky / `Solid.004` 运行 `PREVIEW → FINALIZE`。
+- 预期可见变化：四个 radius cell 不再以 `ambiguous_boundary` 结束；允许暴露后续 Phase 4/5 已知失败家族。
+- 自动证据：目标 Operator runtime result、Boundary Edge single-consumption ledger、source fingerprint、固定 `.blend` artifact。
+- Go：两个目标对象均消除 `ambiguous_boundary`；每条原 Boundary Edge 恰好消费一次；不重排/插值坐标；source unchanged。
+- Stop：跳过 branch、用最近 Pipe/BVH 或 centroid 猜 owner、全局 Fill、放宽阈值，或只修单一 fixture。
+
+## TDD seams
+
+1. Product seam：`bpy.ops.hst.feature_chamfer_gn(action="PREVIEW")` → `FINALIZE`。
+2. Backend seam：`bind_boolean_boundary(plan, boolean_mesh, groove_face_indices)` → immutable `FinalizationBinding`。
+
+合成 seam 覆盖 cyclic、open、Y/T/X；真实 fixture 验收始终从目标 Operator 开始。Phase 2 已于 commit `bdc0a5b` 达到 `PROTOTYPE / GO`，因此 Phase 3 可进入 runtime implementation。
+
+## 当前 RED
+
+- simple / `Solid 44`：radius `0.01`、`0.03` 均为 `ambiguous_boundary`，每个失败 BoundaryGraph 含一个 degree-4 Junction。
+- tricky / `Solid.004`：radius `0.01` 含三个 degree-4 Junction components；`0.03` 含四个。
+- 现有 `_open_boundary()` 在删除 groove Faces 后遇到 degree≠2 立即失败，authoritative binding 尚不可达。
+
+## 本轮 Stop 证据
+
+WIP probe 仅用于验证门禁，已从 production runtime 撤出，未作为 Phase 3 实现提交。
+
+| case | WIP probe 结果 | Boundary Edge | 未分类 Edge |
+|---|---|---:|---:|
+| simple / `Solid 44` / `0.01` | `junction_boundary_unresolved` | 295 | 0 |
+| simple / `Solid 44` / `0.03` | `junction_boundary_unresolved` | 294 | 0 |
+| tricky / `Solid.004` / `0.01` | `boundary_binding_incomplete` | 2036 | 10 |
+| tricky / `Solid.004` / `0.03` | `boundary_binding_incomplete` | 1999 | 10 |
+
+probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，但没有证明 authoritative ownership：
+
+- 无直接 provenance 的 component 曾把邻接 owner union 赋给每条 Edge，多 owner junction 会被伪装成已分类；
+- binding 只读取 `plan_id`，未映射到 plan `FeatureStrand`、`JunctionPort`、`RailChain` 或 `StripCorrespondence`；
+- patch runtime 仍由 `_final_boolean_boundary_rails()` 的 BVH 最近 Pipe 路径驱动，新 binding 只是 stats 旁路；
+- 测试缺少 public binder 的 cyclic/open/Y/T/X contract，Operator gate 也没有锁定精确 2 PASS / 2 fail-closed 结果。
+
+因此本轮没有 authoritative binding artifact；`/tmp/hst_phase3_stop_final` 只保留 WIP probe 诊断，不能作为 Go 证据。
+
+## 下一轮入口
+
+1. 在同一 BMesh 内用 `BMEdge` identity 保留删除槽面前后的 cutter/source provenance，禁止坐标 key。
+2. 建立 cutter component → plan `FeatureStrand/JunctionPort` 显式映射；无 owner 或多 owner ambiguity 必须 fail-closed。
+3. 让正式 patch runtime 消费 `FinalizationBinding`，不得落回 BVH/centroid owner。
+4. 先补 public binder 的 cyclic/open/Y/T/X 合成测试，再从目标 Operator 验证两个真实对象与两个 radius。
+
+当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。

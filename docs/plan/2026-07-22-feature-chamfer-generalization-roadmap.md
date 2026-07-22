@@ -233,6 +233,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 **失败目标：** `ambiguous_boundary`；**首批真实 case：** simple / `Solid 44`，tricky / `Solid.004`。
 **状态目标：** Algorithm→Backend→Operator 逐级达到 `INTEGRATED`。
 
+> 2026-07-22 状态：`PROTOTYPE / STOP`。Phase 2 已在 commit `bdc0a5b` 达到 Go；Phase 3 WIP probe 虽能分解 degree≠2 BoundaryGraph，但 tricky / `Solid.004` 两个 radius cell 均留下 10 条无直接 cutter/source provenance 的 junction-only Boundary Edge。独立 Spec Audit 还确认该 probe 未把 Boundary owner 绑定到 plan FeatureStrand/JunctionPort，正式 runtime 仍会落回 BVH 最近 Pipe owner。runtime diff 已撤出，禁止进入 Phase 4。证据见 `docs/diagnostics/feature-chamfer-generalization/phase-3-boundary-binding.md`。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。
