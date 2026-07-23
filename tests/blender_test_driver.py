@@ -8556,6 +8556,61 @@ def test_feature_chamfer_batched_cyclic_span_unwrap_regression(
     result.add_detail("cyclic Patch-pair span and forbidden intervals unwrap across seam")
 
 
+# 验证 Regular fragments 只沿唯一共享 topology endpoint 拼接；分支与非 cyclic seam 不得猜测。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_unique_regular_stitch_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+
+    def make_run(edge_id, start, end, start_u, end_u, start_token, end_token):
+        return {
+            "edge_ids": [edge_id],
+            "coordinates": [start, end],
+            "endpoint_tokens": [start_token, end_token],
+            "u_values": [start_u, end_u],
+            "u_interval": [start_u, end_u],
+            "is_cyclic": False,
+        }
+
+    linear_runs = (
+        make_run("edge:a", (0, 0, 0), (1, 0, 0), 0.0, 0.4, "t0", "t1"),
+        make_run("edge:b", (1, 0, 0), (2, 0, 0), 0.4, 0.8, "t1", "t2"),
+    )
+    linear = module._stitch_contiguous_regular_runs(
+        linear_runs, 0.01, 2.0, False
+    )
+    branch = module._stitch_contiguous_regular_runs(
+        (
+            *linear_runs,
+            make_run(
+                "edge:c", (1, 0, 0), (1, 1, 0), 0.4, 0.7, "t1", "t3"
+            ),
+        ),
+        0.01,
+        2.0,
+        False,
+    )
+    non_cyclic_seam = module._stitch_contiguous_regular_runs(
+        (
+            make_run("edge:d", (0, 0, 0), (1, 0, 0), 0.8, 1.0, "t4", "t5"),
+            make_run("edge:e", (1, 0, 0), (2, 0, 0), 0.0, 0.2, "t5", "t6"),
+        ),
+        0.01,
+        2.0,
+        False,
+    )
+    ensure(
+        len(linear) == 1
+        and linear[0]["edge_ids"] == ["edge:a", "edge:b"]
+        and len(branch) == 3
+        and len(non_cyclic_seam) == 2,
+        f"Regular stitch crossed a branch/non-cyclic seam: {linear}, {branch}, {non_cyclic_seam}",
+    )
+    result.add_detail("regular stitch requires unique topology continuation and cyclic seam authority")
+
+
 # 验证 stitch 引入的唯一同点微闭环只延迟给 junction，主 run 保留全部其他 Edge 且恢复单调。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_stitched_micro_loop_regression(
@@ -9318,6 +9373,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_cyclic_span_unwrap_regression",
         test_feature_chamfer_batched_cyclic_span_unwrap_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_unique_regular_stitch_regression",
+        test_feature_chamfer_batched_unique_regular_stitch_regression,
     )
     context.run_case(
         "feature_chamfer_batched_stitched_micro_loop_regression",

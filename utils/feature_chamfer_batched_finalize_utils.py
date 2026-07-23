@@ -2894,14 +2894,32 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
     changed = True
     while changed:
         changed = False
+        successor_indices = {index: [] for index in range(len(remaining))}
+        predecessor_indices = {index: [] for index in range(len(remaining))}
         for left_index, left in enumerate(remaining):
-            if changed:
-                break
+            left_parameters = [float(value) for value in left["u_values"]]
+            if any(
+                following + 1.0e-8 < current
+                for current, following in zip(
+                    left_parameters,
+                    left_parameters[1:],
+                )
+            ):
+                continue
             for right_index, right in enumerate(remaining):
                 if left_index == right_index:
                     continue
+                right_parameters = [float(value) for value in right["u_values"]]
+                if any(
+                    following + 1.0e-8 < current
+                    for current, following in zip(
+                        right_parameters,
+                        right_parameters[1:],
+                    )
+                ):
+                    continue
                 u_gap = abs(
-                    float(left["u_values"][-1]) - float(right["u_values"][0])
+                    left_parameters[-1] - right_parameters[0]
                 )
                 seam_shift = 0
                 if strand_cyclic and u_gap > parameter_tolerance:
@@ -2909,7 +2927,7 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                         (
                             abs(
                                 float(left["u_values"][-1])
-                                - (float(right["u_values"][0]) + shift)
+                                - (right_parameters[0] + shift)
                             ),
                             abs(shift),
                             shift,
@@ -2934,11 +2952,29 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                     or not topology_contiguous
                 ):
                     continue
-                shifted_right_u_values = [
-                    float(value) + seam_shift
-                    for value in right["u_values"]
-                ]
-                merged = {
+                successor_indices[left_index].append(
+                    (right_index, seam_shift)
+                )
+                predecessor_indices[right_index].append(
+                    (left_index, seam_shift)
+                )
+        unique_pairs = sorted(
+            (left_index, candidates[0][0], candidates[0][1])
+            for left_index, candidates in successor_indices.items()
+            if len(candidates) == 1
+            and len(predecessor_indices[candidates[0][0]]) == 1
+        )
+        if unique_pairs:
+            left_index, right_index, seam_shift = unique_pairs[0]
+            left = remaining[left_index]
+            right = remaining[right_index]
+            shifted_right_u_values = [
+                float(value) + seam_shift
+                for value in right["u_values"]
+            ]
+            left_endpoint_tokens = left["endpoint_tokens"]
+            right_endpoint_tokens = right["endpoint_tokens"]
+            merged = {
                     **left,
                     "edge_ids": [*left["edge_ids"], *right["edge_ids"]],
                     "coordinates": [
@@ -2957,12 +2993,11 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                         float(left["u_values"][0]),
                         shifted_right_u_values[-1],
                     ],
-                }
-                for index in sorted((left_index, right_index), reverse=True):
-                    remaining.pop(index)
-                remaining.append(merged)
-                changed = True
-                break
+            }
+            for index in sorted((left_index, right_index), reverse=True):
+                remaining.pop(index)
+            remaining.append(merged)
+            changed = True
     return tuple(sorted(remaining, key=lambda run: run["edge_ids"]))
 
 
