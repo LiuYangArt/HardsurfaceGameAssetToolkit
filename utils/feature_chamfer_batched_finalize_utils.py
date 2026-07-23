@@ -3631,6 +3631,7 @@ def _build_regular_record_from_match(
     pipe_id,
     radius,
     ledger_by_edge_id,
+    atom=None,
 ):
     left_core = match["left"]
     right_core = match["right"]
@@ -3657,12 +3658,6 @@ def _build_regular_record_from_match(
             "reason": "STRIP_GEOMETRY_GUARD",
             "diagnostics": strip["diagnostics"],
         }
-    consumer_id = (
-        f"regular:{correspondence.correspondence_id}:"
-        + _stable_fingerprint(
-            [left_core["edge_ids"], right_core["edge_ids"]]
-        )[:20]
-    )
     coordinates_a = [
         tuple(round(float(value), 8) for value in point) for point in left_open
     ]
@@ -3754,6 +3749,16 @@ def _build_regular_record_from_match(
                 }
             )
     consumed_edge_ids = regular_edge_ids
+    consumer_id = (
+        f"regular:{correspondence.correspondence_id}:"
+        + _stable_fingerprint(
+            [
+                left_core["edge_ids"],
+                right_core["edge_ids"],
+                sorted(record["edge_id"] for record in extension_records),
+            ]
+        )[:20]
+    )
     for edge_id in consumed_edge_ids:
         if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
             raise BatchedChamferError(
@@ -3778,6 +3783,7 @@ def _build_regular_record_from_match(
             "left_u_interval": list(left_core["u_interval"]),
             "right_u_interval": list(right_core["u_interval"]),
             "terminal_extension_records": extension_records,
+            "atom_id": atom["atom_id"] if atom is not None else None,
             "micro_loop_junction_proofs": list(
                 match.get("micro_loop_junction_proofs", ())
             ),
@@ -6589,6 +6595,7 @@ def _build_cyclic_regular_strip_partition(
                 pipe_id,
                 radius,
                 ledger_by_edge_id,
+                atom_by_id[match["atom_id"]],
             )
             if record is None:
                 unresolved_components = (
