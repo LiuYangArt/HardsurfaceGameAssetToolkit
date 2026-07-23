@@ -9035,6 +9035,65 @@ def test_feature_chamfer_batched_regular_component_bridge_handoff_contract(
     result.add_detail("bridge Edge requires two distinct Regular consumers and exact endpoint topology")
 
 
+# 验证 full-cycle Plan span 在 seam 的 START/END 共点必须归并成唯一权威 Boundary witness。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_cyclic_seam_boundary_handoff_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["seam:0", "seam:1"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.2, 0.0, 0.0)],
+        "endpoint_tokens": ["regular:end", "middle:test", "terminal:test"],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 0,
+        "patch_pair": [2, 4],
+        "convexity": 1,
+        "side": "LEFT",
+        "u_interval": [0.0, 1.0],
+        "span_u_intervals": [[0.0, 1.0]],
+        "strand_cyclic": True,
+        "strand_length": 1.0,
+        "forbidden_envelopes": [],
+    }
+    records = (
+        {
+            "consumer_id": "regular:test",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:0"],
+            "right_edge_ids": [],
+            "left_u_interval": [0.0, 0.7],
+            "u_interval": [0.0, 0.7],
+        },
+    )
+    ledger = {
+        "seam:0": {"rail_id": "rail:test", "endpoint_tokens": ["regular:end", "middle:test"]},
+        "seam:1": {"rail_id": "rail:test", "endpoint_tokens": ["middle:test", "terminal:test"]},
+        "regular:0": {"rail_id": "rail:test", "endpoint_tokens": ["regular:start", "regular:end"]},
+    }
+    proof = module._regular_terminal_tail_handoff_proof(
+        chain,
+        0.7,
+        1.0,
+        claim,
+        records,
+        ledger,
+        0.1,
+    )
+    ensure(
+        proof is not None
+        and proof.get("proof_version") == "REGULAR_TERMINAL_TAIL_HANDOFF_V1"
+        and proof["boundary_witness"]["span_boundary_side"] == "CYCLIC_SEAM",
+        f"Coincident cyclic seam boundaries were not normalized: {proof}",
+    )
+    result.add_detail("cyclic full-span START/END collapse to one seam witness")
+
+
 # 验证 cyclic Patch-pair span 跨 seam 时保持一条 unwrapped interval，不能被错误拆成中间 outside gap。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_cyclic_span_unwrap_regression(
@@ -9907,6 +9966,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_regular_component_bridge_handoff_contract",
         test_feature_chamfer_batched_regular_component_bridge_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_cyclic_seam_boundary_handoff_contract",
+        test_feature_chamfer_batched_cyclic_seam_boundary_handoff_contract,
     )
     context.run_case(
         "feature_chamfer_batched_cyclic_span_unwrap_regression",

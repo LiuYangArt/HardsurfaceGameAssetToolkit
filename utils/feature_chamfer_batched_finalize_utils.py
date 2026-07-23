@@ -4989,6 +4989,49 @@ def _regular_terminal_tail_handoff_proof(
             witness.get("regular_boundary_side"),
         )
         boundary_witness_groups.setdefault(key, []).append(witness)
+    if (
+        claim["strand_cyclic"]
+        and boundary_witness_groups
+        and {
+            key[0] for key in boundary_witness_groups
+        }
+        == {"PLAN_SPAN"}
+        and len(boundary_witness_groups) == 2
+        and {
+            key[2] for key in boundary_witness_groups
+        }
+        == {"SPAN_START", "SPAN_END"}
+        and max(
+            key[1] for key in boundary_witness_groups
+        )
+        - min(key[1] for key in boundary_witness_groups)
+        <= 1.0e-8
+    ):
+        coincident_witnesses = [
+            witness
+            for witnesses in boundary_witness_groups.values()
+            for witness in witnesses
+        ]
+        boundary_u = sum(
+            float(witness["lifted_boundary_u"])
+            for witness in coincident_witnesses
+        ) / len(coincident_witnesses)
+        boundary_witness_groups = {
+            (
+                "PLAN_SPAN",
+                round(boundary_u, 10),
+                "CYCLIC_SEAM",
+                None,
+                None,
+            ): [
+                {
+                    "boundary_type": "PLAN_SPAN",
+                    "span_boundary_side": "CYCLIC_SEAM",
+                    "lifted_boundary_u": boundary_u,
+                    "coincident_witnesses": coincident_witnesses,
+                }
+            ]
+        }
     if len(boundary_witness_groups) != 1:
         return {
             "rejected_stage": "BOUNDARY_WITNESS",
@@ -5097,6 +5140,7 @@ def _regular_terminal_tail_handoff_proof(
             for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
         }
         shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
+        cyclic_full_span_closure = False
         direct_projection_gap_u = abs(
             (
                 record_start
@@ -5116,8 +5160,8 @@ def _regular_terminal_tail_handoff_proof(
             and chain_length <= maximum_chain_length + 1.0e-10
         )
         plan_span_topology_adjacent = (
-            len(shared_tokens) == 1
-            and boundary_witness["boundary_type"] == "PLAN_SPAN"
+            boundary_witness["boundary_type"] == "PLAN_SPAN"
+            and (len(shared_tokens) == 1 or cyclic_full_span_closure)
         )
         regular_numeric_fragment_adjacent = (
             not shared_tokens
@@ -5145,10 +5189,15 @@ def _regular_terminal_tail_handoff_proof(
                     "consumer_id": record["consumer_id"],
                     "regular_boundary_side": matching_record_boundary,
                     "shared_endpoint_token": (
-                        shared_tokens[0] if shared_tokens else None
+                        shared_tokens[0]
+                        if len(shared_tokens) == 1
+                        else None
                     ),
+                    "shared_endpoint_tokens": shared_tokens,
                     "adjacency_type": (
-                        "SHARED_BOUNDARY_ENDPOINT"
+                        "CYCLIC_FULL_SPAN_CLOSURE"
+                        if cyclic_full_span_closure
+                        else "SHARED_BOUNDARY_ENDPOINT"
                         if shared_tokens
                         else (
                             "BOOLEAN_NUMERIC_FRAGMENT_PROJECTED_GAP"
