@@ -8418,6 +8418,134 @@ def test_feature_chamfer_batched_strip_geometry_guard_regression(
     result.add_detail("strip winding and non-adjacent self-intersection guards are active")
 
 
+# 验证两段 overlap forbidden envelopes 之间的极短塌缩 gap 只有在双侧直接 witness 唯一时才 handoff。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_collapsed_forbidden_gap_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    oriented_chain = {
+        "edge_ids": ["gap:0"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.000025, 0.0, 0.0)],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 5,
+        "patch_pair": [0, 5],
+        "convexity": 1,
+        "side": "LEFT",
+        "u_interval": [0.20, 0.2000025],
+        "span_u_intervals": [[0.0, 1.0]],
+        "strand_cyclic": False,
+        "strand_length": 10.0,
+        "forbidden_envelopes": [
+            {
+                "interval_index": 0,
+                "source_u_interval": [0.10, 0.20],
+                "effective_u_interval": [0.10, 0.20],
+                "direct_witness_edge_ids": ["overlap:left"],
+            },
+            {
+                "interval_index": 1,
+                "source_u_interval": [0.2000025, 0.30],
+                "effective_u_interval": [0.2000025, 0.30],
+                "direct_witness_edge_ids": ["overlap:right"],
+            },
+        ],
+    }
+    ledger = {
+        "gap:0": {
+            "endpoint_tokens": ["gap:start", "gap:end"],
+        }
+    }
+    proof = module._regular_terminal_tail_handoff_proof(
+        oriented_chain,
+        0.20,
+        0.2000025,
+        claim,
+        (),
+        ledger,
+        0.01,
+    )
+    ensure(
+        proof is not None
+        and proof.get("proof_version") == "REGULAR_TERMINAL_TAIL_HANDOFF_V1"
+        and proof["atom_boundary_side"] == "ATOM_START_END_COLLAPSED"
+        and proof["boundary_witness"]["boundary_type"]
+        == "COLLAPSED_FORBIDDEN_GAP"
+        and len(proof["boundary_witness"]["coincident_witnesses"]) == 2,
+        f"Doubly witnessed collapsed forbidden gap was not proven: {proof}",
+    )
+    one_sided_claim = {
+        **claim,
+        "forbidden_envelopes": claim["forbidden_envelopes"][:1],
+    }
+    oversized_chain = {
+        **oriented_chain,
+        "coordinates": [(0.0, 0.0, 0.0), (0.0002, 0.0, 0.0)],
+    }
+    unsafe_proofs = (
+        module._regular_terminal_tail_handoff_proof(
+            oriented_chain,
+            0.20,
+            0.2000025,
+            one_sided_claim,
+            (),
+            ledger,
+            0.01,
+        ),
+        module._regular_terminal_tail_handoff_proof(
+            oversized_chain,
+            0.20,
+            0.2000025,
+            claim,
+            (),
+            ledger,
+            0.01,
+        ),
+    )
+    ensure(
+        all(
+            candidate is None or "proof_version" not in candidate
+            for candidate in unsafe_proofs
+        ),
+        f"Unsafe collapsed forbidden gap received a proof: {unsafe_proofs}",
+    )
+    result.add_detail("collapsed forbidden gap requires two direct witnesses and <=0.01r")
+
+
+# 验证 cyclic Patch-pair span 跨 seam 时保持一条 unwrapped interval，不能被错误拆成中间 outside gap。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_cyclic_span_unwrap_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    group = {
+        "points": [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((1.0, 0.0, 0.0)),
+            Vector((1.0, 1.0, 0.0)),
+            Vector((0.0, 1.0, 0.0)),
+        ],
+        "edge_indices": [0, 1, 2, 3],
+        "patch_pair_by_edge": [(1, 2), (2, 3), (2, 3), (1, 2)],
+        "convexity_by_edge": [1, 1, 1, 1],
+        "is_cyclic": True,
+    }
+    records = module._group_correspondence_span_records(group)
+    ensure(
+        len(records[(1, 2)]) == 1
+        and records[(1, 2)][0]["u_interval"] == [0.75, 1.25]
+        and records[(2, 3)][0]["u_interval"] == [0.25, 0.75],
+        f"Cyclic Patch-pair seam span was split incorrectly: {records}",
+    )
+    result.add_detail("cyclic Patch-pair seam span stays one unwrapped interval")
+
+
 # 验证 stitch 引入的唯一同点微闭环只延迟给 junction，主 run 保留全部其他 Edge 且恢复单调。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_stitched_micro_loop_regression(
@@ -9172,6 +9300,14 @@ def main():
     context.run_case(
         "feature_chamfer_batched_strip_geometry_guard_regression",
         test_feature_chamfer_batched_strip_geometry_guard_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_collapsed_forbidden_gap_contract",
+        test_feature_chamfer_batched_collapsed_forbidden_gap_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_cyclic_span_unwrap_regression",
+        test_feature_chamfer_batched_cyclic_span_unwrap_regression,
     )
     context.run_case(
         "feature_chamfer_batched_stitched_micro_loop_regression",
