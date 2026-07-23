@@ -5115,24 +5115,6 @@ def _regular_terminal_tail_handoff_proof(
                 "rejected_adjacent_records": rejected_adjacent_records,
                 "nearest_candidates": nearest_candidates,
                 "inner_u": inner_u,
-                "correspondence_record_boundaries": [
-                    {
-                        "consumer_id": record["consumer_id"],
-                        "u_interval": list(record["u_interval"]),
-                        "start_gap_arc_length": min(
-                            abs(float(record["u_interval"][0]) - inner_u - shift)
-                            for shift in range(-2, 3)
-                        )
-                        * strand_length,
-                        "end_gap_arc_length": min(
-                            abs(float(record["u_interval"][1]) - inner_u - shift)
-                            for shift in range(-2, 3)
-                        )
-                        * strand_length,
-                    }
-                    for record in regular_records
-                    if record["correspondence_id"] == claim["correspondence_id"]
-                ],
                 "chain_terminal_tokens": sorted(chain_terminal_tokens),
             }
     return {
@@ -5453,10 +5435,6 @@ def _build_cyclic_regular_strip_partition(
     }
     correspondence_spans_by_strand_id = {
         group["strand"].strand_id: _group_correspondence_span_records(group)
-        for group in groups
-    }
-    group_by_strand_id = {
-        group["strand"].strand_id: group
         for group in groups
     }
     ledger_by_edge_id = {entry["edge_id"]: dict(entry) for entry in boundary_ledger}
@@ -6139,36 +6117,7 @@ def _build_cyclic_regular_strip_partition(
                             ),
                             "rail_id": rail_id,
                             "source_patch_id": int(first_entry["source_patch_id"]),
-                            "group_patch_pair_spans": [
-                                {
-                                    "span_id": int(span["span_id"]),
-                                    "patch_pair": list(span["patch_pair"]),
-                                    "convexity": int(span["convexity"]),
-                                    "edge_offsets": list(span["edge_offsets"]),
-                                }
-                                for span in _group_patch_pair_spans(
-                                    group_by_strand_id[first_entry["strand_id"]]
-                                )
-                            ],
                             "edge_ids": list(oriented_chain["edge_ids"]),
-                            "endpoint_port_tokens_by_edge": {
-                                edge_id: list(
-                                    ledger_by_edge_id[edge_id].get(
-                                        "endpoint_port_tokens",
-                                        (),
-                                    )
-                                )
-                                for edge_id in oriented_chain["edge_ids"]
-                            },
-                            "endpoint_degrees_by_edge": {
-                                edge_id: list(
-                                    ledger_by_edge_id[edge_id].get(
-                                        "endpoint_degrees",
-                                        (),
-                                    )
-                                )
-                                for edge_id in oriented_chain["edge_ids"]
-                            },
                             "edge_lengths": [
                                 round(
                                     (
