@@ -8517,6 +8517,524 @@ def test_feature_chamfer_batched_collapsed_forbidden_gap_contract(
     result.add_detail("collapsed forbidden gap requires two direct witnesses and <=0.01r")
 
 
+# 验证跨越 Plan span 的 maximal chain 只有在一端唯一邻接 Regular Strip、另一端终止于真实 Rail terminal/junction 时才 handoff。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_plan_span_crossing_handoff_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    oriented_chain = {
+        "edge_ids": ["cross:0", "cross:1"],
+        "coordinates": [
+            (0.40, 0.0, 0.0),
+            (0.50, 0.0, 0.0),
+            (0.70, 0.0, 0.0),
+        ],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 3,
+        "patch_pair": [2, 5],
+        "convexity": 1,
+        "side": "RIGHT",
+        "u_interval": [0.20, 0.50],
+        "span_u_intervals": [[0.20, 0.50]],
+        "strand_cyclic": False,
+        "strand_length": 1.0,
+        "forbidden_envelopes": [],
+    }
+    regular_records = (
+        {
+            "consumer_id": "regular:test",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:left"],
+            "right_edge_ids": ["regular:right"],
+            "u_interval": [0.30, 0.40],
+        },
+    )
+    ledger = {
+        "cross:0": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["shared:test", "middle:test"],
+        },
+        "cross:1": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["middle:test", "terminal:test"],
+        },
+        "regular:right": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["regular:start", "shared:test"],
+        },
+        "regular:left": {
+            "rail_id": "rail:other",
+            "endpoint_tokens": ["other:start", "other:end"],
+        },
+    }
+    proof = module._plan_span_crossing_handoff_proof(
+        oriented_chain,
+        0.40,
+        0.70,
+        claim,
+        regular_records,
+        ledger,
+        5,
+    )
+    ensure(
+        proof is not None
+        and proof["proof_version"] == "PLAN_SPAN_CROSSING_HANDOFF_V1"
+        and proof["span_boundary"]["span_boundary_side"] == "SPAN_END"
+        and proof["outer_terminal_degree"] == 1,
+        f"Structurally proven Plan span crossing was rejected: {proof}",
+    )
+    unsafe_ledgers = (
+        {
+            **ledger,
+            "regular:right": {
+                **ledger["regular:right"],
+                "endpoint_tokens": ["regular:start", "regular:end"],
+            },
+        },
+        {
+            **ledger,
+            "branch:a": {
+                "rail_id": "rail:test",
+                "endpoint_tokens": ["terminal:test", "branch:a"],
+            },
+            "branch:b": {
+                "rail_id": "rail:test",
+                "endpoint_tokens": ["terminal:test", "branch:b"],
+            },
+        },
+    )
+    ensure(
+        all(
+            module._plan_span_crossing_handoff_proof(
+                oriented_chain,
+                0.40,
+                0.70,
+                claim,
+                regular_records,
+                unsafe_ledger,
+                5,
+            )
+            is None
+            for unsafe_ledger in unsafe_ledgers
+        ),
+        "Unattached or degree-3 Plan span crossing received a handoff proof",
+    )
+    ensure(
+        module._plan_span_crossing_handoff_proof(
+            oriented_chain,
+            0.20,
+            0.40,
+            claim,
+            regular_records,
+            ledger,
+            5,
+        )
+        is None,
+        "Non-crossing Plan component received a span crossing proof",
+    )
+    result.add_detail("Plan span crossing requires Regular topology adjacency and terminal/junction degree")
+
+
+# 验证 atom 内单侧 tail 只有在与唯一 Regular Strip 共享端点、且另一端为真实 Rail terminal/junction 时才 handoff。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_regular_component_terminal_handoff_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    oriented_chain = {
+        "edge_ids": ["tail:0", "tail:1", "tail:2"],
+        "coordinates": [
+            (0.40, 0.0, 0.0),
+            (0.50, 0.0, 0.0),
+            (0.60, 0.0, 0.0),
+            (0.70, 0.0, 0.0),
+        ],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 4,
+        "patch_pair": [2, 7],
+        "convexity": 1,
+        "side": "LEFT",
+        "u_interval": [0.20, 0.80],
+        "span_u_intervals": [[0.10, 0.90]],
+        "strand_cyclic": False,
+        "strand_length": 1.0,
+        "forbidden_envelopes": [],
+    }
+    records = (
+        {
+            "consumer_id": "regular:test",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:left"],
+            "right_edge_ids": ["regular:right"],
+            "left_u_interval": [0.20, 0.40],
+            "right_u_interval": [0.20, 0.40],
+            "u_interval": [0.20, 0.40],
+        },
+    )
+    ledger = {
+        "tail:0": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["shared:test", "middle:test"],
+        },
+        "tail:1": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["middle:test", "middle:next"],
+        },
+        "tail:2": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["middle:next", "terminal:test"],
+        },
+        "regular:left": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["regular:start", "shared:test"],
+        },
+        "regular:right": {
+            "rail_id": "rail:other",
+            "endpoint_tokens": ["other:start", "other:end"],
+        },
+    }
+    proof = module._regular_component_terminal_handoff_proof(
+        oriented_chain,
+        0.40,
+        0.70,
+        claim,
+        records,
+        ledger,
+        2,
+    )
+    ensure(
+        proof is not None
+        and proof["proof_version"]
+        == "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1"
+        and proof["adjacent_regular"]["tail_direction"] == "AFTER_REGULAR"
+        and proof["outer_terminal_degree"] == 1,
+        f"Structurally proven Regular component tail was rejected: {proof}",
+    )
+    unsafe_claim = {
+        **claim,
+        "forbidden_envelopes": [
+            {
+                "effective_u_interval": [0.45, 0.55],
+                "source_u_interval": [0.45, 0.55],
+                "direct_witness_edge_ids": ["overlap:test"],
+            }
+        ],
+    }
+    unsafe_ledgers = (
+        {
+            **ledger,
+            "regular:left": {
+                **ledger["regular:left"],
+                "endpoint_tokens": ["regular:start", "regular:end"],
+            },
+        },
+        {
+            **ledger,
+            "branch:a": {
+                "rail_id": "rail:test",
+                "endpoint_tokens": ["terminal:test", "branch:a"],
+            },
+            "branch:b": {
+                "rail_id": "rail:test",
+                "endpoint_tokens": ["terminal:test", "branch:b"],
+            },
+        },
+    )
+    ensure(
+        module._regular_component_terminal_handoff_proof(
+            oriented_chain,
+            0.40,
+            0.70,
+            unsafe_claim,
+            records,
+            ledger,
+            2,
+        )
+        is None
+        and all(
+            module._regular_component_terminal_handoff_proof(
+                oriented_chain,
+                0.40,
+                0.70,
+                claim,
+                records,
+                unsafe_ledger,
+                2,
+            )
+            is None
+            for unsafe_ledger in unsafe_ledgers
+        ),
+        "Overlap-crossing, unattached, or degree-3 tail received a handoff proof",
+    )
+    result.add_detail("Regular component tail requires shared topology and a Rail terminal/junction")
+
+
+# 验证零投影单 Edge Boolean 数值碎片仅在极短、真实 terminal 且唯一邻接 Regular Strip 时才 handoff。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_regular_numeric_fragment_handoff_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    oriented_chain = {
+        "edge_ids": ["fragment:0"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.00005, 0.0, 0.0)],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 2,
+        "patch_pair": [0, 1],
+        "convexity": 1,
+        "side": "RIGHT",
+        "u_interval": [0.0, 1.0],
+        "span_u_intervals": [[0.0, 1.0]],
+        "strand_cyclic": False,
+        "strand_length": 10.0,
+        "forbidden_envelopes": [],
+    }
+    records = (
+        {
+            "consumer_id": "regular:test",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:left"],
+            "right_edge_ids": ["regular:right"],
+            "u_interval": [0.20, 0.30],
+        },
+    )
+    ledger = {
+        "fragment:0": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["fragment:start", "fragment:end"],
+        },
+        "regular:right": {
+            "rail_id": "rail:test",
+            "endpoint_tokens": ["regular:start", "regular:end"],
+        },
+        "regular:left": {
+            "rail_id": "rail:other",
+            "endpoint_tokens": ["other:start", "other:end"],
+        },
+    }
+    proof = module._regular_terminal_tail_handoff_proof(
+        oriented_chain,
+        0.3000001,
+        0.3000001,
+        claim,
+        records,
+        ledger,
+        0.01,
+    )
+    ensure(
+        proof is not None
+        and proof.get("proof_version") == "REGULAR_TERMINAL_TAIL_HANDOFF_V1"
+        and proof["boundary_witness"]["boundary_type"]
+        == "REGULAR_COMPONENT_BOUNDARY"
+        and proof["adjacent_regular"]["adjacency_type"]
+        == "BOOLEAN_NUMERIC_FRAGMENT_PROJECTED_GAP",
+        f"Strict Boolean numeric fragment was not proven: {proof}",
+    )
+    unsafe_variants = (
+        ({**oriented_chain, "coordinates": [(0.0, 0.0, 0.0), (0.001, 0.0, 0.0)]}, ledger),
+        (oriented_chain, {
+            **ledger,
+            "branch:a": {
+                "rail_id": "rail:test",
+                "endpoint_tokens": ["fragment:start", "branch:a"],
+            },
+        }),
+    )
+    ensure(
+        all(
+            (
+                candidate := module._regular_terminal_tail_handoff_proof(
+                    variant,
+                    0.3000001,
+                    0.3000001,
+                    claim,
+                    records,
+                    unsafe_ledger,
+                    0.01,
+                )
+            )
+            is None
+            or "proof_version" not in candidate
+            for variant, unsafe_ledger in unsafe_variants
+        ),
+        "Oversized or non-terminal Boolean fragment received a handoff proof",
+    )
+    result.add_detail("numeric fragment requires <=0.03r geometry, <=0.10r projected span, one Edge, and terminal topology")
+
+
+# 验证已构建 Regular Strip 可原子消费与其端点共享 topology 的唯一 terminal/junction Edge，且 consumer 双向引用一致。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_regular_terminal_extension_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+
+    class Correspondence:
+        correspondence_id = "corr:test"
+        owner_strand_id = "strand:test"
+        owner_surface_pair = (2, 5)
+
+    match = {
+        "left": {
+            "edge_ids": ["left:core"],
+            "coordinates": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            "endpoint_tokens": ["left:start", "left:end"],
+            "u_interval": [0.0, 1.0],
+        },
+        "right": {
+            "edge_ids": ["right:core"],
+            "coordinates": [(0.0, 0.014142135, 0.0), (1.0, 0.014142135, 0.0)],
+            "endpoint_tokens": ["right:start", "right:end"],
+            "u_interval": [0.0, 1.0],
+        },
+        "common_u_interval": [0.0, 1.0],
+        "width_inlier_ratio": 1.0,
+        "maximum_width_error": 0.0,
+        "endpoint_trim_counts": [0, 0, 0, 0],
+    }
+    ledger = {
+        "left:core": {
+            "edge_id": "left:core",
+            "classification": "UNCLASSIFIED",
+            "consumer_id": None,
+            "strand_id": "strand:test",
+            "source_patch_id": 2,
+            "rail_id": "rail:left",
+            "endpoint_tokens": ["left:start", "left:end"],
+            "endpoints": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)],
+        },
+        "right:core": {
+            "edge_id": "right:core",
+            "classification": "UNCLASSIFIED",
+            "consumer_id": None,
+            "strand_id": "strand:test",
+            "source_patch_id": 5,
+            "rail_id": "rail:right",
+            "endpoint_tokens": ["right:start", "right:end"],
+            "endpoints": [(0.0, 0.014142135, 0.0), (1.0, 0.014142135, 0.0)],
+        },
+        "left:extension": {
+            "edge_id": "left:extension",
+            "classification": "UNCLASSIFIED",
+            "consumer_id": None,
+            "strand_id": "strand:test",
+            "source_patch_id": 2,
+            "rail_id": "rail:left",
+            "endpoint_tokens": ["left:end", "left:terminal"],
+            "endpoints": [(1.0, 0.0, 0.0), (1.005, 0.0, 0.0)],
+        },
+    }
+    record, failure = module._build_regular_record_from_match(
+        Correspondence(),
+        match,
+        0,
+        0.01,
+        ledger,
+    )
+    ensure(
+        failure is None
+        and record is not None
+        and record["terminal_extension_edge_ids"] == ["left:extension"]
+        and ledger["left:extension"]["classification"]
+        == "REGULAR_STRIP_CONSUMED"
+        and ledger["left:extension"]["consumer_id"] == record["consumer_id"],
+        f"Unique terminal extension was not atomically consumed: {record}, {failure}, {ledger}",
+    )
+    result.add_detail("unique topology-adjacent terminal Edge is bound to the Regular consumer")
+
+
+# 验证单 Edge bridge 必须分别连接同一 correspondence 的两个不同 Regular Strip terminals。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_regular_component_bridge_handoff_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["bridge:0"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.02, 0.0, 0.0)],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 1,
+        "patch_pair": [3, 5],
+        "convexity": 1,
+        "side": "LEFT",
+    }
+    records = (
+        {
+            "consumer_id": "regular:lower",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:lower"],
+            "right_edge_ids": [],
+            "left_u_interval": [0.1, 0.2],
+            "u_interval": [0.1, 0.2],
+        },
+        {
+            "consumer_id": "regular:upper",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:upper"],
+            "right_edge_ids": [],
+            "left_u_interval": [0.3, 0.4],
+            "u_interval": [0.3, 0.4],
+        },
+    )
+    ledger = {
+        "bridge:0": {"endpoint_tokens": ["bridge:a", "bridge:b"]},
+        "regular:lower": {"endpoint_tokens": ["lower:start", "bridge:a"]},
+        "regular:upper": {"endpoint_tokens": ["bridge:b", "upper:end"]},
+    }
+    proof = module._regular_component_bridge_handoff_proof(
+        chain,
+        claim,
+        records,
+        ledger,
+        5,
+    )
+    ensure(
+        proof is not None
+        and proof["proof_version"]
+        == "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1"
+        and len(proof["adjacent_regular_records"]) == 2,
+        f"Two-sided Regular bridge was not proven: {proof}",
+    )
+    unsafe_ledger = {
+        **ledger,
+        "regular:upper": {"endpoint_tokens": ["upper:start", "upper:end"]},
+    }
+    ensure(
+        module._regular_component_bridge_handoff_proof(
+            chain,
+            claim,
+            records,
+            unsafe_ledger,
+            5,
+        )
+        is None,
+        "One-sided bridge received a handoff proof",
+    )
+    result.add_detail("bridge Edge requires two distinct Regular consumers and exact endpoint topology")
+
+
 # 验证 cyclic Patch-pair span 跨 seam 时保持一条 unwrapped interval，不能被错误拆成中间 outside gap。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_cyclic_span_unwrap_regression(
@@ -9369,6 +9887,26 @@ def main():
     context.run_case(
         "feature_chamfer_batched_collapsed_forbidden_gap_contract",
         test_feature_chamfer_batched_collapsed_forbidden_gap_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_plan_span_crossing_handoff_contract",
+        test_feature_chamfer_batched_plan_span_crossing_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_regular_component_terminal_handoff_contract",
+        test_feature_chamfer_batched_regular_component_terminal_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_regular_numeric_fragment_handoff_contract",
+        test_feature_chamfer_batched_regular_numeric_fragment_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_regular_terminal_extension_contract",
+        test_feature_chamfer_batched_regular_terminal_extension_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_regular_component_bridge_handoff_contract",
+        test_feature_chamfer_batched_regular_component_bridge_handoff_contract,
     )
     context.run_case(
         "feature_chamfer_batched_cyclic_span_unwrap_regression",

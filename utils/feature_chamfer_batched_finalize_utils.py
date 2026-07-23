@@ -3693,6 +3693,67 @@ def _build_regular_record_from_match(
             "geometry_guard": strip["diagnostics"],
         }
     consumed_edge_ids = set(left_core["edge_ids"] + right_core["edge_ids"])
+    regular_edge_ids = set(consumed_edge_ids)
+    extension_records = []
+    for side, core in (("LEFT", left_core), ("RIGHT", right_core)):
+        core_endpoint_tokens = list(core.get("endpoint_tokens", ()))
+        if len(core_endpoint_tokens) < 2:
+            continue
+        endpoint_roles = (
+            ("START", core_endpoint_tokens[0]),
+            ("END", core_endpoint_tokens[-1]),
+        )
+        for endpoint_role, endpoint_token in endpoint_roles:
+            candidates = []
+            for ledger_entry in ledger_by_edge_id.values():
+                if (
+                    ledger_entry["edge_id"] in regular_edge_ids
+                    or ledger_entry["classification"] != "UNCLASSIFIED"
+                    or ledger_entry["strand_id"]
+                    != correspondence.owner_strand_id
+                    or ledger_entry["source_patch_id"]
+                    != correspondence.owner_surface_pair[
+                        0 if side == "LEFT" else 1
+                    ]
+                    or endpoint_token not in ledger_entry["endpoint_tokens"]
+                ):
+                    continue
+                candidates.append(ledger_entry)
+            if len(candidates) != 1:
+                continue
+            candidate = candidates[0]
+            coordinates = [Vector(point) for point in candidate["endpoints"]]
+            edge_length = (coordinates[1] - coordinates[0]).length
+            candidate_endpoint_tokens = list(candidate["endpoint_tokens"])
+            outer_tokens = set(candidate_endpoint_tokens) - {endpoint_token}
+            rail_entries = [
+                entry
+                for entry in ledger_by_edge_id.values()
+                if entry["rail_id"] == candidate["rail_id"]
+            ]
+            outer_degrees = sorted(
+                sum(token in entry["endpoint_tokens"] for entry in rail_entries)
+                for token in outer_tokens
+            )
+            if (
+                edge_length > radius * 2.0 + 1.0e-10
+                or len(outer_tokens) != 1
+                or outer_degrees != [1]
+            ):
+                continue
+            regular_edge_ids.add(candidate["edge_id"])
+            extension_records.append(
+                {
+                    "edge_id": candidate["edge_id"],
+                    "side": side,
+                    "endpoint_role": endpoint_role,
+                    "shared_endpoint_token": endpoint_token,
+                    "outer_endpoint_token": next(iter(outer_tokens)),
+                    "outer_endpoint_degree": outer_degrees[0],
+                    "edge_length": edge_length,
+                }
+            )
+    consumed_edge_ids = regular_edge_ids
     for edge_id in consumed_edge_ids:
         if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
             raise BatchedChamferError(
@@ -3711,6 +3772,12 @@ def _build_regular_record_from_match(
             "patch_pair": list(correspondence.owner_surface_pair),
             "left_edge_ids": left_core["edge_ids"],
             "right_edge_ids": right_core["edge_ids"],
+            "terminal_extension_edge_ids": sorted(
+                record["edge_id"] for record in extension_records
+            ),
+            "left_u_interval": list(left_core["u_interval"]),
+            "right_u_interval": list(right_core["u_interval"]),
+            "terminal_extension_records": extension_records,
             "micro_loop_junction_proofs": list(
                 match.get("micro_loop_junction_proofs", ())
             ),
@@ -3726,6 +3793,9 @@ def _build_regular_record_from_match(
             "face_count": len(faces),
             "geometry_guard": {
                 **strip["diagnostics"],
+                "endpoint_trim_counts": list(
+                    match.get("endpoint_trim_counts", ())
+                ),
                 "pair_width_inlier_ratio": match["width_inlier_ratio"],
                 "pair_maximum_width_error": match["maximum_width_error"],
             },
@@ -4691,6 +4761,40 @@ def _regular_terminal_tail_handoff_proof(
                                 lifted_boundary_u,
                             )
                         )
+    if not lifted_candidates and len(oriented_chain["edge_ids"]) == 1:
+        for record in regular_records:
+            if record["correspondence_id"] != claim["correspondence_id"]:
+                continue
+            side_interval_key = (
+                "left_u_interval"
+                if claim["side"] == "LEFT"
+                else "right_u_interval"
+            )
+            side_interval = record.get(side_interval_key, record["u_interval"])
+            for record_boundary_side, record_boundary_u in (
+                ("START", float(side_interval[0])),
+                ("END", float(side_interval[1])),
+            ):
+                chain_start, chain_end = raw_chain_interval
+                projection_gap_arc_length = min(
+                    abs(record_boundary_u - chain_start),
+                    abs(record_boundary_u - chain_end),
+                ) * strand_length
+                if (
+                    projection_gap_arc_length <= radius * 0.08 + 1.0e-10
+                    and chain_length <= radius * 0.03 + 1.0e-10
+                    and abs(chain_end - chain_start) * strand_length
+                    <= radius * 0.10 + 1.0e-10
+                ):
+                    lifted_candidates.append(
+                        (
+                            0,
+                            f"REGULAR_{record_boundary_side}",
+                            chain_start,
+                            chain_end,
+                            record_boundary_u,
+                        )
+                    )
     lifted_candidates = {
         (
             candidate[1],
@@ -4772,6 +4876,16 @@ def _regular_terminal_tail_handoff_proof(
         * strand_length
     )
     boundary_witnesses = []
+    if atom_boundary_side.startswith("REGULAR_"):
+        boundary_witnesses.append(
+            {
+                "boundary_type": "REGULAR_COMPONENT_BOUNDARY",
+                "regular_boundary_side": atom_boundary_side.removeprefix(
+                    "REGULAR_"
+                ),
+                "lifted_boundary_u": atom_boundary_u,
+            }
+        )
     if atom_boundary_side == "ATOM_START_END_COLLAPSED":
         lower_forbidden_witnesses = [
             envelope
@@ -4896,13 +5010,24 @@ def _regular_terminal_tail_handoff_proof(
             "coincident_witnesses": grouped_witnesses,
         }
     )
+    plan_boundary_types = {
+        "PLAN_SPAN",
+        "OVERLAP_FORBIDDEN_ENVELOPE",
+        "COLLAPSED_FORBIDDEN_GAP",
+        "REGULAR_COMPONENT_BOUNDARY",
+    }
     if (
         boundary_witness["boundary_type"]
-        not in {
-            "OVERLAP_FORBIDDEN_ENVELOPE",
-            "COLLAPSED_FORBIDDEN_GAP",
-        }
-        or chain_length > maximum_chain_length + 1.0e-10
+        not in plan_boundary_types
+        or (
+            boundary_witness["boundary_type"]
+            not in {
+                "PLAN_SPAN",
+                "OVERLAP_FORBIDDEN_ENVELOPE",
+                "REGULAR_COMPONENT_BOUNDARY",
+            }
+            and chain_length > maximum_chain_length + 1.0e-10
+        )
         or atom_boundary_distance > radius * 2.0 + 1.0e-10
     ):
         return {
@@ -4927,6 +5052,18 @@ def _regular_terminal_tail_handoff_proof(
     chain_terminal_tokens = {
         token for token, count in chain_endpoint_counts.items() if count == 1
     }
+    chain_rail_id = ledger_by_edge_id[oriented_chain["edge_ids"][0]].get(
+        "rail_id"
+    )
+    all_rail_entries = [
+        entry
+        for entry in ledger_by_edge_id.values()
+        if chain_rail_id is None or entry.get("rail_id") == chain_rail_id
+    ]
+    chain_terminal_degrees = sorted(
+        sum(token in entry["endpoint_tokens"] for entry in all_rail_entries)
+        for token in chain_terminal_tokens
+    )
     adjacent_records = []
     rejected_adjacent_records = []
     adjacency_tolerance_u = max(
@@ -4937,7 +5074,14 @@ def _regular_terminal_tail_handoff_proof(
     for record in regular_records:
         if record["correspondence_id"] != claim["correspondence_id"]:
             continue
-        record_start, record_end = sorted(map(float, record["u_interval"]))
+        side_interval_key = (
+            "left_u_interval"
+            if claim["side"] == "LEFT"
+            else "right_u_interval"
+        )
+        record_start, record_end = sorted(
+            map(float, record.get(side_interval_key, record["u_interval"]))
+        )
         matching_record_boundary = None
         if abs(record_start - inner_u) <= adjacency_tolerance_u:
             matching_record_boundary = "START"
@@ -4971,7 +5115,31 @@ def _regular_terminal_tail_handoff_proof(
             and direct_projection_gap_arc_length <= radius * 0.50 + 1.0e-10
             and chain_length <= maximum_chain_length + 1.0e-10
         )
-        if len(shared_tokens) == 1 or direct_overlap_boundary_adjacent:
+        plan_span_topology_adjacent = (
+            len(shared_tokens) == 1
+            and boundary_witness["boundary_type"] == "PLAN_SPAN"
+        )
+        regular_numeric_fragment_adjacent = (
+            not shared_tokens
+            and boundary_witness["boundary_type"]
+            == "REGULAR_COMPONENT_BOUNDARY"
+            and len(oriented_chain["edge_ids"]) == 1
+            and chain_terminal_degrees == [1, 1]
+            and chain_length <= radius * 0.03 + 1.0e-10
+            and abs(chain_end - chain_start) * strand_length
+            <= radius * 0.10 + 1.0e-10
+            and direct_projection_gap_arc_length
+            <= radius * 0.08 + 1.0e-10
+        )
+        if (
+            plan_span_topology_adjacent
+            or regular_numeric_fragment_adjacent
+            or (
+                boundary_witness["boundary_type"]
+                != "PLAN_SPAN"
+                and (len(shared_tokens) == 1 or direct_overlap_boundary_adjacent)
+            )
+        ):
             adjacent_records.append(
                 {
                     "consumer_id": record["consumer_id"],
@@ -4982,7 +5150,11 @@ def _regular_terminal_tail_handoff_proof(
                     "adjacency_type": (
                         "SHARED_BOUNDARY_ENDPOINT"
                         if shared_tokens
-                        else "OVERLAP_BOUNDARY_PROJECTED_GAP"
+                        else (
+                            "BOOLEAN_NUMERIC_FRAGMENT_PROJECTED_GAP"
+                            if regular_numeric_fragment_adjacent
+                            else "OVERLAP_BOUNDARY_PROJECTED_GAP"
+                        )
                     ),
                     "projection_gap_u": direct_projection_gap_u,
                     "projection_gap_arc_length": (
@@ -5006,7 +5178,14 @@ def _regular_terminal_tail_handoff_proof(
         for record in regular_records:
             if record["correspondence_id"] != claim["correspondence_id"]:
                 continue
-            record_start, record_end = sorted(map(float, record["u_interval"]))
+            side_interval_key = (
+                "left_u_interval"
+                if claim["side"] == "LEFT"
+                else "right_u_interval"
+            )
+            record_start, record_end = sorted(
+                map(float, record.get(side_interval_key, record["u_interval"]))
+            )
             boundary_candidates = (
                 (("START", record_start), ("END", record_end))
             )
@@ -5241,6 +5420,377 @@ def _regular_terminal_tail_handoff_proof(
         "maximum_atom_boundary_distance": radius * 2.0,
         "regular_adjacency_tolerance_u": adjacency_tolerance_u,
         "adjacent_regular": adjacent_records[0],
+        "chain_terminal_degrees": chain_terminal_degrees,
+    }
+
+
+# 证明 maximal Boundary chain 从唯一 Regular Strip 端点穿过权威 Plan span 边界，并终止于真实 Rail terminal/junction。
+# oriented_chain/start_u/end_u/claim/regular_records/ledger_by_edge_id/source_patch_id: 当前链、投影、唯一 atom、已提交 Strip、完整 ledger 与 owner Patch；返回 crossing handoff proof 或 None。
+def _plan_span_crossing_handoff_proof(
+    oriented_chain,
+    start_u,
+    end_u,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or not oriented_chain.get("edge_ids")
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    chain_start, chain_end = sorted((float(start_u), float(end_u)))
+    if chain_end - chain_start <= 1.0e-8:
+        return None
+    crossing_candidates = []
+    for span_interval in claim["span_u_intervals"]:
+        for span_boundary_side, raw_boundary_u in (
+            ("SPAN_START", float(span_interval[0])),
+            ("SPAN_END", float(span_interval[1])),
+        ):
+            for shift in range(-2, 3) if claim["strand_cyclic"] else (0,):
+                lifted_boundary_u = raw_boundary_u + shift
+                if (
+                    chain_start + 1.0e-8 < lifted_boundary_u
+                    and lifted_boundary_u < chain_end - 1.0e-8
+                ):
+                    crossing_candidates.append(
+                        {
+                            "span_boundary_side": span_boundary_side,
+                            "raw_boundary_u": raw_boundary_u,
+                            "lifted_boundary_u": lifted_boundary_u,
+                        }
+                    )
+    unique_crossings = {
+        (
+            candidate["span_boundary_side"],
+            round(candidate["lifted_boundary_u"], 10),
+        ): candidate
+        for candidate in crossing_candidates
+    }
+    if len(unique_crossings) != 1:
+        return None
+    crossing = next(iter(unique_crossings.values()))
+    inner_boundary_side = (
+        "START" if crossing["span_boundary_side"] == "SPAN_END" else "END"
+    )
+    inner_u = chain_start if inner_boundary_side == "START" else chain_end
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    chain_endpoint_counts = {}
+    for edge_id in oriented_chain["edge_ids"]:
+        for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            chain_endpoint_counts[endpoint_token] = (
+                chain_endpoint_counts.get(endpoint_token, 0) + 1
+            )
+    chain_terminal_tokens = {
+        token for token, count in chain_endpoint_counts.items() if count == 1
+    }
+    if len(chain_terminal_tokens) != 2:
+        return None
+    adjacent_records = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        record_start, record_end = sorted(map(float, record["u_interval"]))
+        record_boundary_side = (
+            "END" if inner_boundary_side == "START" else "START"
+        )
+        record_boundary_u = (
+            record_end if record_boundary_side == "END" else record_start
+        )
+        if abs(record_boundary_u - inner_u) > 1.0e-4:
+            continue
+        record_endpoint_tokens = {
+            endpoint_token
+            for edge_id in record[side_edge_key]
+            for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
+        }
+        shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
+        if len(shared_tokens) != 1:
+            continue
+        adjacent_records.append(
+            {
+                "consumer_id": record["consumer_id"],
+                "regular_boundary_side": record_boundary_side,
+                "shared_endpoint_token": shared_tokens[0],
+                "u_interval": list(record["u_interval"]),
+                "projection_gap_u": abs(record_boundary_u - inner_u),
+            }
+        )
+    unique_adjacent_records = {
+        (
+            record["consumer_id"],
+            record["regular_boundary_side"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in adjacent_records
+    }
+    if len(unique_adjacent_records) != 1:
+        return None
+    adjacent_record = next(iter(unique_adjacent_records.values()))
+    outer_terminal_tokens = chain_terminal_tokens - {
+        adjacent_record["shared_endpoint_token"]
+    }
+    if len(outer_terminal_tokens) != 1:
+        return None
+    outer_terminal_token = next(iter(outer_terminal_tokens))
+    rail_id = ledger_by_edge_id[oriented_chain["edge_ids"][0]]["rail_id"]
+    outer_terminal_degree = sum(
+        outer_terminal_token in entry["endpoint_tokens"]
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == rail_id
+    )
+    if outer_terminal_degree not in {1, 2}:
+        return None
+    return {
+        "proof_version": "PLAN_SPAN_CROSSING_HANDOFF_V1",
+        "edge_ids": list(oriented_chain["edge_ids"]),
+        "component_u_interval": [chain_start, chain_end],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "convexity": int(claim["convexity"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "span_boundary": crossing,
+        "adjacent_regular": adjacent_record,
+        "outer_terminal_token": outer_terminal_token,
+        "outer_terminal_degree": outer_terminal_degree,
+        "handoff_boundary_type": (
+            "PLAN_TERMINAL"
+            if outer_terminal_degree == 1
+            else "PLAN_JUNCTION_BRANCH"
+        ),
+    }
+
+
+# 证明单 Edge Boundary 连接同一 correspondence 的两个 Regular Strip terminals，作为 deterministic bridge 交给 junction handoff。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id: 当前单 Edge、唯一 atom、已提交 Strip、完整 ledger 与 owner Patch；返回 bridge proof 或 None。
+def _regular_component_bridge_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or len(oriented_chain.get("edge_ids", ())) != 1
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    edge_id = oriented_chain["edge_ids"][0]
+    chain_terminal_tokens = set(ledger_by_edge_id[edge_id]["endpoint_tokens"])
+    if len(chain_terminal_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    adjacent_records = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        record_endpoint_tokens = {
+            token
+            for record_edge_id in record[side_edge_key]
+            for token in ledger_by_edge_id[record_edge_id]["endpoint_tokens"]
+        }
+        shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
+        if len(shared_tokens) == 1:
+            adjacent_records.append(
+                {
+                    "consumer_id": record["consumer_id"],
+                    "shared_endpoint_token": shared_tokens[0],
+                    "side_u_interval": list(
+                        record.get(
+                            "left_u_interval"
+                            if claim["side"] == "LEFT"
+                            else "right_u_interval",
+                            record["u_interval"],
+                        )
+                    ),
+                }
+            )
+    unique_records = {
+        (record["consumer_id"], record["shared_endpoint_token"]): record
+        for record in adjacent_records
+    }
+    if (
+        len(unique_records) != 2
+        or {
+            record["shared_endpoint_token"]
+            for record in unique_records.values()
+        }
+        != chain_terminal_tokens
+    ):
+        return None
+    return {
+        "proof_version": "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "convexity": int(claim["convexity"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "adjacent_regular_records": sorted(
+            unique_records.values(),
+            key=lambda record: (
+                record["side_u_interval"],
+                record["consumer_id"],
+            ),
+        ),
+        "bridge_endpoint_tokens": sorted(chain_terminal_tokens),
+    }
+
+
+# 证明 atom 内 maximal Boundary tail 从唯一 Regular Strip 端点延续，并终止于真实 Rail terminal/junction。
+# oriented_chain/start_u/end_u/claim/regular_records/ledger_by_edge_id/source_patch_id: 当前链、投影、唯一 atom、已提交 Strip、完整 ledger 与 owner Patch；返回 component-terminal handoff proof 或 None。
+def _regular_component_terminal_handoff_proof(
+    oriented_chain,
+    start_u,
+    end_u,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or not oriented_chain.get("edge_ids")
+        or len(oriented_chain["edge_ids"]) < 2
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    chain_start, chain_end = sorted((float(start_u), float(end_u)))
+    atom_start, atom_end = sorted(map(float, claim["u_interval"]))
+    if (
+        chain_end - chain_start <= 1.0e-8
+        or chain_start < atom_start - 1.0e-10
+        or chain_end > atom_end + 1.0e-10
+        or any(
+            _common_run_interval(
+                [chain_start, chain_end],
+                envelope["effective_u_interval"],
+                bool(claim["strand_cyclic"]),
+            )
+            is not None
+            for envelope in claim["forbidden_envelopes"]
+        )
+    ):
+        return None
+    chain_endpoint_counts = {}
+    for edge_id in oriented_chain["edge_ids"]:
+        for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            chain_endpoint_counts[endpoint_token] = (
+                chain_endpoint_counts.get(endpoint_token, 0) + 1
+            )
+    chain_terminal_tokens = {
+        token for token, count in chain_endpoint_counts.items() if count == 1
+    }
+    if len(chain_terminal_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    side_interval_key = (
+        "left_u_interval" if claim["side"] == "LEFT" else "right_u_interval"
+    )
+    adjacent_records = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        record_start, record_end = sorted(
+            map(float, record.get(side_interval_key, record["u_interval"]))
+        )
+        boundary_matches = []
+        if abs(record_end - chain_start) <= 1.0e-8:
+            boundary_matches.append(("AFTER_REGULAR", "END", chain_start))
+        if abs(record_start - chain_end) <= 1.0e-8:
+            boundary_matches.append(("BEFORE_REGULAR", "START", chain_end))
+        if len(boundary_matches) != 1:
+            continue
+        record_endpoint_tokens = {
+            endpoint_token
+            for edge_id in record[side_edge_key]
+            for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
+        }
+        shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
+        if len(shared_tokens) != 1:
+            continue
+        tail_direction, regular_boundary_side, regular_boundary_u = (
+            boundary_matches[0]
+        )
+        adjacent_records.append(
+            {
+                "consumer_id": record["consumer_id"],
+                "tail_direction": tail_direction,
+                "regular_boundary_side": regular_boundary_side,
+                "regular_boundary_u": regular_boundary_u,
+                "shared_endpoint_token": shared_tokens[0],
+                "side_u_interval": [record_start, record_end],
+            }
+        )
+    unique_adjacent_records = {
+        (
+            record["consumer_id"],
+            record["tail_direction"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in adjacent_records
+    }
+    if len(unique_adjacent_records) != 1:
+        return None
+    adjacent_record = next(iter(unique_adjacent_records.values()))
+    outer_terminal_tokens = chain_terminal_tokens - {
+        adjacent_record["shared_endpoint_token"]
+    }
+    if len(outer_terminal_tokens) != 1:
+        return None
+    outer_terminal_token = next(iter(outer_terminal_tokens))
+    rail_id = ledger_by_edge_id[oriented_chain["edge_ids"][0]]["rail_id"]
+    outer_terminal_degree = sum(
+        outer_terminal_token in entry["endpoint_tokens"]
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == rail_id
+    )
+    if outer_terminal_degree not in {1, 2}:
+        return None
+    adjacent_regular_gap_arc_length = (
+        min(
+            abs(float(start_u) - float(adjacent_record["regular_boundary_u"])),
+            abs(float(end_u) - float(adjacent_record["regular_boundary_u"])),
+        )
+        * max(float(claim["strand_length"]), 1.0e-12)
+    )
+    if adjacent_regular_gap_arc_length > 1.0e-8:
+        return None
+    return {
+        "proof_version": "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
+        "edge_ids": list(oriented_chain["edge_ids"]),
+        "component_u_interval": [chain_start, chain_end],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "convexity": int(claim["convexity"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "adjacent_regular": adjacent_record,
+        "outer_terminal_token": outer_terminal_token,
+        "outer_terminal_degree": outer_terminal_degree,
+        "adjacent_regular_gap_arc_length": adjacent_regular_gap_arc_length,
+        "handoff_boundary_type": (
+            "PLAN_TERMINAL"
+            if outer_terminal_degree == 1
+            else "PLAN_JUNCTION_BRANCH"
+        ),
     }
 
 
@@ -5272,7 +5822,7 @@ def _outside_correspondence_span_handoff_proof(
         sum(token in entry["endpoint_tokens"] for entry in all_rail_entries)
         for token in chain_terminal_tokens
     )
-    if len(chain_terminal_tokens) != 2 or terminal_degrees != [1, 1]:
+    if len(chain_terminal_tokens) != 2 or terminal_degrees not in ([1, 1], [1, 2]):
         return None
     grouped_claims = {}
     for claim in claims:
@@ -5356,6 +5906,11 @@ def _outside_correspondence_span_handoff_proof(
         ),
         "terminal_endpoint_tokens": sorted(chain_terminal_tokens),
         "terminal_endpoint_degrees": terminal_degrees,
+        "handoff_boundary_type": (
+            "PLAN_TERMINAL"
+            if terminal_degrees == [1, 1]
+            else "PLAN_JUNCTION_BRANCH"
+        ),
     }
 
 
@@ -6219,6 +6774,90 @@ def _build_cyclic_regular_strip_partition(
                         if len(overlapping_atom_claims) > 1
                         else None
                     )
+                    plan_span_crossing_proof = (
+                        (
+                            next(iter(unique_plan_span_crossing_proofs.values()))
+                            if len(unique_plan_span_crossing_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_plan_span_crossing_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _plan_span_crossing_handoff_proof(
+                                        oriented_chain,
+                                        start_u,
+                                        end_u,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    regular_component_terminal_proof = (
+                        (
+                            next(
+                                iter(
+                                    unique_regular_component_terminal_proofs.values()
+                                )
+                            )
+                            if len(unique_regular_component_terminal_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_regular_component_terminal_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _regular_component_terminal_handoff_proof(
+                                        oriented_chain,
+                                        start_u,
+                                        end_u,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    regular_component_bridge_proof = (
+                        (
+                            next(
+                                iter(
+                                    unique_regular_component_bridge_proofs.values()
+                                )
+                            )
+                            if len(unique_regular_component_bridge_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_regular_component_bridge_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _regular_component_bridge_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
                     structural_proof = (
                         terminal_tail_proof
                         if terminal_tail_proof is not None
@@ -6226,6 +6865,9 @@ def _build_cyclic_regular_strip_partition(
                         else (
                             outside_span_proof
                             or correspondence_transition_proof
+                            or plan_span_crossing_proof
+                            or regular_component_terminal_proof
+                            or regular_component_bridge_proof
                         )
                     )
                     if structural_proof is not None:
@@ -6287,6 +6929,12 @@ def _build_cyclic_regular_strip_partition(
                                     "u_interval": record["u_interval"],
                                     "left_edge_ids": record["left_edge_ids"],
                                     "right_edge_ids": record["right_edge_ids"],
+                                    "terminal_extension_edge_ids": record[
+                                        "terminal_extension_edge_ids"
+                                    ],
+                                    "left_u_interval": record["left_u_interval"],
+                                    "right_u_interval": record["right_u_interval"],
+                                    "geometry_guard": record["geometry_guard"],
                                 }
                                 for record in regular_records
                                 if record["correspondence_id"]
@@ -6324,6 +6972,9 @@ def _build_cyclic_regular_strip_partition(
                     "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
                     "OUTSIDE_CORRESPONDENCE_SPAN_HANDOFF_V1",
                     "CORRESPONDENCE_TRANSITION_HANDOFF_V1",
+                    "PLAN_SPAN_CROSSING_HANDOFF_V1",
+                    "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
+                    "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1",
                 } and len(micro_loop_proofs) != len(oriented_chain["edge_ids"]):
                     raise BatchedChamferError(
                         "MICRO_LOOP_JUNCTION_PROOF_MISSING",
@@ -6382,7 +7033,11 @@ def _build_cyclic_regular_strip_partition(
     regular_edge_ids = {
         edge_id
         for record in regular_records
-        for edge_id in (*record["left_edge_ids"], *record["right_edge_ids"])
+        for edge_id in (
+            *record["left_edge_ids"],
+            *record["right_edge_ids"],
+            *record["terminal_extension_edge_ids"],
+        )
     }
     setback_edge_ids = {
         edge_id
@@ -6426,7 +7081,11 @@ def _build_cyclic_regular_strip_partition(
         else:
             invalid_ledger_classification_count += 1
     consumer_edge_mismatch_count = sum(
-        set(record["left_edge_ids"] + record["right_edge_ids"])
+        set(
+            record["left_edge_ids"]
+            + record["right_edge_ids"]
+            + record["terminal_extension_edge_ids"]
+        )
         != regular_ledger_edges_by_consumer.get(consumer_id, set())
         for consumer_id, record in regular_records_by_consumer.items()
     ) + sum(
