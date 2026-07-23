@@ -8403,7 +8403,70 @@ def test_feature_chamfer_batched_atom_boundary_clip_regression(
         == "edge:cross",
         f"Atom boundary clip changed provenance or missed boundary: {clipped}",
     )
-    result.add_detail("atom boundary clip preserved whole-Edge ledger identity")
+    descending_run = {
+        "edge_ids": ["edge:cross-upper", "edge:inside", "edge:cross-lower"],
+        "coordinates": [
+            (0.8, 0.0, 0.0),
+            (0.5, 0.0, 0.0),
+            (0.3, 0.0, 0.0),
+            (0.1, 0.0, 0.0),
+        ],
+        "u_values": [0.8, 0.5, 0.3, 0.1],
+        "u_interval": [0.8, 0.1],
+        "is_cyclic": False,
+    }
+    descending_clipped = module._clip_run_geometry_to_interval(
+        descending_run,
+        (0.2, 0.6),
+    )
+    ensure(
+        descending_clipped["edge_ids"]
+        == list(reversed(descending_run["edge_ids"]))
+        and descending_clipped["u_values"] == [0.2, 0.3, 0.5, 0.6]
+        and all(
+            abs(actual - expected) <= 5.0e-8
+            for actual, expected in zip(
+                descending_clipped["coordinates"][0],
+                (0.2, 0.0, 0.0),
+            )
+        )
+        and all(
+            abs(actual - expected) <= 5.0e-8
+            for actual, expected in zip(
+                descending_clipped["coordinates"][-1],
+                (0.6, 0.0, 0.0),
+            )
+        )
+        and {
+            boundary["endpoint_role"]
+            for boundary in descending_clipped["virtual_atom_boundaries"]
+        }
+        == {"START", "END"},
+        f"Descending atom boundary clip reversed interval roles: {descending_clipped}",
+    )
+    descending_boundary_by_role = {
+        boundary["endpoint_role"]: boundary
+        for boundary in descending_clipped["virtual_atom_boundaries"]
+    }
+    ensure(
+        descending_boundary_by_role["START"]["source_edge_id"]
+        == "edge:cross-lower"
+        and abs(
+            descending_boundary_by_role["START"]["source_edge_factor"] - 0.5
+        )
+        <= 5.0e-8
+        and descending_boundary_by_role["END"]["source_edge_id"]
+        == "edge:cross-upper"
+        and abs(
+            descending_boundary_by_role["END"]["source_edge_factor"]
+            - (1.0 / 3.0)
+        )
+        <= 5.0e-8,
+        f"Descending virtual-boundary provenance was not reoriented: {descending_clipped}",
+    )
+    result.add_detail(
+        "atom boundary clip preserved whole-Edge ledger identity in both directions"
+    )
 
 
 # 从真实 PREVIEW Operator 验证 batched backend 只消费同一 ChamferPlan 与正式 Pipe builder。

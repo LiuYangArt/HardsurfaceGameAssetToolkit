@@ -3001,10 +3001,18 @@ def _clip_run_geometry_to_interval(run, interval):
     clipped = list(coordinates)
     clipped_parameters = list(parameters)
     virtual_boundaries = []
-    for point_index, boundary_u, endpoint_role in (
-        (0, lower, "START"),
-        (len(parameters) - 1, upper, "END"),
-    ):
+    endpoint_boundaries = (
+        (
+            (0, lower, "START"),
+            (len(parameters) - 1, upper, "END"),
+        )
+        if parameters[-1] >= parameters[0]
+        else (
+            (0, upper, "END"),
+            (len(parameters) - 1, lower, "START"),
+        )
+    )
+    for point_index, boundary_u, endpoint_role in endpoint_boundaries:
         current_u = clipped_parameters[point_index]
         outside = current_u < lower - 1.0e-10 or current_u > upper + 1.0e-10
         if not outside:
@@ -3043,8 +3051,25 @@ def _clip_run_geometry_to_interval(run, interval):
                 "coordinate": tuple(clipped[point_index]),
             }
         )
+    if clipped_parameters[-1] + 1.0e-10 < clipped_parameters[0]:
+        clipped.reverse()
+        clipped_parameters.reverse()
+        reversed_edge_ids = list(reversed(run["edge_ids"]))
+        if run.get("is_cyclic") and reversed_edge_ids:
+            reversed_edge_ids = [*reversed_edge_ids[1:], reversed_edge_ids[0]]
+        virtual_boundaries = [
+            {
+                **boundary,
+                "source_edge_factor": 1.0
+                - float(boundary["source_edge_factor"]),
+            }
+            for boundary in reversed(virtual_boundaries)
+        ]
+    else:
+        reversed_edge_ids = list(run["edge_ids"])
     return {
         **run,
+        "edge_ids": reversed_edge_ids,
         "coordinates": [tuple(point) for point in clipped],
         "u_values": clipped_parameters,
         "u_interval": [clipped_parameters[0], clipped_parameters[-1]],
