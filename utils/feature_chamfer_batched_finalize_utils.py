@@ -7166,6 +7166,10 @@ def _build_cyclic_regular_strip_partition(
         for unresolved in attempt.get("unresolved_components", ())
     }
     unresolved_remote_component_count = len(unresolved_remote_component_ids)
+    deferred_attempt_count = sum(
+        attempt.get("status") == "DEFERRED"
+        for attempt in strip_attempts
+    )
     return (
         tuple(sorted(regular_records, key=lambda record: record["consumer_id"])),
         classified_ledger,
@@ -7197,6 +7201,7 @@ def _build_cyclic_regular_strip_partition(
             "outside_plan_regular_edge_count": outside_plan_regular_edge_count,
             "outside_plan_wrong_reason_count": outside_plan_wrong_reason_count,
             "unresolved_remote_component_count": unresolved_remote_component_count,
+            "deferred_attempt_count": deferred_attempt_count,
             "all_ledger_edges_consumed_once": (
                 classified_count == len(classified_ledger)
                 and ledger_edge_ids == regular_edge_ids | setback_edge_ids

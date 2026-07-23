@@ -474,6 +474,10 @@ def run_repetition(
         for unresolved in attempt.get("unresolved_components", [])
     }
     unresolved_remote_component_count = len(unresolved_remote_component_ids)
+    deferred_attempt_count = sum(
+        attempt.get("status") == "DEFERRED"
+        for attempt in phase_c_diagnostics.get("strip_attempts", [])
+    )
     phase_c_pass = (
         phase_c_diagnostics.get("regular_core_count", 0) > 0
         and phase_c_diagnostics.get("real_regular_strip_face_count", 0) > 0
@@ -498,6 +502,7 @@ def run_repetition(
         and phase_c_diagnostics.get("cross_pipe_owner_guessing") is False
         and phase_c_diagnostics.get("global_fill") is False
         and unresolved_remote_component_count == 0
+        and deferred_attempt_count == 0
         and bool(diagnostics.get("boundary_edge_ledger"))
     )
     valid = (
