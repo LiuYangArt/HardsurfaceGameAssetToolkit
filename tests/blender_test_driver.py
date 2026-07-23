@@ -8417,6 +8417,47 @@ def test_feature_chamfer_batched_cyclic_regular_closure_regression(
     result.add_detail("cyclic regular closure preserved all Edges with monotonic lifted u")
 
 
+# 验证 regular fragment 只在拓扑续接唯一时拼接，分支点不得贪心选一条支路。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_unique_regular_stitch_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+
+    def make_run(edge_id, start, end, start_u, end_u):
+        return {
+            "edge_ids": [edge_id],
+            "coordinates": [start, end],
+            "u_values": [start_u, end_u],
+            "u_interval": [start_u, end_u],
+            "is_cyclic": False,
+        }
+
+    linear = module._stitch_contiguous_regular_runs(
+        (
+            make_run("edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0, 0.4),
+            make_run("edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.4, 0.8),
+        )
+    )
+    branch = module._stitch_contiguous_regular_runs(
+        (
+            make_run("edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0, 0.4),
+            make_run("edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.4, 0.8),
+            make_run("edge:c", (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), 0.4, 0.7),
+        )
+    )
+    ensure(
+        len(linear) == 1
+        and linear[0]["edge_ids"] == ["edge:a", "edge:b"]
+        and len(branch) == 3
+        and sorted(run["edge_ids"] for run in branch)
+        == [["edge:a"], ["edge:b"], ["edge:c"]],
+        f"Regular stitch crossed a non-unique branch: linear={linear}, branch={branch}",
+    )
+    result.add_detail("regular stitch preserved branch fragments until unique continuation")
+
+
 # 验证跨 Plan atom 的真实 Edge 只裁 regular 几何端点，ledger Edge identity 不拆分、不丢失。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_atom_boundary_clip_regression(
@@ -8709,6 +8750,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_cyclic_regular_closure_regression",
         test_feature_chamfer_batched_cyclic_regular_closure_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_unique_regular_stitch_regression",
+        test_feature_chamfer_batched_unique_regular_stitch_regression,
     )
     context.run_case(
         "feature_chamfer_batched_atom_boundary_clip_regression",

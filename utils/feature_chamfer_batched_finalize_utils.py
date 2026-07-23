@@ -2458,39 +2458,69 @@ def _stitch_contiguous_regular_runs(runs):
     changed = True
     while changed:
         changed = False
+        successor_indices = {index: [] for index in range(len(remaining))}
+        predecessor_indices = {index: [] for index in range(len(remaining))}
         for left_index, left in enumerate(remaining):
-            if changed:
-                break
+            left_parameters = [float(value) for value in left["u_values"]]
+            if any(
+                following + 1.0e-8 < current
+                for current, following in zip(
+                    left_parameters,
+                    left_parameters[1:],
+                )
+            ):
+                continue
             for right_index, right in enumerate(remaining):
                 if left_index == right_index:
                     continue
-                u_gap = abs(
-                    float(left["u_values"][-1]) - float(right["u_values"][0])
-                )
+                right_parameters = [float(value) for value in right["u_values"]]
+                if any(
+                    following + 1.0e-8 < current
+                    for current, following in zip(
+                        right_parameters,
+                        right_parameters[1:],
+                    )
+                ):
+                    continue
+                u_gap = right_parameters[0] - left_parameters[-1]
                 point_gap = (
                     Vector(left["coordinates"][-1])
                     - Vector(right["coordinates"][0])
                 ).length
-                if u_gap > tolerance or point_gap > 1.0e-4:
+                if u_gap < -1.0e-8 or u_gap > tolerance or point_gap > 1.0e-4:
                     continue
-                merged = {
-                    **left,
-                    "edge_ids": [*left["edge_ids"], *right["edge_ids"]],
-                    "coordinates": [
-                        *left["coordinates"],
-                        *right["coordinates"][1:],
-                    ],
-                    "u_values": [*left["u_values"], *right["u_values"][1:]],
-                    "u_interval": [
-                        float(left["u_values"][0]),
-                        float(right["u_values"][-1]),
-                    ],
-                }
-                for index in sorted((left_index, right_index), reverse=True):
-                    remaining.pop(index)
-                remaining.append(merged)
-                changed = True
-                break
+                successor_indices[left_index].append(right_index)
+                predecessor_indices[right_index].append(left_index)
+        unique_pairs = sorted(
+            (
+                left_index,
+                right_indices[0],
+            )
+            for left_index, right_indices in successor_indices.items()
+            if len(right_indices) == 1
+            and len(predecessor_indices[right_indices[0]]) == 1
+        )
+        if unique_pairs:
+            left_index, right_index = unique_pairs[0]
+            left = remaining[left_index]
+            right = remaining[right_index]
+            merged = {
+                **left,
+                "edge_ids": [*left["edge_ids"], *right["edge_ids"]],
+                "coordinates": [
+                    *left["coordinates"],
+                    *right["coordinates"][1:],
+                ],
+                "u_values": [*left["u_values"], *right["u_values"][1:]],
+                "u_interval": [
+                    float(left["u_values"][0]),
+                    float(right["u_values"][-1]),
+                ],
+            }
+            for index in sorted((left_index, right_index), reverse=True):
+                remaining.pop(index)
+            remaining.append(merged)
+            changed = True
     return tuple(sorted(remaining, key=lambda run: run["edge_ids"]))
 
 
