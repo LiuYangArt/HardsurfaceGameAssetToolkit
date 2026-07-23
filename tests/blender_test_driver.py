@@ -2392,6 +2392,60 @@ def test_feature_chamfer_regular_strip_terminal_span_guard_regression(
     result.add_detail("Regular Strip preserved monotonic and scale-invariant terminal correspondence")
 
 
+# 验证 Regular Strip DP 可绕开会生成零面积 Face 的重复 Rail 点，且无路径时结构化 fail-closed。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_regular_strip_zero_area_path_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    left = [
+        Vector((0.0, 0.0, 0.0)),
+        Vector((0.0, 0.0, 0.05)),
+        Vector((0.0, 0.0, 0.1)),
+    ]
+    right = [
+        Vector((0.0141421356, 0.0, 0.0)),
+        Vector((0.0141421356, 0.0, 0.0)),
+        Vector((0.0141421356, 0.0, 0.1)),
+    ]
+    strip = utils.build_chamfer_strip(
+        left,
+        right,
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(len(left) - 1, len(right) - 1)],
+            "expected_width": 0.0141421356,
+            "maximum_width_error": 0.006,
+            "reject_zero_area_faces": True,
+        },
+    )
+    ensure(
+        strip["diagnostics"]["status"] == "FAIL"
+        and strip["diagnostics"]["reasons"]
+        == ["NO_MONOTONIC_CORRESPONDENCE_PATH"],
+        f"Zero-area-aware DP did not fail closed on a degenerate Rail: {strip}",
+    )
+    no_path = utils.build_chamfer_strip(
+        [Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))],
+        [Vector((0.014, 0.0, 0.0)), Vector((0.014, 0.0, 0.0))],
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(1, 1)],
+            "expected_width": 0.014,
+            "maximum_width_error": 0.006,
+            "reject_zero_area_faces": True,
+        },
+    )
+    ensure(
+        no_path["diagnostics"]["status"] == "FAIL"
+        and no_path["diagnostics"]["reasons"]
+        == ["NO_MONOTONIC_CORRESPONDENCE_PATH"],
+        f"No-path Strip did not fail closed: {no_path}",
+    )
+    result.add_detail("zero-area steps rejected; no-path results stayed structured")
+
+
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
     """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
@@ -8398,6 +8452,10 @@ def main():
     context.run_case(
         "feature_chamfer_regular_strip_terminal_span_guard_regression",
         test_feature_chamfer_regular_strip_terminal_span_guard_regression,
+    )
+    context.run_case(
+        "feature_chamfer_regular_strip_zero_area_path_regression",
+        test_feature_chamfer_regular_strip_zero_area_path_regression,
     )
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)

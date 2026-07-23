@@ -3222,6 +3222,7 @@ def build_chamfer_strip(
     parameters_a = _coordinate_parameters(coordinates_a, False)
     parameters_b = _coordinate_parameters(coordinates_b, False)
     constraints = terminal_constraints or {}
+    reject_zero_area_faces = bool(constraints.get("reject_zero_area_faces", False))
     expected_width = constraints.get("expected_width")
     maximum_width_error = constraints.get("maximum_width_error")
     endpoint_width = (
@@ -3253,6 +3254,34 @@ def build_chamfer_strip(
                 previous = (index_a - delta_a, index_b - delta_b)
                 if previous not in costs:
                     continue
+                if reject_zero_area_faces:
+                    previous_a, previous_b = previous
+                    if delta_a and delta_b:
+                        face_coordinates = (
+                            coordinates_a[previous_a],
+                            coordinates_a[index_a],
+                            coordinates_b[index_b],
+                            coordinates_b[previous_b],
+                        )
+                    elif delta_a:
+                        face_coordinates = (
+                            coordinates_a[previous_a],
+                            coordinates_a[index_a],
+                            coordinates_b[index_b],
+                        )
+                    else:
+                        face_coordinates = (
+                            coordinates_a[index_a],
+                            coordinates_b[index_b],
+                            coordinates_b[previous_b],
+                        )
+                    face_normal = Vector()
+                    for face_index, coordinate in enumerate(face_coordinates):
+                        face_normal += coordinate.cross(
+                            face_coordinates[(face_index + 1) % len(face_coordinates)]
+                        )
+                    if face_normal.length <= 1.0e-12:
+                        continue
                 width = (coordinates_a[index_a] - coordinates_b[index_b]).length
                 width_error = (
                     abs(width - expected_width)
@@ -3274,7 +3303,15 @@ def build_chamfer_strip(
                 if best is None or candidate < best:
                     best = candidate
             if best is None:
-                raise ValueError("Regular Strip has no monotonic correspondence path")
+                return {
+                    "faces": [],
+                    "path": [],
+                    "diagnostics": {
+                        "status": "FAIL",
+                        "reasons": ["NO_MONOTONIC_CORRESPONDENCE_PATH"],
+                        "monotonic": False,
+                    },
+                }
             costs[(index_a, index_b)] = best[0]
             predecessors[(index_a, index_b)] = best[1]
 
