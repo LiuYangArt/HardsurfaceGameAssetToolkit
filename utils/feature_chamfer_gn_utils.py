@@ -25,9 +25,11 @@ from ..const import FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG
 from ..const import FEATURE_CHAMFER_CURVE_NODE
 from ..const import FEATURE_CHAMFER_CURVE_OBJECT_TAG
 from ..const import FEATURE_CHAMFER_CURVE_OWNER_TAG
+from ..const import FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG
 from ..const import PRESET_FILE_PATH
 from .experimental_pipe_chamfer_utils import _base_stats
 from .experimental_pipe_chamfer_utils import _build_preview_feature_graph
+from .experimental_pipe_chamfer_utils import _classify_pipe_endpoints
 from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
 from .feature_chamfer_plan_utils import build_chamfer_plan
 from .feature_chamfer_plan_utils import feature_strand_points
@@ -127,6 +129,67 @@ def source_fingerprint(source_object):
     ).hexdigest()
 
 
+# 把 Preview 构图时唯一生成的 Pipe groups 冻结为可跨阶段读取的稳定 JSON 合同。
+# source_object/groups/chamfer_plan/radius: Preview source、已分类 groups、immutable plan 与半径；返回 JSON 字符串。
+def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius):
+    strands_by_edge_keys = {
+        frozenset(strand.ordered_edge_keys): strand
+        for strand in chamfer_plan.feature_strands
+    }
+    pipe_specs = []
+    source_mesh = source_object.data
+    for group in sorted(groups, key=lambda item: item["pipe_id"]):
+        group_edge_keys = frozenset(
+            "|".join(
+                sorted(
+                    ",".join(
+                        f"{float(component):.8f}"
+                        for component in source_mesh.vertices[vertex_index].co
+                    )
+                    for vertex_index in source_mesh.edges[edge_index].vertices
+                )
+            )
+            for edge_index in group["edge_indices"]
+        )
+        strand = strands_by_edge_keys.get(group_edge_keys)
+        if strand is None:
+            raise FeatureChamferPreviewError(
+                f"Preview Pipe {group['pipe_id']} 无法绑定到 ChamferPlan FeatureStrand"
+            )
+        pipe_specs.append(
+            {
+                "pipe_id": int(group["pipe_id"]),
+                "strand_id": strand.strand_id,
+                "ordered_edge_keys": list(strand.ordered_edge_keys),
+                "edge_indices": [int(index) for index in group["edge_indices"]],
+                "vertex_indices": [int(index) for index in group["vertex_indices"]],
+                "points": [
+                    [round(float(component), 10) for component in point]
+                    for point in group["points"]
+                ],
+                "is_cyclic": bool(group["is_cyclic"]),
+                "start_endpoint_class": str(group.get("start_endpoint_class", "CYCLIC")),
+                "end_endpoint_class": str(group.get("end_endpoint_class", "CYCLIC")),
+                "start_extension": round(float(group.get("start_extension", 0.0)), 10),
+                "end_extension": round(float(group.get("end_extension", 0.0)), 10),
+            }
+        )
+    if len(pipe_specs) != len(chamfer_plan.feature_strands):
+        raise FeatureChamferPreviewError("Preview Pipe 合同与 ChamferPlan 不是一一对应")
+    return json.dumps(
+        {
+            "contract": "GN_PREVIEW_PIPE_V1",
+            "plan_id": chamfer_plan.plan_id,
+            "source_fingerprint": source_fingerprint(source_object),
+            "radius": round(float(radius), 10),
+            "pipes": pipe_specs,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 # 查找本工具拥有且名称稳定的 Geometry Nodes modifier。
 # source_object: Preview 所属 Mesh Object；返回 modifier 或 None。
 def owned_preview_modifier(source_object):
@@ -189,6 +252,7 @@ def _remove_preview_curve_object(curve_object):
 def _rebuild_owned_preview_curve(source_object, radius):
     stats = _base_stats(source_object, 0.0, 8, 35.0, 3.0, 1.5, "PREVIEW")
     groups = _build_preview_feature_graph(source_object, radius, stats)
+    _classify_pipe_endpoints(source_object, groups, radius)
     chamfer_plan = build_chamfer_plan(
         source_object,
         groups,
@@ -200,8 +264,19 @@ def _rebuild_owned_preview_curve(source_object, radius):
         type="CURVE",
     )
     curve_data.dimensions = "3D"
+    pipe_contract_json = _serialize_preview_pipe_contract(
+        source_object,
+        groups,
+        chamfer_plan,
+        radius,
+    )
+    pipe_contract = json.loads(pipe_contract_json)
+    pipe_records_by_strand_id = {
+        item["strand_id"]: item for item in pipe_contract["pipes"]
+    }
     for feature_strand in chamfer_plan.feature_strands:
-        points = feature_strand_points(feature_strand)
+        pipe_record = pipe_records_by_strand_id[feature_strand.strand_id]
+        points = tuple(tuple(point) for point in pipe_record["points"])
         spline = curve_data.splines.new("POLY")
         spline.points.add(len(points) - 1)
         for index, point in enumerate(points):
@@ -214,6 +289,7 @@ def _rebuild_owned_preview_curve(source_object, radius):
     curve_object.hide_render = True
     curve_object[FEATURE_CHAMFER_CURVE_OWNER_TAG] = source_object.name
     curve_object[FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG] = source_fingerprint(source_object)
+    curve_object[FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG] = pipe_contract_json
     source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = curve_object.name
     return curve_object, stats, chamfer_plan
 

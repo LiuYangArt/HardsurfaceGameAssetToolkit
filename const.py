@@ -123,6 +123,7 @@ FEATURE_CHAMFER_CURVE_DEPENDENCY_FINGERPRINT = "f9e8b8bfd0889a88afb88eea9b7fd48e
 FEATURE_CHAMFER_CURVE_OWNER_TAG = "hst_feature_chamfer_curve_owner"
 FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG = "hst_feature_chamfer_curve_source_fingerprint"
 FEATURE_CHAMFER_CURVE_OBJECT_TAG = "hst_feature_chamfer_curve_object"
+FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG = "hst_feature_chamfer_curve_pipe_contract"
 FEATURE_CHAMFER_GN_STATE_TAG = "hst_feature_chamfer_preview_state"
 FEATURE_CHAMFER_GN_PARAMETERS_TAG = "hst_feature_chamfer_parameters"
 FEATURE_CHAMFER_GN_LAST_ACTION_TAG = "hst_feature_chamfer_last_action"

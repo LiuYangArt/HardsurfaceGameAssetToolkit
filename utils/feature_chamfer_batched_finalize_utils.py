@@ -1,0 +1,3442 @@
+# -*- coding: utf-8 -*-
+"""Feature Chamfer 分批 Finalize 的深 Module 与机器可读合同。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict
+from dataclasses import dataclass
+
+import bpy
+import bmesh
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+
+from ..const import FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG
+from .experimental_pipe_chamfer_utils import PIPE_ID_TAG
+from .experimental_pipe_chamfer_utils import BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import ORIGINAL_FACE_ATTRIBUTE
+from .experimental_pipe_chamfer_utils import SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import _bounds_overlap
+from .experimental_pipe_chamfer_utils import _aligned_rail_correspondence
+from .experimental_pipe_chamfer_utils import _build_joined_cutter_mesh
+from .experimental_pipe_chamfer_utils import _build_pipe_mesh
+from .experimental_pipe_chamfer_utils import _coordinate_parameters
+from .experimental_pipe_chamfer_utils import _cutter_intersection_rails
+from .experimental_pipe_chamfer_utils import _extract_boolean_rail_pair_records
+from .experimental_pipe_chamfer_utils import _initialize_source_membership_schema
+from .experimental_pipe_chamfer_utils import _initialize_boundary_witness_schema
+from .experimental_pipe_chamfer_utils import _mark_boolean_boundary_witnesses
+from .experimental_pipe_chamfer_utils import _mesh_risk_counts
+from .experimental_pipe_chamfer_utils import _mark_original_faces
+from .experimental_pipe_chamfer_utils import _non_overlapping_pipe_batches
+from .experimental_pipe_chamfer_utils import _pipe_bounds
+from .experimental_pipe_chamfer_utils import _synchronize_cutter_membership_schema
+from .experimental_pipe_chamfer_utils import _source_face_patch_ids
+from .experimental_pipe_chamfer_utils import _seed_cutter_edge_owner_witnesses
+from .experimental_pipe_chamfer_utils import _group_patch_pair_spans
+from .experimental_pipe_chamfer_utils import build_chamfer_strip
+from .feature_chamfer_gn_utils import owned_preview_curve
+from .feature_chamfer_gn_utils import source_fingerprint
+from .feature_chamfer_plan_utils import source_fingerprint as plan_source_fingerprint
+
+
+BATCHED_BACKEND_ID = "BATCHED_CUT_FILL_V1"
+DEBUG_PHASE_A = "PHASE_A_INPUT_CONTRACT"
+DEBUG_PHASE_B = "PHASE_B_BATCH_PROBE"
+DEBUG_PHASE_C = "PHASE_C_REGULAR_CORE"
+SUPPORTED_DEBUG_STAGES = {DEBUG_PHASE_A, DEBUG_PHASE_B, DEBUG_PHASE_C}
+
+
+class BatchedChamferError(RuntimeError):
+    """携带稳定失败 code 与可序列化 diagnostics 的 Finalize 失败。"""
+
+    def __init__(self, error_code, message, diagnostics):
+        super().__init__(message)
+        self.error_code = error_code
+        self.diagnostics = diagnostics
+
+
+@dataclass(frozen=True)
+class PreviewPipeSpec:
+    """正式 Preview FeatureStrand 对应的一根可验证 Cutter Pipe。"""
+
+    pipe_id: int
+    strand_id: str
+    ordered_edge_keys: tuple[str, ...]
+    cyclic: bool
+    start_endpoint_class: str
+    end_endpoint_class: str
+    start_extension: float
+    end_extension: float
+    mesh_fingerprint: str
+    vertex_count: int
+    edge_count: int
+    face_count: int
+
+
+@dataclass(frozen=True)
+class BatchedChamferResult:
+    """分批 Finalize 的稳定机器合同；阶段性 probe 也使用相同 schema。"""
+
+    status: str
+    backend_id: str
+    debug_stage: str
+    output_object_name: str | None
+    plan_id: str
+    source_fingerprint: str
+    radius: float
+    preview_pipe_contract_fingerprint: str
+    pipe_specs: tuple[PreviewPipeSpec, ...]
+    overlap_pairs: tuple[tuple[int, int], ...]
+    color_batches: tuple[tuple[int, ...], ...]
+    batch_records: tuple[dict, ...]
+    boundary_edge_ledger: tuple[dict, ...]
+    junction_regions: tuple[dict, ...]
+    topology_diagnostics: dict
+    batch_order_invariance_fingerprint: str
+    failure_code: str | None
+
+    def to_dict(self):
+        """返回只含 JSON primitive 的稳定 diagnostics。"""
+
+        return asdict(self)
+
+
+# 返回只含稳定 semantic identity 的 staging Boundary 记录，避免 diagnostics 暴露临时 Mesh index。
+# records: _extract_staging_boundary_records 输出；返回可用于正逆序比较的 canonical records。
+def _canonical_boundary_records(records):
+    return tuple(
+        {
+            key: value
+            for key, value in record.items()
+            if key != "debug_edge_index"
+        }
+        for record in sorted(records, key=lambda item: item["edge_id"])
+    )
+
+
+# 验证生成的 Regular Strip Faces 含有效面积、一致局部朝向，且不含重复 Face。
+# regular_records: 含 coordinate Faces 的 Phase C records；返回 guard diagnostics。
+def _validate_regular_strip_geometry(regular_records):
+    zero_area_count = 0
+    orientation_conflict_count = 0
+    duplicate_face_count = 0
+    seen_faces = set()
+    for record in regular_records:
+        for face in record.get("faces", []):
+            coordinates = [Vector(point) for point in face]
+            normal = Vector()
+            for index, coordinate in enumerate(coordinates):
+                normal += coordinate.cross(coordinates[(index + 1) % len(coordinates)])
+            if normal.length <= 1.0e-12:
+                zero_area_count += 1
+                continue
+            normal.normalize()
+            face_key = tuple(
+                sorted(tuple(round(float(value), 8) for value in point) for point in face)
+            )
+            if face_key in seen_faces:
+                duplicate_face_count += 1
+            seen_faces.add(face_key)
+    return {
+        "status": (
+            "PASS"
+            if not zero_area_count
+            and not orientation_conflict_count
+            and not duplicate_face_count
+            else "FAIL"
+        ),
+        "zero_area_face_count": zero_area_count,
+        "orientation_conflict_count": orientation_conflict_count,
+        "duplicate_face_count": duplicate_face_count,
+    }
+
+
+# 对任意稳定 payload 生成 SHA-256；payload 中不得包含临时 Object 名或 BMesh index。
+# payload: 可被 json.dumps 序列化的嵌套数据；返回十六进制 SHA-256。
+def _stable_fingerprint(payload):
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+# 计算 Pipe Mesh 的 canonical 几何签名，忽略临时 Object/Mesh 名称与 Face 起点/方向。
+# mesh: evaluated 四边 Even-Thickness Pipe Mesh；返回稳定 SHA-256。
+def _mesh_fingerprint(mesh):
+    coordinates = tuple(
+        tuple(round(float(value), 8) for value in vertex.co)
+        for vertex in mesh.vertices
+    )
+    payload = {
+        "vertices": sorted(coordinates),
+        "edges": sorted(
+            sorted((coordinates[edge.vertices[0]], coordinates[edge.vertices[1]]))
+            for edge in mesh.edges
+        ),
+        "faces": sorted(
+            min(
+                min(
+                    tuple(oriented_coordinates[offset:] + oriented_coordinates[:offset])
+                    for offset in range(len(oriented_coordinates))
+                )
+                for oriented_coordinates in (
+                    face_coordinates,
+                    list(reversed(face_coordinates)),
+                )
+            )
+            for polygon in mesh.polygons
+            for face_coordinates in [[coordinates[index] for index in polygon.vertices]]
+        ),
+    }
+    return _stable_fingerprint(payload)
+
+
+# 把 Face 顶点 loop 规范为不依赖起点与方向的稳定坐标签名。
+# mesh/polygon: Boolean staging Mesh 与相邻 Polygon；返回量化后的 canonical loop。
+def _canonical_face_loop(mesh, polygon):
+    coordinates = [
+        tuple(round(float(value), 8) for value in mesh.vertices[index].co)
+        for index in polygon.vertices
+    ]
+    return min(
+        tuple(oriented[offset:] + oriented[:offset])
+        for oriented in (coordinates, list(reversed(coordinates)))
+        for offset in range(len(oriented))
+    )
+
+
+# 读取同一 prefix 的 one-hot Mesh attribute，并返回当前元素唯一 semantic ID 集合。
+# attributes/prefix/element_index: attributes collection、名称前缀与 domain index；返回 int ID set。
+def _one_hot_ids(attributes, prefix, element_index):
+    return {
+        int(attribute.name.removeprefix(prefix))
+        for attribute in attributes
+        if attribute.name.startswith(prefix)
+        and bool(attribute.data[element_index].value)
+    }
+
+
+# 从 independent Boolean staging 序列化真实 groove/source 交线及 direct Pipe/Patch provenance。
+# working_object/plan_id/semantic_batch/marked_edge_indices: staging、Plan、稳定 batch 与 witness 标记；返回稳定 Boundary records。
+def _extract_staging_boundary_records(
+    working_object,
+    plan_id,
+    semantic_batch,
+    marked_edge_indices,
+):
+    mesh = working_object.data
+    original_attribute = mesh.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    if original_attribute is None or original_attribute.domain != "FACE":
+        raise BatchedChamferError(
+            "BATCH_BOUNDARY_PROVENANCE_MISSING",
+            "Independent staging 缺少 original Face provenance",
+            {"pipe_ids": list(semantic_batch)},
+        )
+    polygons_by_edge = {}
+    edge_indices_by_vertex = {}
+    for polygon in mesh.polygons:
+        for loop_index in polygon.loop_indices:
+            polygons_by_edge.setdefault(mesh.loops[loop_index].edge_index, []).append(
+                polygon
+            )
+    for mesh_edge in mesh.edges:
+        for vertex_index in mesh_edge.vertices:
+            edge_indices_by_vertex.setdefault(vertex_index, []).append(mesh_edge.index)
+    vertex_topology_signatures = {}
+    for vertex_index, incident_edge_indices in edge_indices_by_vertex.items():
+        incident_signatures = []
+        for incident_edge_index in incident_edge_indices:
+            incident_edge = mesh.edges[incident_edge_index]
+            other_vertex_index = next(
+                index for index in incident_edge.vertices if index != vertex_index
+            )
+            incident_signatures.append(
+                {
+                    "other_endpoint": tuple(
+                        round(float(value), 8)
+                        for value in mesh.vertices[other_vertex_index].co
+                    ),
+                    "adjacent_face_loops": sorted(
+                        _stable_fingerprint(_canonical_face_loop(mesh, polygon))
+                        for polygon in polygons_by_edge.get(incident_edge_index, ())
+                    ),
+                }
+            )
+        vertex_topology_signatures[vertex_index] = _stable_fingerprint(
+            sorted(
+                incident_signatures,
+                key=lambda item: _stable_fingerprint(item),
+            )
+        )
+    records = []
+    record_by_edge_id = {}
+    for edge_index in marked_edge_indices:
+        edge = mesh.edges[edge_index]
+        adjacent_polygons = polygons_by_edge.get(edge_index, [])
+        source_polygons = [
+            polygon
+            for polygon in adjacent_polygons
+            if bool(original_attribute.data[polygon.index].value)
+        ]
+        groove_polygons = [
+            polygon
+            for polygon in adjacent_polygons
+            if not bool(original_attribute.data[polygon.index].value)
+        ]
+        owner_ids = _one_hot_ids(
+            mesh.attributes,
+            BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX,
+            edge_index,
+        )
+        patch_ids = _one_hot_ids(
+            mesh.attributes,
+            BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX,
+            edge_index,
+        )
+        direct_owner_ids = (
+            _one_hot_ids(
+                mesh.attributes,
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                groove_polygons[0].index,
+            )
+            if len(groove_polygons) == 1
+            else set()
+        )
+        direct_patch_ids = (
+            _one_hot_ids(
+                mesh.attributes,
+                SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                source_polygons[0].index,
+            )
+            if len(source_polygons) == 1
+            else set()
+        )
+        aggregate_direct_owner_ids = {
+            owner_id
+            for polygon in groove_polygons
+            for owner_id in _one_hot_ids(
+                mesh.attributes,
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                polygon.index,
+            )
+        }
+        aggregate_direct_patch_ids = {
+            patch_id
+            for polygon in source_polygons
+            for patch_id in _one_hot_ids(
+                mesh.attributes,
+                SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                polygon.index,
+            )
+        }
+        accepted_face_fan = (
+            len(adjacent_polygons) >= 2
+            and len(source_polygons) >= 1
+            and len(groove_polygons) >= 1
+            and aggregate_direct_owner_ids == owner_ids
+            and aggregate_direct_patch_ids == patch_ids
+        )
+        if (
+            len(owner_ids) != 1
+            or len(patch_ids) != 1
+            or not (
+                (
+                    len(adjacent_polygons) == 2
+                    and len(source_polygons) == 1
+                    and len(groove_polygons) == 1
+                    and direct_owner_ids == owner_ids
+                    and direct_patch_ids == patch_ids
+                )
+                or accepted_face_fan
+            )
+        ):
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_PROVENANCE_CONFLICT",
+                "Independent staging Boundary 的 direct Pipe/Patch provenance 不唯一或不一致",
+                {
+                    "pipe_ids": list(semantic_batch),
+                    "debug_edge_index": int(edge_index),
+                    "adjacent_face_count": len(adjacent_polygons),
+                    "source_face_count": len(source_polygons),
+                    "groove_face_count": len(groove_polygons),
+                    "owner_ids": sorted(owner_ids),
+                    "patch_ids": sorted(patch_ids),
+                    "direct_owner_ids": sorted(direct_owner_ids),
+                    "direct_patch_ids": sorted(direct_patch_ids),
+                },
+            )
+        owner_pipe_id = next(iter(owner_ids))
+        source_patch_id = next(iter(patch_ids))
+        if owner_pipe_id not in semantic_batch:
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_OWNER_OUTSIDE_BATCH",
+                "Boundary owner Pipe 不属于当前 semantic batch",
+                {
+                    "pipe_ids": list(semantic_batch),
+                    "owner_pipe_id": owner_pipe_id,
+                },
+            )
+        endpoint_records = sorted(
+            (
+                tuple(round(float(value), 8) for value in mesh.vertices[index].co),
+                vertex_topology_signatures[index],
+                int(index),
+            )
+            for index in edge.vertices
+        )
+        endpoints = [record[0] for record in endpoint_records]
+        endpoint_topology_signatures = [record[1] for record in endpoint_records]
+        endpoint_tokens = [
+            _stable_fingerprint(
+                {
+                    "plan_id": plan_id,
+                    "semantic_batch_key": list(semantic_batch),
+                    "coordinate": coordinate,
+                    "vertex_topology_signature": topology_signature,
+                }
+            )
+            for coordinate, topology_signature, _ in endpoint_records
+        ]
+        adjacent_face_signatures = sorted(
+            _stable_fingerprint(
+                {
+                    "role": role,
+                    "loop": _canonical_face_loop(mesh, polygon),
+                    "membership_id": membership_id,
+                }
+            )
+            for role, polygons, membership_id in (
+                ("SOURCE", source_polygons, source_patch_id),
+                ("GROOVE", groove_polygons, owner_pipe_id),
+            )
+            for polygon in polygons
+        )
+        stable_payload = {
+            "plan_id": plan_id,
+            "semantic_batch_key": list(semantic_batch),
+            "endpoints": endpoints,
+            "endpoint_topology_signatures": endpoint_topology_signatures,
+            "endpoint_tokens": endpoint_tokens,
+            "adjacent_face_signatures": adjacent_face_signatures,
+            "owner_pipe_id": owner_pipe_id,
+            "source_patch_id": source_patch_id,
+        }
+        semantic_base_id = _stable_fingerprint(stable_payload)
+        edge_id = semantic_base_id
+        record = {
+            "edge_id": edge_id,
+            "semantic_base_id": semantic_base_id,
+            **stable_payload,
+            "debug_edge_index": int(edge_index),
+        }
+        previous = record_by_edge_id.get(edge_id)
+        if previous is not None:
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_EDGE_ID_COLLISION",
+                "稳定 Boundary Edge ID 出现冲突",
+                {"edge_id": edge_id, "pipe_ids": list(semantic_batch)},
+            )
+        record_by_edge_id[edge_id] = record
+        records.append(record)
+    return tuple(sorted(records, key=lambda record: record["edge_id"]))
+
+
+# 读取 Preview 创建时冻结的 Pipe 合同，并用正式 Even-Thickness Pipe builder 重建 Mesh。
+# source_object/preview_plan/preview_parameters/collection: 当前有效 Preview、live 参数与临时输出 Collection；返回 groups、Pipe Objects、Pipe specs。
+def _build_preview_pipe_contract(
+    source_object,
+    preview_plan,
+    preview_parameters,
+    collection,
+):
+    radius = float(preview_parameters["radius"])
+    curve_object = owned_preview_curve(source_object)
+    raw_contract = (
+        curve_object.get(FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG)
+        if curve_object is not None
+        else None
+    )
+    try:
+        contract = json.loads(raw_contract) if isinstance(raw_contract, str) else None
+    except (TypeError, ValueError) as error:
+        raise BatchedChamferError(
+            "PREVIEW_PIPE_CONTRACT_INVALID",
+            "Preview Curve Pipe 合同不是有效 JSON",
+            {},
+        ) from error
+    try:
+        contract_radius = float(contract.get("radius", -1.0)) if isinstance(contract, dict) else -1.0
+    except (TypeError, ValueError) as error:
+        raise BatchedChamferError(
+            "PREVIEW_PIPE_CONTRACT_INVALID",
+            "Preview Pipe 合同 radius 无效",
+            {},
+        ) from error
+    if (
+        not isinstance(contract, dict)
+        or contract.get("contract") != "GN_PREVIEW_PIPE_V1"
+        or contract.get("plan_id") != preview_plan.plan_id
+        or contract.get("source_fingerprint") != source_fingerprint(source_object)
+        or abs(contract_radius - radius) > 1.0e-10
+        or not isinstance(contract.get("pipes"), list)
+    ):
+        raise BatchedChamferError(
+            "PREVIEW_PIPE_CONTRACT_MISMATCH",
+            "Preview Curve 缺少与当前 ChamferPlan 匹配的 Pipe 合同",
+            {"curve_object": curve_object.name if curve_object else None},
+        )
+    strands_by_id = {strand.strand_id: strand for strand in preview_plan.feature_strands}
+    groups = []
+    for pipe_record in contract["pipes"]:
+        try:
+            group = {
+                "pipe_id": int(pipe_record["pipe_id"]),
+                "edge_indices": [int(index) for index in pipe_record["edge_indices"]],
+                "vertex_indices": [int(index) for index in pipe_record["vertex_indices"]],
+                "points": [Vector(point) for point in pipe_record["points"]],
+                "is_cyclic": bool(pipe_record["is_cyclic"]),
+                "start_endpoint_class": str(pipe_record["start_endpoint_class"]),
+                "end_endpoint_class": str(pipe_record["end_endpoint_class"]),
+                "start_extension": float(pipe_record["start_extension"]),
+                "end_extension": float(pipe_record["end_extension"]),
+            }
+            strand = strands_by_id[pipe_record["strand_id"]]
+        except (KeyError, TypeError, ValueError) as error:
+            raise BatchedChamferError(
+                "PREVIEW_PIPE_CONTRACT_INVALID",
+                "Preview Pipe 合同字段不完整",
+                {},
+            ) from error
+        group["patch_pair_by_edge"] = [
+            tuple(owner_pair) for owner_pair in strand.owner_surface_pairs
+        ]
+        group["convexity_by_edge"] = [
+            int(value) for value in strand.convexity_by_edge
+        ]
+        group["patch_pair"] = group["patch_pair_by_edge"][0]
+        group["convexity"] = group["convexity_by_edge"][0]
+        if tuple(pipe_record.get("ordered_edge_keys", ())) != strand.ordered_edge_keys:
+            raise BatchedChamferError(
+                "PREVIEW_PIPE_CONTRACT_MISMATCH",
+                "Preview Pipe 合同与 ChamferPlan strand 不一致",
+                {"pipe_id": group["pipe_id"]},
+            )
+        group["strand"] = strand
+        groups.append(group)
+    pipe_ids = [group["pipe_id"] for group in groups]
+    strand_ids = [group["strand"].strand_id for group in groups]
+    if (
+        len(groups) != len(preview_plan.feature_strands)
+        or len(pipe_ids) != len(set(pipe_ids))
+        or len(strand_ids) != len(set(strand_ids))
+    ):
+        raise BatchedChamferError(
+            "PREVIEW_PIPE_MAPPING_INCOMPLETE",
+            "Preview Pipe 合同与 FeatureStrand 不是一一对应",
+            {"group_count": len(groups), "strand_count": len(preview_plan.feature_strands)},
+        )
+    pipes = []
+    specs = []
+    for group in sorted(groups, key=lambda item: item["pipe_id"]):
+        pipe = _build_pipe_mesh(
+            source_object,
+            group,
+            radius,
+            4,
+            collection,
+        )
+        risks = _mesh_risk_counts(pipe)
+        if risks["non_manifold"] or risks["zero_area"]:
+            raise BatchedChamferError(
+                "PREVIEW_PIPE_INVALID",
+                f"正式 Preview Pipe {group['pipe_id']} 不是有效 closed manifold",
+                {
+                    "pipe_id": int(group["pipe_id"]),
+                    "topology": risks,
+                },
+            )
+        strand = group["strand"]
+        specs.append(
+            PreviewPipeSpec(
+                pipe_id=int(group["pipe_id"]),
+                strand_id=strand.strand_id,
+                ordered_edge_keys=strand.ordered_edge_keys,
+                cyclic=bool(group["is_cyclic"]),
+                start_endpoint_class=str(group.get("start_endpoint_class", "CYCLIC")),
+                end_endpoint_class=str(group.get("end_endpoint_class", "CYCLIC")),
+                start_extension=round(float(group.get("start_extension", 0.0)), 10),
+                end_extension=round(float(group.get("end_extension", 0.0)), 10),
+                mesh_fingerprint=_mesh_fingerprint(pipe.data),
+                vertex_count=len(pipe.data.vertices),
+                edge_count=len(pipe.data.edges),
+                face_count=len(pipe.data.polygons),
+            )
+        )
+        pipes.append(pipe)
+    return groups, tuple(pipes), tuple(specs)
+
+
+# 验证 Preview Plan RailChains 完整覆盖每条 FeatureStrand 的实际 owner Surface patches。
+# preview_plan/groups: immutable ChamferPlan 与正式 Preview groups；覆盖不完整时 fail-closed。
+def _validate_plan_rail_coverage(preview_plan, groups):
+    rail_patches_by_strand = {}
+    for rail in preview_plan.rail_chains:
+        if not rail.side.startswith("OWNER_PATCH:"):
+            continue
+        rail_patches_by_strand.setdefault(rail.owner_strand_id, set()).add(
+            int(rail.side.removeprefix("OWNER_PATCH:"))
+        )
+    missing = []
+    for group in groups:
+        strand_id = group["strand"].strand_id
+        required_patches = {
+            int(patch_id)
+            for span in _group_patch_pair_spans(group)
+            for patch_id in span["patch_pair"]
+        }
+        missing_patches = sorted(
+            required_patches - rail_patches_by_strand.get(strand_id, set())
+        )
+        if missing_patches:
+            missing.append(
+                {
+                    "pipe_id": int(group["pipe_id"]),
+                    "strand_id": strand_id,
+                    "missing_patch_ids": missing_patches,
+                }
+            )
+    if missing:
+        raise BatchedChamferError(
+            "PREVIEW_PLAN_RAIL_COVERAGE_INCOMPLETE",
+            "ChamferPlan RailChains 未覆盖正式 Preview FeatureStrand 的实际 Patch spans",
+            {"missing_rail_bindings": missing},
+        )
+
+
+# 从正式 Pipe Mesh 计算稳定 overlap graph，owner 使用 Pipe ID 而非临时列表位置。
+# pipes: 带 PIPE_ID_TAG 的正式 Pipe Objects；返回 pipe-id pairs。
+def _pipe_overlap_pairs(pipes):
+    trees = {}
+    bounds = {}
+    for pipe in pipes:
+        pipe_id = int(pipe[PIPE_ID_TAG])
+        pipe_bmesh = bmesh.new()
+        pipe_bmesh.from_mesh(pipe.data)
+        trees[pipe_id] = BVHTree.FromBMesh(pipe_bmesh)
+        pipe_bmesh.free()
+        bounds[pipe_id] = _pipe_bounds(pipe)
+    pairs = []
+    pipe_ids = sorted(trees)
+    for offset, pipe_id_a in enumerate(pipe_ids):
+        for pipe_id_b in pipe_ids[offset + 1 :]:
+            if (
+                _bounds_overlap(bounds[pipe_id_a], bounds[pipe_id_b])
+                and trees[pipe_id_a].overlap(trees[pipe_id_b])
+            ):
+                pairs.append((pipe_id_a, pipe_id_b))
+    return tuple(pairs)
+
+
+# 把 Pipe-Pipe BVH overlap triangles 投影到两条 FeatureStrand，建立局部 normalized u setback intervals。
+# groups/pipes/overlap_pairs/radius: Preview groups、正式 Pipes、overlap graph 与半径；返回 pipe_id→expanded u intervals。
+def _pipe_overlap_setback_intervals(groups, pipes, overlap_pairs, radius):
+    group_by_pipe_id = {int(group["pipe_id"]): group for group in groups}
+    pipe_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
+    triangles_by_pipe_id = {}
+    for pipe_id, pipe in pipe_by_id.items():
+        pipe_bmesh = bmesh.new()
+        pipe_bmesh.from_mesh(pipe.data)
+        bmesh.ops.triangulate(pipe_bmesh, faces=list(pipe_bmesh.faces))
+        pipe_bmesh.faces.ensure_lookup_table()
+        triangles_by_pipe_id[pipe_id] = (
+            pipe_bmesh,
+            [tuple(vertex.co.copy() for vertex in face.verts) for face in pipe_bmesh.faces],
+            BVHTree.FromBMesh(pipe_bmesh),
+        )
+
+    def strand_parameter(group, point):
+        points = group["points"]
+        segment_count = len(points) if group["is_cyclic"] else len(points) - 1
+        lengths = [
+            (points[(index + 1) % len(points)] - points[index]).length
+            for index in range(segment_count)
+        ]
+        total = sum(lengths)
+        cumulative = 0.0
+        best = None
+        for index, length in enumerate(lengths):
+            start = points[index]
+            end = points[(index + 1) % len(points)]
+            segment = end - start
+            factor = (
+                max(0.0, min(1.0, (point - start).dot(segment) / segment.length_squared))
+                if segment.length_squared > 1.0e-20
+                else 0.0
+            )
+            closest = start.lerp(end, factor)
+            candidate = ((point - closest).length_squared, (cumulative + length * factor) / total)
+            if best is None or candidate < best:
+                best = candidate
+            cumulative += length
+        return best[1], total
+
+    # 合并相交或相邻的 normalized u intervals，消除同一 intersection component
+    # 在多个 triangle pair 上留下的重复区间。
+    def merge_intervals(intervals):
+        merged = []
+        for start, end in sorted(intervals):
+            start = max(0.0, min(1.0, float(start)))
+            end = max(0.0, min(1.0, float(end)))
+            if end < start:
+                start, end = end, start
+            if merged and start <= merged[-1][1] + 1.0e-8:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return merged
+
+    # 对 cyclic FeatureStrand 取最短 circular covering arc，避免 seam 两侧的一处
+    # overlap 被错误扩张成 [0, 1]。
+    def expanded_component_intervals(group, parameters, strand_length):
+        margin_u = min(0.25, radius * 2.0 / max(strand_length, radius))
+        if not group["is_cyclic"] or len(parameters) < 2:
+            return [[
+                max(0.0, min(parameters) - margin_u),
+                min(1.0, max(parameters) + margin_u),
+            ]]
+        ordered = sorted(float(value) % 1.0 for value in parameters)
+        gaps = [
+            (
+                (ordered[(index + 1) % len(ordered)] - ordered[index]) % 1.0,
+                index,
+            )
+            for index in range(len(ordered))
+        ]
+        _, gap_index = max(gaps)
+        arc_start = ordered[(gap_index + 1) % len(ordered)]
+        arc_end = ordered[gap_index]
+        arc_length = (arc_end - arc_start) % 1.0
+        if arc_length + margin_u * 2.0 >= 1.0 - 1.0e-8:
+            return [[0.0, 1.0]]
+        expanded_start = (arc_start - margin_u) % 1.0
+        expanded_end = (arc_end + margin_u) % 1.0
+        if expanded_start <= expanded_end:
+            return [[expanded_start, expanded_end]]
+        return [[0.0, expanded_end], [expanded_start, 1.0]]
+
+    intervals_by_pipe_id = {pipe_id: [] for pipe_id in pipe_by_id}
+    try:
+        for pipe_id_a, pipe_id_b in overlap_pairs:
+            _, triangles_a, tree_a = triangles_by_pipe_id[pipe_id_a]
+            _, triangles_b, tree_b = triangles_by_pipe_id[pipe_id_b]
+            overlap_records = tree_a.overlap(tree_b)
+            adjacency = {}
+            for triangle_a, triangle_b in overlap_records:
+                node_a = ("A", int(triangle_a))
+                node_b = ("B", int(triangle_b))
+                adjacency.setdefault(node_a, set()).add(node_b)
+                adjacency.setdefault(node_b, set()).add(node_a)
+            remaining = set(adjacency)
+            components = []
+            while remaining:
+                component = set()
+                stack = [min(remaining)]
+                while stack:
+                    node = stack.pop()
+                    if node in component:
+                        continue
+                    component.add(node)
+                    stack.extend(adjacency.get(node, ()) - component)
+                remaining -= component
+                components.append(component)
+            for component in components:
+                for pipe_id, side, triangles, group in (
+                    (pipe_id_a, "A", triangles_a, group_by_pipe_id[pipe_id_a]),
+                    (pipe_id_b, "B", triangles_b, group_by_pipe_id[pipe_id_b]),
+                ):
+                    triangle_indices = sorted(
+                        index for node_side, index in component if node_side == side
+                    )
+                    samples = [
+                        sum(triangles[index], Vector()) / 3.0
+                        for index in triangle_indices
+                    ]
+                    if not samples:
+                        continue
+                    parameters_and_lengths = [
+                        strand_parameter(group, point) for point in samples
+                    ]
+                    intervals_by_pipe_id[pipe_id].extend(
+                        expanded_component_intervals(
+                            group,
+                            [item[0] for item in parameters_and_lengths],
+                            parameters_and_lengths[0][1],
+                        )
+                    )
+    finally:
+        for pipe_bmesh, _, _ in triangles_by_pipe_id.values():
+            pipe_bmesh.free()
+    return {
+        pipe_id: tuple(tuple(interval) for interval in merge_intervals(intervals))
+        for pipe_id, intervals in intervals_by_pipe_id.items()
+    }
+
+
+# 对 closed Pipe Mesh 统一 outward winding，避免大半径 multi-component Exact Boolean 将 inside/outside 解释反转。
+# pipes: 正式 Preview Pipe Objects；原地规范负 signed volume 的 Face winding，并返回翻转 Pipe IDs。
+def _normalize_pipe_winding(pipes):
+    flipped_pipe_ids = []
+    for pipe in pipes:
+        pipe_bmesh = bmesh.new()
+        pipe_bmesh.from_mesh(pipe.data)
+        signed_volume = pipe_bmesh.calc_volume(signed=True)
+        if signed_volume < 0.0:
+            bmesh.ops.reverse_faces(pipe_bmesh, faces=list(pipe_bmesh.faces))
+            pipe_bmesh.to_mesh(pipe.data)
+            pipe.data.update()
+            flipped_pipe_ids.append(int(pipe[PIPE_ID_TAG]))
+        pipe_bmesh.free()
+    return tuple(sorted(flipped_pipe_ids))
+
+
+# 把现有 greedy coloring 提升为稳定 Pipe ID 合同，并 fail-closed 验证 complete/independent。
+# pipe_ids/overlap_pairs: 全部 Pipe IDs 与无向冲突边；返回 color batches。
+def color_pipe_overlap_graph(pipe_ids, overlap_pairs):
+    raw_pipe_ids = tuple(pipe_ids)
+    normalized_pipe_ids = tuple(sorted({int(pipe_id) for pipe_id in raw_pipe_ids}))
+    if len(normalized_pipe_ids) != len(raw_pipe_ids):
+        raise ValueError("Pipe IDs must be unique")
+    index_by_pipe_id = {
+        pipe_id: index for index, pipe_id in enumerate(normalized_pipe_ids)
+    }
+    normalized_pairs = set()
+    for raw_a, raw_b in overlap_pairs:
+        pipe_id_a = int(raw_a)
+        pipe_id_b = int(raw_b)
+        if pipe_id_a == pipe_id_b:
+            raise ValueError("Pipe overlap graph cannot contain self edges")
+        if pipe_id_a not in index_by_pipe_id or pipe_id_b not in index_by_pipe_id:
+            raise ValueError("Pipe overlap graph references an unknown Pipe ID")
+        normalized_pairs.add(tuple(sorted((pipe_id_a, pipe_id_b))))
+    index_pairs = {
+        tuple(index_by_pipe_id[pipe_id] for pipe_id in pair)
+        for pair in normalized_pairs
+    }
+    index_batches = _non_overlapping_pipe_batches(
+        len(normalized_pipe_ids),
+        index_pairs,
+    )
+    batches = tuple(
+        tuple(sorted(normalized_pipe_ids[index] for index in batch))
+        for batch in index_batches
+    )
+    flattened = [pipe_id for batch in batches for pipe_id in batch]
+    if sorted(flattened) != list(normalized_pipe_ids) or len(flattened) != len(set(flattened)):
+        raise RuntimeError("Pipe coloring does not consume every Pipe exactly once")
+    if any(
+        tuple(sorted((pipe_id_a, pipe_id_b))) in normalized_pairs
+        for batch in batches
+        for offset, pipe_id_a in enumerate(batch)
+        for pipe_id_b in batch[offset + 1 :]
+    ):
+        raise RuntimeError("Pipe coloring produced an overlapping batch")
+    return batches
+
+
+# 计算不依赖 batch 执行方向的 graph/cut probe fingerprint。
+# pipe_specs/overlap_pairs/color_batches: Preview Pipe 合同与确定 coloring；返回稳定 SHA-256。
+def batch_order_invariance_fingerprint(pipe_specs, overlap_pairs, color_batches):
+    semantic_batches = sorted(
+        tuple(sorted(batch)) for batch in color_batches
+    )
+    payload = {
+        "pipe_fingerprints": {
+            str(spec.pipe_id): spec.mesh_fingerprint
+            for spec in sorted(pipe_specs, key=lambda item: item.pipe_id)
+        },
+        "overlap_pairs": sorted(tuple(sorted(pair)) for pair in overlap_pairs),
+        "semantic_batches": semantic_batches,
+    }
+    forward = _stable_fingerprint(payload)
+    reverse_payload = {
+        **payload,
+        "semantic_batches": sorted(
+            tuple(sorted(batch)) for batch in reversed(color_batches)
+        ),
+    }
+    reverse = _stable_fingerprint(reverse_payload)
+    if forward != reverse:
+        raise RuntimeError("Canonical batch signature depends on execution order")
+    return forward
+
+
+# 在同一个 source duplicate 上依次 Apply 每个互斥 Cutter batch，并保留每步 canonical topology 签名。
+# source_object/pipes/color_batches/probe_collection/order_label: Preview source、正式 Pipes、批次顺序、临时 Collection 与方向标签；返回真实 Cut 记录。
+def _run_exact_boolean_cut_order(
+    source_object,
+    pipes,
+    color_batches,
+    probe_collection,
+    order_label,
+):
+    pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
+    working_mesh = source_object.data.copy()
+    working_object = source_object.copy()
+    working_object.data = working_mesh
+    working_object.name = f"{source_object.name}_BatchedCut_{order_label}"
+    for modifier in tuple(working_object.modifiers):
+        working_object.modifiers.remove(modifier)
+    probe_collection.objects.link(working_object)
+    records = []
+    try:
+        for batch_index, batch in enumerate(color_batches):
+            try:
+                batch_pipes = [pipes_by_id[int(pipe_id)] for pipe_id in batch]
+            except KeyError as error:
+                raise BatchedChamferError(
+                    "BATCH_PIPE_MISSING",
+                    "真实 Cut probe 引用了不存在的 Pipe",
+                    {"batch": list(batch)},
+                ) from error
+            cutter = _build_joined_cutter_mesh(
+                batch_pipes,
+                source_object,
+                probe_collection,
+                f"{order_label}_{batch_index}",
+            )
+            modifier = working_object.modifiers.new(
+                f"HST Batched Cut {order_label} {batch_index}",
+                type="BOOLEAN",
+            )
+            modifier.operation = "DIFFERENCE"
+            modifier.solver = "EXACT"
+            modifier.use_self = True
+            modifier.use_hole_tolerant = True
+            modifier.operand_type = "OBJECT"
+            modifier.object = cutter
+            with bpy.context.temp_override(
+                object=working_object,
+                active_object=working_object,
+                selected_objects=[working_object],
+                selected_editable_objects=[working_object],
+            ):
+                bpy.ops.object.modifier_apply(modifier=modifier.name)
+            if not working_object.data.vertices or not working_object.data.polygons:
+                raise BatchedChamferError(
+                    "BATCH_CUT_EMPTY",
+                    "真实 Cut probe 生成了空 Mesh",
+                    {
+                        "order": order_label,
+                        "batch_index": batch_index,
+                        "pipe_ids": list(batch),
+                    },
+                )
+            records.append(
+                {
+                    "batch_index": batch_index,
+                    "pipe_ids": list(batch),
+                    "cut_signature": _mesh_fingerprint(working_object.data),
+                    "vertex_count": len(working_object.data.vertices),
+                    "edge_count": len(working_object.data.edges),
+                    "face_count": len(working_object.data.polygons),
+                }
+            )
+        return {
+            "order": order_label,
+            "cut_batch_count": len(records),
+            "records": records,
+            "final_cut_signature": _mesh_fingerprint(working_object.data),
+        }
+    finally:
+        if bpy.data.objects.get(working_object.name) == working_object:
+            bpy.data.objects.remove(working_object, do_unlink=True)
+        if (
+            working_mesh.users == 0
+            and bpy.data.meshes.get(working_mesh.name) == working_mesh
+        ):
+            bpy.data.meshes.remove(working_mesh)
+
+
+# 从同一份 source 为每个 batch 生成独立 Cut staging Mesh，供后续 Rail/regular-core ledger 消费。
+# source_object/pipes/color_batches/probe_collection: Preview source、正式 Pipes、coloring 与临时 Collection；返回与 batch 顺序无关的 staging 诊断。
+def _run_independent_batch_cut_probe(
+    source_object,
+    pipes,
+    color_batches,
+    probe_collection,
+    plan_id,
+    execution_order,
+):
+    pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
+    _synchronize_cutter_membership_schema(pipes)
+    records = []
+    semantic_batches = tuple(tuple(sorted(batch)) for batch in color_batches)
+    ordered_batches = (
+        semantic_batches
+        if execution_order == "FORWARD"
+        else tuple(reversed(semantic_batches))
+    )
+    for semantic_batch in ordered_batches:
+        working_mesh = source_object.data.copy()
+        working_object = source_object.copy()
+        working_object.data = working_mesh
+        working_object.name = f"{source_object.name}_BatchedIndependentCut"
+        for modifier in tuple(working_object.modifiers):
+            working_object.modifiers.remove(modifier)
+        probe_collection.objects.link(working_object)
+        try:
+            batch_pipes = [pipes_by_id[pipe_id] for pipe_id in semantic_batch]
+            source_patch_ids = _source_face_patch_ids(source_object)
+            _mark_original_faces(working_object, source_patch_ids)
+            _initialize_source_membership_schema(
+                working_object.data,
+                batch_pipes,
+                source_patch_ids,
+            )
+            cutter = _build_joined_cutter_mesh(
+                batch_pipes,
+                source_object,
+                probe_collection,
+                "INDEPENDENT_" + "_".join(str(pipe_id) for pipe_id in semantic_batch),
+            )
+            _initialize_boundary_witness_schema(
+                working_object.data,
+                (cutter,),
+                source_patch_ids,
+            )
+            _seed_cutter_edge_owner_witnesses((cutter,))
+            modifier = working_object.modifiers.new(
+                "HST Batched Independent Cut",
+                type="BOOLEAN",
+            )
+            modifier.operation = "DIFFERENCE"
+            modifier.solver = "EXACT"
+            modifier.use_self = True
+            modifier.use_hole_tolerant = True
+            modifier.operand_type = "OBJECT"
+            modifier.object = cutter
+            with bpy.context.temp_override(
+                object=working_object,
+                active_object=working_object,
+                selected_objects=[working_object],
+                selected_editable_objects=[working_object],
+            ):
+                bpy.ops.object.modifier_apply(modifier=modifier.name)
+            boundary_witnesses = _mark_boolean_boundary_witnesses(working_object)
+            if boundary_witnesses["conflicting_edge_indices"]:
+                raise BatchedChamferError(
+                    "BATCH_BOUNDARY_OWNER_CONFLICT",
+                    "Independent staging Boundary 存在多 Pipe/Patch owner",
+                    {
+                        "pipe_ids": list(semantic_batch),
+                        **boundary_witnesses,
+                    },
+                )
+            boundary_records = _extract_staging_boundary_records(
+                working_object,
+                plan_id,
+                semantic_batch,
+                boundary_witnesses["marked_edge_indices"],
+            )
+            if not working_object.data.vertices or not working_object.data.polygons:
+                pipe_diagnostics = []
+                for pipe in batch_pipes:
+                    pipe_bmesh = bmesh.new()
+                    pipe_bmesh.from_mesh(pipe.data)
+                    signed_volume = pipe_bmesh.calc_volume(signed=True)
+                    pipe_bmesh.free()
+                    minimum, maximum = _pipe_bounds(pipe)
+                    pipe_diagnostics.append(
+                        {
+                            "pipe_id": int(pipe[PIPE_ID_TAG]),
+                            "signed_volume": round(float(signed_volume), 10),
+                            "minimum": [round(float(value), 8) for value in minimum],
+                            "maximum": [round(float(value), 8) for value in maximum],
+                            "topology": _mesh_risk_counts(pipe),
+                        }
+                    )
+                raise BatchedChamferError(
+                    "BATCH_CUT_EMPTY",
+                    "独立 Cut staging 生成了空 Mesh",
+                    {
+                        "pipe_ids": list(semantic_batch),
+                        "pipe_diagnostics": pipe_diagnostics,
+                    },
+                )
+            records.append(
+                {
+                    "pipe_ids": list(semantic_batch),
+                    "cut_signature": _mesh_fingerprint(working_object.data),
+                    "vertex_count": len(working_object.data.vertices),
+                    "edge_count": len(working_object.data.edges),
+                    "face_count": len(working_object.data.polygons),
+                    "boundary_witnesses": boundary_witnesses,
+                    "boundary_records": _canonical_boundary_records(boundary_records),
+                }
+            )
+        finally:
+            if bpy.data.objects.get(working_object.name) == working_object:
+                bpy.data.objects.remove(working_object, do_unlink=True)
+            if (
+                working_mesh.users == 0
+                and bpy.data.meshes.get(working_mesh.name) == working_mesh
+            ):
+                bpy.data.meshes.remove(working_mesh)
+    canonical_records = tuple(sorted(records, key=lambda record: record["pipe_ids"]))
+    return {
+        "execution_order": execution_order,
+        "cut_signature": _stable_fingerprint(canonical_records),
+        "records": canonical_records,
+    }
+
+
+# 在真实 staging Boundary records 上校验 Pipe→Strand→Plan Rail 绑定，并建立未消费初始 ledger。
+# preview_plan/pipe_specs/staging_records: 当前 Plan、Preview Pipe 合同和 independent staging 记录；返回完整 Boundary universe ledger。
+def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
+    strand_id_by_pipe_id = {
+        int(spec.pipe_id): spec.strand_id
+        for spec in pipe_specs
+    }
+    rail_by_owner_patch = {
+        (rail.owner_strand_id, int(rail.side.removeprefix("OWNER_PATCH:"))): rail
+        for rail in preview_plan.rail_chains
+        if rail.side.startswith("OWNER_PATCH:")
+    }
+    ledger = []
+    edge_ids = set()
+    for staging_record in staging_records:
+        semantic_batch = tuple(int(value) for value in staging_record["pipe_ids"])
+        for boundary in staging_record["boundary_records"]:
+            edge_id = boundary["edge_id"]
+            if edge_id in edge_ids:
+                raise BatchedChamferError(
+                    "BATCH_BOUNDARY_EDGE_DUPLICATE",
+                    "不同 independent staging 重复声明同一稳定 Boundary Edge",
+                    {"edge_id": edge_id},
+                )
+            edge_ids.add(edge_id)
+            pipe_id = int(boundary["owner_pipe_id"])
+            patch_id = int(boundary["source_patch_id"])
+            strand_id = strand_id_by_pipe_id.get(pipe_id)
+            rail = rail_by_owner_patch.get((strand_id, patch_id))
+            if strand_id is None:
+                raise BatchedChamferError(
+                    "BATCH_BOUNDARY_PLAN_BINDING_MISSING",
+                    "真实 Boundary Edge 无法绑定 Preview Plan RailChain",
+                    {
+                        "edge_id": edge_id,
+                        "pipe_id": pipe_id,
+                        "strand_id": strand_id,
+                        "patch_id": patch_id,
+                    },
+                )
+            if rail is None:
+                rail_id = f"rail:{strand_id}:patch:{patch_id}:OUTSIDE_PLAN"
+                ledger.append(
+                    {
+                        "edge_id": edge_id,
+                        "semantic_batch_key": list(semantic_batch),
+                        "pipe_id": pipe_id,
+                        "strand_id": strand_id,
+                        "source_patch_id": patch_id,
+                        "rail_id": rail_id,
+                        "endpoints": boundary["endpoints"],
+                        "endpoint_tokens": boundary["endpoint_tokens"],
+                        "classification": "UNCLASSIFIED",
+                        "consumer_id": None,
+                        "outside_plan_owner_patch": True,
+                    }
+                )
+                continue
+            ledger.append(
+                {
+                    "edge_id": edge_id,
+                    "semantic_batch_key": list(semantic_batch),
+                    "pipe_id": pipe_id,
+                    "strand_id": strand_id,
+                    "source_patch_id": patch_id,
+                    "rail_id": rail.rail_id,
+                    "endpoints": boundary["endpoints"],
+                    "endpoint_tokens": boundary["endpoint_tokens"],
+                    "classification": "UNCLASSIFIED",
+                    "consumer_id": None,
+                }
+            )
+    return tuple(sorted(ledger, key=lambda entry: entry["edge_id"]))
+
+
+# 把同一 Pipe/Patch 的真实 Boundary Edge 拆为有序 open/cyclic chains，保留稳定 Edge identity。
+# ledger_entries: 已绑定 Plan RailChain 的真实 Boundary ledger 子集；返回有序 chain records。
+def _ordered_stable_boundary_chains(ledger_entries):
+    entries_by_id = {entry["edge_id"]: entry for entry in ledger_entries}
+    edge_ids_by_endpoint = {}
+    coordinate_by_endpoint = {}
+    for entry in ledger_entries:
+        for endpoint, coordinate in zip(
+            entry["endpoint_tokens"],
+            entry["endpoints"],
+        ):
+            edge_ids_by_endpoint.setdefault(endpoint, set()).add(entry["edge_id"])
+            coordinate_by_endpoint[endpoint] = tuple(coordinate)
+    special_endpoints = {
+        endpoint
+        for endpoint, edge_ids in edge_ids_by_endpoint.items()
+        if len(edge_ids) != 2
+    }
+    remaining = set(entries_by_id)
+    chains = []
+    for start in sorted(special_endpoints):
+        for seed_edge_id in sorted(edge_ids_by_endpoint[start] & remaining):
+            edge_ids = []
+            coordinates = [coordinate_by_endpoint[start]]
+            current = start
+            edge_id = seed_edge_id
+            while edge_id in remaining:
+                remaining.remove(edge_id)
+                edge_ids.append(edge_id)
+                endpoints = entries_by_id[edge_id]["endpoint_tokens"]
+                following = endpoints[1] if endpoints[0] == current else endpoints[0]
+                coordinates.append(coordinate_by_endpoint[following])
+                current = following
+                if current in special_endpoints:
+                    break
+                candidates = sorted(edge_ids_by_endpoint[current] & remaining)
+                if len(candidates) != 1:
+                    break
+                edge_id = candidates[0]
+            if edge_ids:
+                chains.append(
+                    {
+                        "edge_ids": edge_ids,
+                        "coordinates": coordinates,
+                        "is_cyclic": False,
+                        "branch_setback": True,
+                    }
+                )
+    remaining = set(entries_by_id)
+    consumed_edge_ids = {
+        edge_id for chain in chains for edge_id in chain["edge_ids"]
+    }
+    remaining -= consumed_edge_ids
+    while remaining:
+        component = set()
+        stack = [min(remaining)]
+        while stack:
+            edge_id = stack.pop()
+            if edge_id in component:
+                continue
+            component.add(edge_id)
+            for endpoint in entries_by_id[edge_id]["endpoint_tokens"]:
+                stack.extend(edge_ids_by_endpoint[endpoint] - component)
+        remaining -= component
+        component_degrees = {
+            endpoint: len(edge_ids & component)
+            for endpoint, edge_ids in edge_ids_by_endpoint.items()
+            if edge_ids & component
+        }
+        open_endpoints = sorted(
+            endpoint for endpoint, degree in component_degrees.items() if degree == 1
+        )
+        if len(open_endpoints) not in {0, 2}:
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_CHAIN_INVALID",
+                "Boundary component 不是单一 open/cyclic chain",
+                {
+                    "edge_count": len(component),
+                    "open_endpoint_count": len(open_endpoints),
+                },
+            )
+        cyclic = not open_endpoints
+        start = open_endpoints[0] if open_endpoints else min(component_degrees)
+        ordered_edge_ids = []
+        ordered_coordinates = [coordinate_by_endpoint[start]]
+        current = start
+        previous_edge_id = None
+        while len(ordered_edge_ids) < len(component):
+            candidates = sorted(
+                (edge_ids_by_endpoint[current] & component)
+                - ({previous_edge_id} if previous_edge_id else set())
+                - set(ordered_edge_ids)
+            )
+            if not candidates:
+                break
+            edge_id = candidates[0]
+            endpoints = entries_by_id[edge_id]["endpoint_tokens"]
+            following = endpoints[1] if endpoints[0] == current else endpoints[0]
+            ordered_edge_ids.append(edge_id)
+            if not cyclic or following != start:
+                ordered_coordinates.append(coordinate_by_endpoint[following])
+            previous_edge_id = edge_id
+            current = following
+        if len(ordered_edge_ids) != len(component):
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_CHAIN_DISCONNECTED",
+                "Boundary component 无法形成连续稳定序列",
+                {"component_edge_count": len(component)},
+            )
+        chains.append(
+            {
+                "edge_ids": ordered_edge_ids,
+                "coordinates": ordered_coordinates,
+                "is_cyclic": cyclic,
+            }
+        )
+    return tuple(
+        sorted(
+            chains,
+            key=lambda chain: (chain["is_cyclic"], chain["edge_ids"]),
+        )
+    )
+
+
+# 为每个 Plan RailChain 从真实 staging ledger 建立有序 Boundary chains。
+# boundary_ledger: 尚未分类但 owner 已验证的完整 universe；返回 rail_id→chains。
+def _build_staging_rail_chains(boundary_ledger):
+    entries_by_rail = {}
+    for entry in boundary_ledger:
+        entries_by_rail.setdefault(entry["rail_id"], []).append(entry)
+    return {
+        rail_id: _ordered_stable_boundary_chains(entries)
+        for rail_id, entries in sorted(entries_by_rail.items())
+    }
+
+
+# 对 cyclic rail 选择方向与 seam，使其与另一侧 rail 的 normalized correspondence 成本最小。
+# left_chain/right_chain: 同一 Plan StripCorrespondence 的两个 cyclic chains；返回对齐后的右侧 chain。
+def _align_cyclic_stable_chain(left_chain, right_chain):
+    aligned_coordinates, _ = _aligned_rail_correspondence(
+        {
+            "coordinates": [Vector(point) for point in left_chain["coordinates"]],
+            "is_cyclic": True,
+        },
+        {
+            "coordinates": [Vector(point) for point in right_chain["coordinates"]],
+            "is_cyclic": True,
+        },
+    )
+    aligned_coordinates = [
+        tuple(round(float(value), 8) for value in point)
+        for point in aligned_coordinates
+    ]
+    edge_id_by_directed_endpoints = {}
+    for edge_id, start, end in zip(
+        right_chain["edge_ids"],
+        right_chain["coordinates"],
+        right_chain["coordinates"][1:] + right_chain["coordinates"][:1],
+    ):
+        edge_id_by_directed_endpoints[(tuple(start), tuple(end))] = edge_id
+        edge_id_by_directed_endpoints[(tuple(end), tuple(start))] = edge_id
+    aligned_edge_ids = [
+        edge_id_by_directed_endpoints[(start, end)]
+        for start, end in zip(
+            aligned_coordinates,
+            aligned_coordinates[1:] + aligned_coordinates[:1],
+        )
+    ]
+    return {
+        "edge_ids": aligned_edge_ids,
+        "coordinates": aligned_coordinates,
+        "is_cyclic": True,
+    }
+
+
+# 返回点到 open/cyclic polyline 的最短距离。
+# point/coordinates/cyclic: 查询点、polyline 坐标与闭合标记；返回非负距离。
+def _point_to_polyline_distance(point, coordinates, cyclic):
+    point = Vector(point)
+    coordinates = [Vector(value) for value in coordinates]
+    segment_count = len(coordinates) if cyclic else len(coordinates) - 1
+    distances = []
+    for index in range(segment_count):
+        start = coordinates[index]
+        end = coordinates[(index + 1) % len(coordinates)]
+        segment = end - start
+        if segment.length_squared <= 1.0e-20:
+            distances.append((point - start).length)
+            continue
+        factor = max(0.0, min(1.0, (point - start).dot(segment) / segment.length_squared))
+        distances.append((point - start.lerp(end, factor)).length)
+    return min(distances, default=float("inf"))
+
+
+# 从 cyclic Boundary chain 提取与对侧 rail 满足 Chamfer width 的连续 open runs。
+# chain/opposite_chain/radius: 当前真实 rail、对侧 rail 与 Chamfer radius；返回保留稳定 Edge IDs 的 runs。
+def _cyclic_width_core_runs(chain, opposite_chain, radius):
+    coordinates = [Vector(point) for point in chain["coordinates"]]
+    opposite_coordinates = [Vector(point) for point in opposite_chain["coordinates"]]
+    expected_width = radius * (2.0 ** 0.5)
+    tolerance = max(radius * 0.60, 1.0e-5)
+    owned = []
+    for index in range(len(chain["edge_ids"])):
+        midpoint = (
+            coordinates[index]
+            + coordinates[(index + 1) % len(coordinates)]
+        ) * 0.5
+        distance = _point_to_polyline_distance(
+            midpoint,
+            opposite_coordinates,
+            True,
+        )
+        owned.append(abs(distance - expected_width) <= tolerance)
+    if not any(owned):
+        return ()
+    if all(owned):
+        return (chain,)
+    first_unowned = owned.index(False)
+    offset = first_unowned + 1
+    edge_ids = chain["edge_ids"][offset:] + chain["edge_ids"][:offset]
+    rotated_coordinates = chain["coordinates"][offset:] + chain["coordinates"][:offset]
+    rotated_owned = owned[offset:] + owned[:offset]
+    runs = []
+    run_edge_ids = []
+    run_coordinates = []
+    for edge_id, start, is_owned in zip(
+        edge_ids,
+        rotated_coordinates,
+        rotated_owned,
+    ):
+        if is_owned:
+            if not run_edge_ids:
+                run_coordinates = [start]
+            run_edge_ids.append(edge_id)
+            edge_index = chain["edge_ids"].index(edge_id)
+            run_coordinates.append(
+                chain["coordinates"][(edge_index + 1) % len(chain["coordinates"])]
+            )
+        elif run_edge_ids:
+            runs.append(
+                {
+                    "edge_ids": run_edge_ids,
+                    "coordinates": run_coordinates,
+                    "is_cyclic": False,
+                }
+            )
+            run_edge_ids = []
+            run_coordinates = []
+    if run_edge_ids:
+        runs.append(
+            {
+                "edge_ids": run_edge_ids,
+                "coordinates": run_coordinates,
+                "is_cyclic": False,
+            }
+        )
+    return tuple(runs)
+
+
+# 返回 Boundary chain 每个有序点在 FeatureStrand 上的 normalized u；cyclic 时解开 seam。
+# chain/strand: 当前真实 Boundary chain 与权威 Plan FeatureStrand；返回定向 chain 与逐点连续 u。
+def _chain_strand_parameters(chain, strand):
+    feature_points = [
+        Vector(tuple(float(value) for value in key.split("#", 1)[0].split(",")))
+        for key in strand.ordered_vertex_keys
+    ]
+    segment_count = len(feature_points) if strand.cyclic else len(feature_points) - 1
+    lengths = [
+        (feature_points[(index + 1) % len(feature_points)] - feature_points[index]).length
+        for index in range(segment_count)
+    ]
+    total_length = sum(lengths)
+
+    def parameter(point):
+        best = None
+        cumulative = 0.0
+        for index, length in enumerate(lengths):
+            start = feature_points[index]
+            end = feature_points[(index + 1) % len(feature_points)]
+            segment = end - start
+            factor = (
+                max(0.0, min(1.0, (Vector(point) - start).dot(segment) / segment.length_squared))
+                if segment.length_squared > 1.0e-20
+                else 0.0
+            )
+            closest = start.lerp(end, factor)
+            candidate = ((Vector(point) - closest).length_squared, cumulative + length * factor)
+            if best is None or candidate < best:
+                best = candidate
+            cumulative += length
+        return best[1] / total_length if total_length > 1.0e-12 else 0.0
+
+    raw_parameters = [parameter(point) for point in chain["coordinates"]]
+
+    def unwrap(values):
+        if not strand.cyclic or len(values) < 2:
+            return list(values)
+        unwrapped = [float(values[0])]
+        for value in values[1:]:
+            previous = unwrapped[-1]
+            candidates = [float(value) + offset for offset in range(-2, 3)]
+            unwrapped.append(min(candidates, key=lambda candidate: abs(candidate - previous)))
+        return unwrapped
+
+    forward_parameters = unwrap(raw_parameters)
+    reverse_parameters = unwrap(list(reversed(raw_parameters)))
+    forward_backtrack = sum(
+        max(0.0, left - right)
+        for left, right in zip(forward_parameters, forward_parameters[1:])
+    )
+    reverse_backtrack = sum(
+        max(0.0, left - right)
+        for left, right in zip(reverse_parameters, reverse_parameters[1:])
+    )
+    forward_span = abs(forward_parameters[-1] - forward_parameters[0])
+    reverse_span = abs(reverse_parameters[-1] - reverse_parameters[0])
+    reverse = (reverse_backtrack, -reverse_span) < (forward_backtrack, -forward_span)
+    if reverse:
+        return (
+            {
+                **chain,
+                "edge_ids": list(reversed(chain["edge_ids"])),
+                "coordinates": list(reversed(chain["coordinates"])),
+            },
+            reverse_parameters,
+        )
+    return chain, forward_parameters
+
+
+# 按 FeatureStrand 的 normalized u 统一 open rail run 方向。
+# chain/strand: 当前 open rail 与权威 Plan FeatureStrand；返回 direction 与端点 u。
+def _orient_chain_to_strand(chain, strand):
+    oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+    return oriented_chain, parameters[0], parameters[-1]
+
+
+# 把 overlap intervals 投影到 chain 的真实 Edge，并按 Edge 保守切为 regular/setback runs。
+# chain/strand/forbidden_intervals: 有序 Boundary chain、Plan strand 与 normalized u 禁区；返回两类 maximal runs。
+def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
+    oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+    cyclic_edge_count = len(oriented_chain["edge_ids"])
+    if oriented_chain["is_cyclic"]:
+        coordinates = list(oriented_chain["coordinates"])
+        if len(parameters) == cyclic_edge_count:
+            raw_delta = (parameters[0] - parameters[-1])
+            if strand.cyclic:
+                raw_delta = min(
+                    (raw_delta + offset for offset in range(-2, 3)),
+                    key=abs,
+                )
+            parameters = [*parameters, parameters[-1] + raw_delta]
+            coordinates = [*coordinates, coordinates[0]]
+        else:
+            coordinates = list(oriented_chain["coordinates"])
+    else:
+        coordinates = list(oriented_chain["coordinates"])
+    intervals = [tuple(map(float, interval)) for interval in forbidden_intervals]
+
+    def edge_is_forbidden(start_u, end_u):
+        lower, upper = sorted((float(start_u), float(end_u)))
+        offsets = range(-2, 3) if strand.cyclic else (0,)
+        return any(
+            max(lower, start + offset) <= min(upper, end + offset) + 1.0e-10
+            for start, end in intervals
+            for offset in offsets
+        )
+
+    forbidden = [
+        edge_is_forbidden(parameters[index], parameters[index + 1])
+        for index in range(len(oriented_chain["edge_ids"]))
+    ]
+    runs = {"regular": [], "setback": []}
+    if not forbidden:
+        return runs
+    if oriented_chain["is_cyclic"] and all(value == forbidden[0] for value in forbidden):
+        key = "setback" if forbidden[0] else "regular"
+        if key == "regular":
+            run_coordinates = coordinates
+            run_parameters = parameters
+            run_is_cyclic = False
+        else:
+            run_coordinates = coordinates[:-1]
+            run_parameters = parameters[:-1]
+            run_is_cyclic = True
+        runs[key].append(
+            {
+                **oriented_chain,
+                "coordinates": run_coordinates,
+                "u_values": run_parameters,
+                "u_interval": [min(parameters), max(parameters)],
+                "is_cyclic": run_is_cyclic,
+            }
+        )
+        return runs
+    start_offset = 0
+    if oriented_chain["is_cyclic"]:
+        start_offset = next(
+            index + 1
+            for index, (current, following) in enumerate(
+                zip(forbidden, forbidden[1:] + forbidden[:1])
+            )
+            if current != following
+        )
+    edge_ids = (
+        oriented_chain["edge_ids"][start_offset:]
+        + oriented_chain["edge_ids"][:start_offset]
+    )
+    rotated_coordinates = coordinates[start_offset:-1] + coordinates[: start_offset + 1]
+    rotated_parameters = parameters[start_offset:-1]
+    if oriented_chain["is_cyclic"]:
+        rotated_parameters = list(rotated_parameters)
+        for value in parameters[: start_offset + 1]:
+            candidate = float(value)
+            if strand.cyclic:
+                candidate = min(
+                    (candidate + offset for offset in range(-2, 3)),
+                    key=lambda item: abs(item - rotated_parameters[-1]),
+                )
+            rotated_parameters.append(candidate)
+    else:
+        rotated_parameters = list(parameters)
+    rotated_forbidden = forbidden[start_offset:] + forbidden[:start_offset]
+    run_start = 0
+    for index in range(1, len(edge_ids) + 1):
+        if index < len(edge_ids) and rotated_forbidden[index] == rotated_forbidden[run_start]:
+            continue
+        key = "setback" if rotated_forbidden[run_start] else "regular"
+        run_parameters = rotated_parameters[run_start : index + 1]
+        runs[key].append(
+            {
+                "edge_ids": edge_ids[run_start:index],
+                "coordinates": rotated_coordinates[run_start : index + 1],
+                "is_cyclic": False,
+                "u_values": run_parameters,
+                "u_interval": [min(run_parameters), max(run_parameters)],
+                "branch_setback": bool(oriented_chain.get("branch_setback")),
+            }
+        )
+        run_start = index
+    return runs
+
+
+# 把已按 u 定向的 open run 保守裁到共同区间；不在真实 Boundary Edge 内插点。
+# run/interval: 含逐点 u 的 open run 与目标 unwrapped u interval；返回连续子 run 或 None。
+def _trim_open_run_to_interval(run, interval):
+    parameters = [float(value) for value in run["u_values"]]
+    candidates = []
+    for shift in range(-2, 3):
+        lower, upper = sorted(
+            (float(interval[0]) + shift, float(interval[1]) + shift)
+        )
+        selected = [
+            index
+            for index, (start_u, end_u) in enumerate(
+                zip(parameters, parameters[1:])
+            )
+            if lower - 1.0e-10
+            <= (start_u + end_u) * 0.5
+            <= upper + 1.0e-10
+        ]
+        if selected:
+            candidates.append((len(selected), -abs(shift), selected))
+    if not candidates:
+        return None
+    _, _, selected = max(candidates)
+    if selected != list(range(selected[0], selected[-1] + 1)):
+        return None
+    start = selected[0]
+    end = selected[-1] + 1
+    return {
+        **run,
+        "edge_ids": run["edge_ids"][start:end],
+        "coordinates": run["coordinates"][start : end + 1],
+        "u_values": parameters[start : end + 1],
+        "u_interval": [parameters[start], parameters[end]],
+        "is_cyclic": False,
+    }
+
+
+# 求两个 unwrapped u intervals 的最大共同区间，并允许 cyclic strand 的整数 seam shift。
+# left_interval/right_interval/cyclic: 左右区间与 strand 闭合标记；返回共同区间和右侧 shift。
+def _common_run_interval(left_interval, right_interval, cyclic):
+    shifts = range(-2, 3) if cyclic else (0,)
+    candidates = []
+    left_start, left_end = sorted(map(float, left_interval))
+    for shift in shifts:
+        right_start, right_end = sorted(
+            (float(right_interval[0]) + shift, float(right_interval[1]) + shift)
+        )
+        start = max(left_start, right_start)
+        end = min(left_end, right_end)
+        if end - start > 1.0e-8:
+            candidates.append((end - start, -abs(shift), start, end, shift))
+    if not candidates:
+        return None
+    _, _, start, end, shift = max(candidates)
+    return [start, end], shift
+
+
+# 仅从 open run 两端删除完整 Boundary Edges，禁止内部删点或坐标插值。
+# run/start_trim/end_trim: 当前 run 与两端裁剪 Edge 数；返回裁剪后 run 或 None。
+def _trim_run_endpoint_edges(run, start_trim, end_trim):
+    edge_count = len(run["edge_ids"])
+    if start_trim < 0 or end_trim < 0 or start_trim + end_trim >= edge_count:
+        return None
+    edge_end = edge_count - end_trim
+    point_end = edge_end + 1
+    parameters = list(run["u_values"])[start_trim:point_end]
+    return {
+        **run,
+        "edge_ids": list(run["edge_ids"])[start_trim:edge_end],
+        "coordinates": list(run["coordinates"])[start_trim:point_end],
+        "u_values": parameters,
+        "u_interval": [parameters[0], parameters[-1]],
+    }
+
+
+# 对 rail pair 执行 monotonic 与双向 width envelope 硬门禁。
+# left_run/right_run/radius: 已裁到共同 atom component 的两侧 runs 与半径；返回 guard diagnostics。
+def _regular_pair_width_guard(left_run, right_run, radius):
+    left_parameters = [float(value) for value in left_run["u_values"]]
+    right_parameters = [float(value) for value in right_run["u_values"]]
+    if any(
+        following + 1.0e-8 < current
+        for values in (left_parameters, right_parameters)
+        for current, following in zip(values, values[1:])
+    ):
+        return {"status": "FAIL", "reason": "NON_MONOTONIC_U"}
+    left_coordinates = [Vector(point) for point in left_run["coordinates"]]
+    right_coordinates = [Vector(point) for point in right_run["coordinates"]]
+    expected_width = radius * (2.0 ** 0.5)
+    width_tolerance = max(radius * 0.60, 1.0e-5)
+    width_errors = [
+        abs(
+            _point_to_polyline_distance(point, right_coordinates, False)
+            - expected_width
+        )
+        for point in left_coordinates
+    ] + [
+        abs(
+            _point_to_polyline_distance(point, left_coordinates, False)
+            - expected_width
+        )
+        for point in right_coordinates
+    ]
+    inlier_ratio = (
+        sum(error <= width_tolerance for error in width_errors) / len(width_errors)
+        if width_errors
+        else 0.0
+    )
+    sorted_errors = sorted(width_errors)
+    percentile_error = (
+        sorted_errors[max(0, int(len(sorted_errors) * 0.90) - 1)]
+        if sorted_errors
+        else float("inf")
+    )
+    return {
+        "status": (
+            "PASS"
+            if inlier_ratio >= 0.90 and percentile_error <= width_tolerance
+            else "FAIL"
+        ),
+        "reason": (
+            None
+            if inlier_ratio >= 0.90 and percentile_error <= width_tolerance
+            else "PAIR_WIDTH_ENVELOPE_FAILED"
+        ),
+        "width_inlier_ratio": inlier_ratio,
+        "width_percentile_error": percentile_error,
+        "maximum_width_error": max(width_errors, default=0.0),
+        "width_tolerance": width_tolerance,
+        "left_start": [round(float(value), 8) for value in left_coordinates[0]],
+        "left_end": [round(float(value), 8) for value in left_coordinates[-1]],
+        "right_start": [round(float(value), 8) for value in right_coordinates[0]],
+        "right_end": [round(float(value), 8) for value in right_coordinates[-1]],
+    }
+
+
+# 统计 Strip topology 中的零面积 Face，候选提交前即拒绝退化几何。
+# strip/left_coordinates/right_coordinates: build_chamfer_strip 结果与两侧点列；返回零面积 Face 数。
+def _strip_zero_area_face_count(strip, left_coordinates, right_coordinates):
+    zero_area_face_count = 0
+    for face in strip.get("faces", ()):
+        coordinates = [
+            left_coordinates[index] if side == "A" else right_coordinates[index]
+            for side, index in face
+        ]
+        normal = Vector()
+        for index, coordinate in enumerate(coordinates):
+            normal += coordinate.cross(
+                coordinates[(index + 1) % len(coordinates)]
+            )
+        if normal.length <= 1.0e-12:
+            zero_area_face_count += 1
+    return zero_area_face_count
+
+
+# 只接受最小总 Edge 裁剪量下唯一通过 width guard 的 pair，避免按距离成本猜结果。
+# left_run/right_run/radius: atom component 两侧 runs 与半径；返回唯一 pair 或拒绝诊断。
+def _conservative_endpoint_pair_trim(left_run, right_run, radius):
+    maximum_left_trim = min(4, max(0, len(left_run["edge_ids"]) - 1))
+    maximum_right_trim = min(4, max(0, len(right_run["edge_ids"]) - 1))
+    maximum_total_trim = maximum_left_trim * 2 + maximum_right_trim * 2
+    for total_trim in range(maximum_total_trim + 1):
+        passing = []
+        for left_start_trim in range(maximum_left_trim + 1):
+            for left_end_trim in range(maximum_left_trim + 1):
+                for right_start_trim in range(maximum_right_trim + 1):
+                    for right_end_trim in range(maximum_right_trim + 1):
+                        trim_counts = (
+                            left_start_trim,
+                            left_end_trim,
+                            right_start_trim,
+                            right_end_trim,
+                        )
+                        if sum(trim_counts) != total_trim:
+                            continue
+                        trimmed_left = _trim_run_endpoint_edges(
+                            left_run,
+                            left_start_trim,
+                            left_end_trim,
+                        )
+                        trimmed_right = _trim_run_endpoint_edges(
+                            right_run,
+                            right_start_trim,
+                            right_end_trim,
+                        )
+                        if trimmed_left is None or trimmed_right is None:
+                            continue
+                        guard = _regular_pair_width_guard(
+                            trimmed_left,
+                            trimmed_right,
+                            radius,
+                        )
+                        if guard["status"] != "PASS":
+                            continue
+                        left_coordinates = [
+                            Vector(point) for point in trimmed_left["coordinates"]
+                        ]
+                        right_coordinates = [
+                            Vector(point) for point in trimmed_right["coordinates"]
+                        ]
+                        strip = build_chamfer_strip(
+                            left_coordinates,
+                            right_coordinates,
+                            terminal_constraints={
+                                "start_pairs": [(0, 0)],
+                                "end_pairs": [
+                                    (
+                                        len(trimmed_left["coordinates"]) - 1,
+                                        len(trimmed_right["coordinates"]) - 1,
+                                    )
+                                ],
+                                "expected_width": radius * (2.0 ** 0.5),
+                                "maximum_width_error": max(radius * 0.60, 1.0e-5),
+                            },
+                        )
+                        if (
+                            strip["diagnostics"]["status"] == "PASS"
+                            and strip["faces"]
+                            and _strip_zero_area_face_count(
+                                strip,
+                                left_coordinates,
+                                right_coordinates,
+                            )
+                            == 0
+                        ):
+                            passing.append(
+                                {
+                                    "left": trimmed_left,
+                                    "right": trimmed_right,
+                                    "trim_counts": trim_counts,
+                                    "strip_diagnostics": strip["diagnostics"],
+                                    **guard,
+                                }
+                            )
+        unique_by_edges = {
+            (
+                tuple(candidate["left"]["edge_ids"]),
+                tuple(candidate["right"]["edge_ids"]),
+            ): candidate
+            for candidate in passing
+        }
+        if len(unique_by_edges) == 1:
+            return next(iter(unique_by_edges.values())), None
+        if len(unique_by_edges) > 1:
+            return None, {
+                "reason": "ENDPOINT_TRIM_AMBIGUOUS",
+                "minimum_total_trim": total_trim,
+                "candidate_count": len(unique_by_edges),
+            }
+    return None, {
+        "reason": "PAIR_WIDTH_ENVELOPE_FAILED",
+        "untrimmed_guard": _regular_pair_width_guard(
+            left_run,
+            right_run,
+            radius,
+        ),
+    }
+
+
+# 检查两条 open runs 是否可作为同一 regular u component 的唯一匹配候选。
+# left_run/right_run/strand/radius: 两侧真实 runs、Plan strand 与 Chamfer radius；返回候选和拒绝诊断。
+def _regular_run_pair_evaluation(left_run, right_run, strand, radius):
+    common = _common_run_interval(
+        left_run["u_interval"],
+        right_run["u_interval"],
+        strand.cyclic,
+    )
+    if common is None:
+        return None, {"reason": "U_INTERVAL_DISJOINT"}
+    common_interval, right_shift = common
+    trimmed_left = _trim_open_run_to_interval(left_run, common_interval)
+    shifted_right = {
+        **right_run,
+        "u_values": [float(value) + right_shift for value in right_run["u_values"]],
+        "u_interval": [
+            float(right_run["u_interval"][0]) + right_shift,
+            float(right_run["u_interval"][1]) + right_shift,
+        ],
+    }
+    trimmed_right = _trim_open_run_to_interval(shifted_right, common_interval)
+    if trimmed_left is None or trimmed_right is None:
+        return None, {
+            "reason": "COMMON_INTERVAL_HAS_NO_REAL_EDGE",
+            "common_u_interval": common_interval,
+        }
+    if len(trimmed_left["coordinates"]) < 2 or len(trimmed_right["coordinates"]) < 2:
+        return None, {
+            "reason": "COMMON_INTERVAL_TOO_SHORT",
+            "common_u_interval": common_interval,
+        }
+    trimmed_pair, trim_rejection = _conservative_endpoint_pair_trim(
+        trimmed_left,
+        trimmed_right,
+        radius,
+    )
+    if trimmed_pair is None:
+        return None, {
+            **trim_rejection,
+            "common_u_interval": common_interval,
+            "left_edge_count": len(trimmed_left["edge_ids"]),
+            "right_edge_count": len(trimmed_right["edge_ids"]),
+        }
+    trimmed_left = trimmed_pair["left"]
+    trimmed_right = trimmed_pair["right"]
+    diagnostics = {
+        "common_u_interval": common_interval,
+        "left_edge_count": len(trimmed_left["edge_ids"]),
+        "right_edge_count": len(trimmed_right["edge_ids"]),
+        "endpoint_trim_counts": list(trimmed_pair["trim_counts"]),
+        "width_inlier_ratio": trimmed_pair["width_inlier_ratio"],
+        "width_percentile_error": trimmed_pair["width_percentile_error"],
+        "maximum_width_error": trimmed_pair["maximum_width_error"],
+        "width_tolerance": trimmed_pair["width_tolerance"],
+        "left_start": trimmed_pair["left_start"],
+        "left_end": trimmed_pair["left_end"],
+        "right_start": trimmed_pair["right_start"],
+        "right_end": trimmed_pair["right_end"],
+    }
+    return (
+        {
+            "left": trimmed_left,
+            "right": trimmed_right,
+            **diagnostics,
+        },
+        None,
+    )
+
+
+# 兼容调用 seam，仅返回已通过硬门禁的 regular run pair。
+# left_run/right_run/strand/radius: 两侧 runs、Plan strand 与半径；返回候选或 None。
+def _regular_run_pair_candidate(left_run, right_run, strand, radius):
+    candidate, _ = _regular_run_pair_evaluation(
+        left_run,
+        right_run,
+        strand,
+        radius,
+    )
+    return candidate
+
+
+# 枚举 bipartite component 的 perfect matching，最多保留两个以判断唯一性。
+# left_ids/right_ids/candidates: 稳定 run IDs 与候选 pair map；返回零、一个或两个 matching。
+def _unique_perfect_matching(left_ids, right_ids, candidates):
+    left_ids = tuple(sorted(left_ids))
+    right_ids = set(right_ids)
+    solutions = []
+
+    def visit(offset, available_right, matching):
+        if len(solutions) >= 2:
+            return
+        if offset == len(left_ids):
+            if not available_right:
+                solutions.append(tuple(matching))
+            return
+        left_id = left_ids[offset]
+        for right_id in sorted(
+            right_ids & available_right & set(candidates.get(left_id, ()))
+        ):
+            visit(
+                offset + 1,
+                available_right - {right_id},
+                [*matching, (left_id, right_id)],
+            )
+
+    visit(0, right_ids, [])
+    return tuple(solutions)
+
+
+# 把同一 rail、u 连续且共享语义 component 的 fragments 确定性拼成 maximal run。
+# runs: 同一 correspondence side 的 open runs；返回按稳定 Edge IDs 排序的 stitched runs。
+def _stitch_contiguous_regular_runs(runs):
+    remaining = [dict(run) for run in runs]
+    tolerance = 2.0e-3
+    changed = True
+    while changed:
+        changed = False
+        for left_index, left in enumerate(remaining):
+            if changed:
+                break
+            for right_index, right in enumerate(remaining):
+                if left_index == right_index:
+                    continue
+                u_gap = abs(
+                    float(left["u_values"][-1]) - float(right["u_values"][0])
+                )
+                point_gap = (
+                    Vector(left["coordinates"][-1])
+                    - Vector(right["coordinates"][0])
+                ).length
+                if u_gap > tolerance or point_gap > 1.0e-4:
+                    continue
+                merged = {
+                    **left,
+                    "edge_ids": [*left["edge_ids"], *right["edge_ids"]],
+                    "coordinates": [
+                        *left["coordinates"],
+                        *right["coordinates"][1:],
+                    ],
+                    "u_values": [*left["u_values"], *right["u_values"][1:]],
+                    "u_interval": [
+                        float(left["u_values"][0]),
+                        float(right["u_values"][-1]),
+                    ],
+                }
+                for index in sorted((left_index, right_index), reverse=True):
+                    remaining.pop(index)
+                remaining.append(merged)
+                changed = True
+                break
+    return tuple(sorted(remaining, key=lambda run: run["edge_ids"]))
+
+
+# 沿真实 Edge 边界把一条 run 裁为多个 normalized u intervals，避免长侧 fragment
+# 同时覆盖对侧多个已分段 fragments 时形成非一一候选。
+# run/intervals: 当前 open run 与目标 u intervals；返回互不重叠的真实子 runs。
+def _partition_run_by_intervals(run, intervals):
+    parameters = [float(value) for value in run["u_values"]]
+    edge_midpoints = [
+        (start + end) * 0.5
+        for start, end in zip(parameters, parameters[1:])
+    ]
+    buckets = []
+    for midpoint in edge_midpoints:
+        matching = []
+        for interval_index, interval in enumerate(intervals):
+            for shift in range(-2, 3):
+                lower, upper = sorted(
+                    (float(interval[0]) + shift, float(interval[1]) + shift)
+                )
+                if lower - 1.0e-10 <= midpoint <= upper + 1.0e-10:
+                    matching.append((interval_index, shift))
+                    break
+        buckets.append(min(matching) if matching else None)
+    fragments = []
+    start = 0
+    for index in range(1, len(buckets) + 1):
+        if index < len(buckets) and buckets[index] == buckets[start]:
+            continue
+        if buckets[start] is not None:
+            fragment_parameters = parameters[start : index + 1]
+            fragments.append(
+                {
+                    **run,
+                    "edge_ids": run["edge_ids"][start:index],
+                    "coordinates": run["coordinates"][start : index + 1],
+                    "u_values": fragment_parameters,
+                    "u_interval": [
+                        fragment_parameters[0],
+                        fragment_parameters[-1],
+                    ],
+                }
+            )
+        start = index
+    return tuple(fragments)
+
+
+# 若一个长 fragment 覆盖多个互不相交的对侧 fragments，则按对侧 intervals 确定性拆分长侧。
+# left_runs/right_runs: 同一 Plan atom 两侧 runs；返回共同 component 粒度的两侧 fragments。
+def _balance_regular_run_fragments(left_runs, right_runs, cyclic):
+    balanced_left = []
+    right_intervals = [run["u_interval"] for run in right_runs]
+    for run in left_runs:
+        overlapping = [
+            interval
+            for interval in right_intervals
+            if _common_run_interval(run["u_interval"], interval, cyclic) is not None
+        ]
+        balanced_left.extend(
+            _partition_run_by_intervals(run, overlapping)
+            if len(overlapping) > 1
+            else (run,)
+        )
+    balanced_right = []
+    left_intervals = [run["u_interval"] for run in balanced_left]
+    for run in right_runs:
+        overlapping = [
+            interval
+            for interval in left_intervals
+            if _common_run_interval(run["u_interval"], interval, cyclic) is not None
+        ]
+        balanced_right.extend(
+            _partition_run_by_intervals(run, overlapping)
+            if len(overlapping) > 1
+            else (run,)
+        )
+    return tuple(balanced_left), tuple(balanced_right)
+
+
+# 对单个 Plan correspondence 的多条 open rail runs 建立唯一 component matching。
+# correspondence/left_runs/right_runs/strand/radius: 语义 pair 与局部 regular runs；返回 matched pairs 和诊断。
+def _match_regular_run_components(
+    correspondence,
+    left_runs,
+    right_runs,
+    strand,
+    radius,
+):
+    left_runs = _stitch_contiguous_regular_runs(left_runs)
+    right_runs = _stitch_contiguous_regular_runs(right_runs)
+    left_runs, right_runs = _balance_regular_run_fragments(
+        left_runs,
+        right_runs,
+        strand.cyclic,
+    )
+    left_by_id = {
+        _stable_fingerprint(run["edge_ids"]): run for run in left_runs
+    }
+    right_by_id = {
+        _stable_fingerprint(run["edge_ids"]): run for run in right_runs
+    }
+    candidate_records = {}
+    rejected_candidate_records = {}
+    adjacency_left = {run_id: set() for run_id in left_by_id}
+    adjacency_right = {run_id: set() for run_id in right_by_id}
+    for left_id, left_run in sorted(left_by_id.items()):
+        for right_id, right_run in sorted(right_by_id.items()):
+            candidate, rejection = _regular_run_pair_evaluation(
+                left_run,
+                right_run,
+                strand,
+                radius,
+            )
+            if candidate is None:
+                if rejection.get("reason") != "U_INTERVAL_DISJOINT":
+                    rejected_candidate_records.setdefault(left_id, {})[
+                        right_id
+                    ] = rejection
+                continue
+            candidate_records[(left_id, right_id)] = candidate
+            adjacency_left[left_id].add(right_id)
+            adjacency_right[right_id].add(left_id)
+    matched = []
+    unresolved = []
+    visited_left = set()
+    visited_right = set()
+    for seed_side, seed_id in [
+        *(("L", run_id) for run_id in sorted(left_by_id)),
+        *(("R", run_id) for run_id in sorted(right_by_id)),
+    ]:
+        if (seed_side == "L" and seed_id in visited_left) or (
+            seed_side == "R" and seed_id in visited_right
+        ):
+            continue
+        component_left = set()
+        component_right = set()
+        stack = [(seed_side, seed_id)]
+        while stack:
+            side, run_id = stack.pop()
+            if side == "L":
+                if run_id in component_left:
+                    continue
+                component_left.add(run_id)
+                stack.extend(("R", value) for value in adjacency_left[run_id])
+            else:
+                if run_id in component_right:
+                    continue
+                component_right.add(run_id)
+                stack.extend(("L", value) for value in adjacency_right[run_id])
+        visited_left |= component_left
+        visited_right |= component_right
+        solutions = (
+            _unique_perfect_matching(
+                component_left,
+                component_right,
+                adjacency_left,
+            )
+            if len(component_left) == len(component_right)
+            else ()
+        )
+        if len(solutions) != 1:
+            unresolved.append(
+                {
+                    "correspondence_id": correspondence.correspondence_id,
+                    "left_run_ids": sorted(component_left),
+                    "right_run_ids": sorted(component_right),
+                    "solution_count_capped": len(solutions),
+                    "left_runs": [
+                        {
+                            "run_id": run_id,
+                            "edge_count": len(left_by_id[run_id]["edge_ids"]),
+                            "u_interval": [
+                                round(float(value), 10)
+                                for value in left_by_id[run_id]["u_interval"]
+                            ],
+                            "candidate_right_run_ids": sorted(
+                                adjacency_left[run_id]
+                            ),
+                            "rejected_right_runs": {
+                                right_id: rejected_candidate_records.get(
+                                    run_id,
+                                    {},
+                                )[right_id]
+                                for right_id in sorted(
+                                    rejected_candidate_records.get(run_id, {})
+                                )
+                            },
+                        }
+                        for run_id in sorted(component_left)
+                    ],
+                    "right_runs": [
+                        {
+                            "run_id": run_id,
+                            "edge_count": len(right_by_id[run_id]["edge_ids"]),
+                            "u_interval": [
+                                round(float(value), 10)
+                                for value in right_by_id[run_id]["u_interval"]
+                            ],
+                            "candidate_left_run_ids": sorted(
+                                adjacency_right[run_id]
+                            ),
+                            "rejected_left_runs": {
+                                left_id: rejected_candidate_records.get(
+                                    left_id,
+                                    {},
+                                )[run_id]
+                                for left_id in sorted(left_by_id)
+                                if run_id
+                                in rejected_candidate_records.get(left_id, {})
+                            },
+                        }
+                        for run_id in sorted(component_right)
+                    ],
+                    "reason": (
+                        "NO_PERFECT_MATCHING"
+                        if not solutions
+                        else "AMBIGUOUS_PERFECT_MATCHING"
+                    ),
+                }
+            )
+            continue
+        for left_id, right_id in solutions[0]:
+            matched.append(
+                {
+                    "left_run_id": left_id,
+                    "right_run_id": right_id,
+                    **candidate_records[(left_id, right_id)],
+                }
+            )
+    return tuple(matched), tuple(unresolved)
+
+
+# 从已唯一匹配并裁切的真实 rail runs 生成 Strip Faces 与 ledger 消费记录。
+# correspondence/match/pipe_id/radius/ledger_by_edge_id: 语义 pair、唯一 matching、owner Pipe、半径与 ledger；返回 record 或失败诊断。
+def _build_regular_record_from_match(
+    correspondence,
+    match,
+    pipe_id,
+    radius,
+    ledger_by_edge_id,
+):
+    left_core = match["left"]
+    right_core = match["right"]
+    left_open = [Vector(point) for point in left_core["coordinates"]]
+    right_open = [Vector(point) for point in right_core["coordinates"]]
+    if len(left_open) < 2 or len(right_open) < 2:
+        return None, {"reason": "REGULAR_COMPONENT_TOO_SHORT"}
+    expected_width = radius * (2.0 ** 0.5)
+    width_tolerance = max(radius * 0.60, 1.0e-5)
+    strip = build_chamfer_strip(
+        left_open,
+        right_open,
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(len(left_open) - 1, len(right_open) - 1)],
+            "expected_width": expected_width,
+            "maximum_width_error": width_tolerance,
+        },
+    )
+    if strip["diagnostics"]["status"] != "PASS" or not strip["faces"]:
+        return None, {
+            "reason": "STRIP_GEOMETRY_GUARD",
+            "diagnostics": strip["diagnostics"],
+        }
+    consumer_id = (
+        f"regular:{correspondence.correspondence_id}:"
+        + _stable_fingerprint(
+            [left_core["edge_ids"], right_core["edge_ids"]]
+        )[:20]
+    )
+    coordinates_a = [
+        tuple(round(float(value), 8) for value in point) for point in left_open
+    ]
+    coordinates_b = [
+        tuple(round(float(value), 8) for value in point) for point in right_open
+    ]
+    faces = [
+        [
+            coordinates_a[index] if side == "A" else coordinates_b[index]
+            for side, index in face
+        ]
+        for face in strip["faces"]
+    ]
+    zero_area_face_count = 0
+    for face in faces:
+        coordinates = [Vector(point) for point in face]
+        normal = Vector()
+        for index, coordinate in enumerate(coordinates):
+            normal += coordinate.cross(
+                coordinates[(index + 1) % len(coordinates)]
+            )
+        if normal.length <= 1.0e-12:
+            zero_area_face_count += 1
+    if zero_area_face_count:
+        return None, {
+            "reason": "STRIP_ZERO_AREA_FACE",
+            "zero_area_face_count": zero_area_face_count,
+            "geometry_guard": strip["diagnostics"],
+        }
+    consumed_edge_ids = set(left_core["edge_ids"] + right_core["edge_ids"])
+    for edge_id in consumed_edge_ids:
+        if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
+            raise BatchedChamferError(
+                "REGULAR_CORE_LEDGER_CONFLICT",
+                "真实 Boundary Edge 被多个 Regular Strip 消费",
+                {"edge_id": edge_id},
+            )
+        ledger_by_edge_id[edge_id]["classification"] = "REGULAR_STRIP_CONSUMED"
+        ledger_by_edge_id[edge_id]["consumer_id"] = consumer_id
+    return (
+        {
+            "consumer_id": consumer_id,
+            "pipe_id": int(pipe_id),
+            "strand_id": correspondence.owner_strand_id,
+            "correspondence_id": correspondence.correspondence_id,
+            "patch_pair": list(correspondence.owner_surface_pair),
+            "left_edge_ids": left_core["edge_ids"],
+            "right_edge_ids": right_core["edge_ids"],
+            "u_interval": [
+                round(float(value), 10)
+                for value in match["common_u_interval"]
+            ],
+            "faces": faces,
+            "face_count": len(faces),
+            "geometry_guard": {
+                **strip["diagnostics"],
+                "pair_width_inlier_ratio": match["width_inlier_ratio"],
+                "pair_maximum_width_error": match["maximum_width_error"],
+            },
+        },
+        None,
+    )
+
+
+# 返回 Feature group 中每个连续 Patch pair span 的 normalized u intervals。
+# group: 已冻结 Preview Pipe group；返回 correspondence patch pair→可含 wrap 的 intervals。
+def _group_correspondence_u_intervals(group):
+    points = group["points"]
+    segment_count = len(group["edge_indices"])
+    lengths = [
+        (points[(index + 1) % len(points)] - points[index]).length
+        for index in range(segment_count)
+    ]
+    total = sum(lengths)
+    cumulative = [0.0]
+    for length in lengths:
+        cumulative.append(cumulative[-1] + length)
+    intervals_by_pair = {}
+    for span in _group_patch_pair_spans(group):
+        offsets = sorted(int(value) for value in span["edge_offsets"])
+        runs = []
+        start = offsets[0]
+        previous = offsets[0]
+        for offset in offsets[1:]:
+            if offset != previous + 1:
+                runs.append((start, previous + 1))
+                start = offset
+            previous = offset
+        runs.append((start, previous + 1))
+        intervals = [
+            [
+                cumulative[start] / total if total > 1.0e-12 else 0.0,
+                cumulative[end] / total if total > 1.0e-12 else 0.0,
+            ]
+            for start, end in runs
+        ]
+        intervals_by_pair.setdefault(tuple(span["patch_pair"]), []).extend(intervals)
+    return {
+        patch_pair: tuple(intervals)
+        for patch_pair, intervals in sorted(intervals_by_pair.items())
+    }
+
+
+# 从 Plan span 减去 overlap forbidden intervals，生成 canonical regular atoms。
+# span_intervals/forbidden_intervals/cyclic: Plan span、overlap intervals 与闭合标记；返回稳定 atom records。
+def _regular_plan_atoms(span_intervals, forbidden_intervals, cyclic):
+    base_segments = []
+    for start, end in span_intervals:
+        start = float(start)
+        end = float(end)
+        if cyclic and end < start:
+            base_segments.extend(((start, 1.0), (0.0, end)))
+        else:
+            base_segments.append(tuple(sorted((start, end))))
+    forbidden_segments = [tuple(sorted(map(float, interval))) for interval in forbidden_intervals]
+    atoms = []
+    for span_start, span_end in base_segments:
+        remaining = [(span_start, span_end)]
+        for forbidden_start, forbidden_end in forbidden_segments:
+            next_remaining = []
+            for current_start, current_end in remaining:
+                if forbidden_end <= current_start or forbidden_start >= current_end:
+                    next_remaining.append((current_start, current_end))
+                    continue
+                if current_start < forbidden_start:
+                    next_remaining.append((current_start, forbidden_start))
+                if forbidden_end < current_end:
+                    next_remaining.append((forbidden_end, current_end))
+            remaining = next_remaining
+        atoms.extend(remaining)
+    atoms = [
+        (round(float(start), 10), round(float(end), 10))
+        for start, end in atoms
+        if end - start > 1.0e-8
+    ]
+    if cyclic and len(atoms) > 1 and atoms[0][0] <= 1.0e-10 and atoms[-1][1] >= 1.0 - 1.0e-10:
+        wrapped = (atoms[-1][0], atoms[0][1] + 1.0)
+        atoms = [wrapped, *atoms[1:-1]]
+    return tuple(
+        {
+            "atom_id": _stable_fingerprint([start, end])[:20],
+            "u_interval": [start, end],
+            "cyclic": bool(cyclic),
+        }
+        for start, end in sorted(atoms)
+    )
+
+
+# 把 run 的 u lift 对齐到 Plan atom，并沿真实 Edge midpoint 裁入 atom。
+# run/atom/cyclic: Boundary run、Plan atom 与闭合标记；返回 canonical lift fragment 或 None。
+def _trim_run_to_plan_atom(run, atom, cyclic):
+    atom_start, atom_end = map(float, atom["u_interval"])
+    shifts = range(-2, 3) if cyclic else (0,)
+    best = None
+    for shift in shifts:
+        shifted_interval = [
+            float(run["u_interval"][0]) + shift,
+            float(run["u_interval"][1]) + shift,
+        ]
+        common = _common_run_interval(
+            shifted_interval,
+            [atom_start, atom_end],
+            False,
+        )
+        if common is None:
+            continue
+        common_interval, _ = common
+        candidate = (common_interval[1] - common_interval[0], -abs(shift), shift)
+        if best is None or candidate > best:
+            best = candidate
+    if best is None:
+        return None
+    shift = best[2]
+    shifted = {
+        **run,
+        "u_values": [float(value) + shift for value in run["u_values"]],
+        "u_interval": [
+            float(run["u_interval"][0]) + shift,
+            float(run["u_interval"][1]) + shift,
+        ],
+    }
+    trimmed = _trim_open_run_to_interval(
+        shifted,
+        [atom_start, atom_end],
+    )
+    if trimmed is None or not trimmed["edge_ids"]:
+        return None
+    return {
+        **trimmed,
+        "atom_id": atom["atom_id"],
+        "atom_u_interval": list(atom["u_interval"]),
+    }
+
+
+# 计算 atom 中左右 fragments 共同覆盖的 u components；只使用 interval topology，不用距离打分。
+# left_runs/right_runs/atom: atom 两侧 fragments 与 Plan atom；返回共同覆盖 intervals。
+def _common_atom_component_intervals(left_runs, right_runs, atom):
+    boundaries = sorted(
+        {
+            round(float(value), 10)
+            for value in atom["u_interval"]
+        }
+        | {
+            round(float(value), 10)
+            for run in (*left_runs, *right_runs)
+            for value in run["u_interval"]
+        }
+    )
+    common_segments = []
+    for start, end in zip(boundaries, boundaries[1:]):
+        if end - start <= 1.0e-8:
+            continue
+        midpoint = (start + end) * 0.5
+        left_covered = any(
+            min(run["u_interval"]) - 1.0e-10
+            <= midpoint
+            <= max(run["u_interval"]) + 1.0e-10
+            for run in left_runs
+        )
+        right_covered = any(
+            min(run["u_interval"]) - 1.0e-10
+            <= midpoint
+            <= max(run["u_interval"]) + 1.0e-10
+            for run in right_runs
+        )
+        if left_covered and right_covered:
+            if common_segments and start <= common_segments[-1][1] + 1.0e-8:
+                common_segments[-1][1] = end
+            else:
+                common_segments.append([start, end])
+    return tuple(common_segments)
+
+
+# 把 atom 内 fragments 裁到双侧共同 u components，再交给唯一 matching。
+# left_runs/right_runs/atom: atom 两侧 fragments 与 Plan atom；返回 component-indexed runs。
+def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
+    components = _common_atom_component_intervals(
+        left_runs,
+        right_runs,
+        atom,
+    )
+    partitioned_left = []
+    partitioned_right = []
+    for component_index, interval in enumerate(components):
+        component_id = f"{atom['atom_id']}:{component_index}"
+        for runs, target in (
+            (left_runs, partitioned_left),
+            (right_runs, partitioned_right),
+        ):
+            for run in runs:
+                trimmed = _trim_open_run_to_interval(run, interval)
+                if trimmed is None:
+                    continue
+                target.append(
+                    {
+                        **trimmed,
+                        "atom_id": atom["atom_id"],
+                        "component_id": component_id,
+                        "component_u_interval": list(interval),
+                    }
+                )
+    return tuple(partitioned_left), tuple(partitioned_right), components
+
+
+# 用已验证的真实 cyclic Rail pair 构建独立 Regular Strip topology，不修改 staging/source Mesh。
+# preview_plan/staging_rail_chains/boundary_ledger/overlap_pairs/radius: Plan、rails、完整 ledger、overlap graph 与 radius；返回 records、分类 ledger、ports、diagnostics。
+def _build_cyclic_regular_strip_partition(
+    preview_plan,
+    groups,
+    staging_rail_chains,
+    boundary_ledger,
+    overlap_pairs,
+    overlap_setback_intervals,
+    radius,
+):
+    del overlap_pairs
+    strands_by_id = {
+        strand.strand_id: strand for strand in preview_plan.feature_strands
+    }
+    pipe_id_by_strand_id = {
+        group["strand"].strand_id: int(group["pipe_id"])
+        for group in groups
+    }
+    correspondence_intervals_by_strand_id = {
+        group["strand"].strand_id: _group_correspondence_u_intervals(group)
+        for group in groups
+    }
+    ledger_by_edge_id = {entry["edge_id"]: dict(entry) for entry in boundary_ledger}
+    regular_records = []
+    setback_ports = []
+    strip_attempts = []
+    for correspondence in preview_plan.strip_correspondences:
+        left_chains = staging_rail_chains.get(correspondence.left_rail_id, ())
+        right_chains = staging_rail_chains.get(correspondence.right_rail_id, ())
+        strand = strands_by_id[correspondence.owner_strand_id]
+        pipe_id = pipe_id_by_strand_id[correspondence.owner_strand_id]
+        span_intervals = correspondence_intervals_by_strand_id[
+            correspondence.owner_strand_id
+        ].get(tuple(correspondence.owner_surface_pair), ())
+        forbidden_intervals = overlap_setback_intervals.get(pipe_id, ())
+        plan_atoms = _regular_plan_atoms(
+            span_intervals,
+            forbidden_intervals,
+            strand.cyclic,
+        )
+        left_runs_by_atom = {atom["atom_id"]: [] for atom in plan_atoms}
+        right_runs_by_atom = {atom["atom_id"]: [] for atom in plan_atoms}
+        for chains, target_by_atom in (
+            (left_chains, left_runs_by_atom),
+            (right_chains, right_runs_by_atom),
+        ):
+            for chain in chains:
+                split = _split_chain_by_forbidden_intervals(
+                    chain,
+                    strand,
+                    forbidden_intervals,
+                )
+                for run in split["regular"]:
+                    for atom in plan_atoms:
+                        trimmed = _trim_run_to_plan_atom(
+                            run,
+                            atom,
+                            strand.cyclic,
+                        )
+                        if trimmed is not None:
+                            target_by_atom[atom["atom_id"]].append(trimmed)
+        left_runs = [
+            run for runs in left_runs_by_atom.values() for run in runs
+        ]
+        right_runs = [
+            run for runs in right_runs_by_atom.values() for run in runs
+        ]
+        matched_components = []
+        unresolved_components = []
+        for atom in plan_atoms:
+            atom_left, atom_right, component_intervals = (
+                _partition_atom_runs_by_common_components(
+                    left_runs_by_atom[atom["atom_id"]],
+                    right_runs_by_atom[atom["atom_id"]],
+                    atom,
+                )
+            )
+            for component_index, component_interval in enumerate(
+                component_intervals
+            ):
+                component_id = f"{atom['atom_id']}:{component_index}"
+                component_left = [
+                    run for run in atom_left if run["component_id"] == component_id
+                ]
+                component_right = [
+                    run for run in atom_right if run["component_id"] == component_id
+                ]
+                atom_matches, atom_unresolved = _match_regular_run_components(
+                    correspondence,
+                    component_left,
+                    component_right,
+                    strand,
+                    radius,
+                )
+                matched_components.extend(
+                    {
+                        **match,
+                        "atom_id": atom["atom_id"],
+                        "component_id": component_id,
+                        "component_u_interval": list(component_interval),
+                    }
+                    for match in atom_matches
+                )
+                unresolved_components.extend(
+                    {
+                        **unresolved,
+                        "atom_id": atom["atom_id"],
+                        "component_id": component_id,
+                        "component_u_interval": list(component_interval),
+                    }
+                    for unresolved in atom_unresolved
+                )
+        matched_components = tuple(matched_components)
+        unresolved_components = tuple(unresolved_components)
+        matched_count = 0
+        for match in matched_components:
+            record, failure = _build_regular_record_from_match(
+                correspondence,
+                match,
+                pipe_id,
+                radius,
+                ledger_by_edge_id,
+            )
+            if record is None:
+                unresolved_components = (
+                    *unresolved_components,
+                    {
+                        "correspondence_id": correspondence.correspondence_id,
+                        **failure,
+                    },
+                )
+                continue
+            regular_records.append(record)
+            matched_count += 1
+        strip_attempts.append(
+            {
+                "correspondence_id": correspondence.correspondence_id,
+                "status": "PASS" if matched_count else "DEFERRED",
+                "reason": (
+                    None if matched_count else "NO_UNIQUE_REGULAR_COMPONENT"
+                ),
+                "pipe_id": pipe_id,
+                "left_chain_count": len(left_chains),
+                "right_chain_count": len(right_chains),
+                "left_regular_run_count": len(left_runs),
+                "right_regular_run_count": len(right_runs),
+                "plan_atom_count": len(plan_atoms),
+                "matched_component_count": matched_count,
+                "unresolved_components": unresolved_components,
+            }
+        )
+    unclassified_by_rail = {}
+    for entry in ledger_by_edge_id.values():
+        if entry["classification"] == "UNCLASSIFIED":
+            unclassified_by_rail.setdefault(entry["rail_id"], []).append(entry)
+    for rail_id, entries in sorted(unclassified_by_rail.items()):
+        for chain in _ordered_stable_boundary_chains(entries):
+            first_entry = ledger_by_edge_id[chain["edge_ids"][0]]
+            strand = strands_by_id[first_entry["strand_id"]]
+            oriented_chain, start_u, end_u = _orient_chain_to_strand(chain, strand)
+            reason = (
+                "OUTSIDE_PLAN_SETBACK"
+                if first_entry.get("outside_plan_owner_patch")
+                else (
+                    "PIPE_OVERLAP_SETBACK"
+                    if overlap_setback_intervals.get(int(first_entry["pipe_id"]))
+                    else "PLAN_ENDPOINT_OR_JUNCTION_SETBACK"
+                )
+            )
+            port_id = (
+                f"setback:{rail_id}:"
+                + _stable_fingerprint(oriented_chain["edge_ids"])[:20]
+            )
+            for edge_id in oriented_chain["edge_ids"]:
+                if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
+                    raise BatchedChamferError(
+                        "REGULAR_CORE_LEDGER_CONFLICT",
+                        "Setback port 重复消费 Boundary Edge",
+                        {"edge_id": edge_id, "port_id": port_id},
+                    )
+                ledger_by_edge_id[edge_id]["classification"] = "SETBACK_RESERVED"
+                ledger_by_edge_id[edge_id]["consumer_id"] = port_id
+            setback_ports.append(
+                {
+                    "port_id": port_id,
+                    "pipe_id": int(first_entry["pipe_id"]),
+                    "strand_id": first_entry["strand_id"],
+                    "rail_id": rail_id,
+                    "source_patch_id": int(first_entry["source_patch_id"]),
+                    "reason": reason,
+                    "outside_plan_owner_patch": bool(
+                        first_entry.get("outside_plan_owner_patch")
+                    ),
+                    "ordered_edge_ids": oriented_chain["edge_ids"],
+                    "ordered_coordinates": oriented_chain["coordinates"],
+                    "is_cyclic": bool(oriented_chain["is_cyclic"]),
+                    "direction": (
+                        "FEATURE_STRAND_FORWARD"
+                        if not strand.cyclic
+                        else "STABLE_CYCLIC_BOUNDARY_ORDER"
+                    ),
+                    "u_interval": [round(float(start_u), 10), round(float(end_u), 10)],
+                }
+            )
+    classified_ledger = tuple(
+        ledger_by_edge_id[edge_id]
+        for edge_id in sorted(ledger_by_edge_id)
+    )
+    classified_count = sum(
+        entry["classification"] != "UNCLASSIFIED"
+        for entry in classified_ledger
+    )
+    ledger_edge_ids = {entry["edge_id"] for entry in classified_ledger}
+    regular_edge_ids = {
+        edge_id
+        for record in regular_records
+        for edge_id in (*record["left_edge_ids"], *record["right_edge_ids"])
+    }
+    setback_edge_ids = {
+        edge_id
+        for port in setback_ports
+        for edge_id in port["ordered_edge_ids"]
+    }
+    regular_records_by_consumer = {
+        record["consumer_id"]: record for record in regular_records
+    }
+    setback_ports_by_consumer = {
+        port["port_id"]: port for port in setback_ports
+    }
+    regular_ledger_edges_by_consumer = {}
+    setback_ledger_edges_by_consumer = {}
+    invalid_ledger_classification_count = 0
+    orphan_ledger_consumer_count = 0
+    outside_plan_regular_edge_count = 0
+    outside_plan_wrong_reason_count = 0
+    for entry in classified_ledger:
+        classification = entry["classification"]
+        consumer_id = entry.get("consumer_id")
+        if classification == "REGULAR_STRIP_CONSUMED":
+            regular_ledger_edges_by_consumer.setdefault(consumer_id, set()).add(
+                entry["edge_id"]
+            )
+            if consumer_id not in regular_records_by_consumer:
+                orphan_ledger_consumer_count += 1
+            if entry.get("outside_plan_owner_patch"):
+                outside_plan_regular_edge_count += 1
+        elif classification == "SETBACK_RESERVED":
+            setback_ledger_edges_by_consumer.setdefault(consumer_id, set()).add(
+                entry["edge_id"]
+            )
+            port = setback_ports_by_consumer.get(consumer_id)
+            if port is None:
+                orphan_ledger_consumer_count += 1
+            elif entry.get("outside_plan_owner_patch") and port.get("reason") != (
+                "OUTSIDE_PLAN_SETBACK"
+            ):
+                outside_plan_wrong_reason_count += 1
+        else:
+            invalid_ledger_classification_count += 1
+    consumer_edge_mismatch_count = sum(
+        set(record["left_edge_ids"] + record["right_edge_ids"])
+        != regular_ledger_edges_by_consumer.get(consumer_id, set())
+        for consumer_id, record in regular_records_by_consumer.items()
+    ) + sum(
+        set(port["ordered_edge_ids"])
+        != setback_ledger_edges_by_consumer.get(consumer_id, set())
+        for consumer_id, port in setback_ports_by_consumer.items()
+    )
+    unresolved_remote_component_ids = {
+        (
+            attempt["correspondence_id"],
+            unresolved.get("component_id")
+            or unresolved.get("atom_id")
+            or _stable_fingerprint(
+                {
+                    "left": unresolved.get("left_run_ids", ()),
+                    "right": unresolved.get("right_run_ids", ()),
+                    "reason": unresolved.get("reason"),
+                }
+            )[:20],
+        )
+        for attempt in strip_attempts
+        for unresolved in attempt.get("unresolved_components", ())
+    }
+    unresolved_remote_component_count = len(unresolved_remote_component_ids)
+    return (
+        tuple(sorted(regular_records, key=lambda record: record["consumer_id"])),
+        classified_ledger,
+        tuple(sorted(setback_ports, key=lambda port: port["port_id"])),
+        {
+            "real_regular_strip_face_count": sum(
+                record["face_count"] for record in regular_records
+            ),
+            "classified_boundary_edge_count": classified_count,
+            "unclassified_boundary_edge_count": len(classified_ledger) - classified_count,
+            "regular_edge_count": len(regular_edge_ids),
+            "setback_edge_count": len(setback_edge_ids),
+            "missing_from_partition_count": len(
+                ledger_edge_ids - regular_edge_ids - setback_edge_ids
+            ),
+            "extra_in_partition_count": len(
+                (regular_edge_ids | setback_edge_ids) - ledger_edge_ids
+            ),
+            "duplicate_partition_edge_count": len(
+                regular_edge_ids & setback_edge_ids
+            ),
+            "invalid_ledger_classification_count": invalid_ledger_classification_count,
+            "orphan_ledger_consumer_count": orphan_ledger_consumer_count,
+            "consumer_edge_mismatch_count": consumer_edge_mismatch_count,
+            "outside_plan_edge_count": sum(
+                bool(entry.get("outside_plan_owner_patch"))
+                for entry in classified_ledger
+            ),
+            "outside_plan_regular_edge_count": outside_plan_regular_edge_count,
+            "outside_plan_wrong_reason_count": outside_plan_wrong_reason_count,
+            "unresolved_remote_component_count": unresolved_remote_component_count,
+            "all_ledger_edges_consumed_once": (
+                classified_count == len(classified_ledger)
+                and ledger_edge_ids == regular_edge_ids | setback_edge_ids
+                and not regular_edge_ids & setback_edge_ids
+                and not invalid_ledger_classification_count
+                and not orphan_ledger_consumer_count
+                and not consumer_edge_mismatch_count
+                and not outside_plan_regular_edge_count
+                and not outside_plan_wrong_reason_count
+            ),
+            "strip_attempts": strip_attempts,
+        },
+    )
+
+
+# 分别执行正序与逆序 Exact Boolean batch Cut，并比较最终 canonical topology。
+# source_object/pipes/color_batches/probe_collection: Preview source、正式 Pipes、确定 coloring 与临时 Collection；返回 order diagnostics。
+def _run_batch_order_cut_probe(
+    source_object,
+    pipes,
+    color_batches,
+    probe_collection,
+    plan_id,
+):
+    forward = _run_independent_batch_cut_probe(
+        source_object,
+        pipes,
+        color_batches,
+        probe_collection,
+        plan_id,
+        "FORWARD",
+    )
+    reverse = _run_independent_batch_cut_probe(
+        source_object,
+        pipes,
+        color_batches,
+        probe_collection,
+        plan_id,
+        "REVERSE",
+    )
+    return {
+        "real_cut_probe": True,
+        "cut_strategy": "INDEPENDENT_STAGING",
+        "forward_cut_signature": forward["cut_signature"],
+        "reverse_cut_signature": reverse["cut_signature"],
+        "forward_cut_batch_count": len(forward["records"]),
+        "reverse_cut_batch_count": len(reverse["records"]),
+        "batch_order_invariant": (
+            forward["cut_signature"] == reverse["cut_signature"]
+        ),
+        "forward_cut_records": forward["records"],
+        "reverse_cut_records": reverse["records"],
+        "forward_reverse_built_independently": True,
+        "sequential_probe_executed": False,
+        "sequential_probe_reason": (
+            "Rejected by Phase B design: overlapping batches must not mutate one shared Mesh"
+        ),
+    }
+
+
+# 从 per-Pipe Boolean intersection 提取显式 Pipe/Patch owner 的 regular-core Rail records，并建立 exactly-once ledger。
+# source_object/groups/pipes/overlap_pairs/radius: Preview source、冻结 groups、正式 Pipes、Pipe overlap graph 与 radius；返回 Phase C records/ledger/ports/diagnostics。
+def _build_regular_core_contract(
+    source_object,
+    groups,
+    pipes,
+    overlap_pairs,
+    radius,
+):
+    rails, rail_diagnostics = _cutter_intersection_rails(
+        source_object,
+        groups,
+        pipes,
+        radius,
+    )
+    pipe_trees = {}
+    pipe_bounds = {}
+    for pipe in pipes:
+        pipe_id = int(pipe[PIPE_ID_TAG])
+        pipe_bmesh = bmesh.new()
+        pipe_bmesh.from_mesh(pipe.data)
+        pipe_trees[pipe_id] = BVHTree.FromBMesh(pipe_bmesh)
+        pipe_bmesh.free()
+        pipe_bounds[pipe_id] = _pipe_bounds(pipe)
+    rail_records, rail_summary = _extract_boolean_rail_pair_records(
+        None,
+        groups,
+        pipe_trees,
+        pipe_bounds,
+        radius,
+        rails=rails,
+        ownership_backend="CUTTER_FACE_COMPONENT_PROVENANCE",
+        pipe_overlap_pairs=overlap_pairs,
+    )
+    regular_records = []
+    ledger = []
+    for record in rail_records:
+        if record.get("geometry_guard", {}).get("status") != "PASS":
+            continue
+        group_id = int(record["group_id"])
+        owner_key = f"pipe:{group_id}:span:{int(record['span_id'])}"
+        regular_records.append(
+            {
+                "owner_key": owner_key,
+                "pipe_id": group_id,
+                "span_id": int(record["span_id"]),
+                "source_edge_ids": list(record["source_edge_ids"]),
+                "patch_pair": [
+                    int(record["left_patch_id"]),
+                    int(record["right_patch_id"]),
+                ],
+                "rail_left": [list(point) for point in record["rail_left"]],
+                "rail_right": [list(point) for point in record["rail_right"]],
+                "left_cyclic": bool(record.get("left_cyclic")),
+                "right_cyclic": bool(record.get("right_cyclic")),
+                "endpoint_trim": record.get("endpoint_trim", {}),
+                "geometry_guard": record["geometry_guard"],
+            }
+        )
+        for side, coordinates in (
+            ("LEFT", record["rail_left"]),
+            ("RIGHT", record["rail_right"]),
+        ):
+            for segment_index in range(len(coordinates) - 1):
+                ledger.append(
+                    {
+                        "edge_key": _stable_fingerprint(
+                            sorted(
+                                (
+                                    [round(float(value), 8) for value in coordinates[segment_index]],
+                                    [round(float(value), 8) for value in coordinates[segment_index + 1]],
+                                )
+                            )
+                        ),
+                        "owner_key": owner_key,
+                        "pipe_id": group_id,
+                        "side": side,
+                        "segment_index": segment_index,
+                        "consumption": "REGULAR_CORE",
+                    }
+                )
+    edge_key_counts = {}
+    for entry in ledger:
+        edge_key = entry["edge_key"]
+        edge_key_counts[edge_key] = edge_key_counts.get(edge_key, 0) + 1
+    duplicate_edge_keys = sorted(
+        edge_key for edge_key, count in edge_key_counts.items() if count > 1
+    )
+    setback_ports = [
+        {
+            "port_key": f"pipe:{int(record['group_id'])}:span:{int(record['span_id'])}:DEFERRED",
+            "pipe_id": int(record["group_id"]),
+            "span_id": int(record["span_id"]),
+            "reason": record.get("reason", "JUNCTION_OR_TERMINAL"),
+            "patch_pair": list(record.get("patch_pair", ())),
+        }
+        for record in rail_summary.get("deferred_spans", [])
+    ] + [
+        {
+            "port_key": f"pipe:{int(record['group_id'])}:span:{int(record['span_id'])}:OCCLUDED",
+            "pipe_id": int(record["group_id"]),
+            "span_id": int(record["span_id"]),
+            "reason": "OVERLAP_OCCLUDED",
+            "patch_pair": list(record.get("patch_pair", ())),
+        }
+        for record in rail_summary.get("occluded_spans", [])
+    ]
+    diagnostics = {
+        "ownership_backend": rail_summary.get("ownership_backend"),
+        "span_count": rail_summary.get("span_count", 0),
+        "regular_core_count": len(regular_records),
+        "setback_port_count": len(setback_ports),
+        "unresolved_span_count": len(rail_summary.get("unresolved_spans", [])),
+        "classification_coverage": rail_summary.get("classification_coverage", 0.0),
+        "ledger_edge_count": len(ledger),
+        "duplicate_ledger_edge_keys": duplicate_edge_keys,
+        "all_ledger_edges_consumed_once": not duplicate_edge_keys,
+        "cross_pipe_owner_guessing": False,
+        "global_fill": False,
+        "rail_diagnostics": rail_diagnostics,
+    }
+    if diagnostics["unresolved_span_count"]:
+        raise BatchedChamferError(
+            "REGULAR_CORE_SPAN_UNRESOLVED",
+            "Phase C 存在未分类 regular/junction span",
+            diagnostics,
+        )
+    if duplicate_edge_keys:
+        raise BatchedChamferError(
+            "REGULAR_CORE_LEDGER_CONFLICT",
+            "Phase C Rail ledger 存在重复消费",
+            diagnostics,
+        )
+    return tuple(regular_records), tuple(ledger), tuple(setback_ports), diagnostics
+
+
+# 删除本次 batched probe 创建的 Object/Mesh/Collection，不触碰调用前存在的用户数据。
+# created_objects/created_collections: 调用前后差集；无返回值。
+def _cleanup_created_data(created_objects, created_collections):
+    for obj in list(created_objects):
+        if bpy.data.objects.get(obj.name) != obj:
+            continue
+        object_type = obj.type
+        data = obj.data if object_type in {"MESH", "CURVE"} else None
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is not None and data.users == 0:
+            if object_type == "MESH":
+                bpy.data.meshes.remove(data)
+            else:
+                bpy.data.curves.remove(data)
+    for collection in list(created_collections):
+        if bpy.data.collections.get(collection.name) == collection:
+            bpy.data.collections.remove(collection)
+
+
+# 构建分批 Feature Chamfer；Phase A/B 只验证权威输入与 overlap/order，不生成产品输出。
+# source_object: Preview source Mesh；preview_plan: 当前有效 immutable ChamferPlan；preview_parameters: live modifier 参数；debug_stage: 阶段门禁。
+def build_batched_feature_chamfer(
+    source_object,
+    preview_plan,
+    preview_parameters,
+    debug_stage,
+):
+    if debug_stage not in SUPPORTED_DEBUG_STAGES:
+        raise BatchedChamferError(
+            "BATCHED_STAGE_NOT_IMPLEMENTED",
+            f"Batched Finalize stage 尚未通过门禁：{debug_stage}",
+            {"debug_stage": debug_stage},
+        )
+    if source_object is None or source_object.type != "MESH":
+        raise BatchedChamferError(
+            "INVALID_CONTEXT",
+            "Batched Feature Chamfer requires one Mesh source Object",
+            {},
+        )
+    fingerprint_before = source_fingerprint(source_object)
+    plan_fingerprint_before = plan_source_fingerprint(source_object)
+    radius = float(preview_parameters.get("radius", 0.0))
+    if (
+        preview_plan is None
+        or preview_plan.source_fingerprint != plan_fingerprint_before
+        or abs(float(preview_plan.radius) - radius) > 1.0e-10
+        or preview_plan.input_contract != "GN_PREVIEW_V1"
+    ):
+        raise BatchedChamferError(
+            "PREVIEW_INPUT_CONTRACT_MISMATCH",
+            "Batched backend 只接受当前有效 GN_PREVIEW_V1 ChamferPlan",
+            {
+                "source_fingerprint": plan_fingerprint_before,
+                "plan_source_fingerprint": (
+                    preview_plan.source_fingerprint if preview_plan else None
+                ),
+                "plan_radius": preview_plan.radius if preview_plan else None,
+                "preview_radius": radius,
+            },
+        )
+    previous_objects = set(bpy.data.objects)
+    previous_collections = set(bpy.data.collections)
+    probe_collection = bpy.data.collections.new(
+        f"{source_object.name}_FeatureChamferBatchedProbe"
+    )
+    bpy.context.scene.collection.children.link(probe_collection)
+    try:
+        groups, pipes, pipe_specs = _build_preview_pipe_contract(
+            source_object,
+            preview_plan,
+            preview_parameters,
+            probe_collection,
+        )
+        _validate_plan_rail_coverage(preview_plan, groups)
+        normalized_pipe_ids = _normalize_pipe_winding(pipes)
+        if normalized_pipe_ids:
+            pipe_specs = tuple(
+                PreviewPipeSpec(
+                    **{
+                        **asdict(spec),
+                        "mesh_fingerprint": _mesh_fingerprint(
+                            next(
+                                pipe.data
+                                for pipe in pipes
+                                if int(pipe[PIPE_ID_TAG]) == spec.pipe_id
+                            )
+                        ),
+                    }
+                )
+                for spec in pipe_specs
+            )
+        overlap_pairs = _pipe_overlap_pairs(pipes)
+        overlap_setback_intervals = _pipe_overlap_setback_intervals(
+            groups,
+            pipes,
+            overlap_pairs,
+            radius,
+        )
+        pipe_ids = tuple(spec.pipe_id for spec in pipe_specs)
+        color_batches = color_pipe_overlap_graph(pipe_ids, overlap_pairs)
+        graph_order_fingerprint = batch_order_invariance_fingerprint(
+            pipe_specs,
+            overlap_pairs,
+            color_batches,
+        )
+        cut_order_diagnostics = {
+            "real_cut_probe": False,
+            "forward_cut_signature": None,
+            "reverse_cut_signature": None,
+            "forward_cut_batch_count": 0,
+            "reverse_cut_batch_count": 0,
+            "batch_order_invariant": None,
+            "forward_cut_records": [],
+            "reverse_cut_records": [],
+        }
+        regular_core_records = ()
+        boundary_edge_ledger = ()
+        junction_regions = ()
+        regular_core_diagnostics = {
+            "regular_core_count": 0,
+            "setback_port_count": 0,
+        }
+        if debug_stage in {DEBUG_PHASE_B, DEBUG_PHASE_C}:
+            cut_order_diagnostics = _run_batch_order_cut_probe(
+                source_object,
+                pipes,
+                color_batches,
+                probe_collection,
+                preview_plan.plan_id,
+            )
+            if not cut_order_diagnostics["batch_order_invariant"]:
+                raise BatchedChamferError(
+                    "BATCH_ORDER_TOPOLOGY_MISMATCH",
+                    "正序与逆序 batch Cut 生成了不同的 oriented topology",
+                    cut_order_diagnostics,
+                )
+        if debug_stage == DEBUG_PHASE_C:
+            staging_boundary_ledger = _build_staging_boundary_ledger(
+                preview_plan,
+                pipe_specs,
+                cut_order_diagnostics["forward_cut_records"],
+            )
+            reverse_staging_boundary_ledger = _build_staging_boundary_ledger(
+                preview_plan,
+                pipe_specs,
+                cut_order_diagnostics["reverse_cut_records"],
+            )
+            staging_rail_chains = _build_staging_rail_chains(
+                staging_boundary_ledger
+            )
+            reverse_staging_rail_chains = _build_staging_rail_chains(
+                reverse_staging_boundary_ledger
+            )
+            boundary_universe_fingerprint = _stable_fingerprint(
+                staging_boundary_ledger
+            )
+            reverse_boundary_universe_fingerprint = _stable_fingerprint(
+                reverse_staging_boundary_ledger
+            )
+            rail_chain_fingerprint = _stable_fingerprint(staging_rail_chains)
+            reverse_rail_chain_fingerprint = _stable_fingerprint(
+                reverse_staging_rail_chains
+            )
+            if (
+                boundary_universe_fingerprint
+                != reverse_boundary_universe_fingerprint
+                or rail_chain_fingerprint != reverse_rail_chain_fingerprint
+            ):
+                raise BatchedChamferError(
+                    "PHASE_C_ORDER_MISMATCH",
+                    "正序/逆序 independent staging 的 Boundary universe 或 Rail chain 不一致",
+                    {
+                        "forward_boundary_universe_fingerprint": boundary_universe_fingerprint,
+                        "reverse_boundary_universe_fingerprint": reverse_boundary_universe_fingerprint,
+                        "forward_rail_chain_fingerprint": rail_chain_fingerprint,
+                        "reverse_rail_chain_fingerprint": reverse_rail_chain_fingerprint,
+                    },
+                )
+            (
+                regular_core_records,
+                boundary_edge_ledger,
+                junction_regions,
+                regular_core_diagnostics,
+            ) = _build_cyclic_regular_strip_partition(
+                preview_plan,
+                groups,
+                staging_rail_chains,
+                staging_boundary_ledger,
+                overlap_pairs,
+                overlap_setback_intervals,
+                radius,
+            )
+            (
+                reverse_regular_core_records,
+                reverse_boundary_edge_ledger,
+                reverse_junction_regions,
+                reverse_regular_core_diagnostics,
+            ) = _build_cyclic_regular_strip_partition(
+                preview_plan,
+                groups,
+                reverse_staging_rail_chains,
+                reverse_staging_boundary_ledger,
+                overlap_pairs,
+                overlap_setback_intervals,
+                radius,
+            )
+            regular_geometry_fingerprint = _stable_fingerprint(
+                regular_core_records
+            )
+            reverse_regular_geometry_fingerprint = _stable_fingerprint(
+                reverse_regular_core_records
+            )
+            ledger_fingerprint = _stable_fingerprint(boundary_edge_ledger)
+            reverse_ledger_fingerprint = _stable_fingerprint(
+                reverse_boundary_edge_ledger
+            )
+            port_fingerprint = _stable_fingerprint(junction_regions)
+            reverse_port_fingerprint = _stable_fingerprint(
+                reverse_junction_regions
+            )
+            if (
+                regular_geometry_fingerprint
+                != reverse_regular_geometry_fingerprint
+                or ledger_fingerprint != reverse_ledger_fingerprint
+                or port_fingerprint != reverse_port_fingerprint
+            ):
+                raise BatchedChamferError(
+                    "PHASE_C_ORDER_MISMATCH",
+                    "正序/逆序 Phase C regular geometry、ledger 或 setback ports 不一致",
+                    {
+                        "forward_geometry_fingerprint": regular_geometry_fingerprint,
+                        "reverse_geometry_fingerprint": reverse_regular_geometry_fingerprint,
+                        "forward_ledger_fingerprint": ledger_fingerprint,
+                        "reverse_ledger_fingerprint": reverse_ledger_fingerprint,
+                        "forward_port_fingerprint": port_fingerprint,
+                        "reverse_port_fingerprint": reverse_port_fingerprint,
+                    },
+                )
+            regular_core_diagnostics = {
+                **regular_core_diagnostics,
+                "regular_core_count": len(regular_core_records),
+                "setback_port_count": len(junction_regions),
+                "unresolved_span_count": regular_core_diagnostics[
+                    "unclassified_boundary_edge_count"
+                ],
+                "observed_boundary_edge_count": len(staging_boundary_ledger),
+                "observed_rail_chain_count": sum(
+                    len(chains) for chains in staging_rail_chains.values()
+                ),
+                "observed_rail_chains": staging_rail_chains,
+                "boundary_identity_backend": "INDEPENDENT_STAGING_DIRECT_PROVENANCE",
+                "overlap_setback_intervals": overlap_setback_intervals,
+                "phase_c_boundary_universe_fingerprint": boundary_universe_fingerprint,
+                "phase_c_reverse_boundary_universe_fingerprint": reverse_boundary_universe_fingerprint,
+                "phase_c_rail_chain_fingerprint": rail_chain_fingerprint,
+                "phase_c_reverse_rail_chain_fingerprint": reverse_rail_chain_fingerprint,
+                "phase_c_boundary_order_invariant": True,
+                "phase_c_geometry_fingerprint": regular_geometry_fingerprint,
+                "phase_c_reverse_geometry_fingerprint": reverse_regular_geometry_fingerprint,
+                "phase_c_ledger_fingerprint": ledger_fingerprint,
+                "phase_c_reverse_ledger_fingerprint": reverse_ledger_fingerprint,
+                "phase_c_port_fingerprint": port_fingerprint,
+                "phase_c_reverse_port_fingerprint": reverse_port_fingerprint,
+                "phase_c_regular_order_invariant": True,
+                "reverse_phase_c_counts": {
+                    "regular_core_count": len(reverse_regular_core_records),
+                    "ledger_edge_count": len(reverse_boundary_edge_ledger),
+                    "setback_port_count": len(reverse_junction_regions),
+                    "classified_boundary_edge_count": reverse_regular_core_diagnostics[
+                        "classified_boundary_edge_count"
+                    ],
+                },
+                "cross_pipe_owner_guessing": False,
+                "global_fill": False,
+            }
+            strip_geometry_guard = _validate_regular_strip_geometry(
+                regular_core_records
+            )
+            regular_core_diagnostics["strip_geometry_guard"] = (
+                strip_geometry_guard
+            )
+            if strip_geometry_guard["status"] != "PASS":
+                raise BatchedChamferError(
+                    "REGULAR_STRIP_GEOMETRY_INVALID",
+                    "Phase C Regular Strip orientation/area/duplicate Face guard 失败",
+                    strip_geometry_guard,
+                )
+        order_fingerprint = graph_order_fingerprint
+        contract_fingerprint = _stable_fingerprint(
+            [asdict(spec) for spec in pipe_specs]
+        )
+        overlap_set = set(overlap_pairs)
+        batch_records = tuple(
+            {
+                "batch_index": batch_index,
+                "pipe_ids": list(batch),
+                "internal_overlap_pairs": [
+                    list(pair)
+                    for pair in overlap_pairs
+                    if pair[0] in batch and pair[1] in batch
+                ],
+                "cut_signature": _stable_fingerprint(
+                    {
+                        "pipe_ids": sorted(batch),
+                        "pipe_meshes": {
+                            str(spec.pipe_id): spec.mesh_fingerprint
+                            for spec in pipe_specs
+                            if spec.pipe_id in batch
+                        },
+                    }
+                ),
+            }
+            for batch_index, batch in enumerate(color_batches)
+        )
+        if any(record["internal_overlap_pairs"] for record in batch_records):
+            raise BatchedChamferError(
+                "BATCH_INTERNAL_OVERLAP",
+                "Overlap graph coloring 产生了相交 batch",
+                {"overlap_pairs": sorted(overlap_set)},
+            )
+        if source_fingerprint(source_object) != fingerprint_before:
+            raise BatchedChamferError(
+                "SOURCE_MUTATED",
+                "Batched probe 修改了 source Mesh",
+                {},
+            )
+        return BatchedChamferResult(
+            status="PROTOTYPE",
+            backend_id=BATCHED_BACKEND_ID,
+            debug_stage=debug_stage,
+            output_object_name=None,
+            plan_id=preview_plan.plan_id,
+            source_fingerprint=plan_fingerprint_before,
+            radius=radius,
+            preview_pipe_contract_fingerprint=contract_fingerprint,
+            pipe_specs=pipe_specs,
+            overlap_pairs=overlap_pairs,
+            color_batches=color_batches,
+            batch_records=(
+                *batch_records,
+                *regular_core_records,
+            ),
+            boundary_edge_ledger=boundary_edge_ledger,
+            junction_regions=junction_regions,
+            topology_diagnostics={
+                "pipe_count": len(pipe_specs),
+                "batch_count": len(color_batches),
+                "all_pipes_colored_once": (
+                    sorted(pipe_id for batch in color_batches for pipe_id in batch)
+                    == sorted(pipe_ids)
+                ),
+                "batch_internal_overlap_count": sum(
+                    len(record["internal_overlap_pairs"])
+                    for record in batch_records
+                ),
+                "source_unchanged": True,
+                "normalized_pipe_winding_ids": list(normalized_pipe_ids),
+                **regular_core_diagnostics,
+                **cut_order_diagnostics,
+            },
+            batch_order_invariance_fingerprint=order_fingerprint,
+            failure_code=None,
+        )
+    finally:
+        _cleanup_created_data(
+            set(bpy.data.objects) - previous_objects,
+            set(bpy.data.collections) - previous_collections,
+        )

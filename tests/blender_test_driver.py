@@ -6959,6 +6959,35 @@ def curve_geometry_signature(curve_object, variant=0):
     return tuple(sorted(splines))
 
 
+# 把 Preview Pipe contract 的 points 转为与 Curve spline 相同的方向无关几何签名。
+# contract_pipes: owned Curve 上持久化 JSON contract 的 pipes；返回规范化 points tuples。
+def preview_pipe_contract_geometry_signature(contract_pipes):
+    signatures = []
+    for pipe in contract_pipes:
+        contract_points = tuple(pipe["points"])
+        points = tuple(
+            tuple(round(float(component), 6) for component in point)
+            for point in contract_points
+        )
+        reversed_points = tuple(reversed(points))
+        signatures.append((min(points, reversed_points), bool(pipe["is_cyclic"])))
+    return tuple(sorted(signatures))
+
+
+# 把实际 owned Preview Curve 转为包含 cyclic 状态的方向无关几何签名。
+# curve_object: 正式 PREVIEW Operator 创建的 owned Curve；返回规范化 spline tuples。
+def owned_preview_curve_contract_signature(curve_object):
+    signatures = []
+    for spline in curve_object.data.splines:
+        points = tuple(
+            tuple(round(float(component), 6) for component in point.co[:3])
+            for point in spline.points
+        )
+        reversed_points = tuple(reversed(points))
+        signatures.append((min(points, reversed_points), bool(spline.use_cyclic_u)))
+    return tuple(sorted(signatures))
+
+
 # 验证正式 Operator 不会因 Surface Patch/convexity metadata 把平滑 degree-2 环切断。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_gn_preview_operator_keeps_smooth_degree_two_ring_cyclic(
@@ -7942,11 +7971,231 @@ def test_feature_chamfer_panel_dynamic_label_and_cancel(test_context: TestContex
     result.add_detail("Panel labels NONE/PREVIEW_VALID and CANCEL_PREVIEW dispatch verified")
 
 
+# 验证 batched overlap coloring 完整、batch 内无冲突，并拒绝非法 graph。
+# test_context/result: 已加载 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_overlap_coloring_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    pipe_ids = (10, 20, 30, 40)
+    overlap_pairs = ((10, 20), (20, 30), (30, 40))
+    batches = module.color_pipe_overlap_graph(pipe_ids, overlap_pairs)
+    ensure(
+        sorted(pipe_id for batch in batches for pipe_id in batch) == list(pipe_ids),
+        f"Batched coloring did not consume every Pipe exactly once: {batches}",
+    )
+    ensure(
+        all(
+            tuple(sorted((pipe_id_a, pipe_id_b))) not in overlap_pairs
+            for batch in batches
+            for offset, pipe_id_a in enumerate(batch)
+            for pipe_id_b in batch[offset + 1 :]
+        ),
+        f"Batched coloring retained an internal overlap: {batches}",
+    )
+    ensure(
+        batches
+        == module.color_pipe_overlap_graph(
+            tuple(reversed(pipe_ids)),
+            tuple(reversed(overlap_pairs)),
+        ),
+        "Batched coloring depends on input order",
+    )
+    invalid_graphs = (
+        ((10, 10),),
+        ((10, 99),),
+    )
+    for invalid_pairs in invalid_graphs:
+        try:
+            module.color_pipe_overlap_graph(pipe_ids, invalid_pairs)
+        except ValueError:
+            continue
+        raise TestFailure(f"Batched coloring accepted invalid graph: {invalid_pairs}")
+    result.add_detail(f"color_batches={batches}")
+
+
+# 从真实 PREVIEW Operator 验证 batched backend 只消费同一 ChamferPlan 与正式 Pipe builder。
+# test_context/result: 已加载 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_preview_pipe_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BatchedPreviewPipeContract")
+    source = make_test_mesh("BatchedPreviewPipeContractSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = mesh_topology_hash(source)
+    select_objects(source, [source])
+    preview_result, preview_modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(preview_result == {"FINISHED"}, "Batched contract Preview failed")
+    plan_module = test_context.addon.utils.feature_chamfer_plan_utils
+    preview_plan = plan_module.read_chamfer_plan(preview_modifier)
+    preview_utils = test_context.addon.utils.feature_chamfer_gn_utils
+    owned_curve = preview_utils.owned_preview_curve(source)
+    ensure(owned_curve is not None, "Batched contract Preview did not retain owned Curve")
+    contract = json.loads(
+        owned_curve[test_context.addon.const.FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG]
+    )
+    ensure(
+        contract["contract"] == "GN_PREVIEW_PIPE_V1"
+        and contract["plan_id"] == preview_plan.plan_id
+        and contract["source_fingerprint"] == preview_utils.source_fingerprint(source)
+        and abs(float(contract["radius"]) - float(preview_plan.radius)) <= 1.0e-10,
+        f"Persisted Preview Pipe contract diverged from ChamferPlan: {contract}",
+    )
+    ensure(
+        preview_pipe_contract_geometry_signature(contract["pipes"])
+        == owned_preview_curve_contract_signature(owned_curve),
+        "Persisted Preview Pipe contract does not describe the actual owned Curve",
+    )
+    preview_parameters = (
+        preview_utils.live_preview_parameters(
+            preview_modifier
+        )
+    )
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    ensure(
+        not hasattr(module, "_build_preview_feature_graph"),
+        "Batched backend still imports secondary Preview grouping",
+    )
+    probe = module.build_batched_feature_chamfer(
+        source,
+        preview_plan,
+        preview_parameters,
+        module.DEBUG_PHASE_B,
+    )
+    diagnostics = probe.to_dict()
+    ensure(
+        probe.plan_id == preview_plan.plan_id
+        and probe.radius == preview_parameters["radius"],
+        f"Batched backend diverged from Preview inputs: {diagnostics}",
+    )
+    ensure(
+        len(probe.pipe_specs) == len(preview_plan.feature_strands)
+        and all(spec.mesh_fingerprint for spec in probe.pipe_specs),
+        f"Batched backend did not freeze every Preview Pipe: {diagnostics}",
+    )
+    ensure(
+        all(spec.face_count > 0 and spec.vertex_count > 0 for spec in probe.pipe_specs),
+        f"Batched Preview Pipe geometry is empty: {diagnostics}",
+    )
+    ensure(
+        probe.topology_diagnostics["all_pipes_colored_once"]
+        and probe.topology_diagnostics["batch_internal_overlap_count"] == 0
+        and probe.topology_diagnostics["source_unchanged"],
+        f"Batched graph contract failed: {diagnostics}",
+    )
+    ensure(
+        probe.topology_diagnostics.get("real_cut_probe") is True
+        and probe.topology_diagnostics.get("cut_strategy") == "INDEPENDENT_STAGING"
+        and probe.topology_diagnostics.get("batch_order_invariant") is True
+        and probe.topology_diagnostics.get("forward_cut_signature")
+        == probe.topology_diagnostics.get("reverse_cut_signature")
+        and probe.topology_diagnostics.get("forward_cut_signature")
+        != probe.batch_order_invariance_fingerprint
+        and probe.topology_diagnostics.get("forward_cut_batch_count")
+        == len(probe.color_batches)
+        and probe.topology_diagnostics.get("reverse_cut_batch_count")
+        == len(probe.color_batches),
+        f"Phase B did not prove real forward/reverse Cut invariance: {diagnostics}",
+    )
+    ensure(
+        mesh_topology_hash(source) == source_hash,
+        "Batched Preview Pipe probe changed source Mesh",
+    )
+    ensure(
+        not [
+            obj
+            for obj in bpy.data.objects
+            if obj.name.startswith(f"{source.name}_FeatureChamferBatchedProbe")
+            or obj.name.startswith(f"{source.name}_Pipe_")
+        ],
+        "Batched Preview Pipe probe left debug Objects",
+    )
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_batched_phase_ab_contract.json"
+    artifact_path.write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"plan={probe.plan_id}, pipes={len(probe.pipe_specs)}, "
+        f"batches={len(probe.color_batches)}, artifact={artifact_path}"
+    )
+
+
+# 验证隐藏实验 Adapter 从当前有效 PREVIEW 读取 plan/参数并留下机器结果。
+# test_context/result: 已加载 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_adapter_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("BatchedAdapter")
+    source = make_test_mesh("BatchedAdapterSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = mesh_topology_hash(source)
+    select_objects(source, [source])
+    preview_result, _ = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.05,
+    )
+    ensure(preview_result == {"FINISHED"}, "Batched Adapter Preview failed")
+    adapter_result = bpy.ops.hst.experimental_feature_chamfer_batched_finalize(
+        "INVOKE_DEFAULT",
+        debug_stage="PHASE_B_BATCH_PROBE",
+    )
+    ensure(adapter_result == {"FINISHED"}, "Batched Adapter probe failed")
+    diagnostics = json.loads(
+        bpy.context.scene["hst_feature_chamfer_batched_last_result"]
+    )
+    ensure(
+        diagnostics["backend_id"] == "BATCHED_CUT_FILL_V1"
+        and diagnostics["debug_stage"] == "PHASE_B_BATCH_PROBE"
+        and diagnostics["topology_diagnostics"]["all_pipes_colored_once"]
+        and diagnostics["topology_diagnostics"]["batch_internal_overlap_count"] == 0,
+        f"Batched Adapter result is incomplete: {diagnostics}",
+    )
+    topology = diagnostics["topology_diagnostics"]
+    ensure(
+        topology.get("real_cut_probe") is True
+        and topology.get("cut_strategy") == "INDEPENDENT_STAGING"
+        and topology.get("batch_order_invariant") is True
+        and topology.get("forward_cut_signature")
+        == topology.get("reverse_cut_signature")
+        and topology.get("forward_cut_signature")
+        != diagnostics.get("batch_order_invariance_fingerprint"),
+        f"Batched Adapter reported metadata-only order invariance: {diagnostics}",
+    )
+    ensure(
+        mesh_topology_hash(source) == source_hash,
+        "Batched Adapter changed source Mesh",
+    )
+    result.add_detail(
+        f"adapter={diagnostics['backend_id']}, batches={len(diagnostics['color_batches'])}"
+    )
+
+
 def main():
     addon_module = load_addon_module()
     addon_module.register()
 
     context = TestContext(addon_module)
+    context.run_case(
+        "feature_chamfer_batched_overlap_coloring_contract",
+        test_feature_chamfer_batched_overlap_coloring_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_preview_pipe_contract_smoke",
+        test_feature_chamfer_batched_preview_pipe_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_batched_adapter_smoke",
+        test_feature_chamfer_batched_adapter_smoke,
+    )
     context.run_case("addon_registers", test_addon_registers)
     context.run_case("scene_params_stale_pointer_recovery_regression", test_scene_params_stale_pointer_recovery_regression)
     context.run_case("pipe_chamfer_tricky_b_extruded002_regression", test_pipe_chamfer_tricky_b_extruded002_regression)
