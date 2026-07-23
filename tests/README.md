@@ -91,14 +91,13 @@ python tools/run_feature_chamfer_batched_matrix.py --repetitions 3
 - 删除 marker Faces 后可由 marker/non-marker 邻接边稳定得到 trim boundaries。
 - 本机未安装 `ctx7` CLI，因此本轮 Blender API 结论以真实 background probe 为证据。
 
-## Feature Chamfer GN Probe
+## Feature Chamfer GN Probe（历史 SDF 路线，已废弃）
 
 - Blender 5.1.2 实测 artifact：`tests/artifacts/feature_chamfer_gn_probe.json`
-- 发布 cutter 使用原生 `Points to SDF Grid → Grid to Mesh`，fixture 上 closed manifold。
-- 发布资产直接迁移 fixture 的 `pipecut + Boolean Pro + nested Node Groups`，不再替换成原生 Mesh Boolean。
-- `Boolean Pro.New Faces / Slice Faces` 在当前 fixture 配置为空；`Boundary Edges` 可保存但主要是 loose Edge，尚不能安全驱动 Patch，Finalize 继续 fail-closed。
-- 统一 probe：设置 `HST_ADDON_ROOT` 后用 Blender background 执行 `tools/probe_feature_chamfer_gn.py`。
-- Boolean Pro 输出专项 probe：`tools/probe_boolean_pro_provenance.py`。
+- 该 artifact 仅记录 2026-07-19 的历史 probe，不代表当前发布/runtime 路线。
+- `Points to SDF Grid → Grid to Mesh` 已确认废弃：体素重建会丢失 Feature/Patch ownership、成对 rails 与 junction ports，不得用于正式 Preview/Finalize。
+- 失败复盘：`docs/postmortem/2026-07-19-feature-chamfer-sdf-patch-failure.md`。
+- 当前正式方向为结构化 Curve Pipe + Exact Boolean provenance + batched regular strip/junction handoff。
 
 ## Feature Chamfer Structured Curve Phase 1 Prototype
 
