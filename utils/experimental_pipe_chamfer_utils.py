@@ -3245,7 +3245,6 @@ def build_chamfer_strip(
         raise ValueError("Terminal constraint must bind both open Rail endpoints")
 
     costs = {(0, 0): 0.0}
-    hard_guard_costs = {(0, 0): (0, 0, 0.0)}
     predecessors = {}
     for index_a in range(len(coordinates_a)):
         for index_b in range(len(coordinates_b)):
@@ -3301,8 +3300,6 @@ def build_chamfer_strip(
                 else:
                     tangent_cost = 0.25
                 step_cost = width_cost + parameter_error + tangent_cost
-                relative_advance_violation = 0
-                signed_width_violation = 0
                 if (
                     prefer_hard_guard_path
                     and expected_width is not None
@@ -3324,22 +3321,15 @@ def build_chamfer_strip(
                     relative_advance = abs(advance_a - advance_b)
                     relative_advance_limit = expected_width * 8.0
                     if signed_width_error > maximum_width_error:
-                        signed_width_violation = 1
+                        step_cost += 1000.0 + signed_width_error / width_scale
                     if relative_advance > relative_advance_limit:
-                        relative_advance_violation = 1
-                previous_cost = hard_guard_costs[previous]
-                candidate_cost = (
-                    previous_cost[0] + relative_advance_violation,
-                    previous_cost[1] + signed_width_violation,
-                    previous_cost[2] + step_cost,
-                )
-                candidate = (candidate_cost, previous)
+                        step_cost += 1000.0 + relative_advance / width_scale
+                candidate = (costs[previous] + step_cost, previous)
                 if best is None or candidate < best:
                     best = candidate
             if best is None:
                 continue
-            hard_guard_costs[(index_a, index_b)] = best[0]
-            costs[(index_a, index_b)] = best[0][2]
+            costs[(index_a, index_b)] = best[0]
             predecessors[(index_a, index_b)] = best[1]
 
     if required_end not in costs:
@@ -3445,8 +3435,6 @@ def build_chamfer_strip(
                 for (index_a, index_b), (next_a, next_b) in zip(path, path[1:])
             ),
             "cost": costs[required_end],
-            "relative_advance_violation_count": hard_guard_costs[required_end][0],
-            "signed_width_violation_count": hard_guard_costs[required_end][1],
             "expected_width": expected_width,
             "maximum_width_error": max(width_errors, default=0.0),
             "width_error_inlier_ratio": width_error_inlier_ratio,
