@@ -1863,6 +1863,38 @@ def _orient_chain_to_strand(chain, strand):
     return oriented_chain, parameters[0], parameters[-1]
 
 
+# 对没有 Regular StripCorrespondence 的 setback handoff 只保留稳定 Boundary 顺序与共同 u envelope。
+# chain/strand: 只会交给 Junction/terminal 的真实 Boundary chain 与权威 FeatureStrand；返回稳定 chain 与方向无关 envelope。
+def _stable_setback_chain_envelope(chain, strand):
+    try:
+        _, parameters = _chain_strand_parameters(chain, strand)
+    except BatchedChamferError as error:
+        if error.error_code != "AMBIGUOUS_STRAND_PROJECTION_DIRECTION":
+            raise
+        forward_parameters = error.diagnostics.get("forward_u_values") or ()
+        reverse_parameters = error.diagnostics.get("reverse_u_values") or ()
+        if not forward_parameters or not reverse_parameters:
+            raise
+        forward_envelope = (
+            min(map(float, forward_parameters)),
+            max(map(float, forward_parameters)),
+        )
+        reverse_envelope = (
+            min(map(float, reverse_parameters)),
+            max(map(float, reverse_parameters)),
+        )
+        if any(
+            abs(forward_value - reverse_value) > 1.0e-9
+            for forward_value, reverse_value in zip(
+                forward_envelope,
+                reverse_envelope,
+            )
+        ):
+            raise
+        return chain, forward_envelope[0], forward_envelope[1]
+    return chain, min(map(float, parameters)), max(map(float, parameters))
+
+
 # 把 overlap intervals 投影到 chain 的真实 Edge，并按 Edge 保守切为 regular/setback runs。
 # chain/strand/forbidden_intervals: 有序 Boundary chain、Plan strand 与 normalized u 禁区；返回两类 maximal runs。
 def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
@@ -3465,6 +3497,10 @@ def _build_cyclic_regular_strip_partition(
     setback_ports = []
     strip_attempts = []
     overlap_proof_by_edge_id = {}
+    correspondence_strand_ids = {
+        correspondence.owner_strand_id
+        for correspondence in preview_plan.strip_correspondences
+    }
     for correspondence in preview_plan.strip_correspondences:
         left_chains = staging_rail_chains.get(correspondence.left_rail_id, ())
         right_chains = staging_rail_chains.get(correspondence.right_rail_id, ())
@@ -3715,10 +3751,24 @@ def _build_cyclic_regular_strip_partition(
             for chain in _ordered_stable_boundary_chains(evidence_entries):
                 first_entry = ledger_by_edge_id[chain["edge_ids"][0]]
                 strand = strands_by_id[first_entry["strand_id"]]
-                oriented_chain, start_u, end_u = _orient_chain_to_strand(
-                    chain,
-                    strand,
+                stable_no_regular_handoff = (
+                    evidence_key == "PLAN_ENDPOINT_OR_JUNCTION_SETBACK"
+                    and strand.strand_id not in correspondence_strand_ids
+                    and bool(strand.owner_surface_pairs)
+                    and all(
+                        int(owner_pair[0]) == int(owner_pair[1])
+                        for owner_pair in strand.owner_surface_pairs
+                    )
                 )
+                if stable_no_regular_handoff:
+                    oriented_chain, start_u, end_u = (
+                        _stable_setback_chain_envelope(chain, strand)
+                    )
+                else:
+                    oriented_chain, start_u, end_u = _orient_chain_to_strand(
+                        chain,
+                        strand,
+                    )
                 reason = evidence_key
                 overlap_proofs = [
                     overlap_proof_by_edge_id[edge_id]
@@ -3761,7 +3811,9 @@ def _build_cyclic_regular_strip_partition(
                         "ordered_coordinates": oriented_chain["coordinates"],
                         "is_cyclic": bool(oriented_chain["is_cyclic"]),
                         "direction": (
-                            "FEATURE_STRAND_FORWARD"
+                            "STABLE_BOUNDARY_HANDOFF"
+                            if stable_no_regular_handoff
+                            else "FEATURE_STRAND_FORWARD"
                             if not strand.cyclic
                             else "STABLE_CYCLIC_BOUNDARY_ORDER"
                         ),
@@ -3770,6 +3822,20 @@ def _build_cyclic_regular_strip_partition(
                             round(float(end_u), 10),
                         ],
                         "overlap_edge_proofs": overlap_proofs,
+                        "handoff_proof": (
+                            {
+                                "proof_version": (
+                                    "NO_REGULAR_STRIP_CORRESPONDENCE_V1"
+                                ),
+                                "strand_id": strand.strand_id,
+                                "owner_surface_pairs": [
+                                    list(owner_pair)
+                                    for owner_pair in strand.owner_surface_pairs
+                                ],
+                            }
+                            if stable_no_regular_handoff
+                            else None
+                        ),
                     }
                 )
     classified_ledger = tuple(
