@@ -8263,6 +8263,73 @@ def test_feature_chamfer_batched_short_component_setback_contract(
     result.add_detail("single-edge proof accepted; unsafe variants rejected")
 
 
+# 验证 open Boundary chain 的 forbidden partition 保留真实终点，不把起点复制到末尾。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_open_chain_partition_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["edge:0", "edge:1"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.4, 0.0, 0.0), (1.0, 0.0, 0.0)],
+        "is_cyclic": False,
+    }
+    strand = SimpleNamespace(
+        ordered_vertex_keys=("0,0,0#v0", "1,0,0#v1"),
+        cyclic=False,
+    )
+    partition = module._split_chain_by_forbidden_intervals(
+        chain,
+        strand,
+        (),
+    )
+    ensure(
+        partition["setback"] == []
+        and len(partition["regular"]) == 1
+        and partition["regular"][0]["edge_ids"] == chain["edge_ids"]
+        and partition["regular"][0]["coordinates"] == chain["coordinates"]
+        and all(
+            abs(actual - expected) <= 1.0e-7
+            for actual, expected in zip(
+                partition["regular"][0]["u_values"],
+                (0.0, 0.4, 1.0),
+            )
+        ),
+        f"Open chain partition lost endpoint provenance: {partition}",
+    )
+    result.add_detail("open chain partition preserved both real endpoints")
+
+
+# 验证 cyclic chain 反向时 Edge IDs 与反向 coordinates 仍逐段对应。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_cyclic_reverse_provenance_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["edge:ab", "edge:bc", "edge:ca"],
+        "coordinates": [(0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)],
+        "is_cyclic": True,
+    }
+    strand = SimpleNamespace(
+        ordered_vertex_keys=(
+            "0,0,0#v0",
+            "1,0,0#v1",
+            "0,1,0#v2",
+        ),
+        cyclic=True,
+    )
+    oriented, _ = module._chain_strand_parameters(chain, strand)
+    ensure(
+        oriented["coordinates"] == list(reversed(chain["coordinates"]))
+        and oriented["edge_ids"] == ["edge:bc", "edge:ab", "edge:ca"],
+        f"Cyclic reverse broke Edge/coordinate provenance: {oriented}",
+    )
+    result.add_detail("cyclic reverse preserved directed Edge provenance")
+
+
 # 从真实 PREVIEW Operator 验证 batched backend 只消费同一 ChamferPlan 与正式 Pipe builder。
 # test_context/result: 已加载 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_preview_pipe_contract_smoke(
@@ -8439,6 +8506,14 @@ def main():
     context.run_case(
         "feature_chamfer_batched_short_component_setback_contract",
         test_feature_chamfer_batched_short_component_setback_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_open_chain_partition_regression",
+        test_feature_chamfer_batched_open_chain_partition_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_cyclic_reverse_provenance_regression",
+        test_feature_chamfer_batched_cyclic_reverse_provenance_regression,
     )
     context.run_case(
         "feature_chamfer_batched_preview_pipe_contract_smoke",

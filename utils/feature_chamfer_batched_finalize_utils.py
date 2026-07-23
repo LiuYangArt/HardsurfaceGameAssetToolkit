@@ -1492,10 +1492,13 @@ def _chain_strand_parameters(chain, strand):
     reverse_span = abs(reverse_parameters[-1] - reverse_parameters[0])
     reverse = (reverse_backtrack, -reverse_span) < (forward_backtrack, -forward_span)
     if reverse:
+        reversed_edge_ids = list(reversed(chain["edge_ids"]))
+        if chain.get("is_cyclic") and reversed_edge_ids:
+            reversed_edge_ids = [*reversed_edge_ids[1:], reversed_edge_ids[0]]
         return (
             {
                 **chain,
-                "edge_ids": list(reversed(chain["edge_ids"])),
+                "edge_ids": reversed_edge_ids,
                 "coordinates": list(reversed(chain["coordinates"])),
             },
             reverse_parameters,
@@ -1581,9 +1584,11 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
         oriented_chain["edge_ids"][start_offset:]
         + oriented_chain["edge_ids"][:start_offset]
     )
-    rotated_coordinates = coordinates[start_offset:-1] + coordinates[: start_offset + 1]
-    rotated_parameters = parameters[start_offset:-1]
     if oriented_chain["is_cyclic"]:
+        rotated_coordinates = (
+            coordinates[start_offset:-1] + coordinates[: start_offset + 1]
+        )
+        rotated_parameters = parameters[start_offset:-1]
         rotated_parameters = list(rotated_parameters)
         for value in parameters[: start_offset + 1]:
             candidate = float(value)
@@ -1594,6 +1599,7 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                 )
             rotated_parameters.append(candidate)
     else:
+        rotated_coordinates = list(coordinates)
         rotated_parameters = list(parameters)
     rotated_forbidden = forbidden[start_offset:] + forbidden[:start_offset]
     run_start = 0
