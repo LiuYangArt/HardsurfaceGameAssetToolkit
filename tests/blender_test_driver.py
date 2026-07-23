@@ -8330,6 +8330,82 @@ def test_feature_chamfer_batched_cyclic_reverse_provenance_regression(
     result.add_detail("cyclic reverse preserved directed Edge provenance")
 
 
+# 验证 ordered-chain projection 会优先选择零回退路径，并保留原始 Edge provenance。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_ordered_projection_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    layers = (
+        (
+            {"distance_squared": 1.0, "u": 0.50, "segment_index": 1},
+            {"distance_squared": 1.0001, "u": 0.49, "segment_index": 0},
+        ),
+        (
+            {"distance_squared": 1.0, "u": 0.48, "segment_index": 1},
+            {"distance_squared": 1.0001, "u": 0.51, "segment_index": 2},
+        ),
+    )
+    nearest_parameters = [0.50, 0.48]
+    path = module._minimum_backtrack_projection_path(
+        layers,
+        False,
+        False,
+    )
+    ensure(
+        nearest_parameters[1] < nearest_parameters[0]
+        and path is not None
+        and path["backtrack"] <= 1.0e-12
+        and all(
+            following + 1.0e-10 >= current
+            for current, following in zip(
+                path["u_values"],
+                path["u_values"][1:],
+            )
+        ),
+        f"Ordered projection retained nearest-only backtrack: {path}",
+    )
+    result.add_detail("ordered projection replaced local nearest backtrack")
+
+
+# 验证跨 Plan atom 的真实 Edge 只裁 regular 几何端点，ledger Edge identity 不拆分、不丢失。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_atom_boundary_clip_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    run = {
+        "edge_ids": ["edge:inside", "edge:cross"],
+        "coordinates": [
+            (0.2, 0.0, 0.0),
+            (0.4, 0.0, 0.0),
+            (0.8, 0.0, 0.0),
+        ],
+        "u_values": [0.2, 0.4, 0.8],
+        "u_interval": [0.2, 0.8],
+        "is_cyclic": False,
+    }
+    clipped = module._clip_run_geometry_to_interval(run, (0.2, 0.6))
+    ensure(
+        clipped["edge_ids"] == run["edge_ids"]
+        and clipped["u_values"] == [0.2, 0.4, 0.6]
+        and all(
+            abs(actual - expected) <= 5.0e-8
+            for actual, expected in zip(
+                clipped["coordinates"][-1],
+                (0.6, 0.0, 0.0),
+            )
+        )
+        and len(clipped["virtual_atom_boundaries"]) == 1
+        and clipped["virtual_atom_boundaries"][0]["source_edge_id"]
+        == "edge:cross",
+        f"Atom boundary clip changed provenance or missed boundary: {clipped}",
+    )
+    result.add_detail("atom boundary clip preserved whole-Edge ledger identity")
+
+
 # 从真实 PREVIEW Operator 验证 batched backend 只消费同一 ChamferPlan 与正式 Pipe builder。
 # test_context/result: 已加载 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_preview_pipe_contract_smoke(
@@ -8514,6 +8590,14 @@ def main():
     context.run_case(
         "feature_chamfer_batched_cyclic_reverse_provenance_regression",
         test_feature_chamfer_batched_cyclic_reverse_provenance_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_ordered_projection_regression",
+        test_feature_chamfer_batched_ordered_projection_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_atom_boundary_clip_regression",
+        test_feature_chamfer_batched_atom_boundary_clip_regression,
     )
     context.run_case(
         "feature_chamfer_batched_preview_pipe_contract_smoke",

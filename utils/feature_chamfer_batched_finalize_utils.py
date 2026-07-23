@@ -1290,6 +1290,17 @@ def _ordered_stable_boundary_chains(ledger_entries):
                 "is_cyclic": cyclic,
             }
         )
+    for chain in chains:
+        chain_entries = [entries_by_id[edge_id] for edge_id in chain["edge_ids"]]
+        for key in ("rail_id", "strand_id", "source_patch_id", "pipe_id"):
+            values = {entry[key] for entry in chain_entries}
+            if len(values) != 1:
+                raise BatchedChamferError(
+                    "BATCH_BOUNDARY_CHAIN_OWNER_MISMATCH",
+                    "Boundary chain 混入多个 provenance owner",
+                    {"key": key, "values": sorted(values)},
+                )
+            chain[key] = next(iter(values))
     return tuple(
         sorted(
             chains,
@@ -1433,6 +1444,208 @@ def _cyclic_width_core_runs(chain, opposite_chain, radius):
     return tuple(runs)
 
 
+# 为有序 Boundary chain 的每个点枚举局部可辨识的 FeatureStrand 投影候选。
+# coordinates/feature_points/lengths/total_length/cyclic_chain/allowed_segment_indices: Boundary 点列、FeatureStrand 点列与弧长信息、Boundary 是否闭合、Patch owner 允许的 segment；返回逐点候选。
+def _ordered_strand_projection_candidates(
+    coordinates,
+    feature_points,
+    lengths,
+    total_length,
+    cyclic_chain,
+    allowed_segment_indices=None,
+):
+    coordinate_vectors = [Vector(point) for point in coordinates]
+    cumulative_lengths = [0.0]
+    for length in lengths:
+        cumulative_lengths.append(cumulative_lengths[-1] + length)
+    candidate_layers = []
+    for point_index, point in enumerate(coordinate_vectors):
+        projections = []
+        for segment_index, length in enumerate(lengths):
+            if (
+                allowed_segment_indices is not None
+                and segment_index not in allowed_segment_indices
+            ):
+                continue
+            start = feature_points[segment_index]
+            end = feature_points[(segment_index + 1) % len(feature_points)]
+            segment = end - start
+            factor = (
+                max(0.0, min(1.0, (point - start).dot(segment) / segment.length_squared))
+                if segment.length_squared > 1.0e-20
+                else 0.0
+            )
+            closest = start.lerp(end, factor)
+            projections.append(
+                {
+                    "distance_squared": (point - closest).length_squared,
+                    "u": (
+                        cumulative_lengths[segment_index] + length * factor
+                    )
+                    / total_length,
+                    "segment_index": segment_index,
+                }
+            )
+        nearest_distance = min(
+            projection["distance_squared"] for projection in projections
+        ) ** 0.5
+        adjacent_lengths = []
+        if point_index:
+            adjacent_lengths.append(
+                (point - coordinate_vectors[point_index - 1]).length
+            )
+        elif cyclic_chain and len(coordinate_vectors) > 1:
+            adjacent_lengths.append((point - coordinate_vectors[-1]).length)
+        if point_index + 1 < len(coordinate_vectors):
+            adjacent_lengths.append(
+                (coordinate_vectors[point_index + 1] - point).length
+            )
+        elif cyclic_chain and len(coordinate_vectors) > 1:
+            adjacent_lengths.append((coordinate_vectors[0] - point).length)
+        local_resolution = min(adjacent_lengths, default=0.0)
+        maximum_distance = nearest_distance + local_resolution + 1.0e-10
+        local_candidates = [
+            projection
+            for projection in projections
+            if projection["distance_squared"]
+            <= maximum_distance * maximum_distance
+        ]
+        unique_by_u = {}
+        for projection in sorted(
+            local_candidates,
+            key=lambda item: (
+                item["distance_squared"],
+                item["segment_index"],
+            ),
+        ):
+            key = round(float(projection["u"]), 12)
+            unique_by_u.setdefault(key, projection)
+        candidate_layers.append(
+            tuple(
+                sorted(
+                    unique_by_u.values(),
+                    key=lambda item: (
+                        item["u"],
+                        item["distance_squared"],
+                        item["segment_index"],
+                    ),
+                )
+            )
+        )
+    return tuple(candidate_layers)
+
+
+# 选择 ordered projection 的最小回退路径；有零回退解时不得保留局部 nearest 造成的假折返。
+# candidate_layers/strand_cyclic/chain_cyclic: 逐点投影候选、FeatureStrand 与 Boundary 闭合标记；返回路径 cost/u/segment 或 None。
+def _minimum_backtrack_projection_path(
+    candidate_layers,
+    strand_cyclic,
+    chain_cyclic,
+):
+    if not candidate_layers or any(not layer for layer in candidate_layers):
+        return None
+
+    def equivalent(left, right):
+        return len(left["u_values"]) == len(right["u_values"]) and all(
+            abs(left_u - right_u) <= 1.0e-9
+            for left_u, right_u in zip(left["u_values"], right["u_values"])
+        )
+
+    def retain_unique(paths, limit=2):
+        retained = []
+        for path in sorted(
+            paths,
+            key=lambda item: (
+                item["backtrack"],
+                item["cost"],
+                item["switch_count"],
+                item["segment_indices"],
+            ),
+        ):
+            if any(equivalent(path, current) for current in retained):
+                continue
+            retained.append(path)
+            if len(retained) >= limit:
+                break
+        return retained
+
+    states = {}
+    for candidate_index, candidate in enumerate(candidate_layers[0]):
+        path = {
+            "backtrack": 0.0,
+            "cost": float(candidate["distance_squared"]),
+            "switch_count": 0,
+            "segment_indices": (int(candidate["segment_index"]),),
+            "u_values": (float(candidate["u"]),),
+            "first_candidate_index": candidate_index,
+        }
+        states[(candidate_index, round(float(candidate["u"]), 12))] = [path]
+    for layer in candidate_layers[1:]:
+        next_states = {}
+        for candidate_index, candidate in enumerate(layer):
+            candidate_paths = []
+            raw_u = float(candidate["u"])
+            for paths in states.values():
+                for previous in paths:
+                    previous_u = previous["u_values"][-1]
+                    lifted_values = (raw_u,)
+                    if strand_cyclic:
+                        center = round(previous_u - raw_u)
+                        lift_options = [
+                            raw_u + offset
+                            for offset in range(center - 1, center + 2)
+                        ]
+                        minimum_delta = min(
+                            abs(value - previous_u) for value in lift_options
+                        )
+                        lifted_values = tuple(
+                            value
+                            for value in lift_options
+                            if abs(abs(value - previous_u) - minimum_delta)
+                            <= 1.0e-12
+                        )
+                    for lifted_u in lifted_values:
+                        candidate_paths.append(
+                            {
+                                "backtrack": previous["backtrack"]
+                                + max(0.0, previous_u - lifted_u),
+                                "cost": previous["cost"]
+                                + float(candidate["distance_squared"]),
+                                "switch_count": previous["switch_count"]
+                                + (
+                                    previous["segment_indices"][-1]
+                                    != int(candidate["segment_index"])
+                                ),
+                                "segment_indices": (
+                                    *previous["segment_indices"],
+                                    int(candidate["segment_index"]),
+                                ),
+                                "u_values": (*previous["u_values"], lifted_u),
+                                "first_candidate_index": previous[
+                                    "first_candidate_index"
+                                ],
+                            }
+                        )
+            for path in retain_unique(candidate_paths):
+                key = (
+                    candidate_index,
+                    round(path["u_values"][-1], 12),
+                    path["first_candidate_index"] if chain_cyclic else None,
+                )
+                next_states[key] = retain_unique(
+                    [*next_states.get(key, ()), path]
+                )
+        states = next_states
+        if not states:
+            return None
+    completed = [path for paths in states.values() for path in paths]
+    candidates = retain_unique(completed)
+    if not candidates:
+        return None
+    best = candidates[0]
+    return best
+
+
 # 返回 Boundary chain 每个有序点在 FeatureStrand 上的 normalized u；cyclic 时解开 seam。
 # chain/strand: 当前真实 Boundary chain 与权威 Plan FeatureStrand；返回定向 chain 与逐点连续 u。
 def _chain_strand_parameters(chain, strand):
@@ -1447,50 +1660,108 @@ def _chain_strand_parameters(chain, strand):
     ]
     total_length = sum(lengths)
 
-    def parameter(point):
-        best = None
-        cumulative = 0.0
-        for index, length in enumerate(lengths):
-            start = feature_points[index]
-            end = feature_points[(index + 1) % len(feature_points)]
-            segment = end - start
-            factor = (
-                max(0.0, min(1.0, (Vector(point) - start).dot(segment) / segment.length_squared))
-                if segment.length_squared > 1.0e-20
-                else 0.0
+    if total_length <= 1.0e-12:
+        return chain, [0.0 for _ in chain["coordinates"]]
+    source_patch_id = chain.get("source_patch_id")
+    allowed_segment_indices = None
+    if source_patch_id is not None:
+        allowed_segment_indices = {
+            segment_index
+            for segment_index, patch_pair in enumerate(
+                strand.owner_surface_pairs
             )
-            closest = start.lerp(end, factor)
-            candidate = ((Vector(point) - closest).length_squared, cumulative + length * factor)
-            if best is None or candidate < best:
-                best = candidate
-            cumulative += length
-        return best[1] / total_length if total_length > 1.0e-12 else 0.0
-
-    raw_parameters = [parameter(point) for point in chain["coordinates"]]
-
-    def unwrap(values):
-        if not strand.cyclic or len(values) < 2:
-            return list(values)
-        unwrapped = [float(values[0])]
-        for value in values[1:]:
-            previous = unwrapped[-1]
-            candidates = [float(value) + offset for offset in range(-2, 3)]
-            unwrapped.append(min(candidates, key=lambda candidate: abs(candidate - previous)))
-        return unwrapped
-
-    forward_parameters = unwrap(raw_parameters)
-    reverse_parameters = unwrap(list(reversed(raw_parameters)))
-    forward_backtrack = sum(
-        max(0.0, left - right)
-        for left, right in zip(forward_parameters, forward_parameters[1:])
+            if int(source_patch_id) in patch_pair
+        }
+        if not allowed_segment_indices:
+            allowed_segment_indices = None
+    forward_layers = _ordered_strand_projection_candidates(
+        chain["coordinates"],
+        feature_points,
+        lengths,
+        total_length,
+        bool(chain.get("is_cyclic")),
+        allowed_segment_indices,
     )
-    reverse_backtrack = sum(
-        max(0.0, left - right)
-        for left, right in zip(reverse_parameters, reverse_parameters[1:])
+    reverse_layers = _ordered_strand_projection_candidates(
+        list(reversed(chain["coordinates"])),
+        feature_points,
+        lengths,
+        total_length,
+        bool(chain.get("is_cyclic")),
+        allowed_segment_indices,
     )
-    forward_span = abs(forward_parameters[-1] - forward_parameters[0])
-    reverse_span = abs(reverse_parameters[-1] - reverse_parameters[0])
-    reverse = (reverse_backtrack, -reverse_span) < (forward_backtrack, -forward_span)
+    forward_path = _minimum_backtrack_projection_path(
+        forward_layers,
+        bool(strand.cyclic),
+        bool(chain.get("is_cyclic")),
+    )
+    reverse_path = _minimum_backtrack_projection_path(
+        reverse_layers,
+        bool(strand.cyclic),
+        bool(chain.get("is_cyclic")),
+    )
+    paths = [
+        (False, forward_path),
+        (True, reverse_path),
+    ]
+    paths = [(reverse, path) for reverse, path in paths if path is not None]
+    if not paths:
+        raise BatchedChamferError(
+            "NON_MONOTONIC_STRAND_PROJECTION",
+            "Boundary chain 无法唯一映射为 FeatureStrand 单调路径",
+            {"edge_ids": list(chain["edge_ids"])},
+        )
+    paths.sort(
+        key=lambda item: (
+            item[1]["backtrack"],
+            item[1]["cost"],
+            item[1]["switch_count"],
+            item[1]["segment_indices"],
+            tuple(round(float(value), 12) for value in item[1]["u_values"]),
+            item[0],
+        )
+    )
+    reverse, selected_path = paths[0]
+    if len(paths) > 1 and len(chain["edge_ids"]) > 1:
+        average_cost = selected_path["cost"] / max(
+            1,
+            len(selected_path["u_values"]),
+        )
+        ambiguity_tolerance = max(1.0e-16, average_cost * 1.0e-12)
+        reverse_is_same_open_chain = (
+            not chain.get("is_cyclic")
+            and paths[0][1]["u_values"]
+            and paths[1][1]["u_values"]
+            and all(
+                abs(left_u - right_u) <= 1.0e-9
+                for left_u, right_u in zip(
+                    paths[0][1]["u_values"],
+                    reversed(paths[1][1]["u_values"]),
+                )
+            )
+        )
+        if (
+            abs(paths[1][1]["backtrack"] - selected_path["backtrack"])
+            <= 1.0e-12
+            and paths[1][1]["cost"] - selected_path["cost"]
+            <= ambiguity_tolerance
+            and not reverse_is_same_open_chain
+        ):
+            raise BatchedChamferError(
+                "AMBIGUOUS_STRAND_PROJECTION_DIRECTION",
+                "Boundary chain 的 FeatureStrand 正反方向投影无法唯一判定",
+                {
+                    "forward_cost": forward_path["cost"] if forward_path else None,
+                    "reverse_cost": reverse_path["cost"] if reverse_path else None,
+                    "forward_backtrack": (
+                        forward_path["backtrack"] if forward_path else None
+                    ),
+                    "reverse_backtrack": (
+                        reverse_path["backtrack"] if reverse_path else None
+                    ),
+                    "edge_ids": list(chain["edge_ids"]),
+                },
+            )
     if reverse:
         reversed_edge_ids = list(reversed(chain["edge_ids"]))
         if chain.get("is_cyclic") and reversed_edge_ids:
@@ -1501,9 +1772,9 @@ def _chain_strand_parameters(chain, strand):
                 "edge_ids": reversed_edge_ids,
                 "coordinates": list(reversed(chain["coordinates"])),
             },
-            reverse_parameters,
+            list(selected_path["u_values"]),
         )
-    return chain, forward_parameters
+    return chain, list(selected_path["u_values"])
 
 
 # 按 FeatureStrand 的 normalized u 统一 open rail run 方向。
@@ -2520,11 +2791,15 @@ def _build_regular_record_from_match(
             "patch_pair": list(correspondence.owner_surface_pair),
             "left_edge_ids": left_core["edge_ids"],
             "right_edge_ids": right_core["edge_ids"],
-            "u_interval": [
-                round(float(value), 10)
-                for value in match["common_u_interval"]
-            ],
-            "faces": faces,
+        "u_interval": [
+            round(float(value), 10)
+            for value in match["common_u_interval"]
+        ],
+        "virtual_atom_boundaries": {
+            "left": list(left_core.get("virtual_atom_boundaries", ())),
+            "right": list(right_core.get("virtual_atom_boundaries", ())),
+        },
+        "faces": faces,
             "face_count": len(faces),
             "geometry_guard": {
                 **strip["diagnostics"],
@@ -2707,9 +2982,80 @@ def _trim_run_to_plan_atom(run, atom, cyclic):
     }
 
 
+# 在 Plan atom 边界对 crossing Boundary Edge 创建 regular geometry 虚拟端点；ledger 仍消费原始 Edge ID。
+# run/interval: 已按 atom lift 的真实 run 与权威 atom interval；返回只改变几何端点、不拆分 provenance 的 run。
+def _clip_run_geometry_to_interval(run, interval):
+    parameters = [float(value) for value in run["u_values"]]
+    coordinates = [Vector(point) for point in run["coordinates"]]
+    lower, upper = sorted(map(float, interval))
+    if len(parameters) != len(coordinates):
+        raise BatchedChamferError(
+            "REGULAR_RUN_PARAMETER_COUNT_MISMATCH",
+            "Regular run 的坐标与 FeatureStrand 参数数量不一致",
+            {
+                "edge_ids": list(run["edge_ids"]),
+                "coordinate_count": len(coordinates),
+                "parameter_count": len(parameters),
+            },
+        )
+    clipped = list(coordinates)
+    clipped_parameters = list(parameters)
+    virtual_boundaries = []
+    for point_index, boundary_u, endpoint_role in (
+        (0, lower, "START"),
+        (len(parameters) - 1, upper, "END"),
+    ):
+        current_u = clipped_parameters[point_index]
+        outside = current_u < lower - 1.0e-10 or current_u > upper + 1.0e-10
+        if not outside:
+            continue
+        neighbor_index = 1 if point_index == 0 else len(parameters) - 2
+        neighbor_u = clipped_parameters[neighbor_index]
+        span = neighbor_u - current_u
+        if abs(span) <= 1.0e-12 or not (
+            min(current_u, neighbor_u) - 1.0e-10
+            <= boundary_u
+            <= max(current_u, neighbor_u) + 1.0e-10
+        ):
+            raise BatchedChamferError(
+                "CROSS_ATOM_BOUNDARY_INTERPOLATION_INVALID",
+                "Cross-atom Boundary Edge 无法在权威 Plan atom 边界生成虚拟端点",
+                {
+                    "edge_ids": list(run["edge_ids"]),
+                    "u_values": parameters,
+                    "atom_interval": [lower, upper],
+                    "endpoint_role": endpoint_role,
+                },
+            )
+        factor = (boundary_u - current_u) / span
+        clipped[point_index] = coordinates[point_index].lerp(
+            coordinates[neighbor_index],
+            factor,
+        )
+        clipped_parameters[point_index] = boundary_u
+        edge_index = 0 if point_index == 0 else len(run["edge_ids"]) - 1
+        virtual_boundaries.append(
+            {
+                "endpoint_role": endpoint_role,
+                "boundary_u": boundary_u,
+                "source_edge_id": run["edge_ids"][edge_index],
+                "source_edge_factor": factor,
+                "coordinate": tuple(clipped[point_index]),
+            }
+        )
+    return {
+        **run,
+        "coordinates": [tuple(point) for point in clipped],
+        "u_values": clipped_parameters,
+        "u_interval": [clipped_parameters[0], clipped_parameters[-1]],
+        "virtual_atom_boundaries": virtual_boundaries,
+    }
+
+
 # 计算 atom 中左右 fragments 共同覆盖的 u components；只使用 interval topology，不用距离打分。
 # left_runs/right_runs/atom: atom 两侧 fragments 与 Plan atom；返回共同覆盖 intervals。
 def _common_atom_component_intervals(left_runs, right_runs, atom):
+    atom_start, atom_end = sorted(map(float, atom["u_interval"]))
     boundaries = sorted(
         {
             round(float(value), 10)
@@ -2726,6 +3072,8 @@ def _common_atom_component_intervals(left_runs, right_runs, atom):
         if end - start <= 1.0e-8:
             continue
         midpoint = (start + end) * 0.5
+        if midpoint < atom_start - 1.0e-10 or midpoint > atom_end + 1.0e-10:
+            continue
         left_covered = any(
             min(run["u_interval"]) - 1.0e-10
             <= midpoint
@@ -2766,6 +3114,7 @@ def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
                 trimmed = _trim_open_run_to_interval(run, interval)
                 if trimmed is None:
                     continue
+                trimmed = _clip_run_geometry_to_interval(trimmed, interval)
                 target.append(
                     {
                         **trimmed,
@@ -3005,6 +3354,7 @@ def _build_cyclic_regular_strip_partition(
     regular_records = []
     setback_ports = []
     strip_attempts = []
+    overlap_proof_by_edge_id = {}
     for correspondence in preview_plan.strip_correspondences:
         left_chains = staging_rail_chains.get(correspondence.left_rail_id, ())
         right_chains = staging_rail_chains.get(correspondence.right_rail_id, ())
@@ -3031,6 +3381,69 @@ def _build_cyclic_regular_strip_partition(
                     strand,
                     forbidden_intervals,
                 )
+                for setback_run in split["setback"]:
+                    for edge_id, start_u, end_u in zip(
+                        setback_run["edge_ids"],
+                        setback_run["u_values"],
+                        setback_run["u_values"][1:],
+                    ):
+                        edge_interval = sorted((float(start_u), float(end_u)))
+                        matching_intervals = [
+                            {
+                                "interval_index": interval_index,
+                                "u_interval": [
+                                    float(forbidden_start),
+                                    float(forbidden_end),
+                                ],
+                            }
+                            for interval_index, interval in enumerate(
+                                forbidden_intervals
+                            )
+                            for forbidden_start, forbidden_end in (
+                                sorted(map(float, interval)),
+                            )
+                            if any(
+                                max(
+                                    edge_interval[0],
+                                    forbidden_start + offset,
+                                )
+                                <= min(
+                                    edge_interval[1],
+                                    forbidden_end + offset,
+                                )
+                                + 1.0e-10
+                                for offset in (
+                                    range(-2, 3) if strand.cyclic else (0,)
+                                )
+                            )
+                        ]
+                        if not matching_intervals:
+                            raise BatchedChamferError(
+                                "OVERLAP_EDGE_SETBACK_PROOF_MISSING",
+                                "Setback partition Edge 无法反查 overlap forbidden interval",
+                                {
+                                    "edge_id": edge_id,
+                                    "edge_u_interval": edge_interval,
+                                    "forbidden_intervals": list(forbidden_intervals),
+                                },
+                            )
+                        proof = {
+                            "proof_version": "OVERLAP_EDGE_SETBACK_V1",
+                            "pipe_id": pipe_id,
+                            "strand_id": correspondence.owner_strand_id,
+                            "rail_id": ledger_by_edge_id[edge_id]["rail_id"],
+                            "edge_id": edge_id,
+                            "edge_u_interval": edge_interval,
+                            "forbidden_intervals": matching_intervals,
+                        }
+                        existing = overlap_proof_by_edge_id.get(edge_id)
+                        if existing is not None and existing != proof:
+                            raise BatchedChamferError(
+                                "OVERLAP_EDGE_SETBACK_PROOF_CONFLICT",
+                                "同一 Boundary Edge 观察到不一致的 overlap setback proof",
+                                {"existing": existing, "current": proof},
+                            )
+                        overlap_proof_by_edge_id[edge_id] = proof
                 for run in split["regular"]:
                     for atom in plan_atoms:
                         trimmed = _trim_run_to_plan_atom(
@@ -3179,54 +3592,76 @@ def _build_cyclic_regular_strip_partition(
         if entry["classification"] == "UNCLASSIFIED":
             unclassified_by_rail.setdefault(entry["rail_id"], []).append(entry)
     for rail_id, entries in sorted(unclassified_by_rail.items()):
-        for chain in _ordered_stable_boundary_chains(entries):
-            first_entry = ledger_by_edge_id[chain["edge_ids"][0]]
-            strand = strands_by_id[first_entry["strand_id"]]
-            oriented_chain, start_u, end_u = _orient_chain_to_strand(chain, strand)
-            reason = (
-                "OUTSIDE_PLAN_SETBACK"
-                if first_entry.get("outside_plan_owner_patch")
-                else (
-                    "PIPE_OVERLAP_SETBACK"
-                    if overlap_setback_intervals.get(int(first_entry["pipe_id"]))
-                    else "PLAN_ENDPOINT_OR_JUNCTION_SETBACK"
+        entries_by_evidence = {}
+        for entry in entries:
+            if entry.get("outside_plan_owner_patch"):
+                evidence_key = "OUTSIDE_PLAN_SETBACK"
+            elif entry["edge_id"] in overlap_proof_by_edge_id:
+                evidence_key = "PIPE_OVERLAP_SETBACK"
+            else:
+                evidence_key = "PLAN_ENDPOINT_OR_JUNCTION_SETBACK"
+            entries_by_evidence.setdefault(evidence_key, []).append(entry)
+        for evidence_key, evidence_entries in sorted(entries_by_evidence.items()):
+            for chain in _ordered_stable_boundary_chains(evidence_entries):
+                first_entry = ledger_by_edge_id[chain["edge_ids"][0]]
+                strand = strands_by_id[first_entry["strand_id"]]
+                oriented_chain, start_u, end_u = _orient_chain_to_strand(
+                    chain,
+                    strand,
                 )
-            )
-            port_id = (
-                f"setback:{rail_id}:"
-                + _stable_fingerprint(oriented_chain["edge_ids"])[:20]
-            )
-            for edge_id in oriented_chain["edge_ids"]:
-                if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
+                reason = evidence_key
+                overlap_proofs = [
+                    overlap_proof_by_edge_id[edge_id]
+                    for edge_id in oriented_chain["edge_ids"]
+                    if edge_id in overlap_proof_by_edge_id
+                ]
+                if reason == "PIPE_OVERLAP_SETBACK" and len(overlap_proofs) != len(
+                    oriented_chain["edge_ids"]
+                ):
                     raise BatchedChamferError(
-                        "REGULAR_CORE_LEDGER_CONFLICT",
-                        "Setback port 重复消费 Boundary Edge",
-                        {"edge_id": edge_id, "port_id": port_id},
+                        "OVERLAP_EDGE_SETBACK_PROOF_MISSING",
+                        "Overlap setback port 含未证明的 Boundary Edge",
+                        {"edge_ids": list(oriented_chain["edge_ids"])},
                     )
-                ledger_by_edge_id[edge_id]["classification"] = "SETBACK_RESERVED"
-                ledger_by_edge_id[edge_id]["consumer_id"] = port_id
-            setback_ports.append(
-                {
-                    "port_id": port_id,
-                    "pipe_id": int(first_entry["pipe_id"]),
-                    "strand_id": first_entry["strand_id"],
-                    "rail_id": rail_id,
-                    "source_patch_id": int(first_entry["source_patch_id"]),
-                    "reason": reason,
-                    "outside_plan_owner_patch": bool(
-                        first_entry.get("outside_plan_owner_patch")
-                    ),
-                    "ordered_edge_ids": oriented_chain["edge_ids"],
-                    "ordered_coordinates": oriented_chain["coordinates"],
-                    "is_cyclic": bool(oriented_chain["is_cyclic"]),
-                    "direction": (
-                        "FEATURE_STRAND_FORWARD"
-                        if not strand.cyclic
-                        else "STABLE_CYCLIC_BOUNDARY_ORDER"
-                    ),
-                    "u_interval": [round(float(start_u), 10), round(float(end_u), 10)],
-                }
-            )
+                port_id = (
+                    f"setback:{rail_id}:"
+                    + _stable_fingerprint(oriented_chain["edge_ids"])[:20]
+                )
+                for edge_id in oriented_chain["edge_ids"]:
+                    if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
+                        raise BatchedChamferError(
+                            "REGULAR_CORE_LEDGER_CONFLICT",
+                            "Setback port 重复消费 Boundary Edge",
+                            {"edge_id": edge_id, "port_id": port_id},
+                        )
+                    ledger_by_edge_id[edge_id]["classification"] = "SETBACK_RESERVED"
+                    ledger_by_edge_id[edge_id]["consumer_id"] = port_id
+                setback_ports.append(
+                    {
+                        "port_id": port_id,
+                        "pipe_id": int(first_entry["pipe_id"]),
+                        "strand_id": first_entry["strand_id"],
+                        "rail_id": rail_id,
+                        "source_patch_id": int(first_entry["source_patch_id"]),
+                        "reason": reason,
+                        "outside_plan_owner_patch": bool(
+                            first_entry.get("outside_plan_owner_patch")
+                        ),
+                        "ordered_edge_ids": oriented_chain["edge_ids"],
+                        "ordered_coordinates": oriented_chain["coordinates"],
+                        "is_cyclic": bool(oriented_chain["is_cyclic"]),
+                        "direction": (
+                            "FEATURE_STRAND_FORWARD"
+                            if not strand.cyclic
+                            else "STABLE_CYCLIC_BOUNDARY_ORDER"
+                        ),
+                        "u_interval": [
+                            round(float(start_u), 10),
+                            round(float(end_u), 10),
+                        ],
+                        "overlap_edge_proofs": overlap_proofs,
+                    }
+                )
     classified_ledger = tuple(
         ledger_by_edge_id[edge_id]
         for edge_id in sorted(ledger_by_edge_id)
