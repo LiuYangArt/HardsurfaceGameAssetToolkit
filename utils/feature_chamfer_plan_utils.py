@@ -51,6 +51,15 @@ class RailChain:
 
 
 @dataclass(frozen=True)
+class JunctionPortPatchIncidence:
+    incidence_id: str
+    owner_strand_id: str
+    junction_port_id: str
+    endpoint_role: str
+    source_patch_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class StripCorrespondence:
     correspondence_id: str
     owner_strand_id: str
@@ -80,6 +89,7 @@ class ChamferPlan:
     feature_strands: tuple[FeatureStrand, ...]
     junction_ports: tuple[JunctionPort, ...]
     rail_chains: tuple[RailChain, ...]
+    junction_port_patch_incidences: tuple[JunctionPortPatchIncidence, ...]
     strip_correspondences: tuple[StripCorrespondence, ...]
     unsupported_regions: tuple[UnsupportedRegion, ...]
     provenance: tuple[str, ...]
@@ -129,6 +139,21 @@ def _sharp_feature_degrees(mesh):
             vertex_key = _vertex_key(mesh, vertex_index)
             feature_degrees[vertex_key] = feature_degrees.get(vertex_key, 0) + 1
     return feature_degrees
+
+
+# 返回 source Vertex 邻接 Face 的 Surface Patch ID，不使用坐标、BVH 或最近距离推断。
+# mesh/patch_ids_by_face: source Mesh 与按 polygon index 排列的 Patch ID；返回 Vertex key 到 Patch IDs 的映射。
+def _source_vertex_patch_incidence(mesh, patch_ids_by_face):
+    patch_ids_by_vertex_key = {}
+    for polygon in mesh.polygons:
+        patch_id = int(patch_ids_by_face[polygon.index])
+        for vertex_index in polygon.vertices:
+            vertex_key = _vertex_key(mesh, vertex_index)
+            patch_ids_by_vertex_key.setdefault(vertex_key, set()).add(patch_id)
+    return {
+        vertex_key: tuple(sorted(patch_ids))
+        for vertex_key, patch_ids in patch_ids_by_vertex_key.items()
+    }
 
 
 # 规范化 strand 方向/seam，并同步 owner Surface pair，使 correspondence 不错位。
@@ -216,8 +241,14 @@ def chamfer_plan_fingerprint(plan):
 
 
 # 从现有 GN Preview FeatureGraph 构建 immutable shadow plan，不改变现有算法和输出。
-# source_object/groups/radius/input_contract: source Mesh、已有 groups、半径和合同；返回 ChamferPlan。
-def build_chamfer_plan(source_object, groups, radius, input_contract):
+# source_object/groups/radius/input_contract: source Mesh、已有 groups、半径和合同；source_patch_ids: 可选的 Face→Patch authoritative 映射；返回 ChamferPlan。
+def build_chamfer_plan(
+    source_object,
+    groups,
+    radius,
+    input_contract,
+    source_patch_ids=None,
+):
     mesh = source_object.data
     strands = []
     for group in groups:
@@ -298,6 +329,36 @@ def build_chamfer_plan(source_object, groups, radius, input_contract):
         )
         for vertex_key, strand_ids in sorted(port_incidence.items())
     )
+    junction_port_patch_incidences = ()
+    if source_patch_ids is not None:
+        if len(source_patch_ids) != len(mesh.polygons):
+            raise ValueError("ChamferPlan source Patch incidence is incomplete")
+        patch_ids_by_vertex_key = _source_vertex_patch_incidence(
+            mesh,
+            source_patch_ids,
+        )
+        junction_port_patch_incidences = tuple(
+            JunctionPortPatchIncidence(
+                incidence_id=(
+                    f"port-patch:{strand.strand_id}:{endpoint_role}:"
+                    f"{port_id}"
+                ),
+                owner_strand_id=strand.strand_id,
+                junction_port_id=port_id,
+                endpoint_role=endpoint_role,
+                source_patch_ids=patch_ids_by_vertex_key.get(
+                    port_id.removeprefix("port:"),
+                    (),
+                ),
+            )
+            for strand in strands
+            if not strand.cyclic
+            for endpoint_role, port_id in (
+                ("START", strand.start_port_id),
+                ("END", strand.end_port_id),
+            )
+            if port_id is not None
+        )
     provenance = (
         "UI:Feature Chamfer GN",
         "OPERATOR:hst.feature_chamfer_gn",
@@ -370,6 +431,7 @@ def build_chamfer_plan(source_object, groups, radius, input_contract):
         feature_strands=strands,
         junction_ports=ports,
         rail_chains=expected_rails,
+        junction_port_patch_incidences=junction_port_patch_incidences,
         strip_correspondences=expected_correspondences,
         unsupported_regions=(),
         provenance=provenance,
@@ -500,6 +562,16 @@ def chamfer_plan_from_json(payload):
                 endpoint_port_ids=tuple(item["endpoint_port_ids"]),
             )
             for item in data["rail_chains"]
+        ),
+        junction_port_patch_incidences=tuple(
+            JunctionPortPatchIncidence(
+                incidence_id=item["incidence_id"],
+                owner_strand_id=item["owner_strand_id"],
+                junction_port_id=item["junction_port_id"],
+                endpoint_role=item["endpoint_role"],
+                source_patch_ids=tuple(item["source_patch_ids"]),
+            )
+            for item in data.get("junction_port_patch_incidences", ())
         ),
         strip_correspondences=tuple(
             StripCorrespondence(

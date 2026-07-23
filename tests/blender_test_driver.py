@@ -179,15 +179,131 @@ def canonical_mesh_face_signature(mesh, decimal_places=8):
     ))
 
 
+# mesh: probe-only source Mesh；写入 source-local Vertex/Edge identity，验证 Exact Boolean 是否保留拓扑来源。
+def mark_source_topology_identity(mesh):
+    vertex_id_attribute = mesh.attributes.new(
+        "hst_probe_source_vertex_id",
+        type="INT",
+        domain="POINT",
+    )
+    vertex_present_attribute = mesh.attributes.new(
+        "hst_probe_source_vertex_present",
+        type="BOOLEAN",
+        domain="POINT",
+    )
+    edge_id_attribute = mesh.attributes.new(
+        "hst_probe_source_edge_id",
+        type="INT",
+        domain="EDGE",
+    )
+    edge_present_attribute = mesh.attributes.new(
+        "hst_probe_source_edge_present",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    for vertex in mesh.vertices:
+        vertex_id_attribute.data[vertex.index].value = vertex.index + 1
+        vertex_present_attribute.data[vertex.index].value = True
+    for edge in mesh.edges:
+        edge_id_attribute.data[edge.index].value = edge.index + 1
+        edge_present_attribute.data[edge.index].value = True
+
+
 # mesh: 已完成 Exact Difference 的 closed Mesh；删除非 original Faces 后返回 BMesh 与原 EDGE witness layers。
-def open_boolean_mesh_with_witness_layers(mesh, original_attribute_name):
+# boundary_origin_records: 可选诊断字典；记录同一 BMEdge 在删除 groove Faces 前后的 Face/attribute provenance。
+def open_boolean_mesh_with_witness_layers(
+    mesh,
+    original_attribute_name,
+    boundary_origin_records=None,
+):
     bm = bmesh.new()
     bm.from_mesh(mesh)
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
     original_layer = (
         bm.faces.layers.int.get(original_attribute_name)
         or bm.faces.layers.bool.get(original_attribute_name)
     )
     ensure(original_layer is not None, "Sequential Boolean lost original Face provenance")
+    closed_records_by_edge = {}
+    if boundary_origin_records is not None:
+        face_attribute_layers = tuple(
+            (
+                attribute.name,
+                bm.faces.layers.int.get(attribute.name)
+                or bm.faces.layers.bool.get(attribute.name),
+            )
+            for attribute in mesh.attributes
+            if attribute.domain == "FACE" and attribute.name.startswith("hst_")
+        )
+        edge_attribute_layers = tuple(
+            (
+                attribute.name,
+                bm.edges.layers.int.get(attribute.name)
+                or bm.edges.layers.bool.get(attribute.name),
+            )
+            for attribute in mesh.attributes
+            if attribute.domain == "EDGE" and attribute.name.startswith("hst_")
+        )
+        vertex_attribute_layers = tuple(
+            (
+                attribute.name,
+                bm.verts.layers.int.get(attribute.name),
+            )
+            for attribute in mesh.attributes
+            if attribute.domain == "POINT" and attribute.name.startswith("hst_")
+        )
+        for edge in bm.edges:
+            closed_records_by_edge[edge] = {
+                "closed_edge_index": edge.index,
+                "vertex_coordinates": [
+                    list(coordinate)
+                    for coordinate in sorted(
+                        tuple(round(float(value), 8) for value in vertex.co)
+                        for vertex in edge.verts
+                    )
+                ],
+                "closed_edge_attributes": sorted(
+                    attribute_name
+                    for attribute_name, layer in edge_attribute_layers
+                    if layer is not None and bool(edge[layer])
+                ),
+                "closed_edge_attribute_values": {
+                    attribute_name: int(edge[layer])
+                    for attribute_name, layer in edge_attribute_layers
+                    if layer is not None and int(edge[layer]) != 0
+                },
+                "closed_linked_faces": [
+                    {
+                        "face_index": face.index,
+                        "is_original": bool(face[original_layer]),
+                        "attributes": sorted(
+                            attribute_name
+                            for attribute_name, layer in face_attribute_layers
+                            if layer is not None and bool(face[layer])
+                        ),
+                    }
+                    for face in sorted(edge.link_faces, key=lambda item: item.index)
+                ],
+                "closed_vertices": [
+                    {
+                        "index": vertex.index,
+                        "coordinate": [
+                            round(float(value), 8) for value in vertex.co
+                        ],
+                        "attributes": {
+                            attribute_name: int(vertex[layer])
+                            for attribute_name, layer in vertex_attribute_layers
+                            if layer is not None and int(vertex[layer]) != 0
+                        },
+                    }
+                    for vertex in edge.verts
+                ],
+            }
     groove_faces = [face for face in bm.faces if not bool(face[original_layer])]
     ensure(groove_faces, "Sequential Boolean produced no groove Faces")
     bmesh.ops.delete(bm, geom=groove_faces, context="FACES_KEEP_BOUNDARY")
@@ -197,6 +313,16 @@ def open_boolean_mesh_with_witness_layers(mesh, original_attribute_name):
     bm.verts.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     bm.faces.ensure_lookup_table()
+    if boundary_origin_records is not None:
+        boundary_origin_records.update({
+            edge: {
+                **closed_records_by_edge[edge],
+                "open_edge_index": edge.index,
+                "open_linked_face_count": len(edge.link_faces),
+            }
+            for edge in bm.edges
+            if len(edge.link_faces) == 1 and edge in closed_records_by_edge
+        })
     return bm
 
 
@@ -2824,6 +2950,102 @@ def test_gn_chamfer_plan_disconnected_coincident_ports_regression(
     result.add_detail("two disconnected coincident vertices remain distinct ports")
 
 
+# 验证 endpoint Port 的相邻 Patch incidence 来自 source topology，并可生成 strand-local occluded witness。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_chamfer_plan_endpoint_patch_incidence_contract_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNPlanEndpointPatchIncidence")
+    mesh = bpy.data.meshes.new("GNPlanEndpointPatchIncidenceMesh")
+    mesh.from_pydata(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ),
+        (),
+        ((0, 1, 2), (0, 3, 1)),
+    )
+    mesh.update()
+    source = bpy.data.objects.new("GNPlanEndpointPatchIncidenceSource", mesh)
+    collection.objects.link(source)
+    sharp_attribute = mesh.attributes.new(
+        "sharp_edge",
+        type="BOOLEAN",
+        domain="EDGE",
+    )
+    feature_edge_index = next(
+        edge.index for edge in mesh.edges if set(edge.vertices) == {0, 1}
+    )
+    sharp_attribute.data[feature_edge_index].value = True
+    group = {
+        "pipe_id": 7,
+        "edge_indices": [feature_edge_index],
+        "vertex_indices": [0, 1],
+        "is_cyclic": False,
+        "patch_pair": (0, 0),
+        "patch_pair_by_edge": [(0, 0)],
+        "convexity_by_edge": [1],
+        "selected_pair_vertex_ids": [],
+        "start_feature_degree": 1,
+        "end_feature_degree": 1,
+    }
+    plan_module = test_context.addon.utils.feature_chamfer_plan_utils
+    plan = plan_module.build_chamfer_plan(
+        source,
+        [group],
+        0.05,
+        "GN_PREVIEW_V1",
+        source_patch_ids=(0, 4),
+    )
+    strand = plan.feature_strands[0]
+    start_incidence = next(
+        incidence
+        for incidence in plan.junction_port_patch_incidences
+        if incidence.owner_strand_id == strand.strand_id
+        and incidence.endpoint_role == "START"
+    )
+    ensure(
+        start_incidence.junction_port_id == strand.start_port_id
+        and start_incidence.source_patch_ids == (0, 4),
+        f"Endpoint Patch incidence did not preserve source topology: {start_incidence}",
+    )
+    roundtrip = plan_module.chamfer_plan_from_json(
+        plan_module.chamfer_plan_json(plan)
+    )
+    ensure(
+        roundtrip == plan
+        and plan_module.chamfer_plan_fingerprint(roundtrip) == plan.plan_id,
+        "Endpoint Patch incidence was lost by plan JSON/fingerprint roundtrip",
+    )
+    witnesses = test_context.addon.utils.experimental_pipe_chamfer_utils._build_pipe_boundary_witnesses(
+        plan,
+        [group],
+        source.data,
+    )[7]
+    occluded_witness = next(
+        witness
+        for witness in witnesses
+        if witness.junction_port_id == strand.start_port_id
+        and witness.source_patch_id == 4
+    )
+    validation = test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
+        plan,
+        1,
+        (occluded_witness,),
+        ((occluded_witness.witness_id,),),
+    )
+    ensure(
+        validation.status == "PASS"
+        and occluded_witness.owner_rail_ids
+        == (f"rail:{strand.strand_id}:patch:0",),
+        f"Port-local Patch incidence did not produce a valid strand witness: {validation}",
+    )
+    result.add_detail("source topology authorized one strand-local Port/Patch witness")
+
+
 # 验证 cyclic canonicalization 保持每条 Edge 与相邻 Vertex segment 的 metadata 对齐。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_gn_chamfer_plan_cyclic_metadata_alignment_regression(
@@ -5186,6 +5408,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         key=lambda item: int(item[utils.PIPE_ID_TAG]),
     ))
     source_patch_ids = utils._source_face_patch_ids(source)
+    sharp_source_edge_indices = utils._sharp_edge_indices(source)
     plan_stats = utils._base_stats(
         source,
         radius,
@@ -5201,8 +5424,14 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         groups,
         radius,
         "GN_PREVIEW_V1",
+        source_patch_ids=source_patch_ids,
     )
     witnesses_by_pipe_id = utils._build_pipe_boundary_witnesses(
+        plan,
+        groups,
+        source.data,
+    )
+    strands_by_pipe_id = utils._plan_strands_by_pipe_id(
         plan,
         groups,
         source.data,
@@ -5233,6 +5462,8 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         cutters,
         source_patch_ids,
     )
+    mark_source_topology_identity(multi_source.data)
+    source_identity_mesh = multi_source.data.copy()
     (
         multi_mesh,
         witness_name,
@@ -5258,9 +5489,11 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             collection_output.data,
             utils.ORIGINAL_FACE_ATTRIBUTE,
         )
+        boundary_origin_records = {}
         multi_bm = open_boolean_mesh_with_witness_layers(
             multi_mesh,
             utils.ORIGINAL_FACE_ATTRIBUTE,
+            boundary_origin_records,
         )
         try:
             collection_cleanup = utils._clean_open_boundary_degenerates(
@@ -5275,6 +5508,22 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             collection_bm.edges.index_update()
             multi_bm.verts.index_update()
             multi_bm.edges.index_update()
+            boundary_origin_records = {
+                str(edge.index): {
+                    **record,
+                    "post_cleanup_edge_index": edge.index,
+                    "post_cleanup_vertex_coordinates": [
+                        list(coordinate)
+                        for coordinate in sorted(
+                            tuple(round(float(value), 8) for value in vertex.co)
+                            for vertex in edge.verts
+                        )
+                    ],
+                }
+                for edge in multi_bm.edges
+                for record in (boundary_origin_records.get(edge),)
+                if len(edge.link_faces) == 1 and record is not None
+            }
             collection_open_mesh = bpy.data.meshes.new("MultiInputCollectionOpen")
             multi_open_mesh = bpy.data.meshes.new("MultiInputNativeOpen")
             collection_bm.to_mesh(collection_open_mesh)
@@ -5350,6 +5599,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             boundary_witness_registry = []
             witness_ids_by_boundary = []
             unresolved_boundary_edge_indices = []
+            source_fragment_boundary_edge_indices = []
             for boundary_edge_index in boundary_edge_indices:
                 edge_key = str(boundary_edge_index)
                 owner_ids = boundary_owner_candidates[edge_key]
@@ -5359,46 +5609,100 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                     for token in boundary_endpoint_tokens[edge_key]
                     if token in port_id_by_token
                 }
-                owner_rail_sets = {
-                    witness.owner_rail_ids
+                regular_owner_rail_ids = tuple(sorted(
+                    rail.rail_id
+                    for pipe_id in owner_ids
+                    for strand in (strands_by_pipe_id.get(pipe_id),)
+                    if strand is not None
+                    for rail in plan.rail_chains
+                    if rail.owner_strand_id == strand.strand_id
+                    and len(patch_ids) == 1
+                    and rail.side == f"OWNER_PATCH:{patch_ids[0]}"
+                ))
+                matching_witnesses = {
+                    witness
                     for pipe_id in owner_ids
                     for witness in witnesses_by_pipe_id.get(pipe_id, ())
-                    if witness.source_patch_id in patch_ids
+                    if len(patch_ids) == 1
+                    and witness.source_patch_id == patch_ids[0]
+                    and witness.junction_port_id in matching_port_ids
                 }
-                if not owner_rail_sets and matching_port_ids and len(patch_ids) == 1:
-                    owner_rail_sets = {
-                        tuple(sorted(
-                            rail.rail_id
-                            for rail in plan.rail_chains
-                            if rail.side == f"OWNER_PATCH:{patch_ids[0]}"
-                            and any(
-                                port_id in rail.endpoint_port_ids
-                                for port_id in matching_port_ids
-                            )
-                        ))
-                    } - {()}
+                port_local_owner_rail_sets = {
+                    witness.owner_rail_ids
+                    for witness in matching_witnesses
+                    if witness.owner_rail_ids
+                }
+                origin_record = boundary_origin_records.get(edge_key, {})
+                origin_attribute_values = origin_record.get(
+                    "closed_edge_attribute_values",
+                    {},
+                )
+                source_fragment = (
+                    not owner_ids
+                    and not patch_ids
+                    and not matching_port_ids
+                    and int(origin_attribute_values.get(
+                        "hst_probe_source_edge_present",
+                        0,
+                    )) == 1
+                    and bool(origin_record.get("closed_linked_faces"))
+                    and all(
+                        face_record["is_original"]
+                        for face_record in origin_record["closed_linked_faces"]
+                    )
+                )
+                if source_fragment:
+                    source_fragment_boundary_edge_indices.append(
+                        boundary_edge_index
+                    )
+                    continue
                 if (
                     len(owner_ids) != 1
                     or len(patch_ids) != 1
-                    or len(owner_rail_sets) != 1
+                    or (
+                        not regular_owner_rail_ids
+                        and len(port_local_owner_rail_sets) != 1
+                    )
                 ):
                     unresolved_boundary_edge_indices.append(boundary_edge_index)
                     witness_ids_by_boundary.append(())
                     continue
+                if regular_owner_rail_ids:
+                    owner_rail_ids = regular_owner_rail_ids
+                    junction_port_id = None
+                else:
+                    owner_rail_ids = next(iter(port_local_owner_rail_sets))
+                    matching_port_witness_ids = {
+                        witness.junction_port_id
+                        for witness in matching_witnesses
+                        if witness.owner_rail_ids == owner_rail_ids
+                    }
+                    if len(matching_port_witness_ids) != 1:
+                        unresolved_boundary_edge_indices.append(
+                            boundary_edge_index
+                        )
+                        witness_ids_by_boundary.append(())
+                        continue
+                    junction_port_id = next(iter(matching_port_witness_ids))
                 boundary_witness = (
                     test_context.addon.utils.feature_chamfer_binding_utils.BoundaryWitness(
                         witness_id=f"native-boundary-edge:{boundary_edge_index}",
-                        owner_rail_ids=next(iter(owner_rail_sets)),
-                        junction_port_id=None,
+                        owner_rail_ids=owner_rail_ids,
+                        junction_port_id=junction_port_id,
                         source_patch_id=patch_ids[0],
                     )
                 )
                 boundary_witness_registry.append(boundary_witness)
                 witness_ids_by_boundary.append((boundary_witness.witness_id,))
+            chamfer_boundary_edge_indices = [
+                edge_index
+                for edge_index in boundary_edge_indices
+                if edge_index not in source_fragment_boundary_edge_indices
+            ]
             witness_validation = (
                 test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
                     plan,
-                    len(boundary_edge_indices),
+                    len(chamfer_boundary_edge_indices),
                     boundary_witness_registry,
                     witness_ids_by_boundary,
                 )
@@ -5454,6 +5758,10 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             "collection_cleanup": collection_cleanup,
             "multi_input_cleanup": multi_cleanup,
             "boundary_edge_count": len(boundary_edge_indices),
+            "chamfer_boundary_edge_count": len(chamfer_boundary_edge_indices),
+            "source_fragment_boundary_edge_indices": (
+                source_fragment_boundary_edge_indices
+            ),
             "witnessed_boundary_edge_count": len(witnessed_boundary_edge_indices),
             "missing_boundary_edge_indices": sorted(
                 set(boundary_edge_indices) - set(witnessed_boundary_edge_indices)
@@ -5531,6 +5839,97 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 }
                 for edge_index, owner_ids in boundary_owner_candidates.items()
             },
+            "plan_witness_inputs": {
+                "strands_by_pipe_id": {
+                    str(pipe_id): strand.strand_id
+                    for pipe_id, strand in utils._plan_strands_by_pipe_id(
+                        plan,
+                        groups,
+                        source.data,
+                    ).items()
+                },
+                "groups": [
+                    {
+                        "pipe_id": group["pipe_id"],
+                        "patch_pair": list(group["patch_pair"]),
+                        "patch_pair_by_edge": [
+                            list(pair) for pair in group["patch_pair_by_edge"]
+                        ],
+                        "start_feature_degree": group["start_feature_degree"],
+                        "end_feature_degree": group["end_feature_degree"],
+                    }
+                    for group in groups
+                ],
+                "source_edge_pipe_ids": {
+                    str(edge_index + 1): sorted(
+                        group["pipe_id"]
+                        for group in groups
+                        if edge_index in group["edge_indices"]
+                    )
+                    for edge_index in range(len(source.data.edges))
+                    if any(
+                        edge_index in group["edge_indices"]
+                        for group in groups
+                    )
+                },
+                "source_vertex_port_ids": {
+                    str(vertex_index + 1): port.port_id
+                    for vertex_index in range(len(source.data.vertices))
+                    for vertex_key in (
+                        test_context.addon.utils.feature_chamfer_plan_utils._vertex_key(
+                            source.data,
+                            vertex_index,
+                        ),
+                    )
+                    for port in plan.junction_ports
+                    if port.vertex_key == vertex_key
+                },
+                "rails": [
+                    {
+                        "rail_id": rail.rail_id,
+                        "owner_strand_id": rail.owner_strand_id,
+                        "side": rail.side,
+                        "endpoint_port_ids": list(rail.endpoint_port_ids),
+                    }
+                    for rail in plan.rail_chains
+                ],
+                "ports": [
+                    {
+                        "port_id": port.port_id,
+                        "incident_strand_ids": list(port.incident_strand_ids),
+                    }
+                    for port in plan.junction_ports
+                ],
+            },
+            "source_identity": {
+                "vertices": [
+                    {
+                        "source_vertex_id": vertex.index + 1,
+                        "coordinate": [
+                            round(float(value), 8) for value in vertex.co
+                        ],
+                    }
+                    for vertex in source_identity_mesh.vertices
+                ],
+                "edges": [
+                    {
+                        "source_edge_id": edge.index + 1,
+                        "source_vertex_ids": [
+                            int(vertex_index) + 1
+                            for vertex_index in edge.vertices
+                        ],
+                        "sharp": edge.index in sharp_source_edge_indices,
+                        "source_patch_ids": sorted({
+                            source_patch_ids[polygon_index]
+                            for polygon in source_identity_mesh.polygons
+                            if edge.key in polygon.edge_keys
+                            for polygon_index in (polygon.index,)
+                        }),
+                    }
+                    for edge in source_identity_mesh.edges
+                ],
+            },
+            "boundary_origin_records": boundary_origin_records,
         }
         artifact_path.write_text(
             json.dumps(artifact, indent=2, sort_keys=True),
@@ -5544,7 +5943,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
             and not artifact["unresolved_boundary_edge_indices"]
             and artifact["boundary_witness_validation"]["status"] == "PASS"
             and artifact["boundary_witness_validation"]["consumed_edge_count"]
-            == artifact["boundary_edge_count"]
+            == artifact["chamfer_boundary_edge_count"]
             and artifact["fail_closed_validations"]["missing_status"]
             == "boundary_witness_incomplete"
             and tuple(artifact["fail_closed_validations"]["missing_edge_indices"])
@@ -5558,13 +5957,15 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         )
     finally:
         bpy.data.meshes.remove(multi_mesh)
+        bpy.data.meshes.remove(source_identity_mesh)
         if "collection_open_mesh" in locals():
             bpy.data.meshes.remove(collection_open_mesh)
         if "multi_open_mesh" in locals():
             bpy.data.meshes.remove(multi_open_mesh)
     result.add_detail(
         f"PROTOTYPE/STOP: multi-input Exact covered "
-        f"{len(witnessed_boundary_edge_indices)}/{len(boundary_edge_indices)} "
+        f"{witness_validation.consumed_edge_count}/"
+        f"{len(chamfer_boundary_edge_indices)} "
         f"Boundary Edges; equivalent={closed_equivalent and open_equivalent}; "
         f"artifact={artifact_path}"
     )
@@ -5616,6 +6017,12 @@ def test_feature_chamfer_multi_input_boolean_real_target_matrix_probe(
                 "radius": radius,
                 "artifact": str(ARTIFACT_DIR / cell_name),
                 "boundary_edge_count": artifact["boundary_edge_count"],
+                "chamfer_boundary_edge_count": artifact[
+                    "chamfer_boundary_edge_count"
+                ],
+                "source_fragment_edge_count": len(
+                    artifact["source_fragment_boundary_edge_indices"]
+                ),
                 "consumed_edge_count": artifact[
                     "boundary_witness_validation"
                 ]["consumed_edge_count"],
@@ -5643,7 +6050,8 @@ def test_feature_chamfer_multi_input_boolean_real_target_matrix_probe(
         len(records) == 4
         and all(record["status"] == "PASS" for record in records)
         and all(
-            record["boundary_edge_count"] == record["consumed_edge_count"]
+            record["chamfer_boundary_edge_count"]
+            == record["consumed_edge_count"]
             for record in records
         )
         and all(record["source_fingerprint_unchanged"] for record in records),
@@ -7669,6 +8077,10 @@ def main():
     context.run_case(
         "gn_chamfer_plan_disconnected_coincident_ports_regression",
         test_gn_chamfer_plan_disconnected_coincident_ports_regression,
+    )
+    context.run_case(
+        "gn_chamfer_plan_endpoint_patch_incidence_contract_smoke",
+        test_gn_chamfer_plan_endpoint_patch_incidence_contract_smoke,
     )
     context.run_case(
         "gn_chamfer_plan_cyclic_metadata_alignment_regression",

@@ -247,6 +247,8 @@ validate_plan / validate_binding / validate_final_artifact -> Diagnostics
 
 > compound `Pipe+endpoint token` 与 source Patch EDGE witness 已让合成 degree-3 达到 public validator `12/12 PASS`，并让 simple / `Solid 44` 两个 radius 达到 `287/287`、`281/281`。tricky / `Solid.004` 仍只有 `2052/2068`、`1966/1985`：其中 `10/13` 条 Boundary 没有 native Intersecting/Pipe/Patch/Port field，另有少量 JunctionPort→Patch Rail 缺口。无权威证据时继续 fail-closed；runtime 未接入，Phase 3 保持 `PROTOTYPE / STOP`。证据见 Phase 3 诊断文档。
 
+> source-topology identity 审计随后证明，`Solid.004` 两个 radius 的上述 10 条 Edge 全携带 source-local EDGE identity、仅邻接 retained source Face，且不是 cutter intersection 或 junction seam；Boolean 可能把同一条 source Edge 切成多段，但这些 fragment 不属于 Chamfer Rail。旧 probe 把删除 groove Faces 后的所有单面 Edge 都纳入 Chamfer Boundary universe，因而误报 10 条缺失 witness。fresh 14-cell×3 Operator matrix 仍证明原 source closed manifold、source unchanged、Phase 0/1/2 Go；在把 Boundary universe 限定为 Boolean witness Edge并解决剩余 Port→Patch Rail 缺口前，Phase 3 仍为 `PROTOTYPE / STOP`。
+
 ### 任务
 
 1. 把 Boundary component 分解为 maximal degree-2 RailStrands；degree≠2 顶点成为显式 JunctionNode。

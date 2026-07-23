@@ -168,12 +168,34 @@ def _boundary_witness_plan_indices(plan):
         for owner_pair in strand.owner_surface_pairs
         for patch_id in owner_pair
     }
-    return rails_by_id, ports_by_id, strands_by_id, known_patch_ids
+    incidences = getattr(plan, "junction_port_patch_incidences", ())
+    incidence_by_strand_and_port = {
+        (incidence.owner_strand_id, incidence.junction_port_id): incidence
+        for incidence in incidences
+    }
+    known_patch_ids.update(
+        patch_id
+        for incidence in incidences
+        for patch_id in incidence.source_patch_ids
+    )
+    return (
+        rails_by_id,
+        ports_by_id,
+        strands_by_id,
+        known_patch_ids,
+        incidence_by_strand_and_port,
+    )
 
 
 # witness/plan_indices: 单条 BoundaryWitness 与 ChamferPlan 索引；返回未知引用与语义不相容证据。
 def _boundary_witness_semantic_evidence(witness, plan_indices):
-    rails_by_id, ports_by_id, strands_by_id, known_patch_ids = plan_indices
+    (
+        rails_by_id,
+        ports_by_id,
+        strands_by_id,
+        known_patch_ids,
+        incidence_by_strand_and_port,
+    ) = plan_indices
     unknown_rail_ids = set(witness.owner_rail_ids) - set(rails_by_id)
     unknown_port_ids = (
         {witness.junction_port_id} - set(ports_by_id)
@@ -199,21 +221,32 @@ def _boundary_witness_semantic_evidence(witness, plan_indices):
         if rail_id in rails_by_id
     )
     expected_side = f"OWNER_PATCH:{witness.source_patch_id}"
-    if any(
-        rail.side != expected_side
-        or rail.owner_strand_id not in strands_by_id
-        for rail in known_rails
-    ):
+    if any(rail.owner_strand_id not in strands_by_id for rail in known_rails):
         incompatible = True
     if len(witness.owner_rail_ids) > 1 and witness.junction_port_id is None:
         incompatible = True
     port = ports_by_id.get(witness.junction_port_id)
-    if port is not None and any(
-        rail.owner_strand_id not in port.incident_strand_ids
-        or port.port_id not in rail.endpoint_port_ids
-        for rail in known_rails
-    ):
-        incompatible = True
+    if port is None:
+        if any(rail.side != expected_side for rail in known_rails):
+            incompatible = True
+    else:
+        for rail in known_rails:
+            incidence = incidence_by_strand_and_port.get(
+                (rail.owner_strand_id, port.port_id)
+            )
+            if (
+                rail.owner_strand_id not in port.incident_strand_ids
+                or port.port_id not in rail.endpoint_port_ids
+                or (
+                    rail.side != expected_side
+                    and (
+                        incidence is None
+                        or witness.source_patch_id
+                        not in incidence.source_patch_ids
+                    )
+                )
+            ):
+                incompatible = True
     return (
         unknown_rail_ids,
         unknown_port_ids,

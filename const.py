@@ -1,6 +1,7 @@
 import bpy
 from pathlib import Path
 import os
+import tempfile
 # from mathutils import Matrix
 
 class Addon:
@@ -157,8 +158,11 @@ AXIS_ARROW = AXIS_OBJECT_PREFIX + "Arrows"
 CHECK_OK = "OK"
 
 # UE Connect
-USER_PROFILE_PATH = os.environ['USERPROFILE']
-TEMP_PATH = os.path.join(USER_PROFILE_PATH, "AppData", "Local", "Temp", "BlenderHST")
+USER_PROFILE_PATH = os.environ.get("USERPROFILE", str(Path.home()))
+if os.name == "nt":
+    TEMP_PATH = os.path.join(USER_PROFILE_PATH, "AppData", "Local", "Temp", "BlenderHST")
+else:
+    TEMP_PATH = os.path.join(tempfile.gettempdir(), "BlenderHST")
 UE_SCRIPT = "HardsurfacePropImport"
 UE_SCRIPT_CMD = "batch_import_hs_props"
 # UE_MESH_DIR = "/Meshes"
@@ -178,8 +182,8 @@ class Paths:
     PRESETS_DIR = ADDON_DIR / ASSET_DIR  # 复用顶层 ASSET_DIR
     PRESET_FILE = PRESETS_DIR / "Presets.blend"
     CONFIG_FILE = ADDON_DIR / "prefs.json"
-    OS_USER_DIR = os.environ['USERPROFILE']
-    TEMP_DIR = os.path.join(OS_USER_DIR, "AppData", "Local", "Temp", "BlenderHST")
+    OS_USER_DIR = USER_PROFILE_PATH
+    TEMP_DIR = TEMP_PATH
 
 class Names:
     PREVIEW_CAM = "AssetPreviewCamera"

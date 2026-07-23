@@ -2488,6 +2488,12 @@ def _build_pipe_boundary_witnesses(plan, groups, source_mesh):
         )
         for strand in plan.feature_strands
     }
+    port_patch_ids_by_strand_and_port = {
+        (incidence.owner_strand_id, incidence.junction_port_id): (
+            incidence.source_patch_ids
+        )
+        for incidence in getattr(plan, "junction_port_patch_incidences", ())
+    }
     witnesses_by_pipe_id = {}
     for pipe_id, strand in sorted(strands_by_pipe_id.items()):
         owner_rail_ids = tuple(sorted(
@@ -2495,12 +2501,22 @@ def _build_pipe_boundary_witnesses(plan, groups, source_mesh):
             for rail in plan.rail_chains
             if rail.owner_strand_id == strand.strand_id
         ))
-        patch_ids = tuple(sorted({
+        regular_patch_ids = {
             patch_id
             for owner_pair in strand.owner_surface_pairs
             for patch_id in owner_pair
-        }))
+        }
         port_ids = ports_by_strand_id[strand.strand_id]
+        patch_ids_by_port_id = {
+            port_id: tuple(sorted(
+                regular_patch_ids
+                | set(port_patch_ids_by_strand_and_port.get(
+                    (strand.strand_id, port_id),
+                    (),
+                ))
+            ))
+            for port_id in port_ids
+        }
         witnesses_by_pipe_id[pipe_id] = tuple(
             BoundaryWitness(
                 witness_id=(
@@ -2511,13 +2527,28 @@ def _build_pipe_boundary_witnesses(plan, groups, source_mesh):
                     rail.rail_id
                     for rail in plan.rail_chains
                     if rail.rail_id in owner_rail_ids
-                    and rail.side == f"OWNER_PATCH:{patch_id}"
+                    and (
+                        rail.side == f"OWNER_PATCH:{patch_id}"
+                        or (
+                            port_id is not None
+                            and port_id in rail.endpoint_port_ids
+                            and patch_id
+                            in port_patch_ids_by_strand_and_port.get(
+                                (strand.strand_id, port_id),
+                                (),
+                            )
+                        )
+                    )
                 ),
                 junction_port_id=port_id,
                 source_patch_id=patch_id,
             )
             for port_id in (port_ids or (None,))
-            for patch_id in patch_ids
+            for patch_id in (
+                patch_ids_by_port_id[port_id]
+                if port_id is not None
+                else tuple(sorted(regular_patch_ids))
+            )
         )
     return witnesses_by_pipe_id
 
