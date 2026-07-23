@@ -8425,10 +8425,19 @@ def test_feature_chamfer_batched_unique_regular_stitch_regression(
 ):
     module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
 
-    def make_run(edge_id, start, end, start_u, end_u):
+    def make_run(
+        edge_id,
+        start,
+        end,
+        start_u,
+        end_u,
+        start_token,
+        end_token,
+    ):
         return {
             "edge_ids": [edge_id],
             "coordinates": [start, end],
+            "endpoint_tokens": [start_token, end_token],
             "u_values": [start_u, end_u],
             "u_interval": [start_u, end_u],
             "is_cyclic": False,
@@ -8436,15 +8445,42 @@ def test_feature_chamfer_batched_unique_regular_stitch_regression(
 
     linear = module._stitch_contiguous_regular_runs(
         (
-            make_run("edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0, 0.4),
-            make_run("edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.4, 0.8),
+            make_run(
+                "edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                0.0, 0.4, "token:0", "token:1",
+            ),
+            make_run(
+                "edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0),
+                0.4, 0.8, "token:1", "token:2",
+            ),
         )
     )
     branch = module._stitch_contiguous_regular_runs(
         (
-            make_run("edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.0, 0.4),
-            make_run("edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), 0.4, 0.8),
-            make_run("edge:c", (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), 0.4, 0.7),
+            make_run(
+                "edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                0.0, 0.4, "token:0", "token:1",
+            ),
+            make_run(
+                "edge:b", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0),
+                0.4, 0.8, "token:1", "token:2",
+            ),
+            make_run(
+                "edge:c", (1.0, 0.0, 0.0), (1.0, 1.0, 0.0),
+                0.4, 0.7, "token:1", "token:3",
+            ),
+        )
+    )
+    disconnected = module._stitch_contiguous_regular_runs(
+        (
+            make_run(
+                "edge:a", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                0.0, 0.4, "token:0", "token:1",
+            ),
+            make_run(
+                "edge:d", (1.0, 0.0, 0.0), (2.0, 0.0, 0.0),
+                0.4, 0.8, "token:other", "token:2",
+            ),
         )
     )
     ensure(
@@ -8452,8 +8488,10 @@ def test_feature_chamfer_batched_unique_regular_stitch_regression(
         and linear[0]["edge_ids"] == ["edge:a", "edge:b"]
         and len(branch) == 3
         and sorted(run["edge_ids"] for run in branch)
-        == [["edge:a"], ["edge:b"], ["edge:c"]],
-        f"Regular stitch crossed a non-unique branch: linear={linear}, branch={branch}",
+        == [["edge:a"], ["edge:b"], ["edge:c"]]
+        and len(disconnected) == 2,
+        "Regular stitch crossed a non-unique/disconnected Boundary: "
+        f"linear={linear}, branch={branch}, disconnected={disconnected}",
     )
     result.add_detail("regular stitch preserved branch fragments until unique continuation")
 
