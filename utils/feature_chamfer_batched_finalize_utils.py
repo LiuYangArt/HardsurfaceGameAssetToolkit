@@ -15,6 +15,7 @@ from mathutils.bvhtree import BVHTree
 
 from ..const import FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG
 from .experimental_pipe_chamfer_utils import PIPE_ID_TAG
+from .experimental_pipe_chamfer_utils import PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX
@@ -38,6 +39,7 @@ from .experimental_pipe_chamfer_utils import _synchronize_cutter_membership_sche
 from .experimental_pipe_chamfer_utils import _source_face_patch_ids
 from .experimental_pipe_chamfer_utils import _seed_cutter_edge_owner_witnesses
 from .experimental_pipe_chamfer_utils import _group_patch_pair_spans
+from .experimental_pipe_chamfer_utils import _build_strand_endpoint_port_tokens
 from .experimental_pipe_chamfer_utils import build_chamfer_strip
 from .feature_chamfer_gn_utils import owned_preview_curve
 from .feature_chamfer_gn_utils import source_fingerprint
@@ -385,6 +387,17 @@ def _extract_staging_boundary_records(
                     "owner_pipe_id": owner_pipe_id,
                 },
             )
+        endpoint_port_tokens = sorted({
+            int(attribute.name.removeprefix(
+                f"{PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX}{owner_pipe_id}_"
+            ))
+            for attribute in mesh.attributes
+            if attribute.domain == "EDGE"
+            and attribute.name.startswith(
+                f"{PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX}{owner_pipe_id}_"
+            )
+            and bool(attribute.data[edge_index].value)
+        })
         endpoint_records = sorted(
             (
                 tuple(round(float(value), 8) for value in mesh.vertices[index].co),
@@ -429,6 +442,7 @@ def _extract_staging_boundary_records(
             "adjacent_face_signatures": adjacent_face_signatures,
             "owner_pipe_id": owner_pipe_id,
             "source_patch_id": source_patch_id,
+            "endpoint_port_tokens": endpoint_port_tokens,
         }
         semantic_base_id = _stable_fingerprint(stable_payload)
         edge_id = semantic_base_id
@@ -550,6 +564,11 @@ def _build_preview_pipe_contract(
         )
     pipes = []
     specs = []
+    endpoint_tokens_by_pipe_id, _ = _build_strand_endpoint_port_tokens(
+        preview_plan,
+        groups,
+        source_object.data,
+    )
     for group in sorted(groups, key=lambda item: item["pipe_id"]):
         pipe = _build_pipe_mesh(
             source_object,
@@ -557,6 +576,7 @@ def _build_preview_pipe_contract(
             radius,
             4,
             collection,
+            endpoint_tokens_by_pipe_id.get(group["pipe_id"]),
         )
         risks = _mesh_risk_counts(pipe)
         if risks["non_manifold"] or risks["zero_area"]:
@@ -1155,6 +1175,10 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                         "rail_id": rail_id,
                         "endpoints": boundary["endpoints"],
                         "endpoint_tokens": boundary["endpoint_tokens"],
+                        "endpoint_port_tokens": boundary.get(
+                            "endpoint_port_tokens",
+                            (),
+                        ),
                         "classification": "UNCLASSIFIED",
                         "consumer_id": None,
                         "outside_plan_owner_patch": True,
@@ -1171,6 +1195,10 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                     "rail_id": rail.rail_id,
                     "endpoints": boundary["endpoints"],
                     "endpoint_tokens": boundary["endpoint_tokens"],
+                    "endpoint_port_tokens": boundary.get(
+                        "endpoint_port_tokens",
+                        (),
+                    ),
                     "classification": "UNCLASSIFIED",
                     "consumer_id": None,
                 }
@@ -1305,6 +1333,11 @@ def _ordered_stable_boundary_chains(ledger_entries):
                     {"key": key, "values": sorted(values)},
                 )
             chain[key] = next(iter(values))
+        chain["endpoint_port_tokens_by_edge"] = {
+            entry["edge_id"]: list(entry.get("endpoint_port_tokens", ()))
+            for entry in chain_entries
+            if entry.get("endpoint_port_tokens")
+        }
     return tuple(
         sorted(
             chains,

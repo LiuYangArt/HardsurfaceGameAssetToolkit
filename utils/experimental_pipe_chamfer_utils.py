@@ -205,12 +205,34 @@ def _initialize_boundary_witness_schema(mesh, cutters, source_patch_ids):
         and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
     })
     patch_ids = sorted(set(int(patch_id) for patch_id in source_patch_ids))
+    pipe_endpoint_tokens = sorted({
+        (
+            int(attribute.name.rsplit("_", 1)[1]),
+            int(token),
+        )
+        for cutter in cutters
+        for attribute in cutter.data.attributes
+        if attribute.domain == "FACE"
+        and attribute.name.startswith(CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX)
+        and any(bool(item.value) for item in attribute.data)
+        for token_attribute_name in (
+            CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+            CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+        )
+        for token_attribute in (cutter.data.attributes.get(token_attribute_name),)
+        if token_attribute is not None and token_attribute.domain == "FACE"
+        for token in {int(item.value) for item in token_attribute.data}
+        if token > 0
+    })
     attribute_names = tuple(
         _boundary_owner_witness_attribute_name(pipe_id)
         for pipe_id in pipe_ids
     ) + tuple(
         _boundary_patch_witness_attribute_name(patch_id)
         for patch_id in patch_ids
+    ) + tuple(
+        _probe_edge_compound_endpoint_attribute_name(pipe_id, token)
+        for pipe_id, token in pipe_endpoint_tokens
     )
     for target_mesh in (mesh, *(cutter.data for cutter in cutters)):
         for attribute_name in attribute_names:
@@ -266,6 +288,40 @@ def _seed_cutter_edge_owner_witnesses(cutters):
                 attribute.data[edge.index].value = bool(
                     edge_face_indices.get(edge.index, set()) & owner_faces
                 )
+        for token_attribute_name in (
+            CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+            CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+        ):
+            token_attribute = cutter.data.attributes.get(token_attribute_name)
+            if token_attribute is None or token_attribute.domain != "FACE":
+                continue
+            for token in sorted({
+                int(item.value) for item in token_attribute.data if int(item.value) > 0
+            }):
+                token_faces = {
+                    polygon.index
+                    for polygon in cutter.data.polygons
+                    if int(token_attribute.data[polygon.index].value) == token
+                }
+                for pipe_id, owner_faces in face_pipe_ids.items():
+                    if not token_faces & owner_faces:
+                        continue
+                    attribute_name = _probe_edge_compound_endpoint_attribute_name(
+                        pipe_id,
+                        token,
+                    )
+                    attribute = cutter.data.attributes.get(attribute_name)
+                    if attribute is None:
+                        attribute = cutter.data.attributes.new(
+                            attribute_name,
+                            type="BOOLEAN",
+                            domain="EDGE",
+                        )
+                    for edge in cutter.data.edges:
+                        adjacent_faces = edge_face_indices.get(edge.index, set())
+                        attribute.data[edge.index].value = bool(
+                            adjacent_faces & token_faces & owner_faces
+                        )
 
 
 # output: 当前一次 Exact Boolean 后的 closed Mesh；函数把 cutter/source Face 邻接写为稳定 EDGE witness 并返回统计。
