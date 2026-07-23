@@ -66,6 +66,7 @@
 - Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
 - Feature Chamfer batched Phase A：正式 Preview 持久化的 `GN_PREVIEW_PIPE_V1` 必须与实际 owned Curve 的 spline/cyclic 几何一致；测试禁用二次 `_build_preview_feature_graph`，证明 backend 只消费冻结合同
 - Feature Chamfer batched Phase B：产品矩阵必须执行真实正序/逆序 Cut probe，要求几何 signature 相等、batch 数一致，且 signature 不得复用 graph/pipe metadata fingerprint 冒充几何证据
+- Feature Chamfer batched Phase C：`SHORT_COMPONENT_SETBACK_V1` 只允许贴近唯一 Plan/overlap 边界的单侧单 Edge；双侧、atom 内部、跨 span/convexity 或超长 component 必须 fail-closed
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 import bmesh
@@ -8015,6 +8016,140 @@ def test_feature_chamfer_batched_overlap_coloring_contract(
     result.add_detail(f"color_batches={batches}")
 
 
+# 验证 short component setback 只接受贴近唯一 Plan/overlap 边界的单侧单 Edge，并原子消费 ledger。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_short_component_setback_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    strand = SimpleNamespace(
+        ordered_vertex_keys=("0,0,0#v0", "1,0,0#v1"),
+        cyclic=False,
+        start_port_id="port:start",
+        end_port_id="port:end",
+    )
+    atom = {
+        "atom_id": "atom:regular",
+        "span_id": 3,
+        "patch_pair": [0, 5],
+        "convexity": 1,
+        "u_interval": [0.0, 0.40],
+    }
+    unresolved = {
+        "reason": "NO_PERFECT_MATCHING",
+        "solution_count_capped": 0,
+        "correspondence_id": "strip:strand:test:0:5",
+        "atom_id": atom["atom_id"],
+        "component_id": "atom:regular:0",
+        "component_u_interval": [0.385, 0.39],
+        "left_runs": [],
+        "right_runs": [
+            {
+                "edge_ids": ["edge:short"],
+                "coordinates": [(0.385, 0.0, 0.0), (0.39, 0.0, 0.0)],
+                "u_interval": [0.385, 0.39],
+            }
+        ],
+    }
+    forbidden_intervals = ((0.40, 0.60),)
+    proof = module._short_component_setback_proof(
+        unresolved,
+        atom,
+        strand,
+        forbidden_intervals,
+        0.01,
+    )
+    ensure(
+        proof is not None
+        and proof["proof_version"] == "SHORT_COMPONENT_SETBACK_V1"
+        and proof["boundary_type"] == "OVERLAP_FORBIDDEN"
+        and proof["span_id"] == atom["span_id"],
+        f"Valid short setback proof was rejected: {proof}",
+    )
+    correspondence = SimpleNamespace(
+        correspondence_id=unresolved["correspondence_id"],
+        owner_strand_id="strand:test",
+        owner_surface_pair=(0, 5),
+    )
+    ledger = {
+        "edge:short": {
+            "edge_id": "edge:short",
+            "classification": "UNCLASSIFIED",
+            "consumer_id": None,
+            "pipe_id": 7,
+            "strand_id": "strand:test",
+            "source_patch_id": 5,
+            "rail_id": "rail:strand:test:patch:5",
+        }
+    }
+    port = module._commit_short_component_setback(
+        proof,
+        correspondence,
+        7,
+        ledger,
+    )
+    ensure(
+        ledger["edge:short"]["classification"] == "SETBACK_RESERVED"
+        and ledger["edge:short"]["consumer_id"] == port["port_id"]
+        and port["ordered_edge_ids"] == ["edge:short"]
+        and port["boundary_id"] == proof["boundary_id"],
+        f"Short setback ledger commit is incomplete: {port}",
+    )
+    rejected_variants = (
+        {**unresolved, "left_runs": unresolved["right_runs"]},
+        {
+            **unresolved,
+            "component_u_interval": [0.10, 0.105],
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "u_interval": [0.10, 0.105],
+                }
+            ],
+        },
+        {
+            **unresolved,
+            "component_u_interval": [0.30, 0.39],
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "u_interval": [0.30, 0.39],
+                }
+            ],
+        },
+    )
+    ensure(
+        all(
+            module._short_component_setback_proof(
+                variant,
+                atom,
+                strand,
+                forbidden_intervals,
+                0.01,
+            )
+            is None
+            for variant in rejected_variants
+        ),
+        "Short setback accepted a two-sided, atom-interior, or oversized component",
+    )
+    second_commit_rejected = False
+    try:
+        module._commit_short_component_setback(
+            proof,
+            correspondence,
+            7,
+            ledger,
+        )
+    except module.BatchedChamferError as error:
+        second_commit_rejected = error.error_code == "REGULAR_CORE_LEDGER_CONFLICT"
+    ensure(
+        second_commit_rejected,
+        "Short setback allowed the same Boundary Edge to be consumed twice",
+    )
+    result.add_detail("single-edge proof accepted; unsafe variants rejected")
+
+
 # 从真实 PREVIEW Operator 验证 batched backend 只消费同一 ChamferPlan 与正式 Pipe builder。
 # test_context/result: 已加载 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_preview_pipe_contract_smoke(
@@ -8187,6 +8322,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_overlap_coloring_contract",
         test_feature_chamfer_batched_overlap_coloring_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_short_component_setback_contract",
+        test_feature_chamfer_batched_short_component_setback_contract,
     )
     context.run_case(
         "feature_chamfer_batched_preview_pipe_contract_smoke",
