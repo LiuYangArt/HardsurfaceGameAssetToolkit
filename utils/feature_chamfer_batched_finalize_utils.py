@@ -1779,6 +1779,7 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
     maximum_total_trim = maximum_left_trim * 2 + maximum_right_trim * 2
     rejection_counts = {}
     minimum_trim_passing_count = 0
+    best_strip_rejection = None
     for total_trim in range(maximum_total_trim + 1):
         passing = []
         for left_start_trim in range(maximum_left_trim + 1):
@@ -1868,6 +1869,75 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                             rejection_counts[rejection_reason] = (
                                 rejection_counts.get(rejection_reason, 0) + 1
                             )
+                            strip_diagnostics = strip["diagnostics"]
+                            rejection_rank = (
+                                float(
+                                    strip_diagnostics.get(
+                                        "maximum_relative_advance",
+                                        float("inf"),
+                                    )
+                                ),
+                                float(
+                                    strip_diagnostics.get(
+                                        "maximum_width_error",
+                                        float("inf"),
+                                    )
+                                ),
+                                int(
+                                    strip_diagnostics.get(
+                                        "one_sided_step_count",
+                                        1 << 30,
+                                    )
+                                ),
+                                trim_counts,
+                            )
+                            if (
+                                best_strip_rejection is None
+                                or rejection_rank < best_strip_rejection[0]
+                            ):
+                                best_strip_rejection = (
+                                    rejection_rank,
+                                    {
+                                        "reason": rejection_reason,
+                                        "trim_counts": list(trim_counts),
+                                        "status": strip_diagnostics.get("status"),
+                                        "reasons": list(
+                                            strip_diagnostics.get("reasons", ())
+                                        ),
+                                        "maximum_relative_advance": (
+                                            strip_diagnostics.get(
+                                                "maximum_relative_advance"
+                                            )
+                                        ),
+                                        "maximum_relative_advance_limit": (
+                                            strip_diagnostics.get(
+                                                "maximum_relative_advance_limit"
+                                            )
+                                        ),
+                                        "maximum_width_error": (
+                                            strip_diagnostics.get(
+                                                "maximum_width_error"
+                                            )
+                                        ),
+                                        "width_error_inlier_ratio": (
+                                            strip_diagnostics.get(
+                                                "width_error_inlier_ratio"
+                                            )
+                                        ),
+                                        "one_sided_step_count": (
+                                            strip_diagnostics.get(
+                                                "one_sided_step_count"
+                                            )
+                                        ),
+                                        "zero_area_face_count": (
+                                            _strip_zero_area_face_count(
+                                                strip,
+                                                left_coordinates,
+                                                right_coordinates,
+                                            )
+                                        ),
+                                    },
+                                )
         unique_by_edges = {
             (
                 tuple(candidate["left"]["edge_ids"]),
@@ -1884,11 +1954,21 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                 "minimum_total_trim": total_trim,
                 "candidate_count": len(unique_by_edges),
                 "strip_rejection_counts": rejection_counts,
+                "best_strip_rejection": (
+                    best_strip_rejection[1]
+                    if best_strip_rejection is not None
+                    else None
+                ),
             }
     return None, {
         "reason": "PAIR_WIDTH_ENVELOPE_FAILED",
         "minimum_trim_passing_count": minimum_trim_passing_count,
         "strip_rejection_counts": rejection_counts,
+        "best_strip_rejection": (
+            best_strip_rejection[1]
+            if best_strip_rejection is not None
+            else None
+        ),
         "untrimmed_guard": _regular_pair_width_guard(
             left_run,
             right_run,
