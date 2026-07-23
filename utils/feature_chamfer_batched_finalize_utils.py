@@ -440,11 +440,15 @@ def _extract_staging_boundary_records(
         }
         previous = record_by_edge_id.get(edge_id)
         if previous is not None:
-            raise BatchedChamferError(
-                "BATCH_BOUNDARY_EDGE_ID_COLLISION",
-                "稳定 Boundary Edge ID 出现冲突",
-                {"edge_id": edge_id, "pipe_ids": list(semantic_batch)},
-            )
+            if _canonical_boundary_records((previous,)) != _canonical_boundary_records(
+                (record,)
+            ):
+                raise BatchedChamferError(
+                    "BATCH_BOUNDARY_EDGE_ID_COLLISION",
+                    "稳定 Boundary Edge ID 出现非等价冲突",
+                    {"edge_id": edge_id, "pipe_ids": list(semantic_batch)},
+                )
+            continue
         record_by_edge_id[edge_id] = record
         records.append(record)
     return tuple(sorted(records, key=lambda record: record["edge_id"]))
