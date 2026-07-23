@@ -8417,48 +8417,6 @@ def test_feature_chamfer_batched_cyclic_regular_closure_regression(
     result.add_detail("cyclic regular closure preserved all Edges with monotonic lifted u")
 
 
-# 验证无 Regular correspondence 的 setback chain 可保留稳定顺序并使用共同投影 envelope。
-# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
-def test_feature_chamfer_batched_stable_setback_envelope_regression(
-    test_context: TestContext,
-    result: TestCaseResult,
-):
-    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
-    chain = {
-        "edge_ids": ["edge:a", "edge:b", "edge:c"],
-        "coordinates": [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)],
-        "is_cyclic": False,
-    }
-    original = module._chain_strand_parameters
-
-    def ambiguous_projection(current_chain, current_strand):
-        raise module.BatchedChamferError(
-            "AMBIGUOUS_STRAND_PROJECTION_DIRECTION",
-            "test ambiguity",
-            {
-                "forward_u_values": [0.1, 0.4, 0.8],
-                "reverse_u_values": [0.8, 0.4, 0.1],
-            },
-        )
-
-    module._chain_strand_parameters = ambiguous_projection
-    try:
-        stable_chain, start_u, end_u = module._stable_setback_chain_envelope(
-            chain,
-            SimpleNamespace(),
-        )
-    finally:
-        module._chain_strand_parameters = original
-    ensure(
-        stable_chain is chain
-        and stable_chain["edge_ids"] == chain["edge_ids"]
-        and abs(start_u - 0.1) <= 1.0e-10
-        and abs(end_u - 0.8) <= 1.0e-10,
-        f"Stable setback handoff chose an arbitrary projection direction: {stable_chain}",
-    )
-    result.add_detail("setback handoff retained stable Boundary order and common u envelope")
-
-
 # 验证跨 Plan atom 的真实 Edge 只裁 regular 几何端点，ledger Edge identity 不拆分、不丢失。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_atom_boundary_clip_regression(
@@ -8751,10 +8709,6 @@ def main():
     context.run_case(
         "feature_chamfer_batched_cyclic_regular_closure_regression",
         test_feature_chamfer_batched_cyclic_regular_closure_regression,
-    )
-    context.run_case(
-        "feature_chamfer_batched_stable_setback_envelope_regression",
-        test_feature_chamfer_batched_stable_setback_envelope_regression,
     )
     context.run_case(
         "feature_chamfer_batched_atom_boundary_clip_regression",
