@@ -4965,7 +4965,7 @@ def test_feature_chamfer_open_endpoint_token_producer_smoke(
     source = make_edge_network(
         "OpenEndpointTokenProducerSource",
         collection,
-        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        ((1.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
         ((0, 1),),
     )
     source.data.attributes.new("sharp_edge", type="BOOLEAN", domain="EDGE").data[0].value = True
@@ -4973,7 +4973,7 @@ def test_feature_chamfer_open_endpoint_token_producer_smoke(
         "pipe_id": 7,
         "edge_indices": [0],
         "vertex_indices": [0, 1],
-        "points": [Vector((0.0, 0.0, 0.0)), Vector((1.0, 0.0, 0.0))],
+        "points": [Vector((1.0, 0.0, 0.0)), Vector((0.0, 0.0, 0.0))],
         "is_cyclic": False,
         "patch_pair": (10, 11),
         "patch_pair_by_edge": [(10, 11)],
@@ -5025,12 +5025,21 @@ def test_feature_chamfer_open_endpoint_token_producer_smoke(
     )
     start_values = [item.value for item in start_attribute.data]
     end_values = [item.value for item in end_attribute.data]
+    record_by_token = {record.token: record for record in registry}
+    strand = plan.feature_strands[0]
     ensure(
         {value for value in start_values if value} == {tokens_by_pipe_id[7]["start"]}
         and {value for value in end_values if value} == {tokens_by_pipe_id[7]["end"]}
         and any(start_values)
         and any(end_values),
         "Production Curve Pipe lost plan-local endpoint Face tokens",
+    )
+    ensure(
+        record_by_token[tokens_by_pipe_id[7]["start"]].port_id
+        == strand.end_port_id
+        and record_by_token[tokens_by_pipe_id[7]["end"]].port_id
+        == strand.start_port_id,
+        "Curve endpoint tokens were not remapped after ChamferPlan direction canonicalization",
     )
     result.add_detail(
         f"open endpoint producer preserved tokens={tokens_by_pipe_id[7]} on joined cutter Faces"
@@ -5833,7 +5842,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 missing_validation = (
                     test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
                         plan,
-                        len(boundary_edge_indices),
+                        len(chamfer_boundary_edge_indices),
                         boundary_witness_registry,
                         missing_witness_ids,
                     )
@@ -5841,7 +5850,7 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
                 conflicting_validation = (
                     test_context.addon.utils.feature_chamfer_binding_utils.validate_boundary_witnesses(
                         plan,
-                        len(boundary_edge_indices),
+                        len(chamfer_boundary_edge_indices),
                         boundary_witness_registry,
                         conflicting_witness_ids,
                     )
@@ -6052,7 +6061,8 @@ def test_feature_chamfer_multi_input_boolean_witness_probe(
         ensure(
             artifact["source_fingerprint_unchanged"]
             and not artifact["foreign_endpoint_token_boundary_edge_indices"]
-            and not artifact["patch_missing_boundary_edge_indices"]
+            and artifact["patch_missing_boundary_edge_indices"]
+            == sorted(artifact["source_fragment_boundary_edge_indices"])
             and not artifact["patch_conflicting_boundary_edge_indices"]
             and not artifact["unresolved_boundary_edge_indices"]
             and artifact["boundary_witness_validation"]["status"] == "PASS"
@@ -8301,6 +8311,463 @@ def test_feature_chamfer_batched_open_chain_partition_regression(
     result.add_detail("open chain partition preserved both real endpoints")
 
 
+# 验证 paired rails 在同一 overlap 边界跨越不同 Edge 时统一到完整 Edge envelope。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_paired_forbidden_envelope_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chains = (
+        {
+            "edge_ids": ["left:0", "left:1"],
+            "coordinates": [(0.2, 0.0, 0.0), (0.45, 0.0, 0.0), (0.7, 0.0, 0.0)],
+            "is_cyclic": False,
+        },
+        {
+            "edge_ids": ["right:0", "right:1"],
+            "coordinates": [(0.3, 0.0, 0.0), (0.62, 0.0, 0.0), (0.8, 0.0, 0.0)],
+            "is_cyclic": False,
+        },
+    )
+    strand = SimpleNamespace(
+        ordered_vertex_keys=("0,0,0#v0", "1,0,0#v1"),
+        owner_surface_pairs=((0, 1),),
+        cyclic=False,
+    )
+    effective, proofs = module._paired_rail_forbidden_edge_envelopes(
+        chains,
+        strand,
+        ((0.4, 0.5),),
+    )
+    ensure(
+        len(effective) == 1
+        and all(
+            abs(actual - expected) <= 1.0e-7
+            for actual, expected in zip(effective[0], (0.2, 0.7))
+        )
+        and proofs[0]["source_u_interval"] == [0.4, 0.5]
+        and proofs[0]["direct_witness_edge_ids"]
+        == ["left:0", "left:1", "right:0"],
+        f"Paired overlap boundary did not close to direct crossing Edges: {effective}, {proofs}",
+    )
+    touching_effective, touching_proofs = (
+        module._paired_rail_forbidden_edge_envelopes(
+            (
+                {
+                    "edge_ids": ["touch:left", "cross", "touch:right"],
+                    "coordinates": [
+                        (0.0, 0.0, 0.0),
+                        (0.4, 0.0, 0.0),
+                        (0.5, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                    ],
+                    "is_cyclic": False,
+                },
+            ),
+            strand,
+            ((0.4, 0.5),),
+        )
+    )
+    ensure(
+        all(
+            abs(actual - expected) <= 1.0e-7
+            for actual, expected in zip(touching_effective[0], (0.4, 0.5))
+        )
+        and touching_proofs[0]["direct_witness_edge_ids"] == ["cross"],
+        f"Endpoint-only contact expanded forbidden envelope: {touching_effective}, {touching_proofs}",
+    )
+    result.add_detail("paired rails share one direct-crossing overlap envelope")
+
+
+# 验证 Phase C strip guard 检出共享 Edge 同向 winding 与非相邻 Face 穿透，同时允许合法反向共享 Edge。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_strip_geometry_guard_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    valid = module._validate_regular_strip_geometry((
+        {
+            "faces": [
+                [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+                [(1, 0, 0), (2, 0, 1), (2, 1, 1), (1, 1, 0)],
+            ]
+        },
+    ))
+    same_winding = module._validate_regular_strip_geometry((
+        {
+            "faces": [
+                [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+                [(1, 1, 0), (2, 1, 1), (2, 0, 1), (1, 0, 0)],
+            ]
+        },
+    ))
+    intersecting = module._validate_regular_strip_geometry((
+        {"faces": [[(-1, -1, 0), (1, -1, 0), (0, 1, 0)]]},
+        {"faces": [[(0, -0.5, -1), (0, -0.5, 1), (0, 0.5, 0)]]},
+    ))
+    ensure(
+        valid["status"] == "PASS"
+        and valid["orientation_conflict_count"] == 0
+        and valid["self_intersection_count"] == 0
+        and same_winding["orientation_conflict_count"] == 1
+        and intersecting["self_intersection_count"] >= 1,
+        f"Phase C strip geometry guard missed a topology violation: {valid}, {same_winding}, {intersecting}",
+    )
+    result.add_detail("strip winding and non-adjacent self-intersection guards are active")
+
+
+# 验证 stitch 引入的唯一同点微闭环只延迟给 junction，主 run 保留全部其他 Edge 且恢复单调。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_stitched_micro_loop_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    run = {
+        "edge_ids": ["lead", "loop:a", "loop:b", "loop:c", "tail"],
+        "coordinates": [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.000001, 0.0, 0.0),
+            (1.0, 0.000001, 0.0),
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+        ],
+        "u_values": [0.2, 0.3, 0.300001, 0.299999, 0.3, 0.4],
+        "u_interval": [0.2, 0.4],
+        "branch_setback": True,
+    }
+    normalized, proofs = module._defer_stitched_micro_loops(run, 0.01)
+    ensure(
+        normalized is not None
+        and normalized["edge_ids"] == ["lead", "tail"]
+        and normalized["u_values"] == [0.2, 0.3, 0.4]
+        and proofs[0]["edge_ids"] == ["loop:a", "loop:b", "loop:c"]
+        and proofs[0]["proof_version"] == "STITCHED_MICRO_LOOP_JUNCTION_V1",
+        f"Stitched micro loop did not defer exactly: {normalized}, {proofs}",
+    )
+    unsafe = {
+        **run,
+        "coordinates": [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.1, 0.0, 0.0),
+            (1.0, 0.1, 0.0),
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+        ],
+    }
+    ensure(
+        module._defer_stitched_micro_loops(unsafe, 0.01)[0] is None,
+        "Oversized stitched loop was incorrectly deferred",
+    )
+    result.add_detail("unique tiny stitch loop deferred; oversized loop rejected")
+
+
+# 验证独立 tiny cyclic component 只有在唯一贴附于同 Rail 主环且直接 topology 全为 degree-2 时才 defer。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_attached_cyclic_micro_component_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    support = {
+        "edge_ids": ["support:0", "support:1", "support:2", "support:3"],
+        "coordinates": [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ],
+        "is_cyclic": True,
+        "endpoint_degrees_by_edge": {
+            f"support:{index}": [2, 2] for index in range(4)
+        },
+    }
+    micro = {
+        "edge_ids": ["micro:0", "micro:1", "micro:2"],
+        "coordinates": [
+            (0.5, 1.0e-5, 0.0),
+            (0.50001, 1.0e-5, 0.0),
+            (0.500005, 2.0e-5, 0.0),
+        ],
+        "is_cyclic": True,
+        "endpoint_degrees_by_edge": {
+            f"micro:{index}": [2, 2] for index in range(3)
+        },
+    }
+    retained, proofs = module._defer_attached_cyclic_micro_components(
+        (support, micro),
+        0.01,
+    )
+    ensure(
+        retained == (support,)
+        and len(proofs) == 1
+        and proofs[0]["edge_ids"] == micro["edge_ids"]
+        and proofs[0]["proof_version"]
+        == "ATTACHED_CYCLIC_MICRO_COMPONENT_SETBACK_V1",
+        f"Attached cyclic micro component was not proven exactly: {retained}, {proofs}",
+    )
+    unsafe = {
+        **micro,
+        "endpoint_degrees_by_edge": {
+            **micro["endpoint_degrees_by_edge"],
+            "micro:0": [1, 2],
+        },
+    }
+    ensure(
+        module._defer_attached_cyclic_micro_components(
+            (support, unsafe),
+            0.01,
+        )[1]
+        == (),
+        "Non-degree-2 cyclic component received an attached-micro proof",
+    )
+    result.add_detail("unique attached degree-2 cyclic micro deferred")
+
+
+# 验证大半径下孤立 single Edge 只在 degree-2、真实长度与 Plan 弧长都严格短于阈值时 defer。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_radius_collapsed_single_edge_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    atom = {
+        "atom_id": "atom:test",
+        "u_interval": [0.0, 1.0],
+        "span_id": 2,
+        "patch_pair": [4, 11],
+        "convexity": 1,
+    }
+    strand = SimpleNamespace(
+        ordered_vertex_keys=("0,0,0#v0", "1,0,0#v1"),
+        cyclic=False,
+    )
+    unresolved = {
+        "correspondence_id": "corr:test",
+        "component_id": "atom:test:0",
+        "component_u_interval": [0.19, 0.20],
+        "reason": "NO_PERFECT_MATCHING",
+        "solution_count_capped": 0,
+        "left_runs": [],
+        "right_runs": [
+            {
+                "edge_ids": ["edge:collapsed"],
+                "coordinates": [(0.0, 0.0, 0.0), (0.01, 0.0, 0.0)],
+                "endpoint_degrees_by_edge": {"edge:collapsed": [2, 2]},
+            }
+        ],
+    }
+    proof = module._radius_collapsed_single_edge_setback_proof(
+        unresolved,
+        atom,
+        strand,
+        ((0.20, 0.30),),
+        0.03,
+    )
+    ensure(
+        proof is not None
+        and proof["edge_id"] == "edge:collapsed"
+        and proof["proof_version"] == "RADIUS_COLLAPSED_SINGLE_EDGE_SETBACK_V1",
+        f"Valid radius-collapsed single Edge was not proven: {proof}",
+    )
+    unsafe_variants = (
+        {
+            **unresolved,
+            "component_u_interval": [0.60, 0.61],
+        },
+        {
+            **unresolved,
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "endpoint_degrees_by_edge": {"edge:collapsed": [1, 2]},
+                }
+            ],
+        },
+        {
+            **unresolved,
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "coordinates": [(0.0, 0.0, 0.0), (0.02, 0.0, 0.0)],
+                }
+            ],
+        },
+    )
+    ensure(
+        all(
+            module._radius_collapsed_single_edge_setback_proof(
+                variant,
+                atom,
+                strand,
+                ((0.20, 0.30),),
+                0.03,
+            )
+            is None
+            for variant in unsafe_variants
+        ),
+        "Unsafe radius-collapsed single Edge received a setback proof",
+    )
+    result.add_detail("degree-2 short collapsed Edge proven; unsafe variants rejected")
+
+
+# 验证 terminal short tail 必须由唯一 terminal Edge 和少量相邻 degree-2 Edge 组成。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_terminal_short_tail_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    atom = {
+        "atom_id": "atom:test",
+        "u_interval": [0.0, 1.0],
+        "span_id": 5,
+        "patch_pair": [0, 4],
+        "convexity": 1,
+    }
+    unresolved = {
+        "correspondence_id": "corr:test",
+        "component_id": "atom:test:0",
+        "component_u_interval": [0.5, 0.51],
+        "reason": "NO_PERFECT_MATCHING",
+        "solution_count_capped": 0,
+        "left_runs": [
+            {
+                "edge_ids": ["tail:regular", "tail:terminal"],
+                "coordinates": [
+                    (0.0, 0.0, 0.0),
+                    (0.003, 0.0, 0.0),
+                    (0.012, 0.0, 0.0),
+                ],
+                "branch_setback": True,
+                "endpoint_degrees_by_edge": {
+                    "tail:regular": [2, 2],
+                    "tail:terminal": [1, 2],
+                },
+                "junction_endpoint_tokens_by_edge": {
+                    "tail:terminal": ["terminal:test"]
+                },
+            }
+        ],
+        "right_runs": [],
+    }
+    proof = module._terminal_short_tail_setback_proof(
+        unresolved,
+        atom,
+        0.03,
+    )
+    ensure(
+        proof is not None
+        and proof["edge_ids"] == ["tail:regular", "tail:terminal"]
+        and proof["proof_version"] == "TERMINAL_SHORT_TAIL_SETBACK_V1",
+        f"Valid terminal short tail was not proven: {proof}",
+    )
+    unsafe = {
+        **unresolved,
+        "left_runs": [
+            {
+                **unresolved["left_runs"][0],
+                "coordinates": [
+                    (0.0, 0.0, 0.0),
+                    (0.03, 0.0, 0.0),
+                    (0.06, 0.0, 0.0),
+                ],
+            }
+        ],
+    }
+    ensure(
+        module._terminal_short_tail_setback_proof(unsafe, atom, 0.03) is None,
+        "Oversized terminal tail received a setback proof",
+    )
+    result.add_detail("short terminal tail proven; oversized tail rejected")
+
+
+# 验证 junction branch 的孤立数值碎片只在极短单 Edge 条件下生成结构化 setback proof。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_branch_micro_fragment_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    unresolved = {
+        "correspondence_id": "corr:test",
+        "component_id": "atom:test:0",
+        "component_u_interval": [0.2, 0.4],
+        "reason": "NO_PERFECT_MATCHING",
+        "solution_count_capped": 0,
+        "left_runs": [],
+        "right_runs": [
+            {
+                "edge_ids": ["edge:micro"],
+                "coordinates": [(0.0, 0.0, 0.0), (1.0e-6, 0.0, 0.0)],
+                "branch_setback": True,
+                "junction_endpoint_tokens_by_edge": {
+                    "edge:micro": ["terminal:test", "junction:test"]
+                },
+                "endpoint_degrees_by_edge": {"edge:micro": [1, 3]},
+            }
+        ],
+    }
+    atom = {
+        "atom_id": "atom:test",
+        "u_interval": [0.0, 1.0],
+        "span_id": 3,
+        "patch_pair": [2, 7],
+        "convexity": 1,
+    }
+    proof = module._branch_micro_fragment_setback_proof(
+        unresolved,
+        atom,
+        0.01,
+    )
+    ensure(
+        proof is not None
+        and proof["edge_id"] == "edge:micro"
+        and proof["proof_version"] == "BRANCH_MICRO_FRAGMENT_SETBACK_V1",
+        f"Valid branch micro fragment was not proven: {proof}",
+    )
+    unsafe_variants = (
+        {
+            **unresolved,
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "coordinates": [(0.0, 0.0, 0.0), (1.0e-3, 0.0, 0.0)],
+                }
+            ],
+        },
+        {
+            **unresolved,
+            "right_runs": [
+                {**unresolved["right_runs"][0], "branch_setback": False}
+            ],
+        },
+        {
+            **unresolved,
+            "right_runs": [
+                {
+                    **unresolved["right_runs"][0],
+                    "junction_endpoint_tokens_by_edge": {},
+                    "endpoint_degrees_by_edge": {"edge:micro": [2, 2]},
+                }
+            ],
+        },
+    )
+    ensure(
+        all(
+            module._branch_micro_fragment_setback_proof(variant, atom, 0.01)
+            is None
+            for variant in unsafe_variants
+        ),
+        "Oversized, non-branch, or non-junction fragment received a micro setback proof",
+    )
+    result.add_detail("tiny branch fragment proven; oversized/non-branch rejected")
+
+
 # 验证 cyclic chain 反向时 Edge IDs 与反向 coordinates 仍逐段对应。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_cyclic_reverse_provenance_regression(
@@ -8697,6 +9164,34 @@ def main():
     context.run_case(
         "feature_chamfer_batched_open_chain_partition_regression",
         test_feature_chamfer_batched_open_chain_partition_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_paired_forbidden_envelope_regression",
+        test_feature_chamfer_batched_paired_forbidden_envelope_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_strip_geometry_guard_regression",
+        test_feature_chamfer_batched_strip_geometry_guard_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_stitched_micro_loop_regression",
+        test_feature_chamfer_batched_stitched_micro_loop_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_attached_cyclic_micro_component_contract",
+        test_feature_chamfer_batched_attached_cyclic_micro_component_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_radius_collapsed_single_edge_contract",
+        test_feature_chamfer_batched_radius_collapsed_single_edge_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_terminal_short_tail_contract",
+        test_feature_chamfer_batched_terminal_short_tail_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_branch_micro_fragment_contract",
+        test_feature_chamfer_batched_branch_micro_fragment_contract,
     )
     context.run_case(
         "feature_chamfer_batched_cyclic_reverse_provenance_regression",

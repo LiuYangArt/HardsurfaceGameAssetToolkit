@@ -28,6 +28,7 @@ from .feature_chamfer_binding_utils import StrandEndpointPortToken
 from .feature_chamfer_binding_utils import _plan_strands_by_pipe_id
 from .feature_chamfer_patch_utils import patch_boolean_result
 from .feature_chamfer_plan_utils import build_chamfer_plan
+from .feature_chamfer_plan_utils import _vertex_key as plan_vertex_key
 
 
 COLLECTION_NAME = "HST_Experimental_PipeChamfer"
@@ -2494,33 +2495,62 @@ def _build_pipe_mesh(
 
 
 # 为 open ChamferPlan strands 分配 deterministic plan-local endpoint tokens，并按 Pipe ID 建索引。
-# plan/groups/source_mesh: shared plan、Feature groups 与 source Mesh；返回 Pipe token 字典和 immutable registry。
+# plan/groups/source_mesh: shared plan、Feature groups 与 source Mesh；返回按 Curve START/END 索引的 Pipe token 字典和 immutable registry。
 def _build_strand_endpoint_port_tokens(plan, groups, source_mesh):
     strands_by_pipe_id = _plan_strands_by_pipe_id(plan, groups, source_mesh)
     if len(strands_by_pipe_id) != len(groups):
         raise RuntimeError("ChamferPlan Pipe→FeatureStrand endpoint mapping is incomplete")
+    groups_by_pipe_id = {
+        int(group["pipe_id"]): group
+        for group in groups
+    }
     tokens_by_pipe_id = {}
     registry = []
     next_token = 1
     for pipe_id, strand in sorted(strands_by_pipe_id.items()):
         if strand.cyclic:
             continue
+        group = groups_by_pipe_id[pipe_id]
+        group_endpoint_keys = (
+            plan_vertex_key(source_mesh, group["vertex_indices"][0]),
+            plan_vertex_key(source_mesh, group["vertex_indices"][-1]),
+        )
+        strand_endpoint_keys = (
+            strand.ordered_vertex_keys[0],
+            strand.ordered_vertex_keys[-1],
+        )
+        if group_endpoint_keys == strand_endpoint_keys:
+            curve_to_plan_endpoint_roles = (
+                ("START", "START"),
+                ("END", "END"),
+            )
+        elif group_endpoint_keys == tuple(reversed(strand_endpoint_keys)):
+            curve_to_plan_endpoint_roles = (
+                ("START", "END"),
+                ("END", "START"),
+            )
+        else:
+            raise RuntimeError(
+                f"Pipe {pipe_id} endpoints do not match its ChamferPlan FeatureStrand"
+            )
         endpoint_tokens = {}
-        for endpoint_role, port_id in (
-            ("START", strand.start_port_id),
-            ("END", strand.end_port_id),
-        ):
+        port_id_by_plan_role = {
+            "START": strand.start_port_id,
+            "END": strand.end_port_id,
+        }
+        for curve_endpoint_role, plan_endpoint_role in curve_to_plan_endpoint_roles:
+            port_id = port_id_by_plan_role[plan_endpoint_role]
             if port_id is None:
                 raise RuntimeError(
-                    f"Open FeatureStrand lacks {endpoint_role} JunctionPort"
+                    f"Open FeatureStrand lacks {plan_endpoint_role} JunctionPort"
                 )
-            endpoint_tokens[endpoint_role.lower()] = next_token
+            endpoint_tokens[curve_endpoint_role.lower()] = next_token
             registry.append(
                 StrandEndpointPortToken(
                     next_token,
                     pipe_id,
                     strand.strand_id,
-                    endpoint_role,
+                    plan_endpoint_role,
                     port_id,
                 )
             )
@@ -3282,6 +3312,9 @@ def build_chamfer_strip(
     prefer_hard_guard_path = bool(constraints.get("prefer_hard_guard_path", False))
     expected_width = constraints.get("expected_width")
     maximum_width_error = constraints.get("maximum_width_error")
+    relative_advance_multiplier = float(
+        constraints.get("relative_advance_multiplier", 8.0)
+    )
     endpoint_width = (
         (coordinates_a[0] - coordinates_b[0]).length
         + (coordinates_a[-1] - coordinates_b[-1]).length
@@ -3299,6 +3332,25 @@ def build_chamfer_strip(
         len(coordinates_b) - 1,
     ):
         raise ValueError("Terminal constraint must bind both open Rail endpoints")
+    if reject_zero_area_faces and (
+        any(
+            (following - current).length <= 1.0e-12
+            for current, following in zip(coordinates_a, coordinates_a[1:])
+        )
+        or any(
+            (following - current).length <= 1.0e-12
+            for current, following in zip(coordinates_b, coordinates_b[1:])
+        )
+    ):
+        return {
+            "faces": [],
+            "path": [],
+            "diagnostics": {
+                "status": "FAIL",
+                "reasons": ["NO_MONOTONIC_CORRESPONDENCE_PATH"],
+                "monotonic": False,
+            },
+        }
 
     costs = {(0, 0): 0.0}
     hard_guard_costs = {(0, 0): (0, 0, 0.0)}
@@ -3315,24 +3367,90 @@ def build_chamfer_strip(
                 if reject_zero_area_faces:
                     previous_a, previous_b = previous
                     if delta_a and delta_b:
-                        face_coordinates = (
+                        face_coordinate_candidates = (
                             coordinates_a[previous_a],
                             coordinates_a[index_a],
                             coordinates_b[index_b],
                             coordinates_b[previous_b],
                         )
                     elif delta_a:
-                        face_coordinates = (
+                        face_coordinate_candidates = (
                             coordinates_a[previous_a],
                             coordinates_a[index_a],
                             coordinates_b[index_b],
                         )
                     else:
-                        face_coordinates = (
+                        face_coordinate_candidates = (
                             coordinates_a[index_a],
                             coordinates_b[index_b],
                             coordinates_b[previous_b],
                         )
+                    face_coordinates = []
+                    for coordinate in face_coordinate_candidates:
+                        if not face_coordinates or (
+                            coordinate - face_coordinates[-1]
+                        ).length > 1.0e-12:
+                            face_coordinates.append(coordinate)
+                    if (
+                        len(face_coordinates) > 1
+                        and (
+                            face_coordinates[0] - face_coordinates[-1]
+                        ).length
+                        <= 1.0e-12
+                    ):
+                        face_coordinates.pop()
+                    if len(face_coordinates) < 3:
+                        continue
+                    base_coordinate = face_coordinates[0]
+                    face_area = sum(
+                        (
+                            face_coordinates[index] - base_coordinate
+                        ).cross(
+                            face_coordinates[index + 1] - base_coordinate
+                        ).length
+                        * 0.5
+                        for index in range(1, len(face_coordinates) - 1)
+                    )
+                    if face_area <= 1.0e-12:
+                        continue
+                    boundary_is_simple = True
+                    for point_index, point in enumerate(face_coordinates):
+                        for edge_index, (edge_start, edge_end) in enumerate(
+                            zip(
+                                face_coordinates,
+                                face_coordinates[1:] + face_coordinates[:1],
+                            )
+                        ):
+                            if point_index in {
+                                edge_index,
+                                (edge_index + 1) % len(face_coordinates),
+                            }:
+                                continue
+                            edge_direction = edge_end - edge_start
+                            squared_edge_length = edge_direction.length_squared
+                            if squared_edge_length <= 1.0e-24:
+                                boundary_is_simple = False
+                                break
+                            factor = (point - edge_start).dot(
+                                edge_direction
+                            ) / squared_edge_length
+                            if (
+                                1.0e-10 < factor < 1.0 - 1.0e-10
+                                and (
+                                    point
+                                    - (
+                                        edge_start
+                                        + edge_direction * factor
+                                    )
+                                ).length
+                                <= 1.0e-10
+                            ):
+                                boundary_is_simple = False
+                                break
+                        if not boundary_is_simple:
+                            break
+                    if not boundary_is_simple:
+                        continue
                     face_normal = Vector()
                     for face_index, coordinate in enumerate(face_coordinates):
                         face_normal += coordinate.cross(
@@ -3359,6 +3477,7 @@ def build_chamfer_strip(
                 step_cost = width_cost + parameter_error + tangent_cost
                 relative_advance_violation = 0
                 signed_width_violation = 0
+                signed_width_excess = 0.0
                 if (
                     prefer_hard_guard_path
                     and expected_width is not None
@@ -3377,16 +3496,21 @@ def build_chamfer_strip(
                         expected_width - width,
                         width - expected_width - allowed_longitudinal_advance,
                     )
-                    relative_advance = abs(advance_a - advance_b)
-                    relative_advance_limit = expected_width * 8.0
                     if signed_width_error > maximum_width_error:
                         signed_width_violation = 1
+                        signed_width_excess = (
+                            signed_width_error - maximum_width_error
+                        ) / max(maximum_width_error, 1.0e-12)
+                    relative_advance = abs(advance_a - advance_b)
+                    relative_advance_limit = (
+                        expected_width * relative_advance_multiplier
+                    )
                     if relative_advance > relative_advance_limit:
                         relative_advance_violation = 1
                 previous_cost = hard_guard_costs[previous]
                 candidate_cost = (
                     previous_cost[0] + relative_advance_violation,
-                    previous_cost[1] + signed_width_violation,
+                    previous_cost[1] + signed_width_excess,
                     previous_cost[2] + step_cost,
                 )
                 candidate = (candidate_cost, previous)
@@ -3456,14 +3580,15 @@ def build_chamfer_strip(
     )
     maximum_relative_advance = max(relative_advances, default=0.0)
     maximum_relative_advance_limit = (
-        expected_width * 8.0
+        expected_width * relative_advance_multiplier
         if expected_width is not None
         else float("inf")
     )
+    minimum_required_width_inlier_ratio = 0.95
     if (
         maximum_width_error is not None
         and (
-            width_error_inlier_ratio < 0.95
+            width_error_inlier_ratio < minimum_required_width_inlier_ratio
             or maximum_relative_advance > maximum_relative_advance_limit
         )
     ):
