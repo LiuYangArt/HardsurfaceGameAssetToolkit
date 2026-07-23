@@ -2446,6 +2446,46 @@ def test_feature_chamfer_regular_strip_zero_area_path_regression(
     result.add_detail("zero-area steps rejected; no-path results stayed structured")
 
 
+# 验证 Phase C DP 优先选择满足既有 signed-width hard guard 的路径，不修改 guard 阈值。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_regular_strip_hard_guard_path_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    left = [
+        Vector((0.0, 0.0, 0.0)),
+        Vector((0.0, 0.0, 0.05)),
+        Vector((0.0, 0.0, 0.10)),
+    ]
+    right = [
+        Vector((0.014, 0.0, 0.0)),
+        Vector((0.014, 0.0, 0.025)),
+        Vector((0.014, 0.0, 0.075)),
+        Vector((0.014, 0.0, 0.10)),
+    ]
+    strip = utils.build_chamfer_strip(
+        left,
+        right,
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(2, 3)],
+            "expected_width": 0.014,
+            "maximum_width_error": 0.006,
+            "reject_zero_area_faces": True,
+            "prefer_hard_guard_path": True,
+        },
+    )
+    ensure(
+        strip["diagnostics"]["status"] == "PASS"
+        and strip["diagnostics"]["maximum_relative_advance"]
+        <= strip["diagnostics"]["maximum_relative_advance_limit"]
+        and strip["diagnostics"]["width_error_inlier_ratio"] >= 0.95,
+        f"Hard-guard-aware DP did not select a legal path: {strip}",
+    )
+    result.add_detail("DP path satisfied unchanged signed-width hard guards")
+
+
 def test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression(test_context: TestContext, result: TestCaseResult):
     """验证旧 Operator 当前可完成 two-Pipe REGULAR_PATCHED，且 source 不变。
 
@@ -8456,6 +8496,10 @@ def main():
     context.run_case(
         "feature_chamfer_regular_strip_zero_area_path_regression",
         test_feature_chamfer_regular_strip_zero_area_path_regression,
+    )
+    context.run_case(
+        "feature_chamfer_regular_strip_hard_guard_path_regression",
+        test_feature_chamfer_regular_strip_hard_guard_path_regression,
     )
     context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
     context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)

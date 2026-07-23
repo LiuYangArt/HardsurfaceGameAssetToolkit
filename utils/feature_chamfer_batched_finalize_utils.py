@@ -1833,6 +1833,7 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                                 "expected_width": radius * (2.0 ** 0.5),
                                 "maximum_width_error": max(radius * 0.60, 1.0e-5),
                                 "reject_zero_area_faces": True,
+                                "prefer_hard_guard_path": True,
                             },
                         )
                         if (
@@ -2439,6 +2440,7 @@ def _build_regular_record_from_match(
             "expected_width": expected_width,
             "maximum_width_error": width_tolerance,
             "reject_zero_area_faces": True,
+            "prefer_hard_guard_path": True,
         },
     )
     if strip["diagnostics"]["status"] != "PASS" or not strip["faces"]:

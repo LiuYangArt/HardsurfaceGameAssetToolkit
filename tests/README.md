@@ -68,6 +68,7 @@
 - Feature Chamfer batched Phase B：产品矩阵必须执行真实正序/逆序 Cut probe，要求几何 signature 相等、batch 数一致，且 signature 不得复用 graph/pipe metadata fingerprint 冒充几何证据
 - Feature Chamfer batched Phase C：`SHORT_COMPONENT_SETBACK_V1` 只允许贴近唯一 Plan/overlap 边界的单侧单 Edge；双侧、atom 内部、跨 span/convexity 或超长 component 必须 fail-closed
 - Feature Chamfer regular strip：DP 在 Phase C 可拒绝会生成零面积 Face 的 correspondence step；若无替代单调路径则返回结构化 `NO_MONOTONIC_CORRESPONDENCE_PATH`
+- Feature Chamfer regular strip：Phase C DP 可优先选择满足既有 signed-width/relative-advance hard guard 的路径，不放宽任何验收阈值
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。

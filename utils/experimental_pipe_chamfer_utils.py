@@ -3223,6 +3223,7 @@ def build_chamfer_strip(
     parameters_b = _coordinate_parameters(coordinates_b, False)
     constraints = terminal_constraints or {}
     reject_zero_area_faces = bool(constraints.get("reject_zero_area_faces", False))
+    prefer_hard_guard_path = bool(constraints.get("prefer_hard_guard_path", False))
     expected_width = constraints.get("expected_width")
     maximum_width_error = constraints.get("maximum_width_error")
     endpoint_width = (
@@ -3299,6 +3300,30 @@ def build_chamfer_strip(
                 else:
                     tangent_cost = 0.25
                 step_cost = width_cost + parameter_error + tangent_cost
+                if (
+                    prefer_hard_guard_path
+                    and expected_width is not None
+                    and maximum_width_error is not None
+                ):
+                    previous_a, previous_b = previous
+                    advance_a = (
+                        coordinates_a[index_a] - coordinates_a[previous_a]
+                    ).length
+                    advance_b = (
+                        coordinates_b[index_b] - coordinates_b[previous_b]
+                    ).length
+                    allowed_longitudinal_advance = max(advance_a, advance_b)
+                    signed_width_error = max(
+                        0.0,
+                        expected_width - width,
+                        width - expected_width - allowed_longitudinal_advance,
+                    )
+                    relative_advance = abs(advance_a - advance_b)
+                    relative_advance_limit = expected_width * 8.0
+                    if signed_width_error > maximum_width_error:
+                        step_cost += 1000.0 + signed_width_error / width_scale
+                    if relative_advance > relative_advance_limit:
+                        step_cost += 1000.0 + relative_advance / width_scale
                 candidate = (costs[previous] + step_cost, previous)
                 if best is None or candidate < best:
                     best = candidate
