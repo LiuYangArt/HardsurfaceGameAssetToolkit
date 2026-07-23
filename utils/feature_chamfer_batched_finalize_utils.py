@@ -278,6 +278,7 @@ def _extract_staging_boundary_records(
             )
         )
     records = []
+    record_by_edge_id = {}
     for edge_index in marked_edge_indices:
         edge = mesh.edges[edge_index]
         adjacent_polygons = polygons_by_edge.get(edge_index, [])
@@ -430,42 +431,23 @@ def _extract_staging_boundary_records(
             "source_patch_id": source_patch_id,
         }
         semantic_base_id = _stable_fingerprint(stable_payload)
+        edge_id = semantic_base_id
         record = {
+            "edge_id": edge_id,
             "semantic_base_id": semantic_base_id,
             **stable_payload,
             "debug_edge_index": int(edge_index),
         }
+        previous = record_by_edge_id.get(edge_id)
+        if previous is not None:
+            raise BatchedChamferError(
+                "BATCH_BOUNDARY_EDGE_ID_COLLISION",
+                "稳定 Boundary Edge ID 出现冲突",
+                {"edge_id": edge_id, "pipe_ids": list(semantic_batch)},
+            )
+        record_by_edge_id[edge_id] = record
         records.append(record)
-    multiplicity_by_base_id = {
-        base_id: sum(
-            record["semantic_base_id"] == base_id for record in records
-        )
-        for base_id in {record["semantic_base_id"] for record in records}
-    }
-    slot_by_base_id = {}
-    canonical_records = []
-    for record in sorted(
-        records,
-        key=lambda item: (item["semantic_base_id"], item["debug_edge_index"]),
-    ):
-        base_id = record["semantic_base_id"]
-        duplicate_slot = slot_by_base_id.get(base_id, 0)
-        slot_by_base_id[base_id] = duplicate_slot + 1
-        canonical_records.append(
-            {
-                **record,
-                "edge_id": _stable_fingerprint(
-                    {
-                        "semantic_base_id": base_id,
-                        "multiplicity": multiplicity_by_base_id[base_id],
-                        "duplicate_slot": duplicate_slot,
-                    }
-                ),
-                "semantic_multiplicity": multiplicity_by_base_id[base_id],
-                "duplicate_slot": duplicate_slot,
-            }
-        )
-    return tuple(canonical_records)
+    return tuple(sorted(records, key=lambda record: record["edge_id"]))
 
 
 # 读取 Preview 创建时冻结的 Pipe 合同，并用正式 Even-Thickness Pipe builder 重建 Mesh。
@@ -2150,39 +2132,6 @@ def _stitch_contiguous_regular_runs(runs):
     return tuple(sorted(remaining, key=lambda run: run["edge_ids"]))
 
 
-# 在真实 Boundary 的 u 投影发生内部回退处拆成 maximal monotonic runs。
-# runs: 同一 component side 的 open runs；返回只含完整 Boundary Edges 的单调 fragments。
-def _split_non_monotonic_regular_runs(runs):
-    fragments = []
-    for run in runs:
-        parameters = [float(value) for value in run["u_values"]]
-        starts = [0]
-        starts.extend(
-            index
-            for index, (current, following) in enumerate(
-                zip(parameters, parameters[1:]),
-                start=1,
-            )
-            if following + 1.0e-8 < current
-        )
-        starts.append(len(run["edge_ids"]))
-        for start, end in zip(starts, starts[1:]):
-            if end <= start:
-                continue
-            fragment_parameters = parameters[start : end + 1]
-            fragments.append(
-                {
-                    **run,
-                    "edge_ids": list(run["edge_ids"])[start:end],
-                    "coordinates": list(run["coordinates"])[start : end + 1],
-                    "u_values": fragment_parameters,
-                    "u_interval": [fragment_parameters[0], fragment_parameters[-1]],
-                    "is_cyclic": False,
-                }
-            )
-    return tuple(fragments)
-
-
 # 沿真实 Edge 边界把一条 run 裁为多个 normalized u intervals，避免长侧 fragment
 # 同时覆盖对侧多个已分段 fragments 时形成非一一候选。
 # run/intervals: 当前 open run 与目标 u intervals；返回互不重叠的真实子 runs。
@@ -2270,8 +2219,55 @@ def _match_regular_run_components(
 ):
     left_runs = _stitch_contiguous_regular_runs(left_runs)
     right_runs = _stitch_contiguous_regular_runs(right_runs)
-    left_runs = _split_non_monotonic_regular_runs(left_runs)
-    right_runs = _split_non_monotonic_regular_runs(right_runs)
+    non_monotonic_runs = [
+        (side, run)
+        for side, runs in (("LEFT", left_runs), ("RIGHT", right_runs))
+        for run in runs
+        if any(
+            following + 1.0e-8 < current
+            for current, following in zip(run["u_values"], run["u_values"][1:])
+        )
+    ]
+    if non_monotonic_runs:
+        return (), (
+            {
+                "correspondence_id": correspondence.correspondence_id,
+                "left_run_ids": [
+                    _stable_fingerprint(run["edge_ids"])
+                    for side, run in non_monotonic_runs
+                    if side == "LEFT"
+                ],
+                "right_run_ids": [
+                    _stable_fingerprint(run["edge_ids"])
+                    for side, run in non_monotonic_runs
+                    if side == "RIGHT"
+                ],
+                "solution_count_capped": 0,
+                "left_runs": [
+                    {
+                        "run_id": _stable_fingerprint(run["edge_ids"]),
+                        "edge_count": len(run["edge_ids"]),
+                        "edge_ids": list(run["edge_ids"]),
+                        "coordinates": list(run["coordinates"]),
+                        "u_interval": list(run["u_interval"]),
+                    }
+                    for side, run in non_monotonic_runs
+                    if side == "LEFT"
+                ],
+                "right_runs": [
+                    {
+                        "run_id": _stable_fingerprint(run["edge_ids"]),
+                        "edge_count": len(run["edge_ids"]),
+                        "edge_ids": list(run["edge_ids"]),
+                        "coordinates": list(run["coordinates"]),
+                        "u_interval": list(run["u_interval"]),
+                    }
+                    for side, run in non_monotonic_runs
+                    if side == "RIGHT"
+                ],
+                "reason": "NON_MONOTONIC_U",
+            },
+        )
     left_runs, right_runs = _balance_regular_run_fragments(
         left_runs,
         right_runs,
