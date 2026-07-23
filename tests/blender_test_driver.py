@@ -2399,6 +2399,20 @@ def test_feature_chamfer_regular_strip_zero_area_path_regression(
     result: TestCaseResult,
 ):
     utils = test_context.addon.utils.experimental_pipe_chamfer_utils
+    routable = utils.build_chamfer_strip(
+        [Vector((0.0, 0.0, 0.0)), Vector((1.0, 0.0, 0.0))],
+        [Vector((0.5, 0.0, 0.0)), Vector((0.5, 1.0, 0.0))],
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(1, 1)],
+            "reject_zero_area_faces": True,
+        },
+    )
+    ensure(
+        routable["diagnostics"]["status"] == "PASS"
+        and routable["path"] == [(0, 0), (0, 1), (1, 1)],
+        f"Zero-area-aware DP did not route around an unreachable cell: {routable}",
+    )
     left = [
         Vector((0.0, 0.0, 0.0)),
         Vector((0.0, 0.0, 0.05)),
@@ -2482,6 +2496,11 @@ def test_feature_chamfer_regular_strip_hard_guard_path_regression(
         <= strip["diagnostics"]["maximum_relative_advance_limit"]
         and strip["diagnostics"]["width_error_inlier_ratio"] >= 0.95,
         f"Hard-guard-aware DP did not select a legal path: {strip}",
+    )
+    ensure(
+        strip["diagnostics"]["relative_advance_violation_count"] == 0
+        and strip["diagnostics"]["signed_width_violation_count"] == 0,
+        f"Hard guards were not the primary DP objective: {strip}",
     )
     result.add_detail("DP path satisfied unchanged signed-width hard guards")
 
