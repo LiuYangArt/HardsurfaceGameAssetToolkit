@@ -2255,7 +2255,9 @@ def _match_regular_run_components(
                         "edge_count": len(run["edge_ids"]),
                         "edge_ids": list(run["edge_ids"]),
                         "coordinates": list(run["coordinates"]),
+                        "u_values": list(run["u_values"]),
                         "u_interval": list(run["u_interval"]),
+                        "branch_setback": bool(run.get("branch_setback")),
                     }
                     for side, run in non_monotonic_runs
                     if side == "LEFT"
@@ -2266,7 +2268,9 @@ def _match_regular_run_components(
                         "edge_count": len(run["edge_ids"]),
                         "edge_ids": list(run["edge_ids"]),
                         "coordinates": list(run["coordinates"]),
+                        "u_values": list(run["u_values"]),
                         "u_interval": list(run["u_interval"]),
+                        "branch_setback": bool(run.get("branch_setback")),
                     }
                     for side, run in non_monotonic_runs
                     if side == "RIGHT"
@@ -2357,10 +2361,14 @@ def _match_regular_run_components(
                             "edge_count": len(left_by_id[run_id]["edge_ids"]),
                             "edge_ids": list(left_by_id[run_id]["edge_ids"]),
                             "coordinates": list(left_by_id[run_id]["coordinates"]),
+                            "u_values": list(left_by_id[run_id]["u_values"]),
                             "u_interval": [
                                 round(float(value), 10)
                                 for value in left_by_id[run_id]["u_interval"]
                             ],
+                            "branch_setback": bool(
+                                left_by_id[run_id].get("branch_setback")
+                            ),
                             "candidate_right_run_ids": sorted(
                                 adjacency_left[run_id]
                             ),
@@ -2382,10 +2390,14 @@ def _match_regular_run_components(
                             "edge_count": len(right_by_id[run_id]["edge_ids"]),
                             "edge_ids": list(right_by_id[run_id]["edge_ids"]),
                             "coordinates": list(right_by_id[run_id]["coordinates"]),
+                            "u_values": list(right_by_id[run_id]["u_values"]),
                             "u_interval": [
                                 round(float(value), 10)
                                 for value in right_by_id[run_id]["u_interval"]
                             ],
+                            "branch_setback": bool(
+                                right_by_id[run_id].get("branch_setback")
+                            ),
                             "candidate_left_run_ids": sorted(
                                 adjacency_right[run_id]
                             ),

@@ -2497,6 +2497,11 @@ def test_feature_chamfer_regular_strip_hard_guard_path_regression(
         and strip["diagnostics"]["width_error_inlier_ratio"] >= 0.95,
         f"Hard-guard-aware DP did not select a legal path: {strip}",
     )
+    ensure(
+        strip["diagnostics"]["relative_advance_violation_count"] == 0
+        and strip["diagnostics"]["signed_width_violation_count"] == 0,
+        f"Hard guards were not the primary DP objective: {strip}",
+    )
     result.add_detail("DP path satisfied unchanged signed-width hard guards")
 
 
