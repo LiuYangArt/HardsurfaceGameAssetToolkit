@@ -1744,12 +1744,25 @@ def _chain_strand_parameters(chain, strand):
                 )
             )
         )
+        reverse_is_same_cyclic_support = (
+            bool(chain.get("is_cyclic"))
+            and tuple(paths[0][1]["segment_indices"])
+            == tuple(reversed(paths[1][1]["segment_indices"]))
+            and all(
+                abs(left_u - right_u) <= 1.0e-9
+                for left_u, right_u in zip(
+                    paths[0][1]["u_values"],
+                    reversed(paths[1][1]["u_values"]),
+                )
+            )
+        )
         if (
             abs(paths[1][1]["backtrack"] - selected_path["backtrack"])
             <= 1.0e-12
             and paths[1][1]["cost"] - selected_path["cost"]
             <= ambiguity_tolerance
             and not reverse_is_same_open_chain
+            and not reverse_is_same_cyclic_support
         ):
             raise BatchedChamferError(
                 "AMBIGUOUS_STRAND_PROJECTION_DIRECTION",
@@ -1762,6 +1775,35 @@ def _chain_strand_parameters(chain, strand):
                     ),
                     "reverse_backtrack": (
                         reverse_path["backtrack"] if reverse_path else None
+                    ),
+                    "forward_u_values": (
+                        list(forward_path["u_values"])
+                        if forward_path
+                        else None
+                    ),
+                    "reverse_u_values": (
+                        list(reverse_path["u_values"])
+                        if reverse_path
+                        else None
+                    ),
+                    "forward_segment_indices": (
+                        list(forward_path["segment_indices"])
+                        if forward_path
+                        else None
+                    ),
+                    "reverse_segment_indices": (
+                        list(reverse_path["segment_indices"])
+                        if reverse_path
+                        else None
+                    ),
+                    "coordinates": list(chain["coordinates"]),
+                    "is_cyclic": bool(chain.get("is_cyclic")),
+                    "strand_is_cyclic": bool(strand.cyclic),
+                    "source_patch_id": source_patch_id,
+                    "allowed_segment_indices": (
+                        sorted(allowed_segment_indices)
+                        if allowed_segment_indices is not None
+                        else None
                     ),
                     "edge_ids": list(chain["edge_ids"]),
                 },
