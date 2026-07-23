@@ -8369,6 +8369,54 @@ def test_feature_chamfer_batched_ordered_projection_regression(
     result.add_detail("ordered projection replaced local nearest backtrack")
 
 
+# 验证 cyclic Boundary 转为完整 regular open run 时 closure u 保持单调且不丢 Edge。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_cyclic_regular_closure_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["edge:ab", "edge:bc", "edge:ca"],
+        "coordinates": [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+        ],
+        "is_cyclic": True,
+    }
+    strand = SimpleNamespace(
+        ordered_vertex_keys=(
+            "0,0,0#v0",
+            "1,0,0#v1",
+            "1,1,0#v2",
+        ),
+        owner_surface_pairs=((1, 2), (1, 2)),
+        cyclic=False,
+    )
+    original = module._chain_strand_parameters
+    module._chain_strand_parameters = lambda current_chain, current_strand: (
+        current_chain,
+        [0.17, 0.27, 0.37],
+    )
+    try:
+        split = module._split_chain_by_forbidden_intervals(chain, strand, ())
+    finally:
+        module._chain_strand_parameters = original
+    run = split["regular"][0]
+    ensure(
+        run["edge_ids"] == chain["edge_ids"]
+        and len(run["coordinates"]) == len(chain["edge_ids"]) + 1
+        and run["coordinates"][0] == run["coordinates"][-1]
+        and all(
+            following + 1.0e-10 >= current
+            for current, following in zip(run["u_values"], run["u_values"][1:])
+        ),
+        f"Cyclic regular closure lost Edge provenance or backtracked in u: {run}",
+    )
+    result.add_detail("cyclic regular closure preserved all Edges with monotonic lifted u")
+
+
 # 验证跨 Plan atom 的真实 Edge 只裁 regular 几何端点，ledger Edge identity 不拆分、不丢失。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_atom_boundary_clip_regression(
@@ -8657,6 +8705,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_ordered_projection_regression",
         test_feature_chamfer_batched_ordered_projection_regression,
+    )
+    context.run_case(
+        "feature_chamfer_batched_cyclic_regular_closure_regression",
+        test_feature_chamfer_batched_cyclic_regular_closure_regression,
     )
     context.run_case(
         "feature_chamfer_batched_atom_boundary_clip_regression",

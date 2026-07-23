@@ -1877,7 +1877,13 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                     (raw_delta + offset for offset in range(-2, 3)),
                     key=abs,
                 )
-            parameters = [*parameters, parameters[-1] + raw_delta]
+            closure_parameter = parameters[-1] + raw_delta
+            if closure_parameter + 1.0e-10 < parameters[-1]:
+                forward_closure = float(parameters[0])
+                while forward_closure + 1.0e-10 < parameters[-1]:
+                    forward_closure += 1.0
+                closure_parameter = forward_closure
+            parameters = [*parameters, closure_parameter]
             coordinates = [*coordinates, coordinates[0]]
         else:
             coordinates = list(oriented_chain["coordinates"])
