@@ -5251,10 +5251,29 @@ def _outside_correspondence_span_handoff_proof(
     start_u,
     end_u,
     claims,
+    ledger_by_edge_id,
 ):
     if oriented_chain.get("is_cyclic") or not oriented_chain.get("edge_ids") or not claims:
         return None
     chain_interval = sorted((float(start_u), float(end_u)))
+    endpoint_counts = {}
+    for edge_id in oriented_chain["edge_ids"]:
+        for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            endpoint_counts[endpoint_token] = endpoint_counts.get(endpoint_token, 0) + 1
+    chain_terminal_tokens = {
+        token for token, count in endpoint_counts.items() if count == 1
+    }
+    all_rail_entries = [
+        entry
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == ledger_by_edge_id[oriented_chain["edge_ids"][0]]["rail_id"]
+    ]
+    terminal_degrees = sorted(
+        sum(token in entry["endpoint_tokens"] for entry in all_rail_entries)
+        for token in chain_terminal_tokens
+    )
+    if len(chain_terminal_tokens) != 2 or terminal_degrees != [1, 1]:
+        return None
     grouped_claims = {}
     for claim in claims:
         key = (
@@ -5335,6 +5354,8 @@ def _outside_correspondence_span_handoff_proof(
                 for claim in claims
             }
         ),
+        "terminal_endpoint_tokens": sorted(chain_terminal_tokens),
+        "terminal_endpoint_degrees": terminal_degrees,
     }
 
 
@@ -6180,6 +6201,7 @@ def _build_cyclic_regular_strip_partition(
                             start_u,
                             end_u,
                             regular_atom_claims_by_rail_id.get(rail_id, ()),
+                            ledger_by_edge_id,
                         )
                         if not overlapping_atom_claims
                         else None
