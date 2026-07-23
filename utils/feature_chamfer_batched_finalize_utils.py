@@ -1354,6 +1354,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
         for seed_edge_id in sorted(edge_ids_by_endpoint[start] & remaining):
             edge_ids = []
             coordinates = [coordinate_by_endpoint[start]]
+            endpoint_tokens = [start]
             current = start
             edge_id = seed_edge_id
             while edge_id in remaining:
@@ -1362,6 +1363,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
                 endpoints = entries_by_id[edge_id]["endpoint_tokens"]
                 following = endpoints[1] if endpoints[0] == current else endpoints[0]
                 coordinates.append(coordinate_by_endpoint[following])
+                endpoint_tokens.append(following)
                 current = following
                 if current in special_endpoints:
                     break
@@ -1374,6 +1376,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
                     {
                         "edge_ids": edge_ids,
                         "coordinates": coordinates,
+                        "endpoint_tokens": endpoint_tokens,
                         "is_cyclic": False,
                         "branch_setback": True,
                     }
@@ -1415,6 +1418,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
         start = open_endpoints[0] if open_endpoints else min(component_degrees)
         ordered_edge_ids = []
         ordered_coordinates = [coordinate_by_endpoint[start]]
+        ordered_endpoint_tokens = [start]
         current = start
         previous_edge_id = None
         while len(ordered_edge_ids) < len(component):
@@ -1431,6 +1435,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
             ordered_edge_ids.append(edge_id)
             if not cyclic or following != start:
                 ordered_coordinates.append(coordinate_by_endpoint[following])
+                ordered_endpoint_tokens.append(following)
             previous_edge_id = edge_id
             current = following
         if len(ordered_edge_ids) != len(component):
@@ -1443,6 +1448,7 @@ def _ordered_stable_boundary_chains(ledger_entries):
             {
                 "edge_ids": ordered_edge_ids,
                 "coordinates": ordered_coordinates,
+                "endpoint_tokens": ordered_endpoint_tokens,
                 "is_cyclic": cyclic,
             }
         )
@@ -2042,6 +2048,9 @@ def _chain_strand_parameters(chain, strand):
                 **chain,
                 "edge_ids": reversed_edge_ids,
                 "coordinates": list(reversed(chain["coordinates"])),
+                "endpoint_tokens": list(
+                    reversed(chain.get("endpoint_tokens", ()))
+                ),
             },
             list(selected_path["u_values"]),
         )
@@ -2062,6 +2071,7 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
     cyclic_edge_count = len(oriented_chain["edge_ids"])
     if oriented_chain["is_cyclic"]:
         coordinates = list(oriented_chain["coordinates"])
+        endpoint_tokens = list(oriented_chain.get("endpoint_tokens", ()))
         if len(parameters) == cyclic_edge_count:
             raw_delta = (parameters[0] - parameters[-1])
             if strand.cyclic:
@@ -2077,10 +2087,13 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                 closure_parameter = forward_closure
             parameters = [*parameters, closure_parameter]
             coordinates = [*coordinates, coordinates[0]]
+            if endpoint_tokens:
+                endpoint_tokens = [*endpoint_tokens, endpoint_tokens[0]]
         else:
             coordinates = list(oriented_chain["coordinates"])
     else:
         coordinates = list(oriented_chain["coordinates"])
+        endpoint_tokens = list(oriented_chain.get("endpoint_tokens", ()))
     intervals = [tuple(map(float, interval)) for interval in forbidden_intervals]
 
     def edge_is_forbidden(start_u, end_u):
@@ -2117,6 +2130,9 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
             run_coordinates = coordinates[:-1]
             run_parameters = parameters[:-1]
             run_is_cyclic = True
+        run_endpoint_tokens = (
+            endpoint_tokens if key == "regular" else endpoint_tokens[:-1]
+        )
         runs[key].append(
             {
                 **oriented_chain,
@@ -2124,6 +2140,7 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                 "u_values": run_parameters,
                 "u_interval": [min(parameters), max(parameters)],
                 "is_cyclic": run_is_cyclic,
+                "endpoint_tokens": run_endpoint_tokens,
             }
         )
         return runs
@@ -2144,6 +2161,10 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
         rotated_coordinates = (
             coordinates[start_offset:-1] + coordinates[: start_offset + 1]
         )
+        rotated_endpoint_tokens = (
+            endpoint_tokens[start_offset:-1]
+            + endpoint_tokens[: start_offset + 1]
+        )
         rotated_parameters = parameters[start_offset:-1]
         rotated_parameters = list(rotated_parameters)
         for value in parameters[: start_offset + 1]:
@@ -2156,6 +2177,7 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
             rotated_parameters.append(candidate)
     else:
         rotated_coordinates = list(coordinates)
+        rotated_endpoint_tokens = list(endpoint_tokens)
         rotated_parameters = list(parameters)
     rotated_forbidden = forbidden[start_offset:] + forbidden[:start_offset]
     run_start = 0
@@ -2172,6 +2194,7 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                 "u_values": run_parameters,
                 "u_interval": [min(run_parameters), max(run_parameters)],
                 "branch_setback": bool(oriented_chain.get("branch_setback")),
+                "endpoint_tokens": rotated_endpoint_tokens[run_start : index + 1],
                 "junction_endpoint_tokens_by_edge": {
                     edge_id: list(tokens)
                     for edge_id, tokens in oriented_chain.get(
@@ -2317,6 +2340,7 @@ def _trim_open_run_to_interval(run, interval):
         **run,
         "edge_ids": selected_edge_ids,
         "coordinates": run["coordinates"][start : end + 1],
+        "endpoint_tokens": list(run.get("endpoint_tokens", ()))[start : end + 1],
         "u_values": parameters[start : end + 1],
         "u_interval": [parameters[start], parameters[end]],
         "is_cyclic": False,
@@ -2373,6 +2397,9 @@ def _trim_run_endpoint_edges(run, start_trim, end_trim):
         **run,
         "edge_ids": selected_edge_ids,
         "coordinates": list(run["coordinates"])[start_trim:point_end],
+        "endpoint_tokens": list(run.get("endpoint_tokens", ()))[
+            start_trim:point_end
+        ],
         "u_values": parameters,
         "u_interval": [parameters[0], parameters[-1]],
         "junction_endpoint_tokens_by_edge": {
@@ -2402,20 +2429,25 @@ def _defer_zero_length_run_edges(run, radius):
     kept_edge_ids = []
     kept_coordinates = [coordinates[0]]
     kept_u_values = [float(run["u_values"][0])]
+    kept_endpoint_tokens = list(run.get("endpoint_tokens", ()))[:1]
     deferred_edge_ids = []
-    for edge_id, start, end, start_u, end_u in zip(
+    for edge_index, (edge_id, start, end, start_u, end_u) in enumerate(zip(
         run["edge_ids"],
         coordinates,
         coordinates[1:],
         run["u_values"],
         run["u_values"][1:],
-    ):
+    )):
         if (end - start).length <= maximum_length:
             deferred_edge_ids.append(edge_id)
             continue
         kept_edge_ids.append(edge_id)
         kept_coordinates.append(end)
         kept_u_values.append(float(end_u))
+        if run.get("endpoint_tokens"):
+            kept_endpoint_tokens.append(
+                run["endpoint_tokens"][edge_index + 1]
+            )
     if not deferred_edge_ids:
         return run, ()
     if not kept_edge_ids:
@@ -2424,6 +2456,7 @@ def _defer_zero_length_run_edges(run, radius):
         **run,
         "edge_ids": kept_edge_ids,
         "coordinates": [tuple(point) for point in kept_coordinates],
+        "endpoint_tokens": kept_endpoint_tokens,
         "u_values": kept_u_values,
         "u_interval": [kept_u_values[0], kept_u_values[-1]],
         "junction_endpoint_tokens_by_edge": {
@@ -2851,7 +2884,7 @@ def _unique_perfect_matching(left_ids, right_ids, candidates):
 
 # 把同一 rail、u 连续且共享语义 component 的 fragments 确定性拼成 maximal run。
 # runs: 同一 correspondence side 的 open runs；返回按稳定 Edge IDs 排序的 stitched runs。
-def _stitch_contiguous_regular_runs(runs, radius, strand_length):
+def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
     remaining = [dict(run) for run in runs]
     parameter_tolerance = max(
         2.0e-3,
@@ -2871,7 +2904,7 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length):
                     float(left["u_values"][-1]) - float(right["u_values"][0])
                 )
                 seam_shift = 0
-                if u_gap > parameter_tolerance:
+                if strand_cyclic and u_gap > parameter_tolerance:
                     seam_candidates = sorted(
                         (
                             abs(
@@ -2888,7 +2921,18 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length):
                     Vector(left["coordinates"][-1])
                     - Vector(right["coordinates"][0])
                 ).length
-                if u_gap > parameter_tolerance or point_gap > point_tolerance:
+                left_endpoint_tokens = left.get("endpoint_tokens", ())
+                right_endpoint_tokens = right.get("endpoint_tokens", ())
+                topology_contiguous = (
+                    left_endpoint_tokens
+                    and right_endpoint_tokens
+                    and left_endpoint_tokens[-1] == right_endpoint_tokens[0]
+                )
+                if (
+                    u_gap > parameter_tolerance
+                    or point_gap > point_tolerance
+                    or not topology_contiguous
+                ):
                     continue
                 shifted_right_u_values = [
                     float(value) + seam_shift
@@ -2904,6 +2948,10 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length):
                     "u_values": [
                         *left["u_values"],
                         *shifted_right_u_values[1:],
+                    ],
+                    "endpoint_tokens": [
+                        *left_endpoint_tokens,
+                        *right_endpoint_tokens[1:],
                     ],
                     "u_interval": [
                         float(left["u_values"][0]),
@@ -2959,6 +3007,10 @@ def _defer_stitched_micro_loops(run, radius):
         "coordinates": [
             *run["coordinates"][: start + 1],
             *run["coordinates"][end + 1 :],
+        ],
+        "endpoint_tokens": [
+            *run.get("endpoint_tokens", ())[: start + 1],
+            *run.get("endpoint_tokens", ())[end + 1 :],
         ],
         "u_values": [*parameters[: start + 1], *parameters[end + 1 :]],
         "u_interval": [parameters[0], parameters[-1]],
@@ -3211,6 +3263,9 @@ def _partition_run_by_intervals(run, intervals):
                     **run,
                     "edge_ids": run["edge_ids"][start:index],
                     "coordinates": run["coordinates"][start : index + 1],
+                    "endpoint_tokens": list(
+                        run.get("endpoint_tokens", ())
+                    )[start : index + 1],
                     "u_values": fragment_parameters,
                     "u_interval": [
                         fragment_parameters[0],
@@ -3268,11 +3323,13 @@ def _match_regular_run_components(
         left_runs,
         radius,
         strand_length,
+        strand.cyclic,
     )
     right_runs = _stitch_contiguous_regular_runs(
         right_runs,
         radius,
         strand_length,
+        strand.cyclic,
     )
     normalized_sides = []
     micro_loop_proofs = []
@@ -3725,7 +3782,14 @@ def _regular_plan_atoms(span_records, forbidden_intervals, cyclic):
     atoms = []
     for span_start, span_end, span_record in base_segments:
         remaining = [(span_start, span_end)]
-        for forbidden_start, forbidden_end in forbidden_segments:
+        lifted_forbidden_segments = {
+            (forbidden_start + shift, forbidden_end + shift)
+            for forbidden_start, forbidden_end in forbidden_segments
+            for shift in (range(-2, 3) if cyclic else (0,))
+            if max(span_start, forbidden_start + shift)
+            < min(span_end, forbidden_end + shift) - 1.0e-10
+        }
+        for forbidden_start, forbidden_end in sorted(lifted_forbidden_segments):
             next_remaining = []
             for current_start, current_end in remaining:
                 if forbidden_end <= current_start or forbidden_start >= current_end:
@@ -4964,7 +5028,13 @@ def _regular_terminal_tail_handoff_proof(
                         "maximum_projection_gap_arc_length": radius * 0.50,
                     }
                 )
-        if not nearest_candidates and chain_length <= maximum_chain_length + 1.0e-10:
+        if (
+            not nearest_candidates
+            and claim["strand_cyclic"]
+            and boundary_witness["boundary_type"]
+            == "OVERLAP_FORBIDDEN_ENVELOPE"
+            and chain_length <= maximum_chain_length + 1.0e-10
+        ):
             cyclic_seam_candidates = []
             for record in regular_records:
                 if record["correspondence_id"] != claim["correspondence_id"]:
@@ -5688,6 +5758,7 @@ def _build_cyclic_regular_strip_partition(
                         runs,
                         radius,
                         _feature_strand_arc_length(strand),
+                        strand.cyclic,
                     )
                 )
         left_runs = [
@@ -6117,6 +6188,9 @@ def _build_cyclic_regular_strip_partition(
                             ),
                             "rail_id": rail_id,
                             "source_patch_id": int(first_entry["source_patch_id"]),
+                            "chain_endpoint_tokens": list(
+                                oriented_chain.get("endpoint_tokens", ())
+                            ),
                             "edge_ids": list(oriented_chain["edge_ids"]),
                             "edge_lengths": [
                                 round(

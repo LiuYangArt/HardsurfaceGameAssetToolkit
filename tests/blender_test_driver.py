@@ -8537,13 +8537,23 @@ def test_feature_chamfer_batched_cyclic_span_unwrap_regression(
         "is_cyclic": True,
     }
     records = module._group_correspondence_span_records(group)
+    atoms = module._regular_plan_atoms(
+        records[(1, 2)],
+        ((0.0, 0.05), (0.95, 1.0)),
+        True,
+    )
     ensure(
         len(records[(1, 2)]) == 1
         and records[(1, 2)][0]["u_interval"] == [0.75, 1.25]
         and records[(2, 3)][0]["u_interval"] == [0.25, 0.75],
         f"Cyclic Patch-pair seam span was split incorrectly: {records}",
     )
-    result.add_detail("cyclic Patch-pair seam span stays one unwrapped interval")
+    ensure(
+        [atom["u_interval"] for atom in atoms]
+        == [[0.75, 0.95], [1.05, 1.25]],
+        f"Cyclic forbidden intervals were not lifted across seam: {atoms}",
+    )
+    result.add_detail("cyclic Patch-pair span and forbidden intervals unwrap across seam")
 
 
 # 验证 stitch 引入的唯一同点微闭环只延迟给 junction，主 run 保留全部其他 Edge 且恢复单调。
