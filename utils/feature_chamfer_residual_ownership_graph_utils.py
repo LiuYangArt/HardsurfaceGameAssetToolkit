@@ -10,7 +10,7 @@ import math
 from mathutils import Vector
 
 
-GRAPH_CONTRACT = "HST_PHASE_C_PRE_BOOLEAN_BOUNDARY_PAIRING_V2"
+GRAPH_CONTRACT = "HST_PHASE_C_PRE_BOOLEAN_MAXIMAL_CHAIN_PAIRING_V3"
 
 
 # 对稳定 JSON payload 生成 SHA-256。
@@ -101,6 +101,168 @@ def _order_open_token_chain(entries):
         tuple(ordered_tokens),
         tuple(coordinate_by_token[token] for token in ordered_tokens),
     )
+
+
+# 只用稳定 endpoint token 验证并排序一条唯一 open chain。
+# entries/id_key/token_key: Edge-like 记录及其 identity/token 字段；返回连通性、排序后的 Edge identity 与 token，不读取坐标。
+def _validate_open_identity_chain(entries, id_key, token_key):
+    entries_by_id = {}
+    edge_ids_by_token = {}
+    for entry in entries:
+        edge_id = entry.get(id_key)
+        endpoint_tokens = tuple(entry.get(token_key, ()))
+        if edge_id is None or edge_id in entries_by_id:
+            return {
+                "valid": False,
+                "reason": "DUPLICATE_EDGE_IDENTITY",
+                "ordered_edge_ids": [],
+                "ordered_tokens": [],
+            }
+        if len(endpoint_tokens) != 2:
+            return {
+                "valid": False,
+                "reason": "INVALID_ENDPOINT_TOKEN_COUNT",
+                "ordered_edge_ids": [],
+                "ordered_tokens": [],
+            }
+        if endpoint_tokens[0] == endpoint_tokens[1]:
+            return {
+                "valid": False,
+                "reason": "COLLAPSED_ENDPOINT_TOKENS",
+                "ordered_edge_ids": [],
+                "ordered_tokens": [],
+            }
+        entries_by_id[edge_id] = entry
+        for token in endpoint_tokens:
+            edge_ids_by_token.setdefault(token, set()).add(edge_id)
+    if not entries_by_id:
+        return {
+            "valid": False,
+            "reason": "MISSING_EDGES",
+            "ordered_edge_ids": [],
+            "ordered_tokens": [],
+        }
+    if any(len(edge_ids) > 2 for edge_ids in edge_ids_by_token.values()):
+        return {
+            "valid": False,
+            "reason": "BRANCHED_TOKEN_GRAPH",
+            "ordered_edge_ids": [],
+            "ordered_tokens": [],
+        }
+    endpoints = sorted(
+        token for token, edge_ids in edge_ids_by_token.items() if len(edge_ids) == 1
+    )
+    if len(endpoints) != 2:
+        return {
+            "valid": False,
+            "reason": "NOT_UNIQUE_OPEN_CHAIN",
+            "ordered_edge_ids": [],
+            "ordered_tokens": [],
+        }
+    current_token = endpoints[0]
+    remaining_edge_ids = set(entries_by_id)
+    ordered_edge_ids = []
+    ordered_tokens = [current_token]
+    while remaining_edge_ids:
+        candidate_edge_ids = sorted(
+            edge_ids_by_token[current_token] & remaining_edge_ids
+        )
+        if len(candidate_edge_ids) != 1:
+            return {
+                "valid": False,
+                "reason": "DISCONNECTED_OR_AMBIGUOUS_TOKEN_WALK",
+                "ordered_edge_ids": ordered_edge_ids,
+                "ordered_tokens": ordered_tokens,
+            }
+        edge_id = candidate_edge_ids[0]
+        endpoint_tokens = tuple(entries_by_id[edge_id][token_key])
+        next_tokens = [token for token in endpoint_tokens if token != current_token]
+        if len(next_tokens) != 1:
+            return {
+                "valid": False,
+                "reason": "COLLAPSED_ENDPOINT_TOKENS",
+                "ordered_edge_ids": ordered_edge_ids,
+                "ordered_tokens": ordered_tokens,
+            }
+        ordered_edge_ids.append(edge_id)
+        remaining_edge_ids.remove(edge_id)
+        current_token = next_tokens[0]
+        ordered_tokens.append(current_token)
+    return {
+        "valid": True,
+        "reason": None,
+        "ordered_edge_ids": ordered_edge_ids,
+        "ordered_tokens": ordered_tokens,
+    }
+
+
+# 按完整 source lineage key 与共享 endpoint token 划分 maximal source components。
+# normalized_results: 带 direct incidence 的 normalized Edge 诊断；返回确定性 component 列表，不跨 Patch/Rail/profile owner 合并。
+def _build_maximal_source_components(normalized_results):
+    results_by_id = {
+        result["normalized_edge_id"]: result for result in normalized_results
+    }
+    if len(results_by_id) != len(normalized_results):
+        raise ValueError("Normalized Edge identity 重复")
+    results_by_lineage = {}
+    for result in normalized_results:
+        lineage_key = (
+            tuple(result.get("semantic_batch_key", ())),
+            int(result["pipe_id"]),
+            result.get("strand_id"),
+            int(result["source_patch_id"]),
+            result.get("rail_id"),
+            int(result["profile_side_id"]),
+            int(result["opposite_profile_side_id"]),
+            tuple(sorted(result.get("longitudinal_segment_ids", ()))),
+        )
+        results_by_lineage.setdefault(lineage_key, []).append(result)
+    components = []
+    for lineage_key, lineage_results in sorted(
+        results_by_lineage.items(),
+        key=lambda item: _stable_fingerprint(item[0]),
+    ):
+        result_ids_by_token = {}
+        protected_port_tokens = {
+            token
+            for result in lineage_results
+            for token in result.get("endpoint_port_tokens", ())
+        }
+        for result in lineage_results:
+            for token in result.get("endpoint_tokens", ()):
+                result_ids_by_token.setdefault(token, set()).add(
+                    result["normalized_edge_id"]
+                )
+        remaining_result_ids = {
+            result["normalized_edge_id"] for result in lineage_results
+        }
+        while remaining_result_ids:
+            seed_result_id = min(remaining_result_ids)
+            component_result_ids = set()
+            pending_result_ids = [seed_result_id]
+            while pending_result_ids:
+                result_id = pending_result_ids.pop()
+                if result_id in component_result_ids:
+                    continue
+                component_result_ids.add(result_id)
+                result = results_by_id[result_id]
+                for token in result.get("endpoint_tokens", ()):
+                    if token in protected_port_tokens:
+                        continue
+                    pending_result_ids.extend(
+                        sorted(result_ids_by_token.get(token, ()))
+                    )
+            remaining_result_ids -= component_result_ids
+            components.append(
+                {
+                    "lineage_key": lineage_key,
+                    "results": [
+                        results_by_id[result_id]
+                        for result_id in sorted(component_result_ids)
+                    ],
+                }
+            )
+    return components
 
 
 # 以严格 degree/token/provenance/共线门禁规范化 fragmented Boundary chain。
@@ -342,8 +504,8 @@ def constrained_normalize_boundary_chain(
     }
 
 
-# 构建只读 pre-Boolean profile lineage graph；每条 normalized Edge 只接受权威 Patch pair 上相邻 Cutter Face 的 direct Edge chain。
-# normalized/universe/faces/claims/setbacks/ports/pairs: lineage 输入合同；pairs 使用 strand_id+Patch pair；返回 Face→Edge incidence artifact。
+# 构建只读 pre-Boolean profile lineage graph；连续 normalized fragments 合成 maximal source chain 后整体接受 direct candidate chain。
+# normalized/universe/faces/claims/setbacks/ports/pairs: lineage 输入合同；pairs 使用 strand_id+Patch pair；返回 Face→Edge/token connectivity artifact。
 def build_residual_ownership_graph(
     normalized_records,
     boundary_universe,
@@ -365,6 +527,8 @@ def build_residual_ownership_graph(
     }
     if len(boundary_by_edge_id) != len(boundary_universe):
         raise ValueError("Boundary universe 含重复 Edge identity")
+    if set(raw_edge_ids) - set(boundary_by_edge_id):
+        raise ValueError("Residual raw→normalized lineage 超出 Boundary universe")
     regular_claim_by_edge_id = {}
     for claim in regular_claims:
         edge_id = claim["edge_id"]
@@ -414,12 +578,16 @@ def build_residual_ownership_graph(
         ).append(dict(incidence))
     normalized_allowed_patch_pair_counts = {}
     for pair_record in allowed_source_patch_pairs:
-        if isinstance(pair_record, dict):
-            pair = tuple(pair_record.get("patch_pair", ()))
-            pair_strand_id = pair_record.get("strand_id")
-        else:
-            pair = tuple(pair_record)
-            pair_strand_id = None
+        if not isinstance(pair_record, dict):
+            raise ValueError(
+                "Authoritative StripCorrespondence 必须包含 strand_id"
+            )
+        pair = tuple(pair_record.get("patch_pair", ()))
+        pair_strand_id = pair_record.get("strand_id")
+        if pair_strand_id is None:
+            raise ValueError(
+                "Authoritative StripCorrespondence 缺少 strand_id"
+            )
         if len(pair) != 2:
             continue
         normalized_pair = frozenset(int(patch_id) for patch_id in pair)
@@ -440,12 +608,12 @@ def build_residual_ownership_graph(
             for (pair_strand_id, pair), count
             in normalized_allowed_patch_pair_counts.items()
             if count == 1
-            and pair_strand_id in {None, strand_id}
+            and pair_strand_id == strand_id
             and source_patch_id in pair
         ]
         duplicate_matching_patch_pair = any(
             count > 1
-            and pair_strand_id in {None, strand_id}
+            and pair_strand_id == strand_id
             and source_patch_id in pair
             for (pair_strand_id, pair), count
             in normalized_allowed_patch_pair_counts.items()
@@ -508,6 +676,19 @@ def build_residual_ownership_graph(
                 if len(candidate_topologies) != 1:
                     continue
                 candidate_topology = candidate_topologies[0]
+                candidate_lineage_identity = _complete_lineage_identity(candidate)
+                if (
+                    candidate_lineage_identity is None
+                    or candidate_lineage_identity[0] != pipe_id
+                    or candidate_lineage_identity[1] != strand_id
+                    or candidate_lineage_identity[2]
+                    != int(candidate_topology["profile_side_id"])
+                    or candidate_lineage_identity[3]
+                    != int(candidate_topology["opposite_profile_side_id"])
+                    or candidate_lineage_identity[4]
+                    != residual_topology["longitudinal_segment_id"]
+                ):
+                    continue
                 candidate_face_signature = candidate_topology.get(
                     "face_signature"
                 )
@@ -539,7 +720,7 @@ def build_residual_ownership_graph(
                         claim.get("face_consumer_id") if claim is not None else None
                     ),
                     "direct_lineage_identity": list(
-                        _complete_lineage_identity(candidate) or ()
+                        candidate_lineage_identity
                     ),
                     "source_face_signature": residual_topology.get(
                         "face_signature"
@@ -629,9 +810,13 @@ def build_residual_ownership_graph(
                 "normalized_edge_id": record["normalized_edge_id"],
                 "raw_edge_ids": sorted(raw_edge_id_set),
                 "endpoint_tokens": list(record["endpoint_tokens"]),
+                "semantic_batch_key": list(
+                    record.get("semantic_batch_key", ())
+                ),
                 "pipe_id": pipe_id,
                 "strand_id": strand_id,
                 "source_patch_id": source_patch_id,
+                "rail_id": record.get("rail_id"),
                 "allowed_source_patch_pair": (
                     sorted(allowed_patch_pair)
                     if allowed_patch_pair is not None
@@ -651,43 +836,228 @@ def build_residual_ownership_graph(
                 "pre_boolean_face_identity_complete": (
                     pre_boolean_face_identity_complete
                 ),
+                "endpoint_port_tokens": list(
+                    record.get("endpoint_port_tokens", ())
+                ),
                 "authoritative_plan_port_incidences": endpoint_port_incidences,
             }
         )
-    all_normalized_edges_resolved = bool(normalized_edge_results) and all(
-        result["status"] == "UNIQUE_DIRECT_OPPOSITE_CONSUMER"
-        for result in normalized_edge_results
-    )
-    candidate_edge_to_normalized_edges = {}
-    for result in normalized_edge_results:
-        for candidate in result["direct_face_edge_incidence"]:
-            candidate_edge_to_normalized_edges.setdefault(
-                candidate["boundary_edge_id"],
-                [],
-            ).append(result["normalized_edge_id"])
+    maximal_source_chains = []
+    for component in _build_maximal_source_components(normalized_edge_results):
+        component_results = component["results"]
+        source_connectivity = _validate_open_identity_chain(
+            component_results,
+            "normalized_edge_id",
+            "endpoint_tokens",
+        )
+        direct_incidences_by_edge_id = {}
+        conflicting_candidate_edge_ids = set()
+        for result in component_results:
+            for incidence in result["direct_face_edge_incidence"]:
+                edge_id = incidence["boundary_edge_id"]
+                existing = direct_incidences_by_edge_id.get(edge_id)
+                if existing is not None and existing != incidence:
+                    conflicting_candidate_edge_ids.add(edge_id)
+                else:
+                    direct_incidences_by_edge_id[edge_id] = incidence
+        expected_source_face_signatures = sorted(
+            {
+                face_signature
+                for result in component_results
+                for face_signature in result[
+                    "direct_candidate_count_by_source_face"
+                ]
+            }
+        )
+        candidate_edge_ids_by_source_face = {
+            face_signature: sorted(
+                {
+                    edge_id
+                    for edge_id, incidence
+                    in direct_incidences_by_edge_id.items()
+                    if incidence["source_face_signature"] == face_signature
+                }
+            )
+            for face_signature in expected_source_face_signatures
+        }
+        candidate_chain_entries = [
+            {
+                "boundary_edge_id": edge_id,
+                "endpoint_tokens": list(
+                    boundary_by_edge_id[edge_id].get("endpoint_tokens", ())
+                ),
+            }
+            for edge_id in sorted(direct_incidences_by_edge_id)
+            if edge_id in boundary_by_edge_id
+        ]
+        candidate_connectivity = _validate_open_identity_chain(
+            candidate_chain_entries,
+            "boundary_edge_id",
+            "endpoint_tokens",
+        )
+        member_rejection_reasons = sorted(
+            {
+                result["rejection_reason"]
+                for result in component_results
+                if result["rejection_reason"] is not None
+            }
+        )
+        blocking_member_rejection_reasons = list(member_rejection_reasons)
+        candidate_face_exactly_once = bool(
+            expected_source_face_signatures
+        ) and all(
+            len(edge_ids) == 1
+            for edge_ids in candidate_edge_ids_by_source_face.values()
+        )
+        if not source_connectivity["valid"]:
+            chain_status = "UNRESOLVED"
+            chain_rejection_reason = (
+                "INVALID_MAXIMAL_SOURCE_CHAIN:"
+                + source_connectivity["reason"]
+            )
+        elif conflicting_candidate_edge_ids:
+            chain_status = "UNRESOLVED"
+            chain_rejection_reason = "CONFLICTING_DIRECT_EDGE_INCIDENCE"
+        elif blocking_member_rejection_reasons:
+            chain_status = "UNRESOLVED"
+            chain_rejection_reason = blocking_member_rejection_reasons[0]
+        elif not candidate_face_exactly_once:
+            chain_status = "UNRESOLVED"
+            chain_rejection_reason = (
+                "AMBIGUOUS_MAXIMAL_CANDIDATE_FACE_INCIDENCE"
+                if any(
+                    len(edge_ids) > 1
+                    for edge_ids in candidate_edge_ids_by_source_face.values()
+                )
+                else "INCOMPLETE_MAXIMAL_CANDIDATE_FACE_INCIDENCE"
+            )
+        elif not candidate_connectivity["valid"]:
+            chain_status = "UNRESOLVED"
+            chain_rejection_reason = (
+                "INVALID_MAXIMAL_CANDIDATE_CHAIN:"
+                + candidate_connectivity["reason"]
+            )
+        else:
+            chain_status = "UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+            chain_rejection_reason = None
+        normalized_edge_ids = sorted(
+            result["normalized_edge_id"] for result in component_results
+        )
+        maximal_chain_id = "maximal-source:" + _stable_fingerprint(
+            {
+                "lineage_key": component["lineage_key"],
+                "normalized_edge_ids": normalized_edge_ids,
+            }
+        )
+        all_candidate_edge_ids = sorted(direct_incidences_by_edge_id)
+        ordered_candidate_edge_ids = candidate_connectivity[
+            "ordered_edge_ids"
+        ]
+        maximal_source_chains.append(
+            {
+                "maximal_chain_id": maximal_chain_id,
+                "status": chain_status,
+                "resolved_consumer_id": (
+                    "BOUNDARY_MAXIMAL_CHAIN:"
+                    + _stable_fingerprint(ordered_candidate_edge_ids)
+                    if chain_status
+                    == "UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+                    else None
+                ),
+                "rejection_reason": chain_rejection_reason,
+                "normalized_edge_ids": normalized_edge_ids,
+                "raw_edge_ids": sorted(
+                    {
+                        edge_id
+                        for result in component_results
+                        for edge_id in result["raw_edge_ids"]
+                    }
+                ),
+                "semantic_batch_key": list(component["lineage_key"][0]),
+                "pipe_id": component["lineage_key"][1],
+                "strand_id": component["lineage_key"][2],
+                "source_patch_id": component["lineage_key"][3],
+                "rail_id": component["lineage_key"][4],
+                "profile_side_id": component["lineage_key"][5],
+                "opposite_profile_side_id": component["lineage_key"][6],
+                "source_lineage_segment_ids": list(
+                    component["lineage_key"][7]
+                ),
+                "longitudinal_segment_ids": sorted(
+                    {
+                        segment_id
+                        for result in component_results
+                        for segment_id in result["longitudinal_segment_ids"]
+                    }
+                ),
+                "source_chain_connectivity": source_connectivity,
+                "candidate_edge_ids": all_candidate_edge_ids,
+                "ordered_candidate_edge_ids": ordered_candidate_edge_ids,
+                "candidate_chain_connectivity": candidate_connectivity,
+                "candidate_edge_ids_by_source_face": (
+                    candidate_edge_ids_by_source_face
+                ),
+                "candidate_face_exactly_once": candidate_face_exactly_once,
+                "direct_face_edge_incidence": [
+                    direct_incidences_by_edge_id[edge_id]
+                    for edge_id in sorted(direct_incidences_by_edge_id)
+                ],
+                "conflicting_candidate_edge_ids": sorted(
+                    conflicting_candidate_edge_ids
+                ),
+                "member_rejection_reasons": member_rejection_reasons,
+                "blocking_member_rejection_reasons": (
+                    blocking_member_rejection_reasons
+                ),
+            }
+        )
+    maximal_source_chains.sort(key=lambda item: item["maximal_chain_id"])
+    candidate_edge_to_maximal_chains = {}
+    for chain in maximal_source_chains:
+        for edge_id in chain["candidate_edge_ids"]:
+            candidate_edge_to_maximal_chains.setdefault(edge_id, []).append(
+                chain["maximal_chain_id"]
+            )
     overlapping_candidate_edges = {
-        edge_id: sorted(normalized_edge_ids)
-        for edge_id, normalized_edge_ids
-        in candidate_edge_to_normalized_edges.items()
-        if len(normalized_edge_ids) > 1
+        edge_id: sorted(maximal_chain_ids)
+        for edge_id, maximal_chain_ids
+        in candidate_edge_to_maximal_chains.items()
+        if len(maximal_chain_ids) > 1
     }
     if overlapping_candidate_edges:
-        all_normalized_edges_resolved = False
-        for result in normalized_edge_results:
+        for chain in maximal_source_chains:
             if any(
-                candidate["boundary_edge_id"] in overlapping_candidate_edges
-                for candidate in result["direct_face_edge_incidence"]
+                edge_id in overlapping_candidate_edges
+                for edge_id in chain["candidate_edge_ids"]
             ):
-                result["status"] = "UNRESOLVED"
-                result["resolved_consumer_id"] = None
-                result["rejection_reason"] = (
+                chain["status"] = "UNRESOLVED"
+                chain["resolved_consumer_id"] = None
+                chain["rejection_reason"] = (
                     "OVERLAPPING_DIRECT_OPPOSITE_CONSUMER_CHAIN"
                 )
+    all_maximal_source_chains_resolved = bool(maximal_source_chains) and all(
+        chain["status"] == "UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+        for chain in maximal_source_chains
+    )
+    maximal_status_by_normalized_edge_id = {
+        normalized_edge_id: {
+            "maximal_chain_id": chain["maximal_chain_id"],
+            "maximal_chain_status": chain["status"],
+            "maximal_chain_rejection_reason": chain["rejection_reason"],
+        }
+        for chain in maximal_source_chains
+        for normalized_edge_id in chain["normalized_edge_ids"]
+    }
+    for result in normalized_edge_results:
+        result.update(
+            maximal_status_by_normalized_edge_id[result["normalized_edge_id"]]
+        )
     return {
         "contract": GRAPH_CONTRACT,
         "status": "PROTOTYPE",
         "graph_input": {
             "normalized_edge_count": len(normalized_records),
+            "maximal_source_chain_count": len(maximal_source_chains),
             "raw_edge_count": len(raw_edge_ids),
             "boundary_universe_edge_count": len(boundary_universe),
             "complete_cutter_face_node_count": len(face_records_by_signature),
@@ -704,15 +1074,19 @@ def build_residual_ownership_graph(
             "subtraction_outside_universe": [],
         },
         "normalized_edges": normalized_edge_results,
-        "subchains": normalized_edge_results,
-        "all_normalized_edges_resolved": all_normalized_edges_resolved,
-        "all_subchains_resolved": all_normalized_edges_resolved,
+        "maximal_source_chains": maximal_source_chains,
+        "subchains": maximal_source_chains,
+        "all_normalized_edges_resolved": all_maximal_source_chains_resolved,
+        "all_maximal_source_chains_resolved": (
+            all_maximal_source_chains_resolved
+        ),
+        "all_subchains_resolved": all_maximal_source_chains_resolved,
         "candidate_edge_exactly_once": not overlapping_candidate_edges,
         "overlapping_candidate_edges": overlapping_candidate_edges,
         "raw_edge_exactly_once": len(raw_edge_ids) == len(set(raw_edge_ids)),
         "nearest_or_coordinate_matching_used": False,
         "consumer_resolution_mode": (
-            "PLAN_PATCH_PAIR_ADJACENT_CUTTER_FACE_EDGE_INCIDENCE_ONLY"
+            "MAXIMAL_SOURCE_CHAIN_TO_PLAN_PATCH_ADJACENT_CUTTER_FACE_EDGE_CHAIN"
         ),
         "lineage_fingerprint": _stable_fingerprint(
             {
@@ -720,5 +1094,11 @@ def build_residual_ownership_graph(
                 for record in normalized_records
             }
         ),
-        "graph_fingerprint": _stable_fingerprint(normalized_edge_results),
+        "graph_fingerprint": _stable_fingerprint(
+            {
+                "normalized_edges": normalized_edge_results,
+                "maximal_source_chains": maximal_source_chains,
+                "overlapping_candidate_edges": overlapping_candidate_edges,
+            }
+        ),
     }

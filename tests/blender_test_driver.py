@@ -9610,6 +9610,10 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         raw_entries,
         universe,
     )
+    authoritative_patch_pair = {
+        "strand_id": "strand:test",
+        "patch_pair": [1, 2],
+    }
     ensure(
         normalization["raw_edge_exactly_once"]
         and len(normalization["records"]) < len(raw_entries)
@@ -9620,10 +9624,12 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         normalization["records"],
         universe,
         complete_faces,
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         unique_graph["all_subchains_resolved"]
+        and unique_graph["all_maximal_source_chains_resolved"]
+        and len(unique_graph["maximal_source_chains"]) == 1
         and len(unique_graph["normalized_edges"])
         == len(normalization["records"])
         and all(
@@ -9637,7 +9643,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         tuple(reversed(normalization["records"])),
         tuple(reversed(universe)),
         tuple(reversed(complete_faces)),
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         unique_graph["graph_fingerprint"] == reversed_graph["graph_fingerprint"],
@@ -9647,7 +9653,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         normalization["records"],
         raw_entries,
         complete_faces,
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         not missing_graph["all_subchains_resolved"]
@@ -9667,7 +9673,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         normalization["records"],
         (*universe, ambiguous_entry),
         complete_faces,
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         not duplicate_graph["all_subchains_resolved"]
@@ -9713,7 +9719,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         normalization["records"],
         (*raw_entries, mutated_opposite_entry, second_opposite_entry),
         complete_faces,
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         not signature_conflict_graph["all_subchains_resolved"]
@@ -9743,7 +9749,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
             *complete_faces,
             topology("geometric-opposite:left:0", 3, 1),
         ),
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
         geometric_opposite_graph["all_subchains_resolved"]
@@ -9755,39 +9761,270 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         ),
         "C4 geometric opposite Face was accepted as Boundary consumer",
     )
-    overlapping_record = normalization["records"][0]
-    overlapping_chain_graph = graph_module.build_residual_ownership_graph(
+    maximal_fragment_record = normalization["records"][0]
+    maximal_chain_graph = graph_module.build_residual_ownership_graph(
         (
             {
-                **overlapping_record,
+                **maximal_fragment_record,
                 "normalized_edge_id": "normalized:a",
-                "raw_edge_ids": [overlapping_record["raw_edge_ids"][0]],
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][0]],
+                "endpoint_tokens": ["source:v0", "source:v1"],
             },
             {
-                **overlapping_record,
+                **maximal_fragment_record,
                 "normalized_edge_id": "normalized:b",
-                "raw_edge_ids": [overlapping_record["raw_edge_ids"][1]],
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][1]],
+                "endpoint_tokens": ["source:v1", "source:v2"],
             },
         ),
         universe,
         complete_faces,
-        allowed_source_patch_pairs=((1, 2),),
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
     )
     ensure(
-        not overlapping_chain_graph["all_subchains_resolved"]
-        and not overlapping_chain_graph["candidate_edge_exactly_once"]
-        and all(
-            item["rejection_reason"]
-            == "OVERLAPPING_DIRECT_OPPOSITE_CONSUMER_CHAIN"
-            for item in overlapping_chain_graph["normalized_edges"]
+        maximal_chain_graph["all_subchains_resolved"]
+        and maximal_chain_graph["candidate_edge_exactly_once"]
+        and len(maximal_chain_graph["maximal_source_chains"]) == 1
+        and maximal_chain_graph["maximal_source_chains"][0]["status"]
+        == "UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+        and maximal_chain_graph["maximal_source_chains"][0][
+            "normalized_edge_ids"
+        ]
+        == ["normalized:a", "normalized:b"],
+        "Continuous normalized fragments did not merge into one maximal chain",
+    )
+    cross_segment_graph = graph_module.build_residual_ownership_graph(
+        (
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:segment:a",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][0]],
+                "endpoint_tokens": ["source:segment:0", "source:segment:1"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:segment:b",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][1]],
+                "endpoint_tokens": ["source:segment:1", "source:segment:2"],
+                "longitudinal_segment_ids": ["segment:other"],
+            },
         ),
-        "Overlapping direct consumer Edge crossed global exactly-once gate",
+        universe,
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        len(cross_segment_graph["maximal_source_chains"]) == 2
+        and not cross_segment_graph["all_subchains_resolved"],
+        "Shared endpoint token merged distinct longitudinal segments",
+    )
+    protected_port_graph = graph_module.build_residual_ownership_graph(
+        (
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:port:a",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][0]],
+                "endpoint_tokens": ["source:port:0", "source:port:barrier"],
+                "endpoint_port_tokens": ["source:port:barrier"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:port:b",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][1]],
+                "endpoint_tokens": ["source:port:barrier", "source:port:1"],
+                "endpoint_port_tokens": ["source:port:barrier"],
+            },
+        ),
+        universe,
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        len(protected_port_graph["maximal_source_chains"]) == 2
+        and not protected_port_graph["all_subchains_resolved"],
+        "Protected Plan port token was crossed by maximal source grouping",
+    )
+    malformed_candidate_entry = {
+        **opposite_entry,
+        "cutter_face_topology": [
+            topology("right:visible:0", 0, 2),
+            topology("right:conflicting-lineage", 1, 3),
+        ],
+    }
+    malformed_candidate_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        (*raw_entries, malformed_candidate_entry, second_opposite_entry),
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not malformed_candidate_graph["all_subchains_resolved"]
+        and all(
+            chain["status"] == "UNRESOLVED"
+            for chain in malformed_candidate_graph["maximal_source_chains"]
+        ),
+        "Candidate Edge with conflicting complete lineage crossed maximal-chain gate",
+    )
+    try:
+        graph_module.build_residual_ownership_graph(
+            normalization["records"],
+            universe,
+            complete_faces,
+            allowed_source_patch_pairs=((1, 2),),
+        )
+    except ValueError:
+        unscoped_patch_pair_failed_closed = True
+    else:
+        unscoped_patch_pair_failed_closed = False
+    ensure(
+        unscoped_patch_pair_failed_closed,
+        "Unscoped Patch pair was accepted as authoritative StripCorrespondence",
+    )
+    cross_component_overlap_graph = graph_module.build_residual_ownership_graph(
+        (
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:a",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][0]],
+                "endpoint_tokens": ["source:a0", "source:a1"],
+                "rail_id": "rail:left:a",
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:b",
+                "raw_edge_ids": [maximal_fragment_record["raw_edge_ids"][1]],
+                "endpoint_tokens": ["source:b0", "source:b1"],
+                "rail_id": "rail:left:b",
+            },
+        ),
+        universe,
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not cross_component_overlap_graph["all_subchains_resolved"]
+        and not cross_component_overlap_graph["candidate_edge_exactly_once"]
+        and len(cross_component_overlap_graph["maximal_source_chains"]) == 2
+        and all(
+            chain["rejection_reason"]
+            == "OVERLAPPING_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+            for chain in cross_component_overlap_graph[
+                "maximal_source_chains"
+            ]
+        ),
+        "Candidate Edge crossed distinct maximal source components",
+    )
+    branched_source_graph = graph_module.build_residual_ownership_graph(
+        (
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:branch:a",
+                "raw_edge_ids": ["raw:0"],
+                "endpoint_tokens": ["source:branch:0", "source:branch:1"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:branch:b",
+                "raw_edge_ids": ["raw:1"],
+                "endpoint_tokens": ["source:branch:1", "source:branch:2"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:branch:c",
+                "raw_edge_ids": ["raw:2"],
+                "endpoint_tokens": ["source:branch:1", "source:branch:3"],
+            },
+        ),
+        universe,
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not branched_source_graph["all_subchains_resolved"]
+        and len(branched_source_graph["maximal_source_chains"]) == 1
+        and branched_source_graph["maximal_source_chains"][0][
+            "rejection_reason"
+        ]
+        == "INVALID_MAXIMAL_SOURCE_CHAIN:BRANCHED_TOKEN_GRAPH",
+        "Branched source token graph crossed maximal-chain gate",
+    )
+    normalized_cycle_graph = graph_module.build_residual_ownership_graph(
+        (
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:cycle:a",
+                "raw_edge_ids": ["raw:0"],
+                "endpoint_tokens": ["source:cycle:0", "source:cycle:1"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:cycle:b",
+                "raw_edge_ids": ["raw:1"],
+                "endpoint_tokens": ["source:cycle:1", "source:cycle:2"],
+            },
+            {
+                **maximal_fragment_record,
+                "normalized_edge_id": "normalized:cycle:c",
+                "raw_edge_ids": ["raw:2"],
+                "endpoint_tokens": ["source:cycle:2", "source:cycle:0"],
+            },
+        ),
+        universe,
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not normalized_cycle_graph["all_subchains_resolved"]
+        and normalized_cycle_graph["maximal_source_chains"][0][
+            "rejection_reason"
+        ]
+        == "INVALID_MAXIMAL_SOURCE_CHAIN:NOT_UNIQUE_OPEN_CHAIN",
+        "Cyclic source token graph crossed open maximal-chain gate",
+    )
+    disconnected_opposite_entry = {
+        **second_opposite_entry,
+        "endpoint_tokens": ["right:disconnected:0", "right:disconnected:1"],
+    }
+    disconnected_candidate_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        (*raw_entries, opposite_entry, disconnected_opposite_entry),
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not disconnected_candidate_graph["all_subchains_resolved"]
+        and disconnected_candidate_graph["maximal_source_chains"][0][
+            "rejection_reason"
+        ]
+        == "INVALID_MAXIMAL_CANDIDATE_CHAIN:NOT_UNIQUE_OPEN_CHAIN",
+        "Disconnected candidate Edges crossed maximal-chain gate",
+    )
+    cyclic_opposite_entry = {
+        **second_opposite_entry,
+        "endpoint_tokens": ["right:v1", "right:v0"],
+    }
+    cyclic_candidate_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        (*raw_entries, opposite_entry, cyclic_opposite_entry),
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        not cyclic_candidate_graph["all_subchains_resolved"]
+        and cyclic_candidate_graph["maximal_source_chains"][0][
+            "rejection_reason"
+        ]
+        == "INVALID_MAXIMAL_CANDIDATE_CHAIN:NOT_UNIQUE_OPEN_CHAIN",
+        "Cyclic candidate Edges crossed open maximal-chain gate",
     )
     duplicate_patch_pair_graph = graph_module.build_residual_ownership_graph(
         normalization["records"],
         universe,
         complete_faces,
-        allowed_source_patch_pairs=((1, 2), (1, 2)),
+        allowed_source_patch_pairs=(
+            authoritative_patch_pair,
+            authoritative_patch_pair,
+        ),
     )
     ensure(
         not duplicate_patch_pair_graph["all_subchains_resolved"]
@@ -9808,7 +10045,18 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         "conflict_failed_closed": conflict_failed_closed,
         "signature_conflict": signature_conflict_graph,
         "geometric_opposite_rejected": geometric_opposite_graph,
-        "overlapping_chain_rejected": overlapping_chain_graph,
+        "maximal_fragment_chain_accepted": maximal_chain_graph,
+        "cross_segment_merge_rejected": cross_segment_graph,
+        "protected_port_crossing_rejected": protected_port_graph,
+        "malformed_candidate_lineage_rejected": malformed_candidate_graph,
+        "unscoped_patch_pair_failed_closed": (
+            unscoped_patch_pair_failed_closed
+        ),
+        "cross_component_overlap_rejected": cross_component_overlap_graph,
+        "branched_source_rejected": branched_source_graph,
+        "cyclic_source_rejected": normalized_cycle_graph,
+        "disconnected_candidate_rejected": disconnected_candidate_graph,
+        "cyclic_candidate_rejected": cyclic_candidate_graph,
         "duplicate_patch_pair_rejected": duplicate_patch_pair_graph,
         "stop_go": {
             "algorithm_contract_pass": True,
@@ -9824,7 +10072,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         encoding="utf-8",
     )
     result.add_detail(
-        f"direct Boundary Face incidence unique/missing/duplicate/conflict and C4 +2 rejection contracts passed; artifact={artifact_path}"
+        f"pre-Boolean Face incidence and maximal source/candidate chain fail-closed contracts passed; artifact={artifact_path}"
     )
 
 

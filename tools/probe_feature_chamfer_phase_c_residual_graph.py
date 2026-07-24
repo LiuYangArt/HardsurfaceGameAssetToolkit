@@ -602,13 +602,13 @@ def main(arguments):
         preview_utils.source_fingerprint(source_object) == source_fingerprint_before
     )
     report = {
-        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V1",
+        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V2",
         "status": "PROTOTYPE",
         "phase_c_gate": "STOP",
         "decision": (
             "STOP_TARGET_RESIDUAL_IDENTITY_CHANGED"
             if target_identity_changed
-            else "GRAPH_DIRECT_WITNESS_CANDIDATE"
+            else "MAXIMAL_CHAIN_DIRECT_WITNESS_PROBE_GO"
             if graph["all_subchains_resolved"]
             else "STOP_UNRESOLVED_DIRECT_WITNESS"
         ),
@@ -676,7 +676,7 @@ def main(arguments):
             "normalization_contract_pass": normalization[
                 "raw_edge_exactly_once"
             ],
-            "all_normalized_subchains_have_unique_direct_witness": graph[
+            "all_maximal_source_chains_have_unique_direct_witness": graph[
                 "all_subchains_resolved"
             ],
             "expected_two_normalized_edges": (

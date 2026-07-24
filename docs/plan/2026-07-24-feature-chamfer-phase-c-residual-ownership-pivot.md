@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pre-Boolean Profile Lineage Plan
 
 日期：2026-07-24
-状态：`AUTHORIZED / PRE-BOOLEAN LINEAGE RETAINED / BOUNDARY PAIRING CORRECTED / MAXIMAL-CHAIN NEXT / PHASE C STOP / PROTOTYPE`
+状态：`AUTHORIZED / PRE-BOOLEAN LINEAGE RETAINED / MAXIMAL-CHAIN PROBE GO / PHASE C STOP / PROTOTYPE`
 
 ## 0. 目标入口与阶段范围
 
@@ -126,6 +126,6 @@ Go：目标 maximal source chain 获得唯一 direct Boundary consumer chain，�
 - `Visual/Product: NOT VERIFIED`
 - `Phase C: STOP`
 
-下一交付是从目标 PREVIEW → Phase C Adapter 产生的只读 maximal-chain pairing report 和可检查 `.blend`。报告必须明确区分：Pipe owner、profile side、C4 geometric opposite、Boundary partner Patch、longitudinal segment、post-Boolean Edge incidence、raw→normalized lineage、source/candidate chain connectivity、全局 candidate exactly-once 与 resolved consumer。
+只读 maximal-chain pairing report 和可检查 `.blend` 已从目标 PREVIEW → Phase C Adapter 产生，Algorithm/Backend probe 条件通过；终局独立 spec audit 为 `P0=0 / P1=0`。下一步按第 4 节把同一只读 probe 扩展到 `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030`，不能因单个目标 cell 通过就接入 Adapter runtime；正式 `FINALIZE`、Phase D/E 仍不在本阶段。
 
 完成声明前独立 Spec Audit 必须检查：runtime 未越级修改；测试从目标 Operator 开始；consumer 不是最近 sink；计划、代码、artifact 的阶段状态一致。

@@ -1,7 +1,7 @@
 # Phase C Pre-Boolean Profile Lineage Probe
 
 日期：2026-07-24
-状态：`PROTOTYPE / TARGET 3→2 REPRODUCED / OVERLAPPING CONSUMER CHAINS / PHASE C STOP`
+状态：`PROTOTYPE / MAXIMAL-CHAIN PROBE GO / PHASE C STOP`
 
 ## 目标入口
 
@@ -32,11 +32,11 @@ single-Pipe fixture 已通过：
 - missing direct consumer → `UNRESOLVED`；
 - duplicate direct consumer → `UNRESOLVED`；
 - transferred Face identity conflict → normalization fail-closed。
-- candidate Edge 跨 normalized records 重复占用 → `UNRESOLVED`；
+- candidate Edge 在同一 maximal source component 内可去重；跨不同 maximal components 重复占用 → `UNRESOLVED`；
 - 同一 strand/Patch pair 出现重复权威 correspondence → `UNRESOLVED`；
 - C4 `+2` 几何相对面不得冒充 Boundary consumer。
 
-回归 artifact：`/private/tmp/hst-phase-c-boundary-pairing-regression-20260724-08/`。
+回归 artifact：`/private/tmp/hst-phase-c-maximal-chain-regression-20260724-04/`。
 
 ## 真实目标结果
 
@@ -58,19 +58,28 @@ resolver 与 synthetic contract 已改为“strand-scoped Plan Patch pair + 相�
 
 但正式 Phase C Adapter 尚未接入该 resolver，仍以 `UNPROVEN_PLAN_BOUNDARY_EDGE` fail-closed；因此整体 Phase C 继续保持 `STOP / PROTOTYPE`。正式 runtime、Phase D/E 仍未进入。
 
-下一步保持同一 Pre-Boolean Cutter Profile Lineage 主路线：先将共享 endpoint token、完整 source lineage 与同一 Plan component 的连续 normalized fragments 合并为 maximal source chain，再验证对侧 candidate Edges 构成唯一连续 chain。整条 chain 配对通过前不接入正式 runtime。
+已继续沿同一 Pre-Boolean Cutter Profile Lineage 主路线实现 maximal-chain pairing：两个共享 endpoint token 的 normalized fragments 被合并为一个 source chain；对侧两条真实 candidate Edges 形成唯一连续 open chain。全程只使用稳定 token、权威 Patch pair 与 pre/post-Boolean Face→Edge incidence，不使用 nearest/BVH/coordinate 生成 owner。
 
 最新 artifact：
 
-- `/private/tmp/hst-phase-c-boundary-pairing-real-20260724-04/report.json`
-- `/private/tmp/hst-phase-c-boundary-pairing-real-20260724-04/phase_c_pre_boolean_profile_lineage.blend`
+- `/private/tmp/hst-phase-c-maximal-chain-real-20260724-05/report.json`
+- `/private/tmp/hst-phase-c-maximal-chain-real-20260724-05/phase_c_pre_boolean_profile_lineage.blend`
 
 ## Spec Audit
 
+- 终局独立复审：`P0=0 / P1=0`；只授权 Algorithm/Backend 的只读 `PROTOTYPE` probe Go。
 - 目标 3→2 identity 已复现；probe 对 residual identity 漂移有显式 hard Stop 字段。
 - pre-Boolean complete Face records 参与 direct consumer 决策。
-- `all_normalized_edges_resolved` 只接受 `UNIQUE_DIRECT_OPPOSITE_CONSUMER`，Plan port 不能触发本轮 Go。
+- `all_maximal_source_chains_resolved` 只接受 `UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN`；Plan port 不能触发本轮 Go。
 - `strand_id` 已进入 pairing key。
+- `longitudinal_segment_ids` 已进入 maximal source component key；跨 segment 共享 token 不得合并。
+- candidate Edge 必须拥有唯一完整 pre-Boolean lineage；无 strand 的 legacy Patch pair 输入直接拒绝。
+- maximal source grouping 不得跨 protected Plan port/junction token。
 - probe-only 开关隔离完整 lineage；既有 `feature_chamfer_batched_adapter_smoke` 通过。
+- synthetic 已覆盖 missing、duplicate、Face identity conflict、C4 `+2` rejection、跨 maximal component overlap、source branch、candidate disconnected/cycle，均 fail-closed。
 
-未通过 probe 门槛：两个 normalized Edge 的 direct candidate chain 重叠消费同一真实 Edge。不得提升为 `INTEGRATED/VERIFIED/ACCEPTED`，Phase C 仍为 `STOP`。
+当前只达到 Algorithm/Backend 的只读 `PROTOTYPE` probe Go。隐藏 Adapter 仍按既有 residual gate `CANCELLED`，正式 runtime/`FINALIZE` 未接入；不得提升为 `INTEGRATED/VERIFIED/ACCEPTED`，Phase C 仍为 `STOP`。
+
+真实目标结果：1 条 maximal source chain（2 个 normalized fragments）唯一对应 1 条 candidate chain（2 条 Edge：`d08fa882…` → `78c620a9…`）；raw/normalized/candidate exactly-once、source unchanged、正逆输入一致。`report.json` SHA-256 为 `01cbc19a9ee837ee4d0ba819a4b7bf73652f863e772eb2174a2918b4426cdb44`，`.blend` SHA-256 为 `b93efbcc9c4f8e4dc56b2d8fb3ced0597d000bc9a65891e28048b557fc55fca0`。
+
+下一步仍是只读验证：把相同合同扩展到 `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030` 的全部 residual components。三个失败 cell 全部有唯一 direct witness 前，不接入隐藏 Adapter runtime。
