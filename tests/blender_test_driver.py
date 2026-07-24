@@ -1121,6 +1121,124 @@ def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseR
     result.add_detail(f"FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
+def test_staticmeshexport_collection_type_filter_regression(test_context: TestContext, result: TestCaseResult):
+    collection_types = [
+        ("PROP", "PropFilterCase", "SM_PropFilterCase.fbx"),
+        ("DECAL", "DecalFilterCase", "SM_DecalFilterCase.fbx"),
+        ("BAKE_LOW", "BakeFilterCase", "SM_BakeFilterCase.fbx"),
+        (None, "StaticMeshFilterCase", "SM_StaticMeshFilterCase.fbx"),
+        ("SKM", "SkeletalFilterCase", "SM_SkeletalFilterCaseMesh.fbx"),
+    ]
+    for collection_type, collection_name, _ in collection_types:
+        collection = make_collection(collection_name)
+        make_test_mesh(collection_name + "Mesh", collection)
+        if collection_type is not None:
+            test_context.addon.utils.collection_utils.Collection.mark_hst_type(
+                collection,
+                collection_type,
+            )
+
+    params = bpy.context.scene.hst_params
+    params.export_format = "FBX"
+    params.file_prefix = ""
+    export_cases = [
+        ("PROP", "SM_PropFilterCase.fbx"),
+        ("DECAL", "SM_DecalFilterCase.fbx"),
+        ("BAKE", "SM_BakeFilterCase.fbx"),
+        ("STATIC_MESH", "SM_StaticMeshFilterCase.fbx"),
+        ("SKELETAL", "SM_SkeletalFilterCaseMesh.fbx"),
+    ]
+
+    for export_collection_type, expected_filename in export_cases:
+        export_dir = ARTIFACT_DIR / "exports" / "collection_type_filter" / export_collection_type.lower()
+        export_dir.mkdir(parents=True, exist_ok=True)
+        for stale_file in export_dir.glob("*.fbx"):
+            stale_file.unlink()
+        params.export_path = str(export_dir)
+
+        op_result = bpy.ops.hst.staticmeshexport(
+            export_collection_type=export_collection_type,
+        )
+        ensure(
+            "FINISHED" in op_result,
+            f"{export_collection_type} StaticMesh export did not finish",
+        )
+        exported_files = sorted(path.name for path in export_dir.glob("*.fbx"))
+        ensure(
+            exported_files == [expected_filename],
+            f"{export_collection_type} exported unexpected files: {exported_files}",
+        )
+
+    result.add_detail("Prop, Decal, Bake, Static Mesh and Skeletal each exported only their target type")
+
+
+def test_staticmeshexport_world_center_restores_each_object_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("WorldCenterExportCase")
+    first_object = make_test_mesh(
+        "WorldCenterFirst",
+        collection,
+        location=(3.0, 4.0, 5.0),
+    )
+    second_object = make_test_mesh(
+        "WorldCenterSecond",
+        collection,
+        location=(-6.0, 2.0, 8.0),
+    )
+    origin_object = bpy.data.objects.new("WorldCenterOrigin", None)
+    collection.objects.link(origin_object)
+    origin_object.location = (12.0, -3.0, 7.0)
+    bpy.context.view_layer.update()
+    test_context.addon.utils.object_utils.Object.mark_hst_type(origin_object, "ORIGIN")
+    for obj in (first_object, second_object):
+        original_world_matrix = obj.matrix_world.copy()
+        obj.parent = origin_object
+        obj.matrix_world = original_world_matrix
+    original_matrices = {
+        origin_object: origin_object.matrix_world.copy(),
+        first_object: first_object.matrix_world.copy(),
+        second_object: second_object.matrix_world.copy(),
+    }
+
+    export_dir = ARTIFACT_DIR / "exports" / "world_center"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    export_file = export_dir / "SM_WorldCenterExportCase.fbx"
+    export_file.unlink(missing_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport(
+        export_collection_type="STATIC_MESH",
+        move_objects_to_world_center=True,
+    )
+    ensure("FINISHED" in op_result, "World-center StaticMesh export did not finish")
+    ensure(export_file.exists(), "World-center export file was not created")
+    for obj, original_matrix in original_matrices.items():
+        ensure(
+            obj.matrix_world == original_matrix,
+            f"{obj.name} transform was not restored: {tuple(obj.matrix_world.translation)} != {tuple(original_matrix.translation)}",
+        )
+
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
+    bpy.ops.wm.fbx_import(filepath=str(export_file))
+    imported_meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    ensure(len(imported_meshes) == 2, f"Expected two imported Meshes, got {len(imported_meshes)}")
+    imported_locations = sorted(
+        tuple(round(value, 6) for value in obj.matrix_world.translation)
+        for obj in imported_meshes
+    )
+    ensure(
+        imported_locations == [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+        f"Exported Objects were not individually at world center: {imported_locations}",
+    )
+    result.add_detail("Both exported Objects imported at world (0, 0, 0); source matrices restored")
+
 def test_staticmeshexport_current_scene_only_fbx(test_context: TestContext, result: TestCaseResult):
     current_collection = make_collection("CurrentSceneExportCase")
     make_test_mesh("CurrentSceneExportMesh", current_collection)
@@ -4052,6 +4170,8 @@ def main():
     context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
     context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
+    context.run_case("staticmeshexport_collection_type_filter_regression", test_staticmeshexport_collection_type_filter_regression)
+    context.run_case("staticmeshexport_world_center_restores_each_object_regression", test_staticmeshexport_world_center_restores_each_object_regression)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
     context.run_case("prepare_cad_mesh_sets_ue_centimeter_units", test_prepare_cad_mesh_sets_ue_centimeter_units)

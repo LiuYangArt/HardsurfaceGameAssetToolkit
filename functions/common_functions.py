@@ -43,7 +43,12 @@ from ..utils.mesh_utils import (
     mark_sharp_edges_by_split_normal, are_normals_different, mark_sharp_edge_by_angle,
     mark_convex_edges, set_edge_bevel_weight_from_sharp, Mesh
 )
-from ..utils.transform_utils import rotate_quaternion, get_selected_rotation_quat, Transform
+from ..utils.transform_utils import (
+    rotate_quaternion,
+    get_selected_rotation_quat,
+    temporarily_move_objects_to_world_center,
+    Transform,
+)
 from ..utils.import_utils import import_node_group, import_world, import_object, remove_node, make_transfer_proxy_mesh
 from ..utils.bmesh_utils import BMesh
 from ..utils.viewport_utils import check_screen_area, new_screen_area, viewport_shading_mode, Viewport
@@ -191,7 +196,7 @@ class FBXExport:
                 target.matrix_world = obj_transform[target]
 
 
-    def staticmesh(target, file_path: str, reset_transform=False):
+    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False):
         """导出 StaticMesh FBX"""
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
@@ -240,38 +245,44 @@ class FBXExport:
                 obj.rotation_euler = (0, 0, 0)
                 obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
-        bpy.ops.export_scene.fbx(
-            filepath=file_path,
-            use_selection=True,
-            use_active_collection=False,
-            use_visible=False,
-            axis_forward="-Z",
-            axis_up="Y",
-            global_scale=1.0,
-            apply_unit_scale=True,
-            apply_scale_options="FBX_SCALE_NONE",
-            colors_type="LINEAR",
-            object_types={"MESH", "EMPTY"},
-            use_mesh_modifiers=True,
-            mesh_smooth_type="FACE",
-            use_triangles=True,
-            use_tspace=True,
-            bake_space_transform=True,
-            path_mode="AUTO",
-            embed_textures=False,
-            batch_mode="OFF",
-            use_metadata=False,
-            use_custom_props=False,
-            add_leaf_bones=False,
-            use_armature_deform_only=False,
-            bake_anim=False,
-        )
-        for object in hidden_objects:
-            object.hide_set(True)
+        try:
+            with temporarily_move_objects_to_world_center(
+                export_objects,
+                enabled=move_objects_to_world_center,
+            ):
+                bpy.ops.export_scene.fbx(
+                    filepath=file_path,
+                    use_selection=True,
+                    use_active_collection=False,
+                    use_visible=False,
+                    axis_forward="-Z",
+                    axis_up="Y",
+                    global_scale=1.0,
+                    apply_unit_scale=True,
+                    apply_scale_options="FBX_SCALE_NONE",
+                    colors_type="LINEAR",
+                    object_types={"MESH", "EMPTY"},
+                    use_mesh_modifiers=True,
+                    mesh_smooth_type="FACE",
+                    use_triangles=True,
+                    use_tspace=True,
+                    bake_space_transform=True,
+                    path_mode="AUTO",
+                    embed_textures=False,
+                    batch_mode="OFF",
+                    use_metadata=False,
+                    use_custom_props=False,
+                    add_leaf_bones=False,
+                    use_armature_deform_only=False,
+                    bake_anim=False,
+                )
+        finally:
+            for object in hidden_objects:
+                object.hide_set(True)
 
-        if reset_transform is True:
-            for obj in obj_transform:
-                obj.matrix_world = obj_transform[obj]
+            if reset_transform is True:
+                for obj in obj_transform:
+                    obj.matrix_world = obj_transform[obj]
 
     def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 FBX"""
@@ -393,7 +404,7 @@ class GLBExport:
             for obj in obj_transform:
                 obj.matrix_world = obj_transform[obj]
 
-    def staticmesh(target, file_path: str, reset_transform=False):
+    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False):
         """导出 StaticMesh GLB"""
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
@@ -439,14 +450,19 @@ class GLBExport:
                 obj.rotation_euler = (0, 0, 0)
                 obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
-        GLBExport._export_selected(file_path)
+        try:
+            with temporarily_move_objects_to_world_center(
+                export_objects,
+                enabled=move_objects_to_world_center,
+            ):
+                GLBExport._export_selected(file_path)
+        finally:
+            for obj in hidden_objects:
+                obj.hide_set(True)
 
-        for obj in hidden_objects:
-            obj.hide_set(True)
-
-        if reset_transform is True:
-            for obj in obj_transform:
-                obj.matrix_world = obj_transform[obj]
+            if reset_transform is True:
+                for obj in obj_transform:
+                    obj.matrix_world = obj_transform[obj]
 
     def skeletal(target, file_path: str, armature_as_root=False):
         """导出骨骼 GLB（armature_as_root 参数保留用于兼容调用）"""
