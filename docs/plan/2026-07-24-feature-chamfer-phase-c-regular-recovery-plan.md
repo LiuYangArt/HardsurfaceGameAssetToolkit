@@ -1,571 +1,455 @@
-# Feature Chamfer Phase C — Regular Recovery 续作计划
+# Feature Chamfer Phase C — Ownership-driven Bridge / Local Fill 续作计划
 
 日期：2026-07-24  
-状态：`PAUSED / PROTOTYPE / PHASE A GO / PHASE B GO / PHASE C STOP`  
-文档 HEAD：`92d2953` (`docs(feature-chamfer): add phase c regular recovery plan`)
-代码 baseline：`1b8f120` (`wip(feature-chamfer): checkpoint phase c regular diagnostics`)
+状态：`PAUSED / PROTOTYPE / PHASE A GO / PHASE B GO / PHASE C STOP`
+策略决定：`OWNERSHIP_DRIVEN_BLENDER_BRIDGE_LOCAL_FILL_V1`
+最近检查的仓库 HEAD：`b87bb7d` (`Clarify Phase C recovery gates and evidence requirements`)
+Phase C runtime baseline：`1b8f120` (`wip(feature-chamfer): checkpoint phase c regular diagnostics`)
 上游权威 handoff：`docs/plan/2026-07-23-feature-chamfer-batched-cut-fill-handoff.md`
 
-本文是下一次 Session 的执行入口。权威顺序固定为：项目 `AGENTS.md` → 上游 handoff 的不可变产品语义/Phase A→E 阶段边界 → 本文的 Phase C 当前事实、执行策略与门禁。上游 handoff 中已撤销的历史绿灯和旧暂停数字只保留诊断价值，不能覆盖本文的新鲜状态；其他冲突必须停止并更新计划。
+本文是下一次 Session 的执行入口。权威顺序固定为：项目 `AGENTS.md` → 上游 handoff 的产品语义和 Phase A→E Stop/Go → 本文的 Phase C 当前策略与门禁。
 
-## 1. 给下一位 Agent 的一句话任务
+本文明确替代旧版第 7–8 节中的“自研 canonical cyclic rail + circular DP”主路线。旧代码和历史 diagnostics 仍可用于定位问题，但不得因为已经存在就继续叠加 matching、trim 或 handoff 例外。
 
-保留已经通过的 Preview Pipe、independent batched Exact Boolean、Boundary provenance 与 exactly-once ledger；停止增加 setback/handoff 例外，重新收敛 Phase C 的 cyclic/open regular rail 配对，使 14 个产品矩阵 cell 的所有非 junction 区都真正生成 chamfer strip。Phase C 全矩阵和独立审计通过前，不得进入 Phase D/E，也不得接入正式 `hst.feature_chamfer_gn(FINALIZE)`。
+## 1. 一句话任务
 
-## 2. 非技术进度说明
+保留已经通过的 Preview Pipe、independent batched Exact Boolean、Boundary Edge ownership/provenance 与 exactly-once ledger；利用稳定 ownership 唯一选出每条 Pipe 的左右 regular rails，调用 Blender 自己的 `bmesh.ops.bridge_loops()` 补 regular 面，再只对能唯一证明属于 Plan junction 的剩余闭合洞调用 Blender Fill。14 cells × 3 和独立审计通过前，Phase C 保持 STOP，不进入 D/E，不接入正式 `hst.feature_chamfer_gn(FINALIZE)`。
 
-当前已经能可靠完成三件事：
+## 2. 非技术说明
 
-1. 找到模型上需要倒角的槽线，并复用正式 Preview 的 Pipe。
-2. 多条相交槽线按互不冲突的批次独立切割，切割顺序不会决定产品结果。
-3. 给切出来的每条 Boundary Edge 保存稳定身份和 owner；未处理的边不能再被测试静默忽略。
+目前最困难的部分不是“边属于谁”，而是旧实现试图自己计算两排边应该怎样逐点配对。闭环起点不同、两边分段数不同、多个 Pipe 相交时，这套自研配对会产生丢边、重复认领或假绿。
 
-尚未完成的是“把一对切口边稳定地拉成倒角表面”。尤其闭环两侧虽然是同一圈，但投影起点不同；旧算法只填两圈参数重叠的部分，把其余大段遗留给后续 handoff。先前一些宽松 handoff 又把这些大段误当成 junction，造成假绿。独立审计发现后，相关宽松路径已经关停或加严，因此当前失败是诚实的。
+新的方向把职责分开：
 
-可以继续复用的底层能力很多，不建议推倒重来。应把范围聚焦在“regular rail 的规范化、分段、唯一配对和事务式提交”。
+1. 现有系统继续负责准确找到每条边属于哪条 Pipe、哪一侧、是否靠近交点。
+2. Blender 的 Bridge Edge Loops 负责把同一 Pipe 的左右两排 regular edges 连成面。
+3. 两条 Pipe 交叉位置预先留空；全部 regular bridge 完成后，重新找交点处留下的闭合洞。
+4. 只有洞口被证明属于一个已知 junction 时，才使用 Blender Fill 填面。
+5. 任何无法归属、非闭合或混合多个 junction 的洞都应诚实失败，不能自动补掉。
 
-## 3. 当前可信状态与证据边界
+这条路线不是从头猜算法。项目旧 `Feature Chamfer (Sharp/Seam)` Operator 已有 `_bridge_then_fill()` 实现，测试也证明过 `Bridge Edge Loops → Fill` 可以生成 watertight Mesh。需要复用的是 Blender 操作和手工工作流语义，不是旧实现里基于 `_rail_pair_score()` 的近似配对或“Fill 全部剩余闭环”的宽松判断。
 
-### 3.0 目标入口合同
+## 3. 目标入口与阶段边界
 
-当前存在三条必须分开的入口链：
+当前三条入口必须分开：
 
 ```text
-产品 PREVIEW
+正式 PREVIEW
 UI 主按钮(action=AUTO)
-→ hst.feature_chamfer_gn.invoke/execute(PREVIEW)
-→ ensure_gn_feature_chamfer_preview()
-→ owned Curve + GN Preview modifier + GN_PREVIEW_PIPE_V1 contract
+→ hst.feature_chamfer_gn(PREVIEW)
+→ owned Curve + GN Preview modifier + GN_PREVIEW_PIPE_V1
 
-当前产品 FINALIZE
+当前正式 FINALIZE（本阶段禁止修改/接入）
 同一 UI/Operator
-→ hst.feature_chamfer_gn.invoke/execute(FINALIZE)
-→ build_pipe_chamfer(debug_stage=PATCHED, feature_graph_contract=GN_PREVIEW_V1)
-→ 产品 output Object / PATCHED 状态
+→ hst.feature_chamfer_gn(FINALIZE)
+→ 旧 build_pipe_chamfer(PATCHED)
 
-Phase C 验收
-matrix
-→ 正式 hst.feature_chamfer_gn(PREVIEW)
-→ INTERNAL hst.experimental_feature_chamfer_batched_finalize(PHASE_C_REGULAR_CORE)
+Phase C 验收入口
+正式 hst.feature_chamfer_gn(PREVIEW)
+→ hidden hst.experimental_feature_chamfer_batched_finalize(PHASE_C_REGULAR_CORE)
 → build_batched_feature_chamfer()
-→ diagnostics/debug artifacts only
+→ debug Mesh / diagnostics / ledger artifacts
 ```
 
-Batched backend 读取 owned Preview Curve 上冻结的 `GN_PREVIEW_PIPE_V1` immutable Pipe contract，并通过同一 Even-Thickness builder 重建临时 Pipe Mesh；它不是直接复用 evaluated GN cutter Mesh。Phase C 当前返回 `PROTOTYPE`、`output_object_name=None`，并在结束时清理临时数据。
+Phase C 只验证 `Algorithm + Backend + hidden Adapter seam`。即使 Phase C GO，全局产品状态仍是 `PROTOTYPE`；Phase D/E 仍要分别完成 backend product assembly、正式 Operator 接入、Undo/rollback 和 Visual/Product 验收。
 
-因此 Phase C 证据只覆盖 `Algorithm`、`Backend` 和隐藏实验 Adapter seam。即使 Phase C GO，全局产品状态仍是 `PROTOTYPE`；不得声明正式 `FINALIZE` 已 `INTEGRATED`，也不得声明 `Visual/Product` 已 `VERIFIED` 或 `ACCEPTED`。
+## 4. 已确认基础与证据边界
 
-### 3.1 已确认通过
+### 4.1 可继续复用
 
-- Phase A：正式 Preview Pipe 输入合同为 GO。
-- Phase B：Pipe overlap graph、stable coloring、batch 内无 overlap、正序/逆序 independent Exact Boolean staging 为 GO。
-- Source 保持不变；Boundary provenance、consumer 双向引用、outside-plan 分类、geometry guard 和 artifact 保存路径已经建立。
-- 以下定向 handoff guard 曾运行通过，但 artifact 时间早于代码 baseline commit 约 8 秒，且 JSON 不含 commit/run-id/argv，当前只能作为弱基线，Step 0 必须在独立目录重跑：
-  - `feature_chamfer_batched_short_component_setback_contract`
-  - `feature_chamfer_batched_plan_span_crossing_handoff_contract`
-  - `feature_chamfer_batched_structural_handoff_reconciliation_contract`
-  - `feature_chamfer_batched_regular_numeric_fragment_handoff_contract`
-  - `feature_chamfer_batched_regular_terminal_extension_contract`
-  - `feature_chamfer_batched_cyclic_seam_boundary_handoff_contract`
-- 历史 `py_compile` 通过只证明语法；它不能发现控制流错位。macOS 验证必须设置可写 pycache，例如 `PYTHONPYCACHEPREFIX=/tmp/hst-feature-chamfer-pycache`。
+- Phase A GO：正式 Preview Pipe 输入合同已确认。
+- Phase B GO：Pipe overlap graph、stable coloring、batch 内无 overlap、正序/逆序 independent Exact Boolean staging 已确认。
+- Source 不变；每条切口 Boundary Edge 已有 stable identity、Pipe/side/source-patch ownership、consumer 双向引用和 exactly-once ledger 框架。
+- 旧实验代码存在 `_bridge_then_fill()`：同一 Pipe 两侧 rail 调用 `bmesh.ops.bridge_loops()`，然后对剩余闭合洞调用 `bmesh.ops.contextual_create()`。
+- 已有 `feature_chamfer_bridge_then_fill_smoke`，证明隔离 BMesh 中 Bridge → Fill 可得到 watertight Mesh。
 
-### 3.2 不可当作当前 GO 证据
+相关代码入口：
 
-- 2026-07-23 曾有一次 `14/14 × 3` 自动绿，但已因 fake green 被正式撤销。
-- 最近一次完整严格矩阵曾得到 `2 PASS / 12 FAIL`；它用于说明失败分布，不代表 checkpoint 后当前代码的最终数字。
-- 顶层 `tests/artifacts/feature_chamfer_batched_matrix/results.json` 会被每次定向 run 覆盖。本文编写时它只包含 `simple__extruded_002__r0p010` 的单格失败，不得误读为完整矩阵。
-- 各 cell 的历史诊断仍在 `tests/artifacts/feature_chamfer_batched_matrix/<case>/diagnostics.json`；使用前必须核对 `mtime`、运行参数和当前 commit。
-- checkpoint 中包含尚未证明正确的 full-cyclic 实验代码。它是 WIP，不是完成方案。
-- 当前 matrix runner 的 `phase_c_go` 汇总门禁存在 fake-green 风险：它未直接要求每个 case/repetition 的总状态、Phase A/B、Preview contract、source unchanged 与无 debug 残留全部通过；必须先修 runner，旧 `phase_c_go` 字段不能单独作为 GO 证据。
-- `_zero_length_regular_connector_handoff_proof()` 当前在建立 `unique_records` 后隐式返回 `None`；其余判定代码误落在 `_regular_overlap_bridge_handoff_proof()` 的无条件 `return` 之后，属于不可达代码。`py_compile` 不会发现，Step 0 必须先用直接合同测试锁定并修复控制流边界。
+- `ui_panel.py`：`Feature Chamfer (Sharp/Seam)` → `hst.experimental_pipe_chamfer`
+- `utils/experimental_pipe_chamfer_utils.py::_bridge_then_fill()`
+- `tests/blender_test_driver.py::test_experimental_pipe_chamfer_bridge_then_fill_smoke()`
 
-### 3.3 当前产品状态
+### 4.2 不能当作 GO 证据
 
-- `Algorithm`：部分通过。
-- `Backend`：Phase C prototype，未 GO。
-- `Operator`：实验 Adapter；正式 FINALIZE 未接入。
+- 2026-07-23 的旧 `14/14 × 3` 已因 fake green 撤销。
+- 历史 `2 PASS / 12 FAIL` 只说明失败分布，不代表新策略当前结果。
+- 顶层 matrix `results.json` 会被定向 run 覆盖；所有 gate 必须使用独立 run-id/artifact directory。
+- checkpoint 中 full-cyclic lift/phase/DP 是未证明 WIP；新路线不依赖它们。
+- `_zero_length_regular_connector_handoff_proof()` 存在已记录的控制流错位，必须在进入 Bridge 集成前修复并补直接合同。
+- 当前 matrix runner 的 `phase_c_go` 存在 fake-green 风险，必须先 harden。
+
+### 4.3 当前状态
+
+- `Algorithm`：Bridge/Fill 手工语义和隔离 smoke 已有证据；ownership 驱动的产品组合尚未实现。
+- `Backend`：Phase C prototype，STOP。
+- `Operator`：hidden experimental Adapter。
 - `Visual/Product`：未验证、未接受。
 
-## 4. 不可变范围与禁止路线
+## 5. 不可变范围与禁止路线
 
-V1 完成范围固定为四个 fixture、7 个对象、radius `{0.01, 0.03}`，共 14 个 cells；每格至少重复 3 次。全部通过才能进入后续阶段。不得为对象名、坐标、Edge/Vertex index 或 fixture 写特判。
+V1 固定范围：四个 `.blend` fixture、7 个 objects、radius `{0.01, 0.03}`，共 14 cells；每格至少重复 3 次。不得写对象名、fixture、坐标、Edge/Vertex index 或 Pipe ID 特判。
 
 继续禁止：
 
 - SDF / `Points to SDF Grid → Grid to Mesh`；
-- nearest-owner 或投影最近邻回退；
+- nearest-owner、nearest-rail 或 `_rail_pair_score()` 猜测配对；
 - global fill、centroid fan、无约束 triangulate；
 - 共享 working Mesh 上按顺序累计 Cut；
-- 用扩大 setback/handoff 范围掩盖 regular 失败；
-- 把 zero-area、non-monotonic、width failure 或大 fragment 简单忽略；
+- 用放宽 handoff/setback/width/monotonic/zero-area guard 掩盖 regular 失败；
+- 忽略大 fragment、重复 provenance、zero-area 或 non-manifold；
 - Phase C GO 前进入 Phase D/E；
-- Phase C GO 前接入正式 `hst.feature_chamfer_gn(FINALIZE)`；
+- Phase C GO 前修改正式 `hst.feature_chamfer_gn(FINALIZE)` runtime path；
 - 修改 `auto_load.py`；
-- 提交 `tests/.DS_Store`。
+- 修改或再次提交 `tests/.DS_Store`。
 
-## 5. 当前工作树与关键文件
-
-checkpoint 已提交全部 Phase C WIP 代码和测试。正常工作树只应残留：
+“Junction-local Fill”不属于被禁止的 global fill。两者边界如下：
 
 ```text
- M tests/.DS_Store
+允许：一个闭合洞的全部边与端口能唯一映射到同一个 Plan junction，
+     且洞由已完成的相邻 regular Bridge 自然留下。
+
+禁止：遍历所有剩余 boundary cycles 并无条件 Fill；
+     仅因为闭合、距离接近或 Fill 能成功就认定它是 junction。
 ```
 
-保留该文件，不修改、不清理、不提交。
-
-主要实现：
-
-- `utils/feature_chamfer_batched_finalize_utils.py`
-- `tests/blender_test_driver.py`
-- `tests/feature_chamfer_batched_matrix_driver.py`
-- `tools/run_feature_chamfer_batched_matrix.py`
-
-主要 artifacts：
-
-- `tests/artifacts/feature_chamfer_batched_matrix/results.json`
-- `tests/artifacts/feature_chamfer_batched_matrix/<case>/diagnostics.json`
-- `tests/artifacts/feature_chamfer_batched_matrix/<case>/ledger.json`
-- `tests/artifacts/feature_chamfer_batched_matrix/<case>/phase_c_regular_core.blend`
-- `tests/artifacts/feature_chamfer_batched_matrix/<case>/phase_c_regular_core_overview.png`
-- `tests/artifacts/feature_chamfer_batched_matrix/<case>/phase_c_setback_closeup.png`
-
-## 6. 失败聚类与应有产品语义
-
-### Cluster A — cyclic full-span 的 common-only remainder
-
-涉及的已知 cells：
-
-- `simple__extruded_002__r0p010`
-- `simple__extruded_002__r0p030`
-- `simple__solid_44__r0p010`
-- `simple__solid_44__r0p030` 的 seam 邻近变体
-- `tricky__solid_016__r0p010`
-- `tricky__solid_016__r0p030` 的同侧重复/缺对侧变体
-- `tricky_b__extruded_003__r0p010`
-
-根因：`_common_atom_component_intervals()` 与 `_partition_run_to_component_intervals()` 只保留左右 rail 的参数交集。闭环两侧的参数 seam/phase 不同，交集之外的 macro remainder 没进入 regular matching，也没有成为 unresolved component；直到 ledger 尾端才报 `UNPROVEN_PLAN_BOUNDARY_EDGE`。
-
-这些长边是 regular，不是 junction。正确结果必须让整圈两侧由同一个 cyclic correspondence 消费并生成 Faces。
-
-最近加入但尚未证明的实验函数：
-
-- `_align_cyclic_stable_chain()` 的调用接入；
-- `_lift_full_cyclic_atom_runs()`；
-- `_align_full_cyclic_atom_run_phase()`；
-- `_full_cyclic_regular_pair_candidate()`。
-
-当前实验仍未解决完整闭环：它可以把两侧 seam 靠近，但 strip guard 仍会在闭合端看到大宽度跳变，或只生成到一侧较短终点。新 Session 必须先审计这些函数；可删除、替换或重构，不得因为它们已在 checkpoint 中就继续叠补丁。
-
-### Cluster B — cyclic component/provenance 重复
-
-已知 cells：
-
-- `tricky_b__extruded_002__r0p010`
-- `tricky_b__extruded_002__r0p030`
-- `mixed__extruded_002__r0p010`
-
-历史根因：同一个 seam provenance 被拆为两个线性 component，pair evaluation 再自由执行整数 shift，使同一左右 Edge 组合被多个 component claim；部分场景是两条 match 只部分重叠，直到逐 record 提交 ledger 才冲突。
-
-已有临时保护：componentized pair 默认不再自由 cyclic shift；相同 effective core 的重复 claim 可去重。最终仍应改为事务式 global provenance allocation，而不是依赖迭代顺序。
-
-### Cluster C — bilateral regular DP/trim failure
-
-已知 cell：
-
-- `tricky__solid_004__r0p030`
-
-证据：同 atom 的 L5/R3 fragments、u 区间重合；最小 endpoint trim 有多个候选，最终 `NO_MONOTONIC_CORRESPONDENCE_PATH`。形成的残段约 `4.59r`，不能提高手尾 handoff 阈值。
-
-这是 regular matching / topology-unique trim canonicalization 问题。应在 DP、paired residues 或 Edge provenance 约束中解决。
-
-### Cluster D — zero-length connector topology
-
-已知 cell：
-
-- `mixed__extruded_002__r0p030`
-
-证据：三条真实零长度 Edge 位于同一 u；它们不能生成正面积 Faces。代码中存在 zero-length proof 的意图，但当前 connector 函数控制流损坏，实际永远返回 `None`；即使恢复控制流，有效 outer degree 仍会受已提交零边影响。
-
-正确方向：把已结构化消费的零边从有效 rail continuation degree 中排除，或生成一个唯一 topology connector proof。只能消费零边本身，不能借此把邻近的大 Edge 一起 setback。
-
-### Cluster E — tricky Solid.004 r0.01 的假绿回退
-
-该定向 cell 曾三次稳定 PASS，但独立审计发现 7 个 `PAIRED_BOUNDARY_RESIDUAL_HANDOFF_V1` 都是大 regular fragment：长度约为 `2r` 上限的 `1.58×–11.57×`。宽松 folded/numeric/direct terminal 例外已经禁用；它们必须恢复 regular 或 unresolved。
-
-另有一个很短 matching fragment 与完整 `REGULAR_TERMINAL_TAIL_HANDOFF_V1` port 重叠。checkpoint 新增 `STRUCTURAL_HANDOFF_COMPONENT_RECONCILIATION_V1`，但审计要求它必须保持严格：单侧、same correspondence/atom/side/source patch、Edge 子集、u containment、唯一 consumer、严格 terminal-tail proof。继续修改时不得让 reconciliation 成为删除 unresolved 的通用通道。
-
-## 7. 推荐的新 Phase C 内部设计
-
-不要继续在 handoff 决策树上增加 case。把 Phase C regular 恢复拆为以下流水线：
+## 6. 新的 Phase C 数据流
 
 ```text
-真实 staging rail chains
-→ 单 Rail canonical circular topology（owner、方向候选、Edge 顺序）
-→ Plan atom/forbidden envelope 的 whole-Edge coverage arrangement
-→ bilateral component 的 unique circular pairing + closed-strip proposal
-→ 全 Boundary universe 的 transactional claim allocation
-→ global guard 全通过后一次性提交 ledger/records/ports
+independent batched Exact Boolean staging
+→ immutable Boundary Edge universe + ownership ledger
+→ structural junction envelope / ports
+→ ownership-driven RegularBridgeJob 列表
+→ 全局 Edge claim preflight
+→ provisional BMesh 上调用 Blender Bridge Edge Loops
+→ 重新提取 remaining boundary graph
+→ 唯一归属的 JunctionFillJob 列表
+→ provisional BMesh 上调用 Blender Fill
+→ topology / provenance / geometry / watertight guards
+→ 成功后一次性发布 Mesh、ledger、records、ports
 ```
 
-### 7.1 Canonical rail topology
+Cut 仍然独立 batched，不在共享 Mesh 上累计。Bridge/Fill 发生在所有 Cut staging 和 ownership 冻结之后的 provisional patch BMesh，因此不违反 Phase B 的顺序独立约束。
 
-目标：先对每条 cyclic rail 单独保留完整 circular Edge 顺序，再在 bilateral component 上求相对 rotation；不能在 coverage partition 前把 left/right 强绑成一对 canonical seam。
+### 6.1 RegularBridgeJob
 
-要求：
-
-- 单 Rail canonicalization 只能使用真实 topology、stable endpoint token、Edge order、owner Rail/Patch 与 Plan FeatureStrand；pair distance 不能决定单 Rail seam；
-- rotation/reverse 必须同步更新 coordinates、Edge IDs、endpoint tokens、port/junction/degrees/topology-signature maps 及所有 per-edge maps；rounded coordinate 不能作为唯一映射 key；
-- 对 bilateral cyclic component 枚举 `2 directions × relative rotations`，允许左右 Edge 数不同并用 circular monotonic DP 求解；
-- 对称环可能有多个 raw rotations。先按完整 circular Edge correspondence 取等价类；只有非等价合法类数量恰为 1 才通过，等价类内用 stable topology token 选序列化代表；
-- 没有合法类或非等价合法类多于 1 时，保留结构化 unresolved，不能按 nearest/min-distance 选 seam；
-- open rail 继续使用现有单调 u path，不受 cyclic solver 影响。
-
-建议拆成两个边界，替换散落的 lift/phase 补丁，例如：
+建议内部合同：
 
 ```text
-_canonicalize_single_rail_cycle(chain, strand, owner) -> CanonicalRailCycle | Rejection
-_solve_cyclic_pair_for_component(left_cycle, right_cycle, component, radius)
-    -> CyclicPairProposal | Rejection
+RegularBridgeJob {
+    pipe_id,
+    strand_id,
+    source_patch_pair,
+    left_edge_ids,
+    right_edge_ids,
+    left_chain_kind: OPEN | CYCLIC,
+    right_chain_kind: OPEN | CYCLIC,
+    terminal_or_junction_ports,
+}
 ```
 
-现有 `_align_cyclic_stable_chain()` 在全字段守恒合同通过前必须禁用其新调用。`_full_cyclic_regular_pair_candidate()` 不能继续把 cyclic loop 当 open strip：闭环求解序列必须显式追加首点（`u + 1 cycle`）并生成最后 Edge→第一 Edge 的 closure Faces。
+生成规则：
 
-### 7.2 Explicit coverage partition
+- 左右侧必须来自同一 `pipe_id/strand_id` 和权威 `source_patch_pair`。
+- 每侧 Edge 必须各自形成一个连通、有序、无分支的 boundary chain/cycle。
+- regular Edge 在生成 job 前先减去有直接结构证据的 junction envelope / terminal port Edge。
+- 一个 Edge 最多属于一个 BridgeJob；相同 Edge 出现在两个 job 时立即 `REGULAR_BRIDGE_CLAIM_CONFLICT`。
+- 多个候选 chain pair 时，只能使用 ownership、Plan topology 和端口 token 唯一决定；不得用距离分数挑最近的一对。
+- 无唯一 pairing 时保留结构化 unresolved，不进入 Bridge。
 
-Boundary Edge 是 ledger 最小不可分单元。每个 Plan atom 必须输出三类互斥 whole-Edge claims：
+Bridge 调用原则：
 
-- `BILATERAL_REGULAR_CANDIDATE`
-- `STRUCTURAL_SETBACK_CANDIDATE`
-- `UNRESOLVED_REGULAR_GAP`
+- 使用 BMesh API `bmesh.ops.bridge_loops()`，不依赖 Edit Mode selection/context。
+- 把完整两侧 Edge sets 一次交给 Blender；不再自研 vertex-to-vertex cyclic DP、seam rotation 或 zipper faces。
+- open/cyclic 具体参数必须由 chain topology 决定，并有直接合同；不得为了某 fixture 硬编码。
+- Blender 可以处理左右分段数不同，但返回结果仍必须通过本计划的 provenance 和 geometry guards。
 
-禁止只返回 common intervals 而丢弃单侧差集。跨 atom/forbidden 边界的 Edge 必须携带 crossing witness 并由唯一 claim 消费，不能因 virtual clip 被拆成两个 ledger claims。
+### 6.2 JunctionFillJob
 
-Coverage 守恒门：
+全部 Bridge 完成后，必须从当前 BMesh 重新提取 boundary graph，不能复用 Bridge 前的 Edge 快照。
+
+建议内部合同：
+
+```text
+JunctionFillJob {
+    junction_id,
+    participating_pipe_ids,
+    boundary_edge_ids,
+    bridge_terminal_edge_ids,
+    source_ports,
+}
+```
+
+只有同时满足以下条件才允许 Fill：
+
+- boundary 是单一闭合 cycle，没有分支、开放端或重复 Edge；
+- cycle 的原始 Boundary Edges 都属于同一个权威 Plan junction/envelope；
+- Bridge 新生成的 terminal Edges 都能通过 BridgeJob 端口反查到同一 junction；
+- participating Pipe 集合与 Plan junction 一致；
+- 该 cycle 未被现有 Face 占据，也未被其他 FillJob claim；
+- Fill 前后不吞掉任何 regular unresolved Edge。
+
+满足合同后，使用项目旧路线已验证的 Blender Fill API（优先复用 `bmesh.ops.contextual_create()` 的现有模式）。返回 Faces 为空、产生多个不受约束区域或 topology guard 失败时，整个 Phase C transaction 失败。
+
+### 6.3 Ownership、provenance 与事务提交
+
+在修改 BMesh 前建立全局 claim map：
+
+```text
+edge_id → REGULAR_BRIDGE(job_id, side)
+        | STRUCTURAL_JUNCTION(junction_id)
+        | STRICT_CONNECTOR(proof_id)
+        | UNRESOLVED(reason)
+```
+
+守恒门：
 
 ```text
 Boundary Edge universe
-== regular_claim_edges ∪ setback_claim_edges ∪ unresolved_claim_edges
-且三者 pairwise disjoint
+== bridge_claim_edges ∪ junction_claim_edges
+   ∪ connector_claim_edges ∪ unresolved_edges
+且四者 pairwise disjoint
 ```
 
-新增 diagnostics：
+事务规则：
 
-- atom 原始左右 Edge universe；
-- canonical seam/rotation；
-- bilateral、one-sided、forbidden coverage intervals；
-- 未归属 Edge IDs；
-- 每个 component 的 left/right provenance。
+- 在 provisional BMesh 和 provisional ledger 上执行全部 Bridge/Fill。
+- 每次 Blender op 后立刻记录返回 Faces/Edges 和对应 job ID。
+- 每条 Bridge 输入 Boundary Edge 必须恰好增加一个 chamfer Face consumer。
+- 每个新 Face 必须反查唯一 `RegularBridgeJob` 或 `JunctionFillJob`。
+- 任一 job 失败时丢弃 provisional 结果，正式 ledger/output fingerprint 不变。
+- 全部 topology、geometry、provenance 和 coverage guards 通过后才一次性发布。
 
-### 7.3 Unique matching and transactional allocation
+### 6.4 必须保留的 guards
 
-事务边界是整个 Phase C Boundary universe，不是单个 component/correspondence。先纯生成全部 `RegularClaim / SetbackClaim / UnresolvedClaim`，不得改 ledger。建立：
+Bridge/Fill 成功返回 Faces 不等于产品正确。必须继续检查：
 
-```text
-edge_id → [(correspondence_id, atom_id, component_id, side, match_id)]
-```
+- missing / extra / duplicate Edge claim 为 0；
+- Edge consumer 正反向引用一致；
+- zero-area Faces 为 0；
+- face orientation 一致；
+- self-intersection / non-manifold / overconnected Edge 为 0；
+- 所有最终 Edge 的 `link_faces == 2`，除非阶段合同明确允许开放 port；
+- forward/reverse staging 的 geometry、ledger、BridgeJob、FillJob fingerprints 一致；
+- source Mesh unchanged；
+- 未产生 allowlist 外 handoff 或 macro setback。
 
-规则：
+## 7. 已知失败 cluster 在新路线中的处理
 
-- 完全相同 semantic provenance 和 effective core：确定性合并；
-- parent/children 只在 children Edge-disjoint、provenance union 精确等于 parent、Face witness 也精确分割时用 children 替换 parent；否则 conflict/unresolved。禁止仅按 u containment 丢弃 parent/residue；
-- 其他重叠：结构化 unresolved / provenance conflict；
-- 所有 claims 唯一且 coverage 守恒后，才为全部 regular claims 构建纯 geometry proposals；
-- 每条 regular provenance Edge 必须直接反查生成 Face boundary；每个 Face 必须反查唯一 regular consumer，禁止只用全局 `face_count > 0`；
-- cyclic proposal 必须验证 closure seam、Edge→Face coverage、width、monotonic、zero-area、orientation 与 self-intersection；
-- 所有 global guard 成功后，才在 ledger copy 上一次提交 records/ports；失败时原 ledger/outputs fingerprint 不变；
-- terminal extension 当前必须保持禁用，除非 Edge 实际参与新增 Face 并纳入同一事务分配。
+### Cluster A — cyclic full-span / common-only remainder
 
-### 7.4 Structural handoff stays narrow
+不再按左右 rail 的参数交集切片，也不再寻找人工 seam。ownership 唯一确定完整左右 cycles 后，把两侧完整 Edge sets 交给 Blender Bridge。任何未进入 Bridge 的 macro Edge 都是 coverage failure。
 
-Phase C 必须先生成 runtime handoff proof inventory，再冻结 allowlist。只保留有直接结构证据、正负合同和长度/owner 门禁的 handoff：
+### Cluster B — cyclic provenance duplicate
 
-- overlap forbidden envelope；
-- 权威 Plan terminal/junction port；
-- zero-length connector；
-- 已批准的严格 `SHORT_COMPONENT_SETBACK_V1`；
-- 经双向 provenance 证明的 terminal-tail reconciliation。
+Bridge 前的全局 claim map 保证一个 Edge 只能进入一个 BridgeJob。冲突在几何修改前失败，不再依赖 component 迭代顺序或事后 ledger 去重。
 
-同一 chain 若同时命中多个不同 proof，不得按 tuple 顺序取第一个，必须以 `AMBIGUOUS_HANDOFF_PROOF` fail-closed。每个 matrix cell 必须输出 proof-version/count/edge-length/radius-ratio；出现 allowlist 外 reason、unexpected count 或 macro setback 立即 FAIL。
+### Cluster C — bilateral DP/trim failure
 
-最终 allowlist 不能由计划臆定：Step 0 先列出现有 runtime proof、对应正负合同与 14 cells 预期结构，再由 direct structural evidence 批准。`SHORT_COMPONENT_SETBACK_V1` 只能由通用唯一结构条件成立，不能用 fixture/object/Pipe ID 白名单。大 fragment、folded continuation、普通 degree-2 点、单个通用 topology signature 均不足以成为 handoff。
+移除自研 L5/R3 DP/trim 主路径。只要两侧 ownership/ports 能唯一形成一对完整 regular chains，就由 Blender Bridge 处理不同分段数。若 ownership 无法唯一成对，报告 pairing ambiguity，不能提高 setback 阈值。
+
+### Cluster D — zero-length connector
+
+先修复 connector proof 控制流。只有有唯一结构 proof 的零长度 Edge可以走 `STRICT_CONNECTOR`；它们不进入 Bridge/Fill，也不能带走邻近正常 Edge。必要 collapse 只能在 provisional BMesh 上对该 proof 的 Edge执行。
+
+### Cluster E — tricky Solid.004 r0.01 假绿
+
+旧 7 个大 paired residual 必须进入 RegularBridgeJob，不能再进入 handoff。只有严格批准的短 component、权威 terminal/junction port 或 zero-length connector 能离开 regular。Fill 也只能消费明确的 junction hole，不能成为大 fragment 的替代出口。
 
 ## 8. 分步执行与 Stop/Go
 
-### Gate 0A — 工作树、代码 baseline 与 source integrity
+### Gate 0A — 恢复真实基线
 
-目标入口：只读 source/runner；不运行产品 Operator。
+目标：只读核对 source、文档和工作树。
 
-用户操作：无。
+操作：
 
-预期可见变化：无产品几何变化；只建立可信执行基线。
+1. 读取 `AGENTS.md`、本文、上游 handoff、`tests/TESTING_POLICY.md`、`tests/README.md`。
+2. 记录实际 `git HEAD/status/diff`；不得假设 HEAD 仍等于本文记录值，不得 reset 用户改动。
+3. 确认 runtime baseline `1b8f120` 仍是祖先，并审计其后的 runtime/test diff。
+4. 明确 `tests/.DS_Store` 当前实际状态；保留它，不修改、不加入下一次提交。
+5. 修复 `_zero_length_regular_connector_handoff_proof()` 控制流并补 valid/rejection 合同。
 
-自动证据：
-
-1. 读取项目 `AGENTS.md`、本文、上游 handoff、`tests/TESTING_POLICY.md` 和 `tests/README.md`。
-2. `git status --short`、`git merge-base --is-ancestor 1b8f120 HEAD`；确认当前 HEAD 可包含计划文档提交，但 `1b8f120..HEAD` 的 runtime/test blobs 未被意外修改。检查所有用户修改，不得 reset 或覆盖。
-3. 修复并直接测试 `_zero_length_regular_connector_handoff_proof()` 的控制流归属；加入 valid/rejection contract，证明返回值来自本函数且 `_regular_overlap_bridge_handoff_proof()` 后无不可达残段。
-4. 用可写 pycache 运行 §9 的 `py_compile`；同时保留源级结构/直接行为测试，不能把语法通过当控制流证据。
-5. 生成 runtime handoff proof inventory，记录每条 proof path 的函数、正负合同、matrix 预期 count/length/radius-ratio；未批准路径先 fail-closed。
-
-Go：代码 baseline 可追溯；connector 直接合同正负通过；无已知不可达 proof 逻辑；inventory 完整。
-
-Stop：runtime/test blob 与预期 baseline 不一致、connector 控制流仍损坏、出现未解释的用户改动。
+Go：baseline 可追溯、没有未解释的 runtime 修改、connector 合同可信。
+Stop：Phase A/B、Preview contract 或 source integrity 回归。
 
 ### Gate 0B — Evidence runner hardening
 
-目标入口：`tools/run_blender_tests.py` 与 batched matrix runner。
+保留旧计划已经确定的 runner 门禁：
 
-用户操作：无；Agent 运行 headless Blender。
+- full gate 必须直接要求 14 cases、42 repetitions、Phase A/B/C、Preview contract、source unchanged、Adapter result 和无 debug 残留全部通过；
+- unknown case、0 executed case、requested/executed mismatch、partial run 必须 non-zero；
+- 每次 gate 使用唯一 artifact directory；
+- summary 记录 run-id、Git HEAD + dirty fingerprint、argv、Blender/fixture/code hashes、artifact manifest/sha256；
+- runner 加 fake-green 负向合同，不能只信 backend 的 `phase_c_go` 布尔值。
 
-预期可见变化：无产品几何变化；每次 run 产生独立、可绑定代码版本的 artifacts。
+Go：失败不能汇总为 GO，artifact 能绑定具体代码和命令。
+Stop：partial/stale artifact 仍可能冒充完整 gate。
 
-自动证据：
+### Gate 0C — 冻结诚实失败与旧策略边界
 
-- `phase_c_go` 必须直接要求：14 case 全 `PASS/stable`；42 repetition 全 `status=PASS` 且 `phase_a/b/c_pass=true`；Preview contract、source unchanged、Adapter result、无 debug 残留全部通过。
-- 直接断言 `missing/extra/duplicate partition == 0`，以及 forward/reverse boundary-universe、rail-chain、geometry、ledger、port fingerprints 分别相等；不能只信 backend 写入的布尔值。
-- runner 加负向合同：以上任一字段失败时 `phase_c_go=false` 且 host exit non-zero；unknown `--case`、0 executed cases、requested/executed set 不一致必须失败；通用 test runner 使用 `--python-exit-code 1`。
-- 每次 gate 使用不存在的独立 `--artifact-dir`；summary 写 `run_id`、started/finished UTC、git HEAD + dirty diff fingerprint、argv、requested/executed cases、Blender executable/version、fixture/code hashes、artifact manifest/sha256。summary 用 temp + atomic replace。
-- `phase_c_setback_closeup.png` 仅在 `setback_port_count > 0` 时 required；无 port 记为 `N/A`。所有 required artifacts 必须携带相同 run-id 且新鲜。
+1. 新鲜重跑现有 handoff/connector/cyclic contracts。
+2. 定向运行 `simple__extruded_002__r0p010`，保存 commit-bound 失败基线。
+3. 为旧 full-cyclic lift/phase/DP 函数加策略开关或隔离边界；新 Bridge 主路径不得调用它们。
+4. 运行已有 `feature_chamfer_bridge_then_fill_smoke`。
 
-Go：runner 正负合同通过；失败不能汇总成 GO；新 run manifest 可唯一复现。
+Go：旧 WIP 被隔离；Bridge → Fill smoke 通过；simple case 诚实失败且 Phase A/B 正常。
+Stop：环境、fixture、Operator 或 runner 不可信。
 
-Stop：仍可 fake green、partial run 覆盖 full gate、unknown case 静默通过或 artifact 不能绑定 source revision。
+### Step 1 — Bridge / Local Fill 合同先行
 
-### Gate 0C — 新鲜失败基线
+新增最小正负合同：
 
-目标 Operator：正式 `hst.feature_chamfer_gn(PREVIEW)` → hidden experimental Adapter。
+- ownership 唯一配对两条 open rails；
+- ownership 唯一配对两条 cyclic rails；
+- 左右 Edge 数不同仍由 Blender Bridge 生成合法 strip；
+- 同一 Edge 被两个 BridgeJob claim 时 fail-closed；
+- ambiguous rail pair 不使用距离 score；
+- Bridge 返回 Faces 后 Edge↔Face provenance 完整；
+- Bridge 后一个明确 junction cycle 可 local Fill；
+- ordinary remaining cycle、mixed-junction cycle、open chain、occupied cycle 均拒绝 Fill；
+- 任一 Blender op 失败时 provisional Mesh/ledger rollback。
 
-用户操作：对 `simple__extruded_002__r0p010` 执行 Preview 后 Phase C probe。
+Go：所有正负合同通过；旧 `_rail_pair_score()` 和自研 cyclic DP 不在新 runtime path。
+Stop：仍需 nearest/fixture hint 才能决定 pairing，或 Fill 只靠“闭合”判断。
 
-预期可见变化：只生成 diagnostics/debug artifact，不生成产品 output。
+### Step 2 — Ownership-driven BridgeJob producer
 
-自动证据：在唯一 run 目录重跑 6 个 narrow handoff guards、已存在的 cyclic span/stitch/reverse/closure/atom-clip contracts，再定向运行该 cell 一次。
+在 batched backend 中只生成 jobs/diagnostics，不先生成 Faces：
 
-Go：Phase A/B、fixture hash、Operator/Preview contract 全通过，且诚实复现结构化 Phase C 失败；artifact manifest 新鲜。
+- 从 immutable Boundary universe 按 Pipe/side/source patch 分组；
+- 用权威 Plan junction envelope/ports 切出 regular chains；
+- 生成全局 Edge claim map；
+- 输出 job、unresolved、claim conflicts 和 coverage 守恒 diagnostics。
 
-Stop：环境、fixture、Operator、runner 或 Phase A/B 回归；只修基线，不进入 solver。
+Go：simple 4 cells 的所有 regular Edge 恰好进入一个 BridgeJob；junction/connector/unresolved 分类互斥。
+Stop：出现 macro unclaimed Edge、重复 claim 或基于距离的 pairing。
 
-### Step 1 — 合同先行并隔离未证明 cyclic WIP
+### Step 3 — Simple 4 cells：Blender Bridge 主路径
 
-目标 Operator：hidden experimental Adapter 的纯 helper/runtime seam。
-
-用户操作：无 UI 操作。
-
-预期可见变化：无产品输出；新增机器可读 Algorithm contracts。
-
-自动证据：为 full-field rotation/reverse 守恒、对称 rotation 等价类、cyclic closure Face coverage、whole-Edge coverage conservation、claim conflict/rollback 编写正负合同。审计四个 full-cyclic 实验函数和 `_align_cyclic_stable_chain()` 新调用；证明前先禁用。
-
-Go：正负合同已落地；旧 WIP 已隔离；旧实现对预期失败合同诚实失败，新的最小纯 canonical/claim proposal 对 rotation 等价类、全字段守恒和 rollback 合同通过。完整 closure Edge→Face coverage 留到 Step 3。
-
-Stop：依靠 nearest/min-distance 猜 seam、rotation 丢 provenance、open-strip 假装 cyclic closure，或合同只能验证 fingerprint 不验证语义。
-
-### Step 2 — Single-rail topology 与 coverage conservation
-
-目标 Operator：hidden experimental Adapter。
-
-用户操作：定向运行 simple cells 的 Phase C probe。
-
-预期可见变化：diagnostics 能显示完整 circular rail 和三类互斥 claims，尚不要求生成 strip。
-
-自动证据：每个 atom 的 input Edge universe、canonical order、bilateral/setback/unresolved claims、crossing witnesses 与守恒计数。
-
-Go：每条输入 Edge 恰属一个 claim，无未归属、重复、common-only 丢失；forward/reverse fingerprint 一致。
-
-Stop：coverage 依赖整个 Edge 的最大 u-overlap猜 owner、单侧差集消失或 virtual clip 重复 claim。
-
-### Step 3 — Cyclic pair solver：先攻 simple 4 cells
-
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
-
-用户操作：对下列 4 cells 运行 Phase C probe。
-
-预期可见变化：完整 cyclic regular rail 生成闭合 debug chamfer strips，不生成产品 output。
-
-自动证据：每格的 coverage、candidate equivalence classes、closure Edge→Face witness、ledger/geometry guards 与独立 artifacts。
-
-顺序：
+依次运行：
 
 1. `simple__extruded_002__r0p010`
 2. `simple__extruded_002__r0p030`
 3. `simple__solid_44__r0p010`
 4. `simple__solid_44__r0p030`
 
-这四格无复杂 multi-Pipe junction，是 cyclic regular solver 的最小产品基线。
+每格先 1 次，全部通过后各 3 次。要求：
 
-每格要求：
+- full regular rail 由 Blender Bridge 生成完整 strip；
+- unresolved/deferred/claim conflict 为 0；
+- all ledger edges exactly once；
+- Edge↔Face witness 100%；
+- zero-area/orientation/self-intersection/non-manifold 为 0；
+- forward/reverse fingerprints 一致；
+- 无 junction Fill、macro setback 或自研 DP fallback。
 
-- `unresolved_remote_component_count == 0`
-- `deferred_attempt_count == 0`
-- `all_ledger_edges_consumed_once == true`
-- missing/extra/duplicate/consumer mismatch 全为 0
-- strip zero-area/orientation/self-intersection 全为 0
-- 正序/逆序 geometry、ledger、port fingerprint 一致
-- 未使用大 fragment handoff
+Go：simple `4/4 × 3` 新鲜 PASS。
+Stop：任一格只 Bridge 局部 rail，或通过 handoff/Fill 掩盖 regular Edge。
 
-四格每格先 1 次，全部通过后再 3 次。
+### Step 4 — 两 Pipe 交叉：先留洞再 Junction-local Fill
 
-Go：simple `4/4 × 3` 新鲜 PASS，cyclic closure Edge→Face coverage 100%，claim conflict=0，allowlist 外 handoff=0。
+选择矩阵中最小的真实双 Pipe 交叉 cell 做定向原型：
 
-Stop：任一格只有局部 strip、macro setback、non-equivalent rotation ambiguity 或依赖 order；留在本 Step 修复。
+1. Plan junction envelope 内的 Edge 预先不进入 Bridge。
+2. 对各 Pipe 两侧 regular rails 完成全部 Bridge。
+3. 从当前 BMesh 重新提取 remaining boundary graph。
+4. 构造唯一 `JunctionFillJob`，调用 Blender Fill。
+5. 验证 Fill Faces 只消费该 junction cycle，最终 watertight。
 
-### Step 4 — 全局 transactional allocation
+Go：交点洞具有唯一 junction witness；Bridge 和 Fill Face provenance 完整；无 global fill。
+Stop：需要 Fill 非 junction cycle、洞不是闭环、一个洞混合多个 junction，或 Fill 吞掉 unresolved regular Edge。
 
-目标 Operator：hidden experimental Adapter。
-
-用户操作：重跑 simple 4 cells。
-
-预期可见变化：成功几何不变；失败不留下部分 ledger/records/ports。
-
-自动证据：全 universe claim graph、semantic quotient、conflict/partition 计数、pre/post ledger fingerprint、Edge↔Face 双向 provenance。
-
-Go：所有 claims/geometry proposals 先全局验证，随后一次提交；注入任一跨 correspondence conflict/geometry failure 均完整 rollback；simple `4/4 × 3` 保持绿。
-
-Stop：仍在 `_build_regular_record_from_match()` 或 handoff helper 内逐 claim 修改正式 ledger，或失败依赖迭代顺序。
-
-### Step 5 — 验证同根 cluster
-
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
-
-用户操作：对下列 4 cells 运行 Phase C probe。
-
-预期可见变化：同根 cyclic cases 生成完整 debug strips；同侧缺对侧保持结构化 unresolved。
-
-自动证据：与 Step 3 相同，并额外核对 common-only macro remainder 和 one-sided claims。
+### Step 5 — 同根 cyclic cluster
 
 运行：
 
-- `tricky__solid_016__r0p010`
-- `tricky__solid_016__r0p030`
-- `tricky_b__extruded_003__r0p010`
-- `tricky_b__extruded_003__r0p030`
+- `tricky__solid_016__r0p010/r0p030`
+- `tricky_b__extruded_003__r0p010/r0p030`
 
-预期：simple solver 应消除 common-only macro remainder。若出现同侧重复/缺对侧，应由 explicit coverage diagnostics 暴露，不能进入 handoff。
+目标：证明完整 ownership cycles 交给 Blender 后，不再出现 common-only macro remainder。
 
-Go：4 cells 各 1 次后各 3 次稳定通过；common-only macro remainder=0，coverage 守恒。
+Go：4 cells 各 3 次通过；simple 4 cells canary 保持绿。
+Stop：单侧大差集、重复 claim 或 junction Fill 越界。
 
-Stop：出现单侧大差集、allowlist 外 handoff 或 coverage/transaction 回归。
-
-### Step 6 — 修 cyclic provenance allocation
-
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
-
-用户操作：对下列 3 cells 运行 Phase C probe。
-
-预期可见变化：重复 provenance 由全局 allocation 唯一分配，不改变用户 source。
-
-自动证据：claim graph、semantic quotient、coverage/Face witness 与 transaction fingerprints。
+### Step 6 — Provenance conflict cluster
 
 运行：
 
-- `tricky_b__extruded_002__r0p010`
-- `tricky_b__extruded_002__r0p030`
+- `tricky_b__extruded_002__r0p010/r0p030`
 - `mixed__extruded_002__r0p010`
 
-实现全局 match claims 与事务式 Edge allocation；任何重复 provenance 在 geometry/ledger commit 前处理。
+目标：所有 BridgeJob/FillJob claims 在 op 前唯一；不再出现 `REGULAR_MATCH_PROVENANCE_CONFLICT` 或 ledger conflict。
 
-Go：不再出现 `REGULAR_MATCH_PROVENANCE_CONFLICT` 或 `REGULAR_CORE_LEDGER_CONFLICT`；claim graph conflict=0、coverage/Face witness 守恒，且没有通过丢弃重复 Edge 达成绿灯。
+Go：3 cells 各 3 次通过；没有通过丢弃 parent/residue Edge 达成绿灯。
+Stop：结果依赖 job 执行顺序或事后去重。
 
-Stop：按 component 迭代顺序解决冲突、只按 u containment 去重或静默丢 parent/residue。
+### Step 7 — L5/R3 与 zero-length cluster
 
-### Step 7 — 修 bilateral DP/trim
+先运行 `tricky__solid_004__r0p030`：证明 Blender Bridge 能处理完整 L5/R3 chains，不使用自研 DP/trim 或放宽 setback。
 
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
+再运行 `mixed__extruded_002__r0p030`：零边只由严格 connector proof 消费；邻近正常 Edge 继续 Bridge，不产生零面积 Face。
 
-用户操作：运行 `tricky__solid_004__r0p030` Phase C probe。
+Go：两个 cells 各 3 次通过，并重跑 simple canary。
+Stop：大 Edge 进入 setback、零边带走正常 Edge或 geometry guard 被放宽。
 
-预期可见变化：L5/R3 bilateral component 生成真实 debug strip，不进入 handoff。
+### Step 8 — tricky Solid.004 r0.01 假绿审计
 
-自动证据：唯一 circular/open DP path、trim/residue provenance、Face witness 与原 geometry thresholds。
+运行 `tricky__solid_004__r0p010` 三次，逐项确认：
 
-运行 `tricky__solid_004__r0p030`。针对同 atom L5/R3 的唯一 topology correspondence修复 DP/trim/residue；保留 width、relative advance、monotonic、zero-area 阈值不变。
-
-Go：大 fragment 进入带 Edge↔Face witness 的真实 strip Faces；不是提高 tail/setback 阈值。
-
-Stop：任何大 fragment 进入 setback/ignore，或 geometry guard 被放宽。
-
-### Step 8 — 修 zero-length connector
-
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
-
-用户操作：运行 `mixed__extruded_002__r0p030` Phase C probe。
-
-预期可见变化：零边由 connector port 消费、邻近 regular strip 保持完整，不生成零面积 Face。
-
-自动证据：connector 直接正负合同、effective-degree diagnostics、ledger/Face witness 与独立 artifacts。
-
-运行 `mixed__extruded_002__r0p030`。先以 Gate 0A 的直接合同确认 connector 函数控制流已修复。zero-length Edge 必须由唯一 connector proof 消费；有效 outer degree 只排除同一已验证 connector claim 内的零边，不能泛化过滤所有短边。
-
-Go：零边不生成 Face，邻近正常 Edge 仍由 regular 消费，ledger exactly-once；valid/rejection connector 合同和 cell 各 3 次通过。
-
-Stop：connector 始终返回 `None`、把邻近正常 Edge 一并 setback，或全局忽略短边。
-
-### Step 9 — 回到 tricky r0.01 做假绿审计
-
-目标 Operator：正式 PREVIEW → hidden experimental Adapter。
-
-用户操作：运行 `tricky__solid_004__r0p010` 三次。
-
-预期可见变化：旧 macro residual 变成真实 debug strips；仅结构严格的小 port 保留 setback。
-
-自动证据：proof inventory/count/length ratio、Edge↔Face witness、transaction 与 3 repetitions fingerprints。
-
-运行 `tricky__solid_004__r0p010` 三次。重点检查：
-
-- 旧 7 个 paired residual 大 Edge 已成为 regular 或明确 unresolved；
-- 只有 handoff 已批准的 pipe0 `0:5` 短 component 可走严格 `SHORT_COMPONENT_SETBACK_V1`；
-- pipe2 裁剪残段只有在唯一完整 terminal-tail port 的双向 proof 下可 reconciliation；
+- 旧 7 个 macro residual 全部进入 Bridge 并产生 Face witness；
+- 只有结构证明的 junction/terminal/short connector 留给 handoff；
+- pipe0 `0:5` 只能在通用严格 `SHORT_COMPONENT_SETBACK_V1` 成立时使用，不写 ID 白名单；
+- pipe2 terminal-tail reconciliation 保持双向唯一；
 - 无 folded/numeric/direct terminal 大 Edge例外；
-- no terminal extension Edge 被 regular consumer 吃掉但没生成 Face。
+- Fill 只发生在有唯一 junction witness 的洞。
 
-Go：3 次稳定通过；所有旧 macro residual 进入有 Face witness 的 regular strip，或由冻结 allowlist 中的严格结构 proof 消费；handoff inventory 与批准 allowlist/count 完全一致，unresolved=0。
+Go：3 次稳定通过，unresolved=0，unexpected/macro setback=0。
+Stop：Bridge 失败被 handoff 或 Fill 掩盖。
 
-Stop：任一大 Edge 仅因 first-match proof、folded/numeric/direct terminal 例外或 reconciliation 泛化而被消费。
+### Step 9 — 完整 Phase C gate
 
-### Step 10 — 完整 Phase C gate
+运行完整 headless regression，再运行 `14 cells × 3 repetitions`。必须直接核对：
 
-目标 Operator：正式 PREVIEW → hidden experimental Adapter；不是正式 FINALIZE。
+- 14/14 cases、42/42 repetitions 全 PASS/stable；
+- Phase A/B/C、Preview contract、source unchanged 全通过；
+- Boundary coverage exactly-once；
+- BridgeJob/FillJob claim conflicts 为 0；
+- regular/junction Face provenance 双向完整；
+- no unresolved/deferred/zero-area/non-manifold/self-intersection；
+- forward/reverse geometry、ledger、BridgeJob、FillJob、port fingerprints 一致；
+- junction Fill count 与 Plan junction inventory 一致；
+- ordinary/global Fill count 为 0；
+- handoff reason 全在冻结 allowlist，unexpected/macro setback 为 0；
+- artifacts 与实际 HEAD/dirty fingerprint/命令一致。
 
-用户操作：Agent 对 14 cells 运行 headless matrix，无需用户点击 UI。
+Go：只将 Phase C internal gate 更新为 GO；全局仍为 `PROTOTYPE`。
+Stop：任一 stale/partial/fake-green、unproven Fill 或缺失 Face witness。
 
-预期可见变化：每格留下 commit-bound debug artifacts，不生成产品 output。
-
-自动证据：42 repetitions summary、直接 JSON assertions、artifact manifest/sha256、handoff inventory 与全部 Algorithm/Backend guards。
-
-先运行 §9 的 `py_compile`、完整 headless regression 和“完整 Phase C”命令；不得省略显式 Blender 路径或独立 `--artifact-dir`。
-
-必须是独立 run 目录中的 `14/14 cells × 3 PASS`，并由 §9 的独立 JSON 断言复核：完整 scope、42 repetitions、Phase A/B/C、每级 status、所有直接计数/fingerprint、artifact manifest 与 source revision 全部一致。每个 regular Edge↔Face 双向 witness 完整；handoff reason 全在冻结 allowlist 且 count/length/radius-ratio 符合预期；unexpected/macro setback=0。
-
-Go：上述机器门禁全部通过；只将 Phase C internal gate 标为 GO，全局状态仍为 `PROTOTYPE`。
-
-Stop：任何 partial/stale/mismatched artifact、runner 自证布尔、unexpected proof、缺失 Face witness 或 Phase A/B/Operator 回归。
-
-### Step 11 — 独立 Spec Audit
-
-目标 Operator：审计正式 PREVIEW→实验 Adapter runtime diff；明确正式 FINALIZE 未集成。
-
-用户操作：无。
-
-预期可见变化：只更新阶段文档状态，不改变 runtime。
-
-自动证据：未参与实现的只读 reviewer 报告、diff、fresh matrix manifest 与逐门禁证据索引。
+### Step 10 — 独立 Spec Audit
 
 由未参与实现的只读 reviewer 核对：
 
-- diff 是否严格落在 change budget：Phase C backend、hidden Adapter（仅必要时）、tests/runner 与 docs；正式 Operator/UI/FINALIZE 不得修改；
-- 每个失败 cluster 是否由 regular 或严格 connector 解决；
-- 是否新增宽松 handoff、ignore、模型特判或阈值放宽；
-- ledger consumer 双向引用、Face provenance 和 exactly-once；
-- full matrix 是否新鲜、稳定、source-bound，且明确从正式 PREVIEW→实验 Adapter 进入；
-- 文档阶段状态是否与代码一致。
+- 正式 PREVIEW → hidden Adapter 是实际测试入口；正式 FINALIZE 未提前修改；
+- Cut 仍是 independent batched，不是共享 Mesh 顺序累计；
+- new runtime path 使用 ownership-driven Blender Bridge / junction-local Fill；
+- `_rail_pair_score()`、nearest、旧 cyclic DP/trim 没有成为 fallback；
+- Fill 必须有唯一 Plan junction witness，不存在 global fill；
+- ledger/Face provenance/exactly-once 和 rollback 有直接证据；
+- 14×3 artifacts 新鲜且 runner 无 fake green；
+- 文档状态与代码一致。
 
-存在 P0/P1 或高严重度语义偏差：Phase C 保持 STOP 并修复。  
-无高严重度问题且全部 gate 通过：更新本文和上游 handoff 为 `PHASE C GO / global PROTOTYPE`，然后才能为 Phase D 写新计划。Phase D 完成后，Phase E 才能单独接入正式 FINALIZE，并验证 preflight、modifier hide/restore、failure rollback、source unchanged、output naming/attribute、PATCHED state、selection 与正式 Operator matrix；Phase C 通过不能跳过这些合同。
+存在 P0/P1 或高严重度偏差：Phase C 保持 STOP 并继续修复。
+无高严重度问题且全部 gate 通过：更新本文及上游 handoff 为 `PHASE C GO / global PROTOTYPE`，再为 Phase D 写新计划。
 
-## 9. 测试命令
+## 9. 验证命令
 
-所有 gate 先创建唯一 `<run-id>`，下列目录必须不存在；不得复用顶层 canonical results。Blender 环境固定为本机 `/Applications/Blender.app/Contents/MacOS/Blender`（当前实测 5.1.2）。
+每次 gate 创建唯一 `<run-id>` 和不存在的 artifact directory。Blender 固定使用：
 
-语法与 source integrity：
+```text
+/Applications/Blender.app/Contents/MacOS/Blender
+```
+
+语法检查：
 
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/hst-feature-chamfer-pycache \
@@ -577,7 +461,7 @@ python3 -m py_compile \
   tools/run_feature_chamfer_batched_matrix.py
 ```
 
-完整 headless regression（Gate 0 通过后使用独立目录）：
+完整 regression：
 
 ```bash
 python3 tools/run_blender_tests.py \
@@ -585,26 +469,12 @@ python3 tools/run_blender_tests.py \
   --artifact-dir tests/artifacts/runs/<run-id>/full-regression
 ```
 
-定向合同：
-
-```bash
-python3 tools/run_blender_tests.py \
-  --blender /Applications/Blender.app/Contents/MacOS/Blender \
-  --artifact-dir tests/artifacts/runs/<run-id>/contracts \
-  --case feature_chamfer_batched_short_component_setback_contract \
-  --case feature_chamfer_batched_plan_span_crossing_handoff_contract \
-  --case feature_chamfer_batched_structural_handoff_reconciliation_contract \
-  --case feature_chamfer_batched_regular_numeric_fragment_handoff_contract \
-  --case feature_chamfer_batched_regular_terminal_extension_contract \
-  --case feature_chamfer_batched_cyclic_seam_boundary_handoff_contract
-```
-
 单格：
 
 ```bash
 python3 tools/run_feature_chamfer_batched_matrix.py \
   --blender /Applications/Blender.app/Contents/MacOS/Blender \
-  --artifact-dir tests/artifacts/runs/<run-id>/simple-r0p010 \
+  --artifact-dir tests/artifacts/runs/<run-id>/single-cell \
   --stage PHASE_C_REGULAR_CORE \
   --repetitions 1 \
   --case simple__extruded_002__r0p010
@@ -620,73 +490,38 @@ python3 tools/run_feature_chamfer_batched_matrix.py \
   --repetitions 3
 ```
 
-完整 gate 后必须对 `tests/artifacts/runs/<run-id>/phase-c/results.json` 做独立 `jq -e` 复核，至少断言：
+macOS Blender 5.1.2 偶发在 Metal 初始化 `supports_barycentric_whitelist` 崩溃。如果发生在 fixture 加载前，以相同命令重试一次并单独记录为环境失败；算法阶段异常不得归入 Metal crash。
 
-```jq
-.status == "finished" and .phase == "C" and
-.run_scope == "PHASE_GATE_FULL" and .gate_eligible == true and
-.blender_version == "5.1.2" and .requested_repetitions == 3 and
-.case_count == 14 and .passed_case_count == 14 and .failed_case_count == 0 and
-.phase_a_go == true and .phase_b_go == true and .phase_c_go == true and
-([.cases[].repetitions[]] | length) == 42 and
-all(.cases[];
-  .status == "PASS" and .stable == true and
-  (.repetitions | length) == 3 and
-  all(.repetitions[];
-    .status == "PASS" and .phase_a_pass == true and
-    .phase_b_pass == true and .phase_c_pass == true and
-    .source_unchanged == true and
-    .preview_contract_matches_owned_curve == true))
-```
+## 10. 实现纪律
 
-runner hardening 完成后，复核还必须包含 manifest/source revision、required artifact sha256、direct partition counts、五组 forward/reverse fingerprints、Edge↔Face witness、handoff allowlist/count/length ratio，不能停留在上面这组最小字段。
+- 先定位入口链，再修改；不修改 `auto_load.py`。
+- 新主路径优先复用项目已有 BMesh Bridge/Fill 模式，做最小充分抽取；不直接复制旧 `_rail_pair_score()`。
+- 功能函数按项目规范添加中文块注释；imports 放文件头。
+- Blender op 异常补充 job/pipe/junction 上下文后 rethrow，不 silent fallback。
+- 每个 Step 先跑直接合同，再定向 1 次，再 cluster 3 次，并重跑 simple canary。
+- 任一 Step 未 GO 时只修当前 Step，不提前进入后续 runtime path。
+- 不因单格或 isolated smoke 绿灯更新 Phase C GO。
+- 不默认提交大 artifacts。
+- 未经用户允许不开分支；本文不授权自动 commit。
+- 保留 `tests/.DS_Store`，不修改、不加入下一次提交。
+- 长程任务真正完成、失败或需要用户决策时，按 `task-completion-notifier` 发送一次对应通知；中间进度不发送。
 
-注意：macOS Blender 5.1.2 偶发在 Metal backend 初始化时崩溃，backtrace 位于 `supports_barycentric_whitelist`。如果崩溃发生在加载 fixture 前，立即以相同命令重试一次，并把它与算法失败区分；不得把算法阶段异常当成环境崩溃忽略。
+## 11. Suggested Skills
 
-## 10. 置信度与升级条件
-
-本文评估的对象是“计划能否可靠把 Phase C 推到 internal GO”，不是当前实现成功率。
-
-| 时点 | 置信度 | 依据与剩余缺口 |
-|---|---:|---|
-| 原计划 | 约 `0.58` | 方向正确，但 runner 可 fake green、artifact 未绑定 commit、cyclic closure/transaction 合同不完整、connector 控制流损坏 |
-| 本次优化后（尚未执行 Gate 0） | 程序性约 `0.90` / 算法完成约 `0.62` | 入口、证据、算法边界与 Stop/Go 已明确；solver 尚未以动态证据证明 |
-| Gate 0A/B/C 全通过 | 目标 `≥0.88` | source/runner/失败基线可信 |
-| simple `4/4 × 3` + transaction contracts | 目标 `≥0.92` | cyclic 主路径已跨越最小产品基线 |
-| 新鲜 `14/14 × 3` + independent audit | 目标 `≥0.96` | 仅可把 Phase C internal gate 标为 GO；全局仍为 `PROTOTYPE` |
-
-程序性置信度表示计划能否防止越阶段与 fake green；算法完成置信度表示当前设计最终覆盖 14 cells 的工程判断。后者不能因文档更完整而自动提高。任一 P0/P1、unexpected handoff、stale/partial artifact 或正式入口混淆都会把程序性置信度降回 `<0.80` 并保持 Phase C STOP。数值是基于已核对代码/runner/历史 artifacts 的工程判断，不是统计成功概率。
-
-## 11. 实现纪律
-
-- 修改前先定位调用链：正式 PREVIEW → owned Curve/immutable Pipe contract → hidden Adapter → `build_batched_feature_chamfer()` → shared Even-Thickness builder/independent staging → `_build_cyclic_regular_strip_partition()` → pair/build/ledger diagnostics。
-- 函数按项目规范添加中文块注释；imports 保持文件头部。
-- 让失败结构化暴露，不 catch/silent fallback。
-- 每次只处理一个 cluster；先定向 1 次，再重复 3 次，再扩大矩阵。
-- 任一 Step 的 Go 未证明时只允许继续当前 Step 的诊断、设计、测试与修复，禁止实现或接入后续 Step runtime path。
-- Step 5–9 每个 cluster 先 1 次诊断，再本 cluster 3 次，并重跑 simple canary；canary 回归则退回最近通过的 Step。
-- 不因单格绿灯更新 Phase C GO。
-- 测试产物大，不默认提交 artifacts；只有项目已有惯例或 handoff 明确要求时提交。
-- 未经用户允许不开分支。本计划不授权 commit；仅在用户另行授权后，稳定 checkpoint 才可提交且 message 必须表明 WIP 或实际解决的 cluster。
-- 不提交 `tests/.DS_Store`。
-- 长程任务真正完成、失败或需要用户注意时，按 `task-completion-notifier` 发送一次对应通知；中间进度不发送。
-
-## 12. Suggested Skills
-
-- `blender-cli`：运行 Blender background probes、保存和检查 `.blend`/JSON/PNG artifacts。
-- 项目内 `agent-skills/hst-blender-regression/SKILL.md`：产品矩阵与完整 headless 回归。
-- `diagnosing-bugs`：按 cluster 读取窄化 diagnostics，不通读大日志。
-- `tdd`：先为 cyclic rotation/provenance allocation 写合同，再实现。
+- `blender-cli`：运行 Blender background contracts、matrix 与 artifact 检查。
+- 项目内 `agent-skills/hst-blender-regression/SKILL.md`：统一 headless 回归入口。
+- `diagnosing-bugs`：按 BridgeJob / FillJob / claim cluster 窄化 diagnostics。
+- `tdd`：先写 ownership pairing、local Fill 和 rollback 正负合同。
 - `code-review`：Phase C GO 前独立 Spec Audit。
-- `verification-before-completion`：核对新鲜 artifacts、矩阵和阶段状态。
-- `task-completion-notifier`：仅最终 completed/attention/failed 时使用。
+- `verification-before-completion`：核对 run-id、HEAD、42 repetitions、artifact hashes。
+- `task-completion-notifier`：仅最终 completed/attention/failed 使用。
 
-如果上列某个通用 skill 在新 Session 不可用，使用项目内回归 skill 和等价的只读诊断/验证流程继续，不因此停止。
+某个通用 skill 不可用时，使用项目内 regression skill 和等价验证流程继续，不因此停止。
 
-## 13. 新 Session 启动 Prompt
+## 12. 新 Session 启动 Prompt
 
 ```text
-继续 HardsurfaceGameAssetToolkit Feature Chamfer batched Phase C Regular Recovery。
+继续 HardsurfaceGameAssetToolkit Feature Chamfer batched Phase C。
 
 先读取并严格遵守：
 1. 项目 AGENTS.md
@@ -694,9 +529,13 @@ runner hardening 完成后，复核还必须包含 manifest/source revision、re
 3. docs/plan/2026-07-23-feature-chamfer-batched-cut-fill-handoff.md
 4. tests/TESTING_POLICY.md 与 tests/README.md
 
-当前文档 HEAD 是 92d2953，代码 baseline 是 1b8f120；先记录实际 HEAD/工作树并验证 runtime/test blobs，而不是要求 HEAD 恰等于 baseline。当前状态 PAUSED / PROTOTYPE / Phase A GO / Phase B GO / Phase C STOP。Phase C GO 前禁止进入 D/E，禁止接入正式 hst.feature_chamfer_gn(FINALIZE)。保留 tests/.DS_Store，不修改、不提交；不修改 auto_load.py，不开新分支。
+当前策略已经改为 OWNERSHIP_DRIVEN_BLENDER_BRIDGE_LOCAL_FILL_V1：保留 independent batched Exact Boolean、Boundary Edge ownership/provenance 和 exactly-once ledger；用 ownership 唯一选择同一 Pipe 两侧 regular rails，调用 Blender bmesh.ops.bridge_loops() 补 regular 面；交叉 Pipe 的 junction 先留空，全部 Bridge 后重新提取 boundary，只对有唯一 Plan junction witness 的闭合洞调用 Blender Fill。禁止 global fill，也禁止 _rail_pair_score()/nearest 或旧自研 cyclic DP/trim fallback。
 
-先完成 Gate 0A/B/C：修复 zero-length connector 的不可达控制流，hardening evidence runner，冻结 handoff proof inventory，并保存 commit-bound 的新鲜失败基线。然后用合同先行建立 single-rail circular topology、whole-Edge coverage、closed cyclic solver 和全 universe transactional allocation。先让 simple 4 cells 全部真实通过，再按 cluster 扩大验证，最后跑新鲜 14×3 和独立 Spec Audit。
+先记录实际 HEAD/status/diff，不要假定文档中的 HEAD 仍是当前值，不得 reset 用户修改。保留 tests/.DS_Store，不修改、不加入下一次提交；不修改 auto_load.py，不开新分支。
 
-禁止 SDF、nearest-owner、global fill、centroid fan、无约束 triangulate、共享 Mesh 顺序累计 Cut、模型特判、忽略大 fragment 或放宽 geometry guard。除非真正需要用户作实质决定，否则持续自主推进。
+当前状态 PAUSED / PROTOTYPE / Phase A GO / Phase B GO / Phase C STOP。Phase C GO 前禁止进入 D/E，禁止接入正式 hst.feature_chamfer_gn(FINALIZE)。
+
+按 Gate 0A/B/C 开始：修 zero-length connector 控制流、harden evidence runner、隔离旧 cyclic WIP并保存新鲜失败基线。随后合同先行实现 RegularBridgeJob、JunctionFillJob、全局 claim preflight 和 provisional transaction。先让 simple 4 cells 的 Blender Bridge 主路径 4/4×3 通过，再完成最小真实双 Pipe junction-local Fill，之后按 cluster 扩展，最后跑新鲜 14×3 和独立 Spec Audit。
+
+禁止 SDF、nearest-owner/rail、global fill、centroid fan、无约束 triangulate、共享 Mesh 顺序累计 Cut、模型特判、忽略大 fragment 或放宽 geometry guard。除非真正需要用户作实质决定，否则持续自主推进。
 ```
