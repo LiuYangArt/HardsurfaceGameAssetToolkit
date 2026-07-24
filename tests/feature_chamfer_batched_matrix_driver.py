@@ -380,6 +380,12 @@ def run_repetition(
         )
         camera = None
         light = None
+        debug_materials = [
+            material
+            for obj in debug_objects
+            for material in obj.data.materials
+            if material is not None
+        ]
         try:
             ledger_artifact = {
                 "contract": "HST_PHASE_C_LEDGER_V1",
@@ -444,11 +450,24 @@ def run_repetition(
                 diagnostics.setdefault("topology_diagnostics", {})[
                     "artifact_closeup_port_id"
                 ] = focus_port["port_id"]
+            else:
+                camera, light = render_phase_c_artifact(
+                    source_object,
+                    debug_objects,
+                    case_directory / "phase_c_setback_closeup.png",
+                    radius=radius,
+                )
             save_artifact_copy(case_directory / "phase_c_regular_core.blend")
         finally:
             cleanup_phase_c_debug_objects(
                 (*debug_objects, *(obj for obj in (camera, light) if obj is not None))
             )
+            for material in debug_materials:
+                if (
+                    material.users == 0
+                    and bpy.data.materials.get(material.name) == material
+                ):
+                    bpy.data.materials.remove(material)
             if bpy.data.collections.get(debug_collection.name) == debug_collection:
                 bpy.data.collections.remove(debug_collection)
     fingerprint_after = addon_module.utils.feature_chamfer_gn_utils.source_fingerprint(
@@ -519,6 +538,112 @@ def run_repetition(
         attempt.get("status") == "DEFERRED"
         for attempt in phase_c_diagnostics.get("strip_attempts", [])
     )
+    boundary_edge_ledger = diagnostics.get("boundary_edge_ledger", [])
+    valid_claim_states = {
+        "REGULAR_BRIDGE",
+        "PORT_RESERVED",
+        "STRICT_CONNECTOR",
+    }
+    claim_partition_valid = bool(boundary_edge_ledger) and all(
+        entry.get("claim_state") in valid_claim_states
+        and (
+            bool(entry.get("face_consumer_id"))
+            if entry.get("claim_state") == "REGULAR_BRIDGE"
+            else entry.get("face_consumer_id") is None
+        )
+        for entry in boundary_edge_ledger
+    )
+    regular_face_witnesses_complete = all(
+        record.get("face_count", 0) > 0
+        and record.get("geometry_guard", {}).get(
+            "input_edge_face_witness_count"
+        )
+        == len(record.get("left_edge_ids", ()))
+        + len(record.get("right_edge_ids", ()))
+        for record in diagnostics.get("batch_records", [])
+        if record.get("consumer_id", "").startswith("face-consumer:")
+    )
+    regular_records = [
+        record
+        for record in diagnostics.get("batch_records", [])
+        if record.get("consumer_id", "").startswith("face-consumer:")
+    ]
+    regular_backend_valid = bool(regular_records) and all(
+        record.get("geometry_guard", {}).get("backend")
+        == "BLENDER_BRIDGE_LOOPS_V1"
+        and record.get("geometry_guard", {}).get("status") == "PASS"
+        for record in regular_records
+    )
+    frozen_handoff_allowlist = {
+        "PIPE_OVERLAP_SETBACK",
+        "OUTSIDE_PLAN_SETBACK",
+        "SHORT_COMPONENT_SETBACK_V1",
+        "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1",
+        "ZERO_LENGTH_REGULAR_INTERIOR_CONNECTOR_V1",
+        "STITCHED_MICRO_LOOP_JUNCTION_V1",
+        "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1",
+        "ATTACHED_CYCLIC_MICRO_COMPONENT_SETBACK_V1",
+        "RADIUS_COLLAPSED_SINGLE_EDGE_SETBACK_V1",
+        "NO_REGULAR_STRIP_CORRESPONDENCE_V1",
+        "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
+        "ATOM_BOUNDARY_JUNCTION_HANDOFF_V1",
+        "OUTSIDE_CORRESPONDENCE_SPAN_HANDOFF_V1",
+        "CORRESPONDENCE_TRANSITION_HANDOFF_V1",
+        "PLAN_SPAN_CROSSING_HANDOFF_V1",
+        "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
+        "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1",
+        "CYCLIC_SPAN_TERMINAL_RESIDUAL_HANDOFF_V1",
+        "CYCLIC_PLAN_GAP_HANDOFF_V1",
+    }
+    setback_ports = diagnostics.get("junction_regions", [])
+    unexpected_handoff_reasons = sorted({
+        port.get("reason")
+        for port in setback_ports
+        if port.get("reason") not in frozen_handoff_allowlist
+    })
+    macro_setback_ports = [
+        port
+        for port in setback_ports
+        if port.get("reason") not in {
+            "PIPE_OVERLAP_SETBACK",
+            "OUTSIDE_PLAN_SETBACK",
+        }
+        and (
+            len(port.get("ordered_edge_ids", ())) != 1
+            or port.get("reason")
+            in {
+                "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1",
+                "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
+                "CYCLIC_SPAN_TERMINAL_RESIDUAL_HANDOFF_V1",
+            }
+        )
+    ]
+    derived_port_records = [
+        port
+        for record in regular_records
+        for port in record.get("derived_ports", ())
+    ]
+    open_regular_records = [
+        record
+        for record in regular_records
+        if record.get("geometry_guard", {}).get("chain_kind") == "OPEN"
+    ]
+    derived_ports_valid = (
+        not open_regular_records
+        or (
+            bool(derived_port_records)
+            and all(
+                port.get("endpoint_tokens")
+                and port.get("port_witness_ids")
+                for port in derived_port_records
+            )
+        )
+    )
+    final_output_object_name = diagnostics.get("output_object_name")
+    fill_job_count = sum(
+        bool(record.get("fill_job_id"))
+        for record in diagnostics.get("batch_records", [])
+    )
     phase_c_pass = (
         phase_c_diagnostics.get("regular_core_count", 0) > 0
         and phase_c_diagnostics.get("real_regular_strip_face_count", 0) > 0
@@ -544,7 +669,19 @@ def run_repetition(
         and phase_c_diagnostics.get("global_fill") is False
         and unresolved_remote_component_count == 0
         and deferred_attempt_count == 0
-        and bool(diagnostics.get("boundary_edge_ledger"))
+        and claim_partition_valid
+        and regular_face_witnesses_complete
+        and regular_backend_valid
+        and phase_c_diagnostics.get("producer_global_preflight") is True
+        and phase_c_diagnostics.get("producer_job_count")
+        == phase_c_diagnostics.get("regular_core_count")
+        and phase_c_diagnostics.get("producer_jobs_fingerprint")
+        == phase_c_diagnostics.get("reverse_producer_jobs_fingerprint")
+        and not unexpected_handoff_reasons
+        and not macro_setback_ports
+        and derived_ports_valid
+        and fill_job_count == 0
+        and final_output_object_name is None
     )
     valid = (
         adapter_result == ["FINISHED"]
@@ -613,6 +750,16 @@ def run_repetition(
         "phase_c_port_fingerprint": phase_c_diagnostics.get(
             "phase_c_port_fingerprint"
         ),
+        "producer_global_preflight": phase_c_diagnostics.get(
+            "producer_global_preflight"
+        ),
+        "producer_job_count": phase_c_diagnostics.get("producer_job_count"),
+        "regular_backend_valid": regular_backend_valid,
+        "unexpected_handoff_reasons": unexpected_handoff_reasons,
+        "macro_setback_count": len(macro_setback_ports),
+        "derived_ports_valid": derived_ports_valid,
+        "fill_job_count": fill_job_count,
+        "final_output_object_name": final_output_object_name,
         "topology_diagnostics": diagnostics.get("topology_diagnostics", {}),
         "debug_object_names": [
             obj.name

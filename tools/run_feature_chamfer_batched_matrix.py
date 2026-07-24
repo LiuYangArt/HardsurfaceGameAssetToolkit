@@ -109,7 +109,7 @@ def git_provenance(repo_root):
 
 # 严格验证完整 Phase C summary，禁止 backend 单一布尔值造成 fake green。
 # summary: Blender driver 生成的完整结果；返回 (valid, errors)。
-def validate_phase_c_gate_summary(summary):
+def validate_phase_c_gate_summary(summary, run_metadata=None):
     errors = []
     cases = summary.get("cases", [])
     repetitions = [item for case in cases for item in case.get("repetitions", [])]
@@ -138,6 +138,32 @@ def validate_phase_c_gate_summary(summary):
         errors.append("Phase B is not GO")
     if summary.get("phase_c_go") is not True:
         errors.append("Phase C is not GO")
+    if run_metadata is not None:
+        expected_git = run_metadata.get("git", {})
+        if summary.get("run_id") != run_metadata.get("run_id"):
+            errors.append("run ID does not match the host evidence envelope")
+        if summary.get("stage") != run_metadata.get("stage"):
+            errors.append("stage does not match the host evidence envelope")
+        if summary.get("git_head") != expected_git.get("head"):
+            errors.append("Git HEAD does not match the host evidence envelope")
+        if summary.get("dirty_fingerprint") != expected_git.get(
+            "dirty_fingerprint"
+        ):
+            errors.append(
+                "dirty fingerprint does not match the host evidence envelope"
+            )
+        if summary.get("argv") != run_metadata.get("argv"):
+            errors.append("argv does not match the host evidence envelope")
+        if not summary.get("blender_version"):
+            errors.append("Blender version is missing")
+        fixture_hashes = summary.get("fixture_hashes")
+        if not isinstance(fixture_hashes, dict) or len(fixture_hashes) != 4:
+            errors.append("fixture hashes do not bind the fixed fixture universe")
+        elif any(
+            not isinstance(digest, str) or len(digest) != 64
+            for digest in fixture_hashes.values()
+        ):
+            errors.append("fixture hash is not a SHA-256 digest")
     for case in cases:
         repetition_ids = [
             repetition.get("repetition")
@@ -159,6 +185,13 @@ def validate_phase_c_gate_summary(summary):
                 and repetition.get("adapter_result") == ["FINISHED"]
                 and repetition.get("preview_contract_matches_owned_curve") is True
                 and repetition.get("source_unchanged") is True
+                and repetition.get("producer_global_preflight") is True
+                and repetition.get("regular_backend_valid") is True
+                and repetition.get("unexpected_handoff_reasons") == []
+                and repetition.get("macro_setback_count") == 0
+                and repetition.get("derived_ports_valid") is True
+                and repetition.get("fill_job_count") == 0
+                and repetition.get("final_output_object_name") is None
                 and not repetition.get("debug_object_names")
                 and not repetition.get("debug_datablock_names")
             )
@@ -312,6 +345,22 @@ def run(argv=None):
     completed = subprocess.run(command, cwd=repo_root, env=environment)
     results_path = artifact_directory / "results.json"
     if completed.returncode != 0:
+        if args.cases and results_path.is_file():
+            try:
+                summary = json.loads(results_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                summary = None
+            write_evidence_manifest(
+                artifact_directory,
+                run_metadata,
+                "DIAGNOSTIC_PARTIAL",
+                error=(
+                    "Partial matrix runs cannot return gate success; "
+                    f"Blender exited with code {completed.returncode}"
+                ),
+                summary=summary,
+            )
+            return 1
         write_evidence_manifest(
             artifact_directory,
             run_metadata,
@@ -349,7 +398,7 @@ def run(argv=None):
             summary=summary,
         )
         return 1
-    gate_valid, gate_errors = validate_phase_c_gate_summary(summary)
+    gate_valid, gate_errors = validate_phase_c_gate_summary(summary, run_metadata)
     if args.stage == "PHASE_C_REGULAR_CORE" and not gate_valid:
         print(f"ERROR: Phase C gate validation failed: {gate_errors}")
         write_evidence_manifest(

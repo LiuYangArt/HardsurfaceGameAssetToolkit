@@ -9235,7 +9235,270 @@ def test_feature_chamfer_batched_zero_length_regular_connector_contract(
         == "ZERO_LENGTH_REGULAR_CONNECTOR_ADJACENCY",
         f"Unsafe zero-length connector received a proof: {rejected}",
     )
-    result.add_detail("unique short connector proven; cyclic/long/wrong-owner/unpaired variants rejected")
+    degree_two_outer_ledger = {
+        **ledger,
+        "outer:continuation": {
+            "rail_id": "rail:test",
+            "endpoints": [(1.0e-6, 0.0, 0.0), (0.1, 0.0, 0.0)],
+            "endpoint_tokens": ["terminal:test", "continuation:end"],
+        },
+    }
+    degree_two_result = module._zero_length_regular_connector_handoff_proof(
+        chain,
+        claim,
+        records,
+        degree_two_outer_ledger,
+        5,
+        0.01,
+    )
+    ensure(
+        degree_two_result.get("rejected_stage")
+        == "ZERO_LENGTH_REGULAR_CONNECTOR_OUTER_TERMINAL",
+        "Degree-2 outer endpoint was accepted as a Rail terminal",
+    )
+    result.add_detail("unique short connector proven; cyclic/long/wrong-owner/unpaired/degree-2 variants rejected")
+
+
+# 验证 Phase C job-local Blender Bridge 支持 open 5-vs-3 rails，并派生两个待证明的 terminal boundaries。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_regular_bridge_open_unequal_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    left_coordinates = tuple((index / 5.0, 0.0, 0.0) for index in range(6))
+    right_coordinates = tuple((index / 3.0, 0.2, 0.0) for index in range(4))
+    job = module.RegularBridgeJob(
+        job_id="bridge:open-5-vs-3",
+        semantic_batch_key=(0,),
+        pipe_id=0,
+        strand_id="strand:test",
+        correspondence_id="corr:test",
+        source_patch_pair=(2, 4),
+        left_edge_ids=tuple(f"left:{index}" for index in range(5)),
+        right_edge_ids=tuple(f"right:{index}" for index in range(3)),
+        left_endpoint_tokens=tuple(f"left:v{index}" for index in range(6)),
+        right_endpoint_tokens=tuple(f"right:v{index}" for index in range(4)),
+        left_coordinates=left_coordinates,
+        right_coordinates=right_coordinates,
+        chain_kind="OPEN",
+        port_witness_ids=(),
+    )
+    records, claims, ports, unresolved = module._execute_regular_bridge_jobs(
+        (job,),
+        (*job.left_edge_ids, *job.right_edge_ids),
+    )
+    ensure(
+        len(records) == 1
+        and records[0]["bridge_face_count"] > 0
+        and len(ports) == 2
+        and not unresolved
+        and len(claims) == 8
+        and all(claim["face_consumer_id"] == records[0]["consumer_id"] for claim in claims),
+        f"Open unequal Blender Bridge contract failed: {records}, {claims}, {ports}, {unresolved}",
+    )
+    face_sizes = {len(face) for face in records[0]["faces"]}
+    ensure(
+        face_sizes <= {3, 4} and 3 in face_sizes,
+        f"Open 5-vs-3 Bridge did not preserve mixed tri/quad semantics: {face_sizes}",
+    )
+    result.add_detail(
+        f"Blender bridge_loops open 5-vs-3 generated {records[0]['bridge_face_count']} Faces and two derived boundaries"
+    )
+
+
+# 验证 cyclic Blender Bridge 对 Edge list permutation、左右交换与方向 reversal 的 canonical Faces 稳定。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_regular_bridge_cyclic_invariance_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    left_coordinates = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+    )
+    right_coordinates = tuple((x * 1.2, y * 1.2, 0.0) for x, y, _ in left_coordinates)
+
+    def make_job(label, left, right, left_tokens, right_tokens):
+        return module.RegularBridgeJob(
+            job_id=f"bridge:{label}",
+            semantic_batch_key=(0,),
+            pipe_id=0,
+            strand_id="strand:cyclic",
+            correspondence_id="corr:cyclic",
+            source_patch_pair=(2, 4),
+            left_edge_ids=tuple(f"{label}:left:{index}" for index in range(4)),
+            right_edge_ids=tuple(f"{label}:right:{index}" for index in range(4)),
+            left_endpoint_tokens=left_tokens,
+            right_endpoint_tokens=right_tokens,
+            left_coordinates=left,
+            right_coordinates=right,
+            chain_kind="CYCLIC",
+            port_witness_ids=(),
+        )
+
+    variants = (
+        make_job(
+            "base",
+            left_coordinates,
+            right_coordinates,
+            tuple(f"left:v{index}" for index in range(4)),
+            tuple(f"right:v{index}" for index in range(4)),
+        ),
+        make_job(
+            "rotated",
+            left_coordinates[1:] + left_coordinates[:1],
+            right_coordinates[2:] + right_coordinates[:2],
+            tuple(f"left:v{index}" for index in (1, 2, 3, 0)),
+            tuple(f"right:v{index}" for index in (2, 3, 0, 1)),
+        ),
+        make_job(
+            "swapped-reversed",
+            tuple(reversed(right_coordinates)),
+            tuple(reversed(left_coordinates)),
+            tuple(f"right:v{index}" for index in (3, 2, 1, 0)),
+            tuple(f"left:v{index}" for index in (3, 2, 1, 0)),
+        ),
+    )
+
+    def canonical_faces(job):
+        faces = module._bridge_regular_job(job)["faces"]
+        return tuple(
+            sorted(tuple(sorted(tuple(point) for point in face)) for face in faces)
+        )
+
+    fingerprints = {canonical_faces(job) for job in variants}
+    ensure(
+        len(fingerprints) == 1,
+        f"Cyclic Blender Bridge changed under permutation/reversal: {fingerprints}",
+    )
+    result.add_detail("cyclic Bridge Faces are invariant under rotation, side swap and reversal")
+
+
+# 验证 endpoint identity、claim collision 与 op failure 在 publication 前 fail-closed。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_regular_bridge_fail_closed_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    base_job = module.RegularBridgeJob(
+        job_id="bridge:base",
+        semantic_batch_key=(0,),
+        pipe_id=0,
+        strand_id="strand:test",
+        correspondence_id="corr:test",
+        source_patch_pair=(2, 4),
+        left_edge_ids=("left:0",),
+        right_edge_ids=("right:0",),
+        left_endpoint_tokens=("left:a", "left:b"),
+        right_endpoint_tokens=("right:a", "right:b"),
+        left_coordinates=((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        right_coordinates=((0.0, 0.2, 0.0), (1.0, 0.2, 0.0)),
+        chain_kind="OPEN",
+        port_witness_ids=(),
+    )
+    conflicting_job = module.RegularBridgeJob(
+        **{**base_job.__dict__, "job_id": "bridge:conflict", "right_edge_ids": ("left:0",)}
+    )
+    try:
+        module._preflight_regular_bridge_claims((base_job, conflicting_job))
+    except module.BatchedChamferError as error:
+        ensure(
+            error.error_code == "REGULAR_BRIDGE_CLAIM_CONFLICT",
+            f"Unexpected duplicate claim failure: {error.error_code}",
+        )
+    else:
+        raise TestFailure("Duplicate RegularBridgeJob claim did not fail closed")
+    conflicting_token_job = module.RegularBridgeJob(
+        **{
+            **base_job.__dict__,
+            "job_id": "bridge:token-conflict",
+            "right_endpoint_tokens": ("left:a", "right:b"),
+        }
+    )
+    try:
+        module._bridge_regular_job(conflicting_token_job)
+    except module.BatchedChamferError as error:
+        ensure(
+            error.error_code == "REGULAR_BRIDGE_ENDPOINT_TOKEN_CONFLICT",
+            f"Unexpected endpoint identity failure: {error.error_code}",
+        )
+    else:
+        raise TestFailure("Conflicting endpoint token coordinates were welded")
+    empty_job = module.RegularBridgeJob(
+        **{
+            **base_job.__dict__,
+            "job_id": "bridge:empty",
+            "left_coordinates": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+            "right_coordinates": ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+        }
+    )
+    try:
+        module._execute_regular_bridge_jobs((base_job, empty_job))
+    except module.BatchedChamferError:
+        pass
+    else:
+        raise TestFailure("Failed second Bridge job published a partial transaction")
+    result.add_detail("duplicate claims, token conflicts and failed jobs abort before publication")
+
+
+# 验证 ownership producer 只接受 Plan component 唯一的一对 rails，ambiguous component 必须 fail-closed。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_regular_bridge_ownership_producer_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+
+    class Correspondence:
+        correspondence_id = "corr:test"
+
+    class Strand:
+        cyclic = False
+        ordered_vertex_keys = ("0,0,0#0", "1,0,0#1")
+
+    def run(label, y):
+        return {
+            "edge_ids": [f"{label}:0"],
+            "coordinates": [(0.0, y, 0.0), (1.0, y, 0.0)],
+            "endpoint_tokens": [f"{label}:a", f"{label}:b"],
+            "u_values": [0.0, 1.0],
+            "u_interval": [0.0, 1.0],
+            "component_id": "component:0",
+            "is_cyclic": False,
+        }
+
+    matched, unresolved = module._match_regular_run_components(
+        Correspondence(),
+        (run("left", 0.0),),
+        (run("right", 0.2),),
+        Strand(),
+        0.1,
+    )
+    ensure(
+        not matched
+        and len(unresolved) == 1
+        and unresolved[0]["reason"] == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+        f"Plan component without direct topology witness produced a job pair: {matched}, {unresolved}",
+    )
+    ambiguous_matches, ambiguous = module._match_regular_run_components(
+        Correspondence(),
+        (run("left-a", 0.0), run("left-b", 0.1)),
+        (run("right", 0.2),),
+        Strand(),
+        0.1,
+    )
+    ensure(
+        not ambiguous_matches
+        and len(ambiguous) == 1
+        and ambiguous[0]["reason"] == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+        f"Ambiguous Plan component selected a rail pair: {ambiguous_matches}, {ambiguous}",
+    )
+    result.add_detail("Plan component identity alone cannot pair rails; ambiguous rails fail closed")
 
 
 # 验证 full-cycle Plan span 在 seam 的 START/END 共点必须归并成唯一权威 Boundary witness。
@@ -9835,9 +10098,11 @@ def test_feature_chamfer_batched_cyclic_regular_closure_regression(
         cyclic=False,
     )
     original = module._chain_strand_parameters
-    module._chain_strand_parameters = lambda current_chain, current_strand: (
-        current_chain,
-        [0.17, 0.27, 0.37],
+    module._chain_strand_parameters = (
+        lambda current_chain, current_strand, **kwargs: (
+            current_chain,
+            [0.17, 0.27, 0.37],
+        )
     )
     try:
         split = module._split_chain_by_forbidden_intervals(chain, strand, ())
@@ -10182,6 +10447,22 @@ def main():
     context.run_case(
         "feature_chamfer_batched_zero_length_regular_connector_contract",
         test_feature_chamfer_batched_zero_length_regular_connector_contract,
+    )
+    context.run_case(
+        "feature_chamfer_regular_bridge_open_unequal_contract",
+        test_feature_chamfer_regular_bridge_open_unequal_contract,
+    )
+    context.run_case(
+        "feature_chamfer_regular_bridge_cyclic_invariance_contract",
+        test_feature_chamfer_regular_bridge_cyclic_invariance_contract,
+    )
+    context.run_case(
+        "feature_chamfer_regular_bridge_fail_closed_contract",
+        test_feature_chamfer_regular_bridge_fail_closed_contract,
+    )
+    context.run_case(
+        "feature_chamfer_regular_bridge_ownership_producer_contract",
+        test_feature_chamfer_regular_bridge_ownership_producer_contract,
     )
     context.run_case(
         "feature_chamfer_batched_cyclic_seam_boundary_handoff_contract",

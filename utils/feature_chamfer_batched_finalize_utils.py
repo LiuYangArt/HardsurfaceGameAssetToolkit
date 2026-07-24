@@ -63,6 +63,9 @@ class BatchedChamferError(RuntimeError):
         self.diagnostics = diagnostics
 
 
+PHASE_C_CUTTER_FACE_ID_ATTRIBUTE = "hst_phase_c_cutter_face_id"
+
+
 @dataclass(frozen=True)
 class PreviewPipeSpec:
     """正式 Preview FeatureStrand 对应的一根可验证 Cutter Pipe。"""
@@ -79,6 +82,26 @@ class PreviewPipeSpec:
     vertex_count: int
     edge_count: int
     face_count: int
+
+
+@dataclass(frozen=True)
+class RegularBridgeJob:
+    """Phase C ownership 唯一确定的一对 regular rails。"""
+
+    job_id: str
+    semantic_batch_key: tuple[int, ...]
+    pipe_id: int
+    strand_id: str
+    correspondence_id: str
+    source_patch_pair: tuple[int, int]
+    left_edge_ids: tuple[str, ...]
+    right_edge_ids: tuple[str, ...]
+    left_endpoint_tokens: tuple[str, ...]
+    right_endpoint_tokens: tuple[str, ...]
+    left_coordinates: tuple[tuple[float, float, float], ...]
+    right_coordinates: tuple[tuple[float, float, float], ...]
+    chain_kind: str
+    port_witness_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -129,13 +152,17 @@ def _validate_regular_strip_geometry(regular_records):
     orientation_conflict_count = 0
     duplicate_face_count = 0
     self_intersection_count = 0
+    self_intersections = []
+    zero_area_faces = []
+    overconnected_edge_count = 0
     seen_faces = set()
     triangulated_vertices = []
     triangulated_vertex_index_by_key = {}
     triangulated_faces = []
     triangulated_vertex_keys = []
     triangulated_coordinates = []
-    for record in regular_records:
+    triangulated_record_ids = []
+    for record_index, record in enumerate(regular_records):
         edge_incidence = {}
         for face_index, face in enumerate(record.get("faces", [])):
             coordinates = [Vector(point) for point in face]
@@ -144,6 +171,14 @@ def _validate_regular_strip_geometry(regular_records):
                 normal += coordinate.cross(coordinates[(index + 1) % len(coordinates)])
             if normal.length <= 1.0e-12:
                 zero_area_count += 1
+                zero_area_faces.append(
+                    {
+                        "job_id": record.get("job_id"),
+                        "consumer_id": record.get("consumer_id"),
+                        "face_index": face_index,
+                        "face": [list(point) for point in face],
+                    }
+                )
                 continue
             normal.normalize()
             face_key = tuple(
@@ -183,9 +218,11 @@ def _validate_regular_strip_geometry(regular_records):
                 triangulated_faces.append(tuple(triangle_vertex_indices))
                 triangulated_vertex_keys.append(frozenset(triangle_keys))
                 triangulated_coordinates.append(triangle)
+                triangulated_record_ids.append(record_index)
         for incidences in edge_incidence.values():
             if len(incidences) > 2:
                 orientation_conflict_count += 1
+                overconnected_edge_count += 1
                 continue
             if len(incidences) == 2:
                 _, start_a, end_a = incidences[0]
@@ -249,10 +286,40 @@ def _validate_regular_strip_geometry(regular_records):
                         if hit is None:
                             continue
                         factor = (hit - start).dot(direction) / direction.length_squared
-                        if -1.0e-8 <= factor <= 1.0 + 1.0e-8:
+                        if 1.0e-7 < factor < 1.0 - 1.0e-7:
                             segment_hits.append(hit)
-                if segment_hits:
+                unique_hits = {
+                    tuple(round(float(value), 7) for value in hit)
+                    for hit in segment_hits
+                }
+                triangle_normals = []
+                for triangle in (left_triangle, right_triangle):
+                    normal = (triangle[1] - triangle[0]).cross(
+                        triangle[2] - triangle[0]
+                    )
+                    if normal.length_squared > 1.0e-24:
+                        normal.normalize()
+                    triangle_normals.append(normal)
+                non_coplanar = (
+                    triangle_normals[0].cross(triangle_normals[1]).length
+                    > 1.0e-7
+                )
+                proper_penetration = len(unique_hits) >= (1 if non_coplanar else 2)
+                if proper_penetration:
                     overlap_pairs.add((left_index, right_index))
+                    self_intersections.append(
+                        {
+                            "record_index": triangulated_record_ids[left_index],
+                            "job_id": regular_records[
+                                triangulated_record_ids[left_index]
+                            ].get("job_id"),
+                            "consumer_id": regular_records[
+                                triangulated_record_ids[left_index]
+                            ].get("consumer_id"),
+                            "left_triangle": [list(point) for point in left_triangle],
+                            "right_triangle": [list(point) for point in right_triangle],
+                        }
+                    )
         self_intersection_count = len(overlap_pairs)
     return {
         "status": (
@@ -264,9 +331,12 @@ def _validate_regular_strip_geometry(regular_records):
             else "FAIL"
         ),
         "zero_area_face_count": zero_area_count,
+        "zero_area_faces": zero_area_faces[:32],
         "orientation_conflict_count": orientation_conflict_count,
+        "overconnected_edge_count": overconnected_edge_count,
         "duplicate_face_count": duplicate_face_count,
         "self_intersection_count": self_intersection_count,
+        "self_intersections": self_intersections[:32],
     }
 
 
@@ -346,10 +416,19 @@ def _extract_staging_boundary_records(
     plan_id,
     semantic_batch,
     marked_edge_indices,
+    cutter_face_provenance_by_id,
 ):
     mesh = working_object.data
     original_attribute = mesh.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
-    if original_attribute is None or original_attribute.domain != "FACE":
+    cutter_face_id_attribute = mesh.attributes.get(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+    )
+    if (
+        original_attribute is None
+        or original_attribute.domain != "FACE"
+        or cutter_face_id_attribute is None
+        or cutter_face_id_attribute.domain != "FACE"
+    ):
         raise BatchedChamferError(
             "BATCH_BOUNDARY_PROVENANCE_MISSING",
             "Independent staging 缺少 original Face provenance",
@@ -545,6 +624,40 @@ def _extract_staging_boundary_records(
             )
             for polygon in polygons
         )
+        groove_face_signatures = sorted(
+            _stable_fingerprint(
+                {
+                    "role": "GROOVE",
+                    "loop": _canonical_face_loop(mesh, polygon),
+                    "membership_id": owner_pipe_id,
+                }
+            )
+            for polygon in groove_polygons
+        )
+        cutter_face_records = [
+            record
+            for polygon in groove_polygons
+            for face_id in (
+                int(cutter_face_id_attribute.data[polygon.index].value),
+            )
+            for record in (
+                cutter_face_provenance_by_id.get(face_id),
+            )
+            if record is not None
+        ]
+        cutter_face_signatures = sorted({
+            record["face_signature"] for record in cutter_face_records
+        })
+        cutter_face_topology = sorted(
+            (
+                {
+                    key: value
+                    for key, value in record.items()
+                }
+                for record in cutter_face_records
+            ),
+            key=_stable_fingerprint,
+        )
         stable_payload = {
             "plan_id": plan_id,
             "semantic_batch_key": list(semantic_batch),
@@ -552,6 +665,9 @@ def _extract_staging_boundary_records(
             "endpoint_topology_signatures": endpoint_topology_signatures,
             "endpoint_tokens": endpoint_tokens,
             "adjacent_face_signatures": adjacent_face_signatures,
+            "groove_face_signatures": groove_face_signatures,
+            "cutter_face_signatures": cutter_face_signatures,
+            "cutter_face_topology": cutter_face_topology,
             "owner_pipe_id": owner_pipe_id,
             "source_patch_id": source_patch_id,
             "endpoint_port_tokens": endpoint_port_tokens,
@@ -578,6 +694,281 @@ def _extract_staging_boundary_records(
         record_by_edge_id[edge_id] = record
         records.append(record)
     return tuple(sorted(records, key=lambda record: record["edge_id"]))
+
+
+# 为 joined Cutter 的每个输入 Face 写稳定 ID，并在 source duplicate 建立同名空 attribute 供 Exact Boolean 传播。
+# working_object/cutter: independent source duplicate 与当前 joined Cutter；返回 face ID→stable semantic signature。
+def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
+    source_attribute = working_object.data.attributes.get(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+    )
+    if source_attribute is not None:
+        working_object.data.attributes.remove(source_attribute)
+    source_attribute = working_object.data.attributes.new(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE,
+        type="INT",
+        domain="FACE",
+    )
+    for item in source_attribute.data:
+        item.value = 0
+    cutter_attribute = cutter.data.attributes.get(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+    )
+    if cutter_attribute is not None:
+        cutter.data.attributes.remove(cutter_attribute)
+    cutter_attribute = cutter.data.attributes.new(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE,
+        type="INT",
+        domain="FACE",
+    )
+    face_signature_by_index = {
+        polygon.index: _stable_fingerprint(
+            {
+                "pipe_id": next(iter(_one_hot_ids(
+                    cutter.data.attributes,
+                    CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                    polygon.index,
+                )), None),
+                "face_loop": _canonical_face_loop(cutter.data, polygon),
+            }
+        )
+        for polygon in cutter.data.polygons
+    }
+    polygons_by_edge_index = {}
+    for polygon in cutter.data.polygons:
+        for loop_index in polygon.loop_indices:
+            polygons_by_edge_index.setdefault(
+                cutter.data.loops[loop_index].edge_index,
+                [],
+            ).append(polygon.index)
+    adjacency_by_face_index = {
+        polygon.index: set()
+        for polygon in cutter.data.polygons
+    }
+    for face_indices in polygons_by_edge_index.values():
+        if len(face_indices) != 2:
+            continue
+        left_index, right_index = face_indices
+        adjacency_by_face_index[left_index].add(right_index)
+        adjacency_by_face_index[right_index].add(left_index)
+
+    # 找出 dual graph 中的 chordless C4；四边 Pipe 的 profile ring 必须是这种 cycle。
+    # face_indices/adjacency: 单 Pipe Face 集合与 Face 邻接；返回规范化 C4 集合。
+    def chordless_four_cycles(face_indices, adjacency):
+        cycles = set()
+        face_set = set(face_indices)
+        for first in face_set:
+            for second in adjacency[first] & face_set:
+                for third in adjacency[second] & face_set - {first}:
+                    if third in adjacency[first]:
+                        continue
+                    for fourth in (
+                        adjacency[third] & adjacency[first] & face_set
+                    ) - {second}:
+                        if fourth in adjacency[second]:
+                            continue
+                        cycles.add(frozenset((first, second, third, fourth)))
+        return cycles
+
+    # 从 profile C4 生成稳定的 ring partition；open Pipe 由 cap 唯一播种，cyclic Pipe 只接受唯一分解。
+    # face_indices/adjacency: 单 Pipe 的 Face dual graph；返回 face→profile ring，无法唯一证明时返回空映射。
+    def profile_ring_by_face_index(face_indices, adjacency):
+        face_set = set(face_indices)
+        cycles = chordless_four_cycles(face_set, adjacency)
+        cap_indices = sorted(
+            face_index
+            for face_index in face_set
+            if len(adjacency[face_index] & face_set) == 4
+            and frozenset(adjacency[face_index] & face_set) in cycles
+        )
+
+        def propagate(initial_ring, previous_group, initial_direction=None):
+            rings = [frozenset(initial_ring)]
+            previous = frozenset(previous_group)
+            current = rings[0]
+            while True:
+                next_candidates_by_face = {
+                    face_index: (
+                        adjacency[face_index]
+                        - current
+                        - previous
+                    )
+                    & face_set
+                    for face_index in current
+                }
+                if all(len(candidates) == 1 for candidates in next_candidates_by_face.values()):
+                    following = frozenset(
+                        next(iter(candidates))
+                        for candidates in next_candidates_by_face.values()
+                    )
+                elif initial_direction is not None and len(rings) == 1:
+                    following = frozenset(initial_direction)
+                else:
+                    return None
+                if len(following) == 1 and next(iter(following)) in cap_indices:
+                    break
+                if following == rings[0]:
+                    break
+                if len(following) != 4 or following not in cycles:
+                    return None
+                if any(following == ring for ring in rings):
+                    return None
+                previous, current = current, following
+                rings.append(current)
+            covered = set().union(*rings)
+            if covered | set(cap_indices) != face_set:
+                return None
+            return tuple(rings)
+
+        partitions = {}
+        if len(cap_indices) == 2:
+            start_cap = min(
+                cap_indices,
+                key=lambda index: face_signature_by_index[index],
+            )
+            first_ring = frozenset(adjacency[start_cap] & face_set)
+            rings = propagate(first_ring, {start_cap})
+            if rings is not None:
+                partition_key = tuple(
+                    sorted(tuple(sorted(ring)) for ring in rings)
+                )
+                partitions[partition_key] = rings
+        elif not cap_indices:
+            for initial_ring in cycles:
+                external_by_face = {
+                    face_index: tuple(sorted(
+                        (adjacency[face_index] - initial_ring) & face_set
+                    ))
+                    for face_index in initial_ring
+                }
+                if any(len(candidates) != 2 for candidates in external_by_face.values()):
+                    continue
+                ordered_faces = sorted(initial_ring)
+
+                def choose_next(offset, selected):
+                    if offset == len(ordered_faces):
+                        following = frozenset(selected)
+                        if len(following) == 4 and following in cycles:
+                            yield following
+                        return
+                    for candidate in external_by_face[ordered_faces[offset]]:
+                        if candidate not in selected:
+                            yield from choose_next(
+                                offset + 1,
+                                (*selected, candidate),
+                            )
+
+                for following in choose_next(0, ()):
+                    rings = propagate(
+                        initial_ring,
+                        set(),
+                        following,
+                    )
+                    if rings is None:
+                        continue
+                    partition_key = tuple(
+                        sorted(tuple(sorted(ring)) for ring in rings)
+                    )
+                    partitions[partition_key] = rings
+        if len(partitions) != 1:
+            return {}
+        rings = next(iter(partitions.values()))
+        return {
+            face_index: ring
+            for ring in rings
+            for face_index in ring
+        }
+
+    topology_by_face_index = {}
+    owner_pipe_ids = sorted({
+        owner_pipe_id
+        for polygon in cutter.data.polygons
+        for owner_pipe_id in _one_hot_ids(
+            cutter.data.attributes,
+            CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+            polygon.index,
+        )
+    })
+    for owner_pipe_id in owner_pipe_ids:
+        face_indices = {
+            polygon.index
+            for polygon in cutter.data.polygons
+            if _one_hot_ids(
+                cutter.data.attributes,
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                polygon.index,
+            ) == {owner_pipe_id}
+        }
+        ring_by_face_index = profile_ring_by_face_index(
+            face_indices,
+            adjacency_by_face_index,
+        )
+        for face_index in face_indices:
+            ring = ring_by_face_index.get(face_index)
+            if ring is None:
+                topology_by_face_index[face_index] = {
+                    "topology_status": "UNRESOLVED",
+                    "pipe_id": owner_pipe_id,
+                }
+                continue
+            profile_neighbors = adjacency_by_face_index[face_index] & set(ring)
+            opposite_faces = set(ring) - profile_neighbors - {face_index}
+            if len(profile_neighbors) != 2 or len(opposite_faces) != 1:
+                topology_by_face_index[face_index] = {
+                    "topology_status": "UNRESOLVED",
+                    "pipe_id": owner_pipe_id,
+                }
+                continue
+            topology_by_face_index[face_index] = {
+                "topology_status": "PROVEN_C4_PIPE",
+                "pipe_id": owner_pipe_id,
+                "profile_ring_id": _stable_fingerprint(sorted(
+                    face_signature_by_index[index] for index in ring
+                )),
+                "profile_neighbor_face_signatures": sorted(
+                    face_signature_by_index[index]
+                    for index in profile_neighbors
+                ),
+                "profile_opposite_face_signature": face_signature_by_index[
+                    next(iter(opposite_faces))
+                ],
+                "longitudinal_neighbor_face_signatures": sorted(
+                    face_signature_by_index[index]
+                    for index in (
+                        adjacency_by_face_index[face_index] - set(ring)
+                    )
+                    if index in face_indices
+                ),
+            }
+    provenance = {}
+    for polygon in cutter.data.polygons:
+        face_id = int(polygon.index) + 1
+        cutter_attribute.data[polygon.index].value = face_id
+        owner_pipe_ids = _one_hot_ids(
+            cutter.data.attributes,
+            CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+            polygon.index,
+        )
+        if len(owner_pipe_ids) != 1:
+            raise BatchedChamferError(
+                "CUTTER_FACE_PROVENANCE_OWNER_CONFLICT",
+                "Cutter 输入 Face 缺少唯一 Pipe owner",
+                {
+                    "face_id": face_id,
+                    "owner_pipe_ids": sorted(owner_pipe_ids),
+                },
+            )
+        provenance[face_id] = {
+            "face_signature": face_signature_by_index[polygon.index],
+            **topology_by_face_index.get(
+                polygon.index,
+                {
+                    "topology_status": "UNRESOLVED",
+                    "pipe_id": next(iter(owner_pipe_ids)),
+                },
+            ),
+        }
+    return provenance
 
 
 # 读取 Preview 创建时冻结的 Pipe 合同，并用正式 Even-Thickness Pipe builder 重建 Mesh。
@@ -1144,6 +1535,12 @@ def _run_independent_batch_cut_probe(
                 probe_collection,
                 "INDEPENDENT_" + "_".join(str(pipe_id) for pipe_id in semantic_batch),
             )
+            cutter_face_signature_by_id = (
+                _initialize_phase_c_cutter_face_provenance(
+                    working_object,
+                    cutter,
+                )
+            )
             _initialize_boundary_witness_schema(
                 working_object.data,
                 (cutter,),
@@ -1182,6 +1579,7 @@ def _run_independent_batch_cut_probe(
                 plan_id,
                 semantic_batch,
                 boundary_witnesses["marked_edge_indices"],
+                cutter_face_signature_by_id,
             )
             if not working_object.data.vertices or not working_object.data.polygons:
                 pipe_diagnostics = []
@@ -1295,12 +1693,26 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                             "adjacent_face_signatures",
                             (),
                         ),
+                        "groove_face_signatures": boundary.get(
+                            "groove_face_signatures",
+                            (),
+                        ),
+                        "cutter_face_signatures": boundary.get(
+                            "cutter_face_signatures",
+                            (),
+                        ),
+                        "cutter_face_topology": boundary.get(
+                            "cutter_face_topology",
+                            (),
+                        ),
                         "endpoint_port_tokens": boundary.get(
                             "endpoint_port_tokens",
                             (),
                         ),
                         "classification": "UNCLASSIFIED",
                         "consumer_id": None,
+                        "claim_state": "UNRESOLVED",
+                        "face_consumer_id": None,
                         "outside_plan_owner_patch": True,
                     }
                 )
@@ -1323,12 +1735,26 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                         "adjacent_face_signatures",
                         (),
                     ),
+                    "groove_face_signatures": boundary.get(
+                        "groove_face_signatures",
+                        (),
+                    ),
+                    "cutter_face_signatures": boundary.get(
+                        "cutter_face_signatures",
+                        (),
+                    ),
+                    "cutter_face_topology": boundary.get(
+                        "cutter_face_topology",
+                        (),
+                    ),
                     "endpoint_port_tokens": boundary.get(
                         "endpoint_port_tokens",
                         (),
                     ),
                     "classification": "UNCLASSIFIED",
                     "consumer_id": None,
+                    "claim_state": "UNRESOLVED",
+                    "face_consumer_id": None,
                 }
             )
     endpoint_degree_by_rail_token = {}
@@ -1506,6 +1932,26 @@ def _ordered_stable_boundary_chains(ledger_entries):
             )
             for entry in chain_entries
             if entry.get("endpoint_topology_signatures")
+        }
+        chain["adjacent_face_signatures_by_edge"] = {
+            entry["edge_id"]: list(entry.get("adjacent_face_signatures", ()))
+            for entry in chain_entries
+            if entry.get("adjacent_face_signatures")
+        }
+        chain["groove_face_signatures_by_edge"] = {
+            entry["edge_id"]: list(entry.get("groove_face_signatures", ()))
+            for entry in chain_entries
+            if entry.get("groove_face_signatures")
+        }
+        chain["cutter_face_signatures_by_edge"] = {
+            entry["edge_id"]: list(entry.get("cutter_face_signatures", ()))
+            for entry in chain_entries
+            if entry.get("cutter_face_signatures")
+        }
+        chain["cutter_face_topology_by_edge"] = {
+            entry["edge_id"]: list(entry.get("cutter_face_topology", ()))
+            for entry in chain_entries
+            if entry.get("cutter_face_topology")
         }
     return tuple(
         sorted(
@@ -1864,9 +2310,27 @@ def _minimum_backtrack_projection_path(
     return best
 
 
+# 判断 cyclic Boundary 投影是否只包含一个合法 seam descent。
+# path: _minimum_backtrack_projection_path 输出；返回是否满足单圈有序拓扑与 descent 数。
+def _cyclic_projection_path_is_ordered(path):
+    if path is None:
+        return False, 0
+    u_values = tuple(map(float, path.get("u_values", ())))
+    descent_count = sum(
+        following < current - 1.0e-10
+        for current, following in zip(u_values, u_values[1:])
+    )
+    return descent_count <= 1, descent_count
+
+
 # 返回 Boundary chain 每个有序点在 FeatureStrand 上的 normalized u；cyclic 时解开 seam。
 # chain/strand: 当前真实 Boundary chain 与权威 Plan FeatureStrand；返回定向 chain 与逐点连续 u。
-def _chain_strand_parameters(chain, strand):
+def _chain_strand_parameters(
+    chain,
+    strand,
+    restrict_to_source_patch=True,
+    allowed_segment_indices=None,
+):
     feature_points = [
         Vector(tuple(float(value) for value in key.split("#", 1)[0].split(",")))
         for key in strand.ordered_vertex_keys
@@ -1881,8 +2345,9 @@ def _chain_strand_parameters(chain, strand):
     if total_length <= 1.0e-12:
         return chain, [0.0 for _ in chain["coordinates"]]
     source_patch_id = chain.get("source_patch_id")
-    allowed_segment_indices = None
-    if source_patch_id is not None:
+    if allowed_segment_indices is not None:
+        allowed_segment_indices = set(map(int, allowed_segment_indices))
+    elif restrict_to_source_patch and source_patch_id is not None:
         allowed_segment_indices = {
             segment_index
             for segment_index, patch_pair in enumerate(
@@ -1929,16 +2394,27 @@ def _chain_strand_parameters(chain, strand):
             "Boundary chain 无法唯一映射为 FeatureStrand 单调路径",
             {"edge_ids": list(chain["edge_ids"])},
         )
-    paths.sort(
-        key=lambda item: (
-            item[1]["backtrack"],
-            item[1]["cost"],
-            item[1]["switch_count"],
-            item[1]["segment_indices"],
-            tuple(round(float(value), 12) for value in item[1]["u_values"]),
-            item[0],
+    cyclic_direction_is_unique = False
+    if bool(chain.get("is_cyclic")) and bool(strand.cyclic) and len(paths) == 2:
+        cyclic_ordered = [
+            _cyclic_projection_path_is_ordered(path)[0]
+            for _, path in paths
+        ]
+        if sum(cyclic_ordered) == 1:
+            selected_index = cyclic_ordered.index(True)
+            paths = [paths[selected_index], paths[1 - selected_index]]
+            cyclic_direction_is_unique = True
+    if not cyclic_direction_is_unique:
+        paths.sort(
+            key=lambda item: (
+                item[1]["backtrack"],
+                item[1]["cost"],
+                item[1]["switch_count"],
+                item[1]["segment_indices"],
+                tuple(round(float(value), 12) for value in item[1]["u_values"]),
+                item[0],
+            )
         )
-    )
     reverse, selected_path = paths[0]
     if len(paths) > 1 and len(chain["edge_ids"]) > 1:
         average_cost = selected_path["cost"] / max(
@@ -2022,13 +2498,14 @@ def _chain_strand_parameters(chain, strand):
         if (
             abs(paths[1][1]["backtrack"] - selected_path["backtrack"])
             <= 1.0e-12
-            and paths[1][1]["cost"] - selected_path["cost"]
+            and abs(paths[1][1]["cost"] - selected_path["cost"])
             <= ambiguity_tolerance
             and not reverse_is_same_open_chain
             and not reverse_is_same_cyclic_support
             and not reverse_is_same_open_support
             and not cyclic_chain_covers_open_strand
             and not collapsed_chain_has_no_direction
+            and not cyclic_direction_is_unique
         ):
             raise BatchedChamferError(
                 "AMBIGUOUS_STRAND_PROJECTION_DIRECTION",
@@ -2101,8 +2578,17 @@ def _orient_chain_to_strand(chain, strand):
 
 # 把 overlap intervals 投影到 chain 的真实 Edge，并按 Edge 保守切为 regular/setback runs。
 # chain/strand/forbidden_intervals: 有序 Boundary chain、Plan strand 与 normalized u 禁区；返回两类 maximal runs。
-def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
-    oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+def _split_chain_by_forbidden_intervals(
+    chain,
+    strand,
+    forbidden_intervals,
+    allowed_segment_indices=None,
+):
+    oriented_chain, parameters = _chain_strand_parameters(
+        chain,
+        strand,
+        allowed_segment_indices=allowed_segment_indices,
+    )
     cyclic_edge_count = len(oriented_chain["edge_ids"])
     if oriented_chain["is_cyclic"]:
         coordinates = list(oriented_chain["coordinates"])
@@ -2246,6 +2732,46 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
                     ).items()
                     if edge_id in edge_ids[run_start:index]
                 },
+                "endpoint_port_tokens_by_edge": {
+                    edge_id: list(tokens)
+                    for edge_id, tokens in oriented_chain.get(
+                        "endpoint_port_tokens_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in edge_ids[run_start:index]
+                },
+                "adjacent_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in oriented_chain.get(
+                        "adjacent_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in edge_ids[run_start:index]
+                },
+                "groove_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in oriented_chain.get(
+                        "groove_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in edge_ids[run_start:index]
+                },
+                "cutter_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in oriented_chain.get(
+                        "cutter_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in edge_ids[run_start:index]
+                },
+                "cutter_face_topology_by_edge": {
+                    edge_id: list(records)
+                    for edge_id, records in oriented_chain.get(
+                        "cutter_face_topology_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in edge_ids[run_start:index]
+                },
             }
         )
         run_start = index
@@ -2254,10 +2780,19 @@ def _split_chain_by_forbidden_intervals(chain, strand, forbidden_intervals):
 
 # 将当前 correspondence 的 rail pair 直接穿过 overlap 内部的完整 Edge span 并入 setback envelope。
 # chains/strand/forbidden_intervals: 当前 pair 的两侧真实 Boundary chains、FeatureStrand 与原始 overlap 禁区；返回扩展禁区及 proof。
-def _paired_rail_forbidden_edge_envelopes(chains, strand, forbidden_intervals):
+def _paired_rail_forbidden_edge_envelopes(
+    chains,
+    strand,
+    forbidden_intervals,
+    allowed_segment_indices=None,
+):
     projected_edges = []
     for chain in chains:
-        oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+        oriented_chain, parameters = _chain_strand_parameters(
+            chain,
+            strand,
+            allowed_segment_indices=allowed_segment_indices,
+        )
         if oriented_chain["is_cyclic"]:
             parameters = list(parameters)
             closure_parameter = float(parameters[0])
@@ -2403,6 +2938,46 @@ def _trim_open_run_to_interval(run, interval):
             ).items()
             if edge_id in selected_edge_ids
         },
+        "endpoint_port_tokens_by_edge": {
+            edge_id: list(tokens)
+            for edge_id, tokens in run.get(
+                "endpoint_port_tokens_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "adjacent_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "adjacent_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "groove_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "groove_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "cutter_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "cutter_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "cutter_face_topology_by_edge": {
+            edge_id: list(records)
+            for edge_id, records in run.get(
+                "cutter_face_topology_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
     }
 
 
@@ -2465,6 +3040,46 @@ def _trim_run_endpoint_edges(run, start_trim, end_trim):
             edge_id: list(signatures)
             for edge_id, signatures in run.get(
                 "endpoint_topology_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "endpoint_port_tokens_by_edge": {
+            edge_id: list(tokens)
+            for edge_id, tokens in run.get(
+                "endpoint_port_tokens_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "adjacent_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "adjacent_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "groove_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "groove_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "cutter_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "cutter_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
+        "cutter_face_topology_by_edge": {
+            edge_id: list(records)
+            for edge_id, records in run.get(
+                "cutter_face_topology_by_edge",
                 {},
             ).items()
             if edge_id in selected_edge_ids
@@ -2536,6 +3151,46 @@ def _defer_zero_length_run_edges(run, radius):
             edge_id: list(signatures)
             for edge_id, signatures in run.get(
                 "endpoint_topology_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "endpoint_port_tokens_by_edge": {
+            edge_id: list(tokens)
+            for edge_id, tokens in run.get(
+                "endpoint_port_tokens_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "adjacent_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "adjacent_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "groove_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "groove_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "cutter_face_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "cutter_face_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "cutter_face_topology_by_edge": {
+            edge_id: list(records)
+            for edge_id, records in run.get(
+                "cutter_face_topology_by_edge",
                 {},
             ).items()
             if edge_id in kept_edge_ids
@@ -3300,11 +3955,6 @@ def _unique_perfect_matching(left_ids, right_ids, candidates):
 # runs: 同一 correspondence side 的 open runs；返回按稳定 Edge IDs 排序的 stitched runs。
 def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
     remaining = [dict(run) for run in runs]
-    parameter_tolerance = max(
-        2.0e-3,
-        radius / max(float(strand_length), 1.0e-12),
-    )
-    point_tolerance = max(1.0e-4, radius * 0.50)
     changed = True
     while changed:
         changed = False
@@ -3332,11 +3982,8 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                     )
                 ):
                     continue
-                u_gap = abs(
-                    left_parameters[-1] - right_parameters[0]
-                )
                 seam_shift = 0
-                if strand_cyclic and u_gap > parameter_tolerance:
+                if strand_cyclic:
                     seam_candidates = sorted(
                         (
                             abs(
@@ -3348,11 +3995,7 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                         )
                         for shift in range(-2, 3)
                     )
-                    u_gap, _, seam_shift = seam_candidates[0]
-                point_gap = (
-                    Vector(left["coordinates"][-1])
-                    - Vector(right["coordinates"][0])
-                ).length
+                    _, _, seam_shift = seam_candidates[0]
                 left_endpoint_tokens = left.get("endpoint_tokens", ())
                 right_endpoint_tokens = right.get("endpoint_tokens", ())
                 topology_contiguous = (
@@ -3360,11 +4003,12 @@ def _stitch_contiguous_regular_runs(runs, radius, strand_length, strand_cyclic):
                     and right_endpoint_tokens
                     and left_endpoint_tokens[-1] == right_endpoint_tokens[0]
                 )
-                if (
-                    u_gap > parameter_tolerance
-                    or point_gap > point_tolerance
-                    or not topology_contiguous
-                ):
+                seam_parameter_valid = (
+                    strand_cyclic
+                    or right_parameters[0]
+                    >= left_parameters[-1] - 1.0e-10
+                )
+                if not topology_contiguous or not seam_parameter_valid:
                     continue
                 successor_indices[left_index].append(
                     (right_index, seam_shift)
@@ -3477,6 +4121,104 @@ def _defer_stitched_micro_loops(run, radius):
         "branch_setback": bool(run.get("branch_setback")),
     }
     return retained, (proof,)
+
+
+# 按 u turning points 把往返 Boundary walk 拆成 maximal monotonic runs，保持 Edge exact/disjoint。
+# run: 含有序 Edge、坐标、tokens 与逐点 u 的 open run；返回单调 fragments。
+def _split_run_at_parameter_turns(run):
+    parameters = [float(value) for value in run.get("u_values", ())]
+    if len(parameters) != len(run.get("edge_ids", ())) + 1:
+        return (run,)
+    directions = []
+    current_direction = 0
+    for current, following in zip(parameters, parameters[1:]):
+        delta = following - current
+        direction = 1 if delta > 1.0e-10 else -1 if delta < -1.0e-10 else 0
+        if direction:
+            current_direction = direction
+        directions.append(current_direction)
+    split_indices = [0]
+    previous_direction = 0
+    for edge_index, direction in enumerate(directions):
+        if previous_direction and direction and direction != previous_direction:
+            split_indices.append(edge_index)
+        if direction:
+            previous_direction = direction
+    split_indices.append(len(run["edge_ids"]))
+    source_run_id = _stable_fingerprint(run["edge_ids"])
+    source_direction = next(
+        (direction for direction in directions if direction),
+        0,
+    )
+    if len(split_indices) <= 2:
+        return (
+            {
+                **run,
+                "turn_source_run_id": source_run_id,
+                "turn_fragment_index": 0,
+                "turn_fragment_count": 1,
+                "turn_original_direction": source_direction,
+            },
+        )
+    fragments = []
+    fragment_ranges = [
+        (start, end)
+        for start, end in zip(split_indices, split_indices[1:])
+        if end > start
+    ]
+    for fragment_index, (start, end) in enumerate(fragment_ranges):
+        if end <= start:
+            continue
+        selected_edge_ids = list(run["edge_ids"][start:end])
+        original_direction = next(
+            (
+                direction
+                for direction in directions[start:end]
+                if direction
+            ),
+            0,
+        )
+        fragment = {
+            **run,
+            "edge_ids": selected_edge_ids,
+            "coordinates": list(run["coordinates"])[start : end + 1],
+            "endpoint_tokens": list(run.get("endpoint_tokens", ()))[
+                start : end + 1
+            ],
+            "u_values": parameters[start : end + 1],
+            "u_interval": [parameters[start], parameters[end]],
+            "is_cyclic": False,
+            "turn_source_run_id": source_run_id,
+            "turn_fragment_index": fragment_index,
+            "turn_fragment_count": len(fragment_ranges),
+            "turn_original_direction": original_direction,
+        }
+        for key in (
+            "junction_endpoint_tokens_by_edge",
+            "endpoint_degrees_by_edge",
+            "endpoint_topology_signatures_by_edge",
+            "endpoint_port_tokens_by_edge",
+            "adjacent_face_signatures_by_edge",
+            "groove_face_signatures_by_edge",
+            "cutter_face_signatures_by_edge",
+            "cutter_face_topology_by_edge",
+        ):
+            fragment[key] = {
+                edge_id: value
+                for edge_id, value in run.get(key, {}).items()
+                if edge_id in selected_edge_ids
+            }
+        if fragment["u_values"][-1] < fragment["u_values"][0]:
+            fragment = {
+                **fragment,
+                "edge_ids": list(reversed(fragment["edge_ids"])),
+                "coordinates": list(reversed(fragment["coordinates"])),
+                "endpoint_tokens": list(reversed(fragment["endpoint_tokens"])),
+                "u_values": list(reversed(fragment["u_values"])),
+                "u_interval": list(reversed(fragment["u_interval"])),
+            }
+        fragments.append(fragment)
+    return tuple(fragments)
 
 
 # 识别同一 Rail 内贴附于主 Boundary chain 的独立微型闭环；仅以直接拓扑与最近真实 Edge 证明交给 junction。
@@ -3756,6 +4498,111 @@ def _balance_regular_run_fragments(left_runs, right_runs, cyclic):
             else (run,)
         )
     return tuple(balanced_left), tuple(balanced_right)
+
+
+# 证明两条 rail run 共同邻接同一组 Boolean groove Faces；这是 direct topology incidence，不做距离或 score 配对。
+# left_run/right_run: 同一 Plan component 的左右 runs；返回逐 Edge 完整的共享 Face signatures witness，或 None。
+def _shared_groove_face_incidence_witness(left_run, right_run):
+    left_by_edge = left_run.get("adjacent_face_signatures_by_edge", {})
+    right_by_edge = right_run.get("adjacent_face_signatures_by_edge", {})
+    if not left_by_edge or not right_by_edge:
+        return None
+    left_signatures = {
+        signature
+        for edge_id in left_run["edge_ids"]
+        for signature in left_by_edge.get(edge_id, ())
+    }
+    right_signatures = {
+        signature
+        for edge_id in right_run["edge_ids"]
+        for signature in right_by_edge.get(edge_id, ())
+    }
+    shared_signatures = left_signatures & right_signatures
+    if not shared_signatures:
+        return None
+    left_witnesses = {
+        edge_id: sorted(set(left_by_edge.get(edge_id, ())) & shared_signatures)
+        for edge_id in left_run["edge_ids"]
+    }
+    right_witnesses = {
+        edge_id: sorted(set(right_by_edge.get(edge_id, ())) & shared_signatures)
+        for edge_id in right_run["edge_ids"]
+    }
+    if any(not signatures for signatures in left_witnesses.values()) or any(
+        not signatures for signatures in right_witnesses.values()
+    ):
+        return None
+    return {
+        "proof_version": "SHARED_GROOVE_FACE_INCIDENCE_V1",
+        "shared_face_signatures": sorted(shared_signatures),
+        "left_edge_witnesses": left_witnesses,
+        "right_edge_witnesses": right_witnesses,
+    }
+
+
+# 证明两条 Boundary runs 分别落在同一四边 Pipe profile 的相对 Faces 上。
+# left_run/right_run: 同一 Plan atom 的左右 runs；返回逐 Edge 完整的 Cutter topology witness 或 None。
+def _opposite_cutter_profile_witness(left_run, right_run):
+    left_topology = left_run.get("cutter_face_topology_by_edge", {})
+    right_topology = right_run.get("cutter_face_topology_by_edge", {})
+    if not left_topology or not right_topology:
+        return None
+
+    def edge_face_records(run, topology_by_edge):
+        records_by_edge = {}
+        for edge_id in run["edge_ids"]:
+            records = [
+                record
+                for record in topology_by_edge.get(edge_id, ())
+                if record.get("topology_status") == "PROVEN_C4_PIPE"
+            ]
+            if len(records) != 1 or not records[0].get("face_signature"):
+                return None
+            records_by_edge[edge_id] = records[0]
+        return records_by_edge
+
+    left_records = edge_face_records(left_run, left_topology)
+    right_records = edge_face_records(right_run, right_topology)
+    if left_records is None or right_records is None:
+        return None
+    left_face_signatures = {
+        record["face_signature"] for record in left_records.values()
+    }
+    right_face_signatures = {
+        record["face_signature"] for record in right_records.values()
+    }
+    if not left_face_signatures or not right_face_signatures:
+        return None
+    if any(
+        record["profile_opposite_face_signature"]
+        not in right_face_signatures
+        for record in left_records.values()
+    ) or any(
+        record["profile_opposite_face_signature"]
+        not in left_face_signatures
+        for record in right_records.values()
+    ):
+        return None
+    left_ring_ids = {
+        record["profile_ring_id"] for record in left_records.values()
+    }
+    right_ring_ids = {
+        record["profile_ring_id"] for record in right_records.values()
+    }
+    if left_ring_ids != right_ring_ids:
+        return None
+    return {
+        "proof_version": "OPPOSITE_CUTTER_PROFILE_FACES_V1",
+        "profile_ring_ids": sorted(left_ring_ids),
+        "left_edge_face_signatures": {
+            edge_id: record["face_signature"]
+            for edge_id, record in sorted(left_records.items())
+        },
+        "right_edge_face_signatures": {
+            edge_id: record["face_signature"]
+            for edge_id, record in sorted(right_records.items())
+        },
+    }
 
 
 # 从原始 run 提取 regular core 两端被 endpoint trim 留下的真实 Edge residues。
@@ -4306,6 +5153,69 @@ def _match_regular_run_components(
     strand,
     radius,
 ):
+    input_left_edge_ids = {
+        edge_id for run in left_runs for edge_id in run["edge_ids"]
+    }
+    input_right_edge_ids = {
+        edge_id for run in right_runs for edge_id in run["edge_ids"]
+    }
+
+    def topology_stitch_component_runs(runs, side):
+        if not runs:
+            return None
+        ordered_runs = sorted(
+            (dict(run) for run in runs),
+            key=lambda run: (
+                float(run["u_values"][0]),
+                float(run["u_values"][-1]),
+                run["edge_ids"],
+            ),
+        )
+        stitched = ordered_runs[0]
+        for following in ordered_runs[1:]:
+            previous_tokens = list(stitched.get("endpoint_tokens", ()))
+            following_tokens = list(following.get("endpoint_tokens", ()))
+            if not previous_tokens or not following_tokens:
+                return None
+            direct_topology = previous_tokens[-1] == following_tokens[0]
+            if not direct_topology:
+                return None
+            appended_endpoint_tokens = list(
+                following["endpoint_tokens"][1:]
+            )
+            stitched = {
+                **stitched,
+                "edge_ids": [*stitched["edge_ids"], *following["edge_ids"]],
+                "endpoint_tokens": [
+                    *stitched["endpoint_tokens"],
+                    *appended_endpoint_tokens,
+                ],
+                "coordinates": [
+                    *stitched["coordinates"],
+                    *following["coordinates"][1:],
+                ],
+                "u_values": [
+                    *stitched["u_values"],
+                    *following["u_values"][1:],
+                ],
+                "u_interval": [
+                    float(stitched["u_values"][0]),
+                    float(following["u_values"][-1]),
+                ],
+            }
+        if len(stitched["edge_ids"]) != len(
+            input_left_edge_ids if side == "LEFT" else input_right_edge_ids
+        ):
+            return None
+        return stitched
+
+    if len(left_runs) > 1 or len(right_runs) > 1:
+        stitched_left = topology_stitch_component_runs(left_runs, "LEFT")
+        stitched_right = topology_stitch_component_runs(right_runs, "RIGHT")
+        if stitched_left is not None:
+            left_runs = (stitched_left,)
+        if stitched_right is not None:
+            right_runs = (stitched_right,)
     strand_length = _feature_strand_arc_length(strand)
     left_runs = _stitch_contiguous_regular_runs(
         left_runs,
@@ -4319,6 +5229,13 @@ def _match_regular_run_components(
         strand_length,
         strand.cyclic,
     )
+    if len(left_runs) > 1 or len(right_runs) > 1:
+        stitched_left = topology_stitch_component_runs(left_runs, "LEFT")
+        stitched_right = topology_stitch_component_runs(right_runs, "RIGHT")
+        if stitched_left is not None:
+            left_runs = (stitched_left,)
+        if stitched_right is not None:
+            right_runs = (stitched_right,)
     normalized_sides = []
     micro_loop_proofs = []
     for side, runs in (("LEFT", left_runs), ("RIGHT", right_runs)):
@@ -4345,6 +5262,16 @@ def _match_regular_run_components(
             )
         normalized_sides.append(tuple(normalized))
     left_runs, right_runs = normalized_sides
+    left_runs = tuple(
+        fragment
+        for run in left_runs
+        for fragment in _split_run_at_parameter_turns(run)
+    )
+    right_runs = tuple(
+        fragment
+        for run in right_runs
+        for fragment in _split_run_at_parameter_turns(run)
+    )
     non_monotonic_runs = [
         (side, run)
         for side, runs in (("LEFT", left_runs), ("RIGHT", right_runs))
@@ -4398,12 +5325,130 @@ def _match_regular_run_components(
                     "reason": "NON_MONOTONIC_U",
                     "micro_loop_junction_proofs": list(micro_loop_proofs),
                 },
+        )
+    full_cyclic_left_runs = [
+        run for run in left_runs if run.get("full_cyclic_atom")
+    ]
+    full_cyclic_right_runs = [
+        run for run in right_runs if run.get("full_cyclic_atom")
+    ]
+    if len(full_cyclic_left_runs) == 1 and len(full_cyclic_right_runs) == 1:
+        left_run = full_cyclic_left_runs[0]
+        right_run = full_cyclic_right_runs[0]
+        deferred_edge_ids = {
+            edge_id
+            for proof in micro_loop_proofs
+            for edge_id in proof.get("edge_ids", ())
+        }
+        if (
+            (input_left_edge_ids - set(left_run["edge_ids"]) - deferred_edge_ids)
+            or (input_right_edge_ids - set(right_run["edge_ids"]) - deferred_edge_ids)
+        ):
+            return (), (
+                {
+                    "correspondence_id": correspondence.correspondence_id,
+                    "left_run_ids": [
+                        _stable_fingerprint(run["edge_ids"])
+                        for run in left_runs
+                    ],
+                    "right_run_ids": [
+                        _stable_fingerprint(run["edge_ids"])
+                        for run in right_runs
+                    ],
+                    "solution_count_capped": 0,
+                    "left_runs": list(left_runs),
+                    "right_runs": list(right_runs),
+                    "reason": "INCOMPLETE_FULL_CYCLIC_OWNERSHIP_COVERAGE",
+                    "micro_loop_junction_proofs": list(micro_loop_proofs),
+                },
             )
+        if len(left_runs) != 1 or len(right_runs) != 1:
+            return (), (
+                {
+                    "correspondence_id": correspondence.correspondence_id,
+                    "left_run_ids": [
+                        _stable_fingerprint(run["edge_ids"])
+                        for run in left_runs
+                    ],
+                    "right_run_ids": [
+                        _stable_fingerprint(run["edge_ids"])
+                        for run in right_runs
+                    ],
+                    "solution_count_capped": 0,
+                    "left_runs": list(left_runs),
+                    "right_runs": list(right_runs),
+                    "reason": "MULTIPLE_FULL_CYCLIC_OWNER_COMPONENTS",
+                    "micro_loop_junction_proofs": list(micro_loop_proofs),
+                },
+            )
+        return (
+            (
+                {
+                    "left_run_id": _stable_fingerprint(left_run["edge_ids"]),
+                    "right_run_id": _stable_fingerprint(right_run["edge_ids"]),
+                    "left": left_run,
+                    "right": right_run,
+                    "width_inlier_ratio": None,
+                    "maximum_width_error": None,
+                    "endpoint_residue_matches": [],
+                    "micro_loop_junction_proofs": list(micro_loop_proofs),
+                    "pairing_backend": "PLAN_COMPONENT_OWNERSHIP_V2",
+                },
+            ),
+            (),
+        )
     left_runs, right_runs = _balance_regular_run_fragments(
         left_runs,
         right_runs,
         strand.cyclic,
     )
+    structural_pairs = [
+        (left_run, right_run, witness)
+        for left_run in left_runs
+        for right_run in right_runs
+        for witness in (
+            _opposite_cutter_profile_witness(left_run, right_run)
+            or _shared_groove_face_incidence_witness(left_run, right_run),
+        )
+        if witness is not None
+    ]
+    if len(structural_pairs) == 1:
+        left_run, right_run, witness = structural_pairs[0]
+        return (
+            (
+                {
+                    "left_run_id": _stable_fingerprint(left_run["edge_ids"]),
+                    "right_run_id": _stable_fingerprint(right_run["edge_ids"]),
+                    "left": left_run,
+                    "right": right_run,
+                    "width_inlier_ratio": None,
+                    "maximum_width_error": None,
+                    "endpoint_residue_matches": [],
+                    "micro_loop_junction_proofs": list(micro_loop_proofs),
+                    "pairing_backend": "PLAN_COMPONENT_OWNERSHIP_V2",
+                    "ownership_witness": witness,
+                },
+            ),
+            (),
+        )
+    return (), (
+        {
+            "correspondence_id": correspondence.correspondence_id,
+            "left_run_ids": [
+                _stable_fingerprint(run["edge_ids"]) for run in left_runs
+            ],
+            "right_run_ids": [
+                _stable_fingerprint(run["edge_ids"]) for run in right_runs
+            ],
+            "solution_count_capped": 0,
+            "left_runs": list(left_runs),
+            "right_runs": list(right_runs),
+            "reason": "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+            "micro_loop_junction_proofs": list(micro_loop_proofs),
+        },
+    )
+    # 旧 distance/DP matching 已隔离；V2 runtime 在上方 fail-closed 返回。
+    """
     left_by_id = {
         _stable_fingerprint(run["edge_ids"]): run for run in left_runs
     }
@@ -4627,6 +5672,495 @@ def _match_regular_run_components(
                 }
             )
     return tuple(matched), tuple(unresolved)
+    """
+
+
+# 验证一条 rail 的 Edge 与 endpoint token 形成唯一 open chain 或 cyclic loop。
+# edge_ids/endpoint_tokens/chain_kind/side: Edge identity、按顶点顺序的 token、链类型与诊断侧；无返回值，失败时抛出稳定错误。
+def _validate_regular_bridge_rail(edge_ids, endpoint_tokens, chain_kind, side):
+    expected_token_count = len(edge_ids) + (0 if chain_kind == "CYCLIC" else 1)
+    if (
+        chain_kind not in {"OPEN", "CYCLIC"}
+        or not edge_ids
+        or len(set(edge_ids)) != len(edge_ids)
+        or len(endpoint_tokens) != expected_token_count
+        or (
+            chain_kind == "CYCLIC"
+            and len(set(endpoint_tokens)) != len(endpoint_tokens)
+        )
+    ):
+        raise BatchedChamferError(
+            "REGULAR_BRIDGE_RAIL_TOPOLOGY_INVALID",
+            "RegularBridgeJob rail 不是唯一有序的 open chain 或 cyclic loop",
+            {
+                "side": side,
+                "chain_kind": chain_kind,
+                "edge_ids": list(edge_ids),
+                "endpoint_tokens": list(endpoint_tokens),
+            },
+        )
+
+
+# 从已唯一 ownership matching 构造不可变 RegularBridgeJob，不根据坐标重新选择 rail pair。
+# correspondence/match/pipe_id/ledger_by_edge_id/semantic_batch_key: Plan correspondence、唯一 rail match、Pipe、Boundary ledger 与 batch；返回 job。
+def _regular_bridge_job_from_match(
+    correspondence,
+    match,
+    pipe_id,
+    ledger_by_edge_id,
+    semantic_batch_key=(),
+):
+    left_core = match["left"]
+    right_core = match["right"]
+    left_edge_ids = tuple(left_core["edge_ids"])
+    right_edge_ids = tuple(right_core["edge_ids"])
+    left_coordinates = tuple(
+        tuple(float(value) for value in point)
+        for point in left_core["coordinates"]
+    )
+    right_coordinates = tuple(
+        tuple(float(value) for value in point)
+        for point in right_core["coordinates"]
+    )
+    left_endpoint_tokens = tuple(left_core.get("endpoint_tokens", ()))
+    right_endpoint_tokens = tuple(right_core.get("endpoint_tokens", ()))
+    left_cyclic = bool(
+        left_core.get("is_cyclic") or left_core.get("full_cyclic_atom")
+    )
+    right_cyclic = bool(
+        right_core.get("is_cyclic") or right_core.get("full_cyclic_atom")
+    )
+    chain_kind = "CYCLIC" if left_cyclic and right_cyclic else "OPEN"
+    if left_cyclic != right_cyclic:
+        raise BatchedChamferError(
+            "REGULAR_BRIDGE_CHAIN_KIND_MISMATCH",
+            "RegularBridgeJob 两侧 rail 的 open/cyclic 类型不一致",
+            {
+                "correspondence_id": correspondence.correspondence_id,
+                "left_cyclic": left_cyclic,
+                "right_cyclic": right_cyclic,
+            },
+        )
+    if chain_kind == "CYCLIC":
+        if len(left_coordinates) == len(left_edge_ids) + 1:
+            left_coordinates = left_coordinates[:-1]
+            left_endpoint_tokens = left_endpoint_tokens[:-1]
+        if len(right_coordinates) == len(right_edge_ids) + 1:
+            right_coordinates = right_coordinates[:-1]
+            right_endpoint_tokens = right_endpoint_tokens[:-1]
+    if not left_endpoint_tokens or not right_endpoint_tokens:
+        raise BatchedChamferError(
+            "REGULAR_BRIDGE_ENDPOINT_TOKENS_MISSING",
+            "RegularBridgeJob 缺少按 rail 顺序冻结的 endpoint tokens",
+            {"correspondence_id": correspondence.correspondence_id},
+        )
+    _validate_regular_bridge_rail(
+        left_edge_ids,
+        left_endpoint_tokens,
+        chain_kind,
+        "LEFT",
+    )
+    _validate_regular_bridge_rail(
+        right_edge_ids,
+        right_endpoint_tokens,
+        chain_kind,
+        "RIGHT",
+    )
+    job_payload = {
+        "semantic_batch_key": list(semantic_batch_key),
+        "pipe_id": int(pipe_id),
+        "strand_id": correspondence.owner_strand_id,
+        "correspondence_id": correspondence.correspondence_id,
+        "source_patch_pair": list(correspondence.owner_surface_pair),
+        "left_edge_ids": list(left_edge_ids),
+        "right_edge_ids": list(right_edge_ids),
+        "chain_kind": chain_kind,
+    }
+    port_witness_ids = tuple(match.get("port_witness_ids", ()))
+    return RegularBridgeJob(
+        job_id=f"bridge:{_stable_fingerprint(job_payload)[:24]}",
+        semantic_batch_key=tuple(map(int, semantic_batch_key)),
+        pipe_id=int(pipe_id),
+        strand_id=correspondence.owner_strand_id,
+        correspondence_id=correspondence.correspondence_id,
+        source_patch_pair=tuple(map(int, correspondence.owner_surface_pair)),
+        left_edge_ids=left_edge_ids,
+        right_edge_ids=right_edge_ids,
+        left_endpoint_tokens=left_endpoint_tokens,
+        right_endpoint_tokens=right_endpoint_tokens,
+        left_coordinates=left_coordinates,
+        right_coordinates=right_coordinates,
+        chain_kind=chain_kind,
+        port_witness_ids=port_witness_ids,
+    )
+
+
+# 在 job-local BMesh 重建两条 rails 并调用 Blender Bridge Edge Loops，禁止坐标近似焊接。
+# job: 已通过 ownership/claim preflight 的 RegularBridgeJob；返回序列化 Faces、derived ports 与 BMesh op 诊断。
+def _bridge_regular_job(job):
+    provisional_bmesh = bmesh.new()
+    try:
+        vertices_by_token = {}
+        coordinates_by_token = {}
+        input_vertices = set()
+        input_edges = []
+
+        def build_rail(endpoint_tokens, coordinates, edge_ids, chain_kind, side):
+            rail_vertices = []
+            for token, coordinate in zip(endpoint_tokens, coordinates):
+                coordinate_key = tuple(round(float(value), 10) for value in coordinate)
+                existing_coordinate = coordinates_by_token.get(token)
+                if existing_coordinate is not None and existing_coordinate != coordinate_key:
+                    raise BatchedChamferError(
+                        "REGULAR_BRIDGE_ENDPOINT_TOKEN_CONFLICT",
+                        "同一 endpoint token 对应不一致坐标",
+                        {
+                            "job_id": job.job_id,
+                            "side": side,
+                            "endpoint_token": token,
+                            "existing_coordinate": existing_coordinate,
+                            "current_coordinate": coordinate_key,
+                        },
+                    )
+                coordinates_by_token[token] = coordinate_key
+                vertex = vertices_by_token.get(token)
+                if vertex is None:
+                    vertex = provisional_bmesh.verts.new(coordinate)
+                    vertices_by_token[token] = vertex
+                rail_vertices.append(vertex)
+                input_vertices.add(vertex)
+            edge_pairs = list(zip(rail_vertices, rail_vertices[1:]))
+            if chain_kind == "CYCLIC":
+                edge_pairs.append((rail_vertices[-1], rail_vertices[0]))
+            if len(edge_pairs) != len(edge_ids):
+                raise BatchedChamferError(
+                    "REGULAR_BRIDGE_EDGE_TOKEN_COUNT_MISMATCH",
+                    "RegularBridgeJob Edge 与 endpoint token 数量不一致",
+                    {"job_id": job.job_id, "side": side},
+                )
+            for edge_id, vertices in zip(edge_ids, edge_pairs):
+                if vertices[0] is vertices[1]:
+                    raise BatchedChamferError(
+                        "REGULAR_BRIDGE_COLLAPSED_INPUT_EDGE",
+                        "RegularBridgeJob endpoint identity 生成 collapsed Edge",
+                        {"job_id": job.job_id, "edge_id": edge_id},
+                    )
+                input_edges.append(provisional_bmesh.edges.new(vertices))
+
+        build_rail(
+            job.left_endpoint_tokens,
+            job.left_coordinates,
+            job.left_edge_ids,
+            job.chain_kind,
+            "LEFT",
+        )
+        build_rail(
+            job.right_endpoint_tokens,
+            job.right_coordinates,
+            job.right_edge_ids,
+            job.chain_kind,
+            "RIGHT",
+        )
+        provisional_bmesh.verts.ensure_lookup_table()
+        provisional_bmesh.edges.ensure_lookup_table()
+        bridge_result = bmesh.ops.bridge_loops(
+            provisional_bmesh,
+            edges=input_edges,
+            use_pairs=False,
+            use_cyclic=False,
+            use_merge=False,
+            merge_factor=0.5,
+            twist_offset=0,
+        )
+        output_faces = tuple(bridge_result.get("faces", ()))
+        output_edges = tuple(bridge_result.get("edges", ()))
+        bridge_backend = "BLENDER_BRIDGE_LOOPS_V1"
+        if not output_faces:
+            raise BatchedChamferError(
+                "REGULAR_BRIDGE_EMPTY_RESULT",
+                "Blender bridge_loops 未生成 regular Faces",
+                {"job_id": job.job_id},
+            )
+        unexpected_vertices = set(provisional_bmesh.verts) - input_vertices
+        if unexpected_vertices:
+            raise BatchedChamferError(
+                "REGULAR_BRIDGE_EXTRA_VERTEX",
+                "Blender bridge_loops 生成未记录 Vertex",
+                {"job_id": job.job_id, "extra_vertex_count": len(unexpected_vertices)},
+            )
+        input_edge_face_counts = tuple(
+            len(edge.link_faces) for edge in input_edges
+        )
+        if any(count != 1 for count in input_edge_face_counts):
+            raise BatchedChamferError(
+                "REGULAR_BRIDGE_FACE_WITNESS_MISMATCH",
+                "RegularBridgeJob 每条输入 Boundary Edge 必须恰好被一个 Face 消费",
+                {
+                    "job_id": job.job_id,
+                    "input_edge_face_counts": list(input_edge_face_counts),
+                },
+            )
+        zero_area_faces = []
+        for face_index, face in enumerate(output_faces):
+            normal = Vector()
+            for loop_index, vertex in enumerate(face.verts):
+                normal += vertex.co.cross(
+                    face.verts[(loop_index + 1) % len(face.verts)].co
+                )
+            if normal.length <= 1.0e-12:
+                zero_area_faces.append(
+                    {
+                        "face_index": face_index,
+                        "coordinates": [
+                            tuple(round(float(value), 10) for value in vertex.co)
+                            for vertex in face.verts
+                        ],
+                    }
+                )
+        if zero_area_faces:
+            raise BatchedChamferError(
+                "REGULAR_BRIDGE_ZERO_AREA_FACE",
+                "Blender bridge_loops 生成 zero-area Face",
+                {
+                    "job": asdict(job),
+                    "zero_area_face_count": len(zero_area_faces),
+                    "zero_area_faces": zero_area_faces[:32],
+                },
+            )
+        raw_faces = [
+            [
+                tuple(round(float(value), 8) for value in vertex.co)
+                for vertex in face.verts
+            ]
+            for face in output_faces
+        ]
+        incidences_by_edge = {}
+        for face_index, coordinates in enumerate(raw_faces):
+            for start_key, end_key in zip(
+                coordinates,
+                coordinates[1:] + coordinates[:1],
+            ):
+                incidences_by_edge.setdefault(
+                    tuple(sorted((start_key, end_key))),
+                    [],
+                ).append((face_index, start_key, end_key))
+        adjacency = {index: [] for index in range(len(raw_faces))}
+        for incidences in incidences_by_edge.values():
+            if len(incidences) != 2:
+                continue
+            left, right = incidences
+            same_direction = left[1:] == right[1:]
+            adjacency[left[0]].append((right[0], same_direction))
+            adjacency[right[0]].append((left[0], same_direction))
+        flip_state = {}
+        for seed in range(len(raw_faces)):
+            if seed in flip_state:
+                continue
+            flip_state[seed] = False
+            pending = [seed]
+            while pending:
+                face_index = pending.pop()
+                for neighbor_index, same_direction in adjacency[face_index]:
+                    required_flip = flip_state[face_index] ^ same_direction
+                    existing = flip_state.get(neighbor_index)
+                    if existing is not None:
+                        if existing != required_flip:
+                            raise BatchedChamferError(
+                                "REGULAR_BRIDGE_ORIENTATION_CONFLICT",
+                                "RegularBridgeJob Faces 无法形成一致 winding",
+                                {"job_id": job.job_id},
+                            )
+                        continue
+                    flip_state[neighbor_index] = required_flip
+                    pending.append(neighbor_index)
+        faces = [
+            list(reversed(coordinates)) if flip_state[index] else coordinates
+            for index, coordinates in enumerate(raw_faces)
+        ]
+        input_edge_set = set(input_edges)
+        derived_edges = [
+            edge
+            for edge in provisional_bmesh.edges
+            if edge not in input_edge_set and edge not in output_edges
+        ]
+        if job.chain_kind == "OPEN":
+            derived_edges = [
+                edge
+                for edge in provisional_bmesh.edges
+                if edge not in input_edge_set
+                and len(edge.link_faces) == 1
+            ]
+            terminal_token_pairs = {
+                frozenset(
+                    (
+                        job.left_endpoint_tokens[endpoint_index],
+                        job.right_endpoint_tokens[endpoint_index],
+                    )
+                )
+                for endpoint_index in (0, -1)
+            }
+            derived_edges = [
+                edge
+                for edge in derived_edges
+                if frozenset(
+                    token
+                    for vertex in edge.verts
+                    for token, token_vertex in vertices_by_token.items()
+                    if token_vertex is vertex
+                )
+                in terminal_token_pairs
+            ]
+            if len(derived_edges) != 2:
+                raise BatchedChamferError(
+                    "REGULAR_BRIDGE_PORT_COUNT_MISMATCH",
+                    "Open RegularBridgeJob 未生成恰好两个 terminal ports",
+                    {"job_id": job.job_id, "derived_edge_count": len(derived_edges)},
+                )
+        elif any(
+            edge not in input_edge_set and len(edge.link_faces) == 1
+            for edge in provisional_bmesh.edges
+        ):
+            raise BatchedChamferError(
+                "REGULAR_BRIDGE_CYCLIC_BOUNDARY_LEAK",
+                "Cyclic RegularBridgeJob 生成额外 open port",
+                {"job_id": job.job_id},
+            )
+        derived_ports = [
+            {
+                "port_id": f"port:{job.job_id}:{index}",
+                "endpoint_tokens": sorted(
+                    token
+                    for vertex in edge.verts
+                    for token, token_vertex in vertices_by_token.items()
+                    if token_vertex is vertex
+                ),
+                "port_witness_ids": list(job.port_witness_ids),
+                "endpoints": sorted(
+                    tuple(round(float(value), 8) for value in vertex.co)
+                    for vertex in edge.verts
+                ),
+            }
+            for index, edge in enumerate(
+                sorted(
+                    derived_edges,
+                    key=lambda edge: sorted(
+                        tuple(round(float(value), 8) for value in vertex.co)
+                        for vertex in edge.verts
+                    ),
+                )
+            )
+        ]
+        return {
+            "faces": faces,
+            "derived_ports": derived_ports,
+            "bridge_face_count": len(output_faces),
+            "bridge_returned_edge_count": len(output_edges),
+            "input_edge_face_witness_count": len(input_edge_face_counts),
+            "backend": bridge_backend,
+        }
+    except BatchedChamferError:
+        raise
+    except Exception as error:
+        raise BatchedChamferError(
+            "REGULAR_BRIDGE_BLENDER_OP_FAILED",
+            "Blender bridge_loops 执行失败",
+            {"job_id": job.job_id, "error": str(error)},
+        ) from error
+    finally:
+        provisional_bmesh.free()
+
+
+# 对一组 RegularBridgeJob 做全局 claim preflight，任一冲突时不运行 Blender op。
+# jobs/boundary_edge_ids: ownership jobs 与可选 Boundary universe；返回 edge_id→claim 及未归属 Edge。
+def _preflight_regular_bridge_claims(jobs, boundary_edge_ids=None):
+    claims = {}
+    for job in jobs:
+        for side, edge_ids in (
+            ("LEFT", job.left_edge_ids),
+            ("RIGHT", job.right_edge_ids),
+        ):
+            for edge_id in edge_ids:
+                current = {
+                    "claim_state": "REGULAR_BRIDGE",
+                    "job_id": job.job_id,
+                    "side": side,
+                    "face_consumer_id": None,
+                }
+                existing = claims.get(edge_id)
+                if existing is not None:
+                    raise BatchedChamferError(
+                        "REGULAR_BRIDGE_CLAIM_CONFLICT",
+                        "同一 Boundary Edge 被多个 RegularBridgeJob claim",
+                        {
+                            "edge_id": edge_id,
+                            "existing": existing,
+                            "current": current,
+                        },
+                    )
+                claims[edge_id] = current
+    boundary_edge_ids = set(boundary_edge_ids or claims)
+    outside_universe = set(claims) - boundary_edge_ids
+    if outside_universe:
+        raise BatchedChamferError(
+            "REGULAR_BRIDGE_CLAIM_OUTSIDE_UNIVERSE",
+            "RegularBridgeJob claim 超出 Boundary universe",
+            {"edge_ids": sorted(outside_universe)},
+        )
+    return claims, tuple(sorted(boundary_edge_ids - set(claims)))
+
+
+# 原子执行全部 job-local Blender Bridge；失败时不返回任何 publication。
+# jobs/boundary_edge_ids: 已生成 jobs 与可选 Boundary universe；返回 records、published claims 与 derived ports。
+def _execute_regular_bridge_jobs(jobs, boundary_edge_ids=None):
+    claims, unresolved_edge_ids = _preflight_regular_bridge_claims(
+        jobs,
+        boundary_edge_ids,
+    )
+    provisional_records = []
+    provisional_ports = []
+    provisional_claims = {edge_id: dict(claim) for edge_id, claim in claims.items()}
+    try:
+        for job in jobs:
+            result = _bridge_regular_job(job)
+            consumer_id = f"face-consumer:{job.job_id}"
+            for edge_id in (*job.left_edge_ids, *job.right_edge_ids):
+                provisional_claims[edge_id]["face_consumer_id"] = consumer_id
+            provisional_records.append(
+                {
+                    "job_id": job.job_id,
+                    "consumer_id": consumer_id,
+                    "pipe_id": job.pipe_id,
+                    "strand_id": job.strand_id,
+                    "correspondence_id": job.correspondence_id,
+                    "patch_pair": list(job.source_patch_pair),
+                    "left_edge_ids": list(job.left_edge_ids),
+                    "right_edge_ids": list(job.right_edge_ids),
+                    "chain_kind": job.chain_kind,
+                    "faces": result["faces"],
+                    "bridge_face_count": result["bridge_face_count"],
+                    "bridge_returned_edge_count": result[
+                        "bridge_returned_edge_count"
+                    ],
+                    "input_edge_face_witness_count": result[
+                        "input_edge_face_witness_count"
+                    ],
+                }
+            )
+            provisional_ports.extend(result["derived_ports"])
+    except Exception:
+        provisional_records.clear()
+        provisional_ports.clear()
+        provisional_claims.clear()
+        raise
+    return (
+        tuple(provisional_records),
+        tuple(
+            {"edge_id": edge_id, **claim}
+            for edge_id, claim in sorted(provisional_claims.items())
+        ),
+        tuple(provisional_ports),
+        unresolved_edge_ids,
+    )
 
 
 # 从已唯一匹配并裁切的真实 rail runs 生成 Strip Faces 与 ledger 消费记录。
@@ -5319,6 +6853,46 @@ def _partition_run_to_component_intervals(run, components):
                     ).items()
                     if edge_id in selected_edge_ids
                 },
+                "endpoint_port_tokens_by_edge": {
+                    edge_id: list(tokens)
+                    for edge_id, tokens in run.get(
+                        "endpoint_port_tokens_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "adjacent_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in run.get(
+                        "adjacent_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "groove_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in run.get(
+                        "groove_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "cutter_face_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in run.get(
+                        "cutter_face_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "cutter_face_topology_by_edge": {
+                    edge_id: list(records)
+                    for edge_id, records in run.get(
+                        "cutter_face_topology_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
             }
             fragments.append(
                 (
@@ -5410,6 +6984,49 @@ def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
                 ),
                 (component_interval,),
             )
+    if (
+        len(left_runs) == 1
+        and len(right_runs) == 1
+        and _common_run_interval(
+            left_runs[0]["u_interval"],
+            right_runs[0]["u_interval"],
+            False,
+        )
+        is not None
+    ):
+        component_interval = [atom_start, atom_end]
+        component_id = f"{atom['atom_id']}:0"
+        partitioned_left = _partition_run_to_component_intervals(
+            left_runs[0],
+            (component_interval,),
+        )
+        partitioned_right = _partition_run_to_component_intervals(
+            right_runs[0],
+            (component_interval,),
+        )
+        return (
+            tuple(
+                {
+                    **run,
+                    "atom_id": atom["atom_id"],
+                    "component_id": component_id,
+                    "component_u_interval": component_interval,
+                }
+                for component_index, run in partitioned_left
+                if component_index == 0
+            ),
+            tuple(
+                {
+                    **run,
+                    "atom_id": atom["atom_id"],
+                    "component_id": component_id,
+                    "component_u_interval": component_interval,
+                }
+                for component_index, run in partitioned_right
+                if component_index == 0
+            ),
+            (component_interval,),
+        )
     components = _common_atom_component_intervals(
         left_runs,
         right_runs,
@@ -5590,7 +7207,11 @@ def _short_component_setback_proof(
         if runs
     ]
     if (
-        unresolved.get("reason") != "NO_PERFECT_MATCHING"
+        unresolved.get("reason")
+        not in {
+            "NO_PERFECT_MATCHING",
+            "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+        }
         or unresolved.get("solution_count_capped") != 0
         or len(present_sides) != 1
         or (left_runs and right_runs)
@@ -5610,7 +7231,11 @@ def _short_component_setback_proof(
     present_start, present_end = sorted(map(float, present_runs[0]["u_interval"]))
     containment_tolerance_u = 1.0e-8
     if (
-        component_start < atom_start - containment_tolerance_u
+        (
+            unresolved.get("reason")
+            != "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+            and component_start < atom_start - containment_tolerance_u
+        )
         or component_end > atom_end + containment_tolerance_u
         or present_start < component_start - containment_tolerance_u
         or present_end > component_end + containment_tolerance_u
@@ -5715,6 +7340,54 @@ def _short_component_setback_proof(
     unique_boundaries = {
         boundary["boundary_id"]: boundary for boundary in adjacent_boundaries
     }
+    if (
+        unresolved.get("reason") == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+        and adjacent_atoms
+    ):
+        overlapping_atoms = []
+        for candidate in adjacent_atoms:
+            if candidate["atom_id"] == atom["atom_id"]:
+                continue
+            candidate_start, candidate_end = sorted(
+                map(float, candidate["u_interval"])
+            )
+            if (
+                max(component_start, candidate_start)
+                < min(component_end, candidate_end) - 1.0e-10
+            ):
+                overlapping_atoms.append(candidate)
+        unique_overlapping_atoms = {
+            candidate["atom_id"]: candidate
+            for candidate in overlapping_atoms
+        }
+        if len(unique_overlapping_atoms) == 1:
+            adjacent_atom = next(iter(unique_overlapping_atoms.values()))
+            boundary_id = (
+                "plan-atom-overlap:"
+                + _stable_fingerprint(
+                    {
+                        "atom_ids": sorted(
+                            (atom["atom_id"], adjacent_atom["atom_id"])
+                        ),
+                        "component_u_interval": [
+                            round(component_start, 10),
+                            round(component_end, 10),
+                        ],
+                    }
+                )[:20]
+            )
+            unique_boundaries = {
+                boundary_id: {
+                    "boundary_id": boundary_id,
+                    "boundary_type": "PLAN_ATOM_BOUNDARY",
+                    "boundary_side": "AMBIGUOUS_OVERLAP",
+                    "boundary_u": component_start,
+                    "atom_boundary_side": atom_side,
+                    "adjacent_atom_id": adjacent_atom["atom_id"],
+                    "adjacent_span_id": int(adjacent_atom["span_id"]),
+                    "adjacent_convexity": int(adjacent_atom["convexity"]),
+                }
+            }
     if source_boundary is not None:
         unique_boundaries[source_boundary["boundary_id"]] = {
             **source_boundary,
@@ -5854,6 +7527,37 @@ def _short_component_setback_proof(
                     "adjacent_span_id": int(adjacent_atom["span_id"]),
                     "adjacent_convexity": int(adjacent_atom["convexity"]),
                 }
+    if (
+        len(unique_boundaries) != 1
+        and unresolved.get("reason") == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+        and len(atom_boundary_candidates) == 1
+    ):
+        boundary_id = (
+            "plan-atom-boundary:"
+            + _stable_fingerprint(
+                {
+                    "atom_id": atom["atom_id"],
+                    "atom_boundary_side": atom_side,
+                    "boundary_u": round(atom_boundary_u, 10),
+                    "component_u_interval": [
+                        round(component_start, 10),
+                        round(component_end, 10),
+                    ],
+                }
+            )[:20]
+        )
+        unique_boundaries = {
+            boundary_id: {
+                "boundary_id": boundary_id,
+                "boundary_type": "PLAN_ATOM_BOUNDARY",
+                "boundary_side": atom_side,
+                "boundary_u": atom_boundary_u,
+                "atom_boundary_side": atom_side,
+                "adjacent_atom_id": None,
+                "adjacent_span_id": None,
+                "adjacent_convexity": None,
+            }
+        }
     if len(unique_boundaries) != 1:
         return None
     adjacent_boundary = next(iter(unique_boundaries.values()))
@@ -5907,15 +7611,13 @@ def _short_component_setback_proof(
 
 # 用同一 correspondence 相邻 Plan atom 的权威边界证明 cyclic short component；不接受普通 atom 内部碎片。
 # unresolved/atom/plan_atoms/strand/radius: 单侧 component、当前及全量 Plan atoms、权威 strand 与半径；返回 proof 或 None。
-def _cyclic_adjacent_atom_short_component_setback_proof(
+def _adjacent_atom_short_component_setback_proof(
     unresolved,
     atom,
     plan_atoms,
     strand,
     radius,
 ):
-    if not strand.cyclic:
-        return None
     present_sides = [
         (side, runs)
         for side, runs in (
@@ -5925,11 +7627,16 @@ def _cyclic_adjacent_atom_short_component_setback_proof(
         if runs
     ]
     if (
-        unresolved.get("reason") != "NO_PERFECT_MATCHING"
+        unresolved.get("reason")
+        not in {
+            "NO_PERFECT_MATCHING",
+            "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+        }
         or unresolved.get("solution_count_capped") != 0
         or len(present_sides) != 1
         or len(present_sides[0][1]) != 1
         or len(present_sides[0][1][0].get("edge_ids", ())) != 1
+        or present_sides[0][1][0].get("is_cyclic")
     ):
         return None
     present_side, present_runs = present_sides[0]
@@ -5964,7 +7671,7 @@ def _cyclic_adjacent_atom_short_component_setback_proof(
             if any(
                 abs(candidate_boundary + offset - boundary_u) <= 1.0e-8
                 for candidate_boundary in (candidate_start, candidate_end)
-                for offset in range(-2, 3)
+                for offset in (range(-2, 3) if strand.cyclic else (0,))
             ):
                 adjacent_atoms.append(candidate)
         unique_adjacent_atoms = {
@@ -5979,6 +7686,91 @@ def _cyclic_adjacent_atom_short_component_setback_proof(
                     next(iter(unique_adjacent_atoms.values())),
                 )
             )
+    if (
+        not boundary_candidates
+        and unresolved.get("reason") == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+    ):
+        component_interval = (component_start, component_end)
+        adjacent_atoms = []
+        for candidate in plan_atoms:
+            if candidate["atom_id"] == atom["atom_id"]:
+                continue
+            candidate_start, candidate_end = sorted(
+                map(float, candidate["u_interval"])
+            )
+            candidate_interval = (candidate_start, candidate_end)
+            overlap_length = max(
+                0.0,
+                min(component_interval[1], candidate_interval[1])
+                - max(component_interval[0], candidate_interval[0]),
+            )
+            if overlap_length > 1.0e-10:
+                adjacent_atoms.append(candidate)
+        unique_adjacent_atoms = {
+            candidate["atom_id"]: candidate for candidate in adjacent_atoms
+        }
+        if len(unique_adjacent_atoms) == 1:
+            adjacent_atom = next(iter(unique_adjacent_atoms.values()))
+            boundary_candidates.append(
+                (
+                    "AMBIGUOUS_OVERLAP",
+                    component_start,
+                    0.0,
+                    adjacent_atom,
+                )
+            )
+    if (
+        len(boundary_candidates) != 1
+        and unresolved.get("reason") == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+    ):
+        nearest_atom_boundary = min(
+            (
+                ("ATOM_START", atom_start),
+                ("ATOM_END", atom_end),
+            ),
+            key=lambda item: min(
+                abs(component_start - item[1]),
+                abs(component_end - item[1]),
+            ),
+        )
+        boundary_distance = min(
+            abs(component_start - nearest_atom_boundary[1]),
+            abs(component_end - nearest_atom_boundary[1]),
+        ) * strand_length
+        if boundary_distance <= maximum_arc_length + 1.0e-10:
+            boundary_id = (
+                "plan-atom-boundary:"
+                + _stable_fingerprint(
+                    {
+                        "atom_id": atom["atom_id"],
+                        "boundary_side": nearest_atom_boundary[0],
+                        "boundary_u": round(nearest_atom_boundary[1], 10),
+                    }
+                )[:20]
+            )
+            return {
+                "proof_version": "SHORT_COMPONENT_SETBACK_V1",
+                "correspondence_id": unresolved["correspondence_id"],
+                "atom_id": atom["atom_id"],
+                "component_id": unresolved["component_id"],
+                "present_side": present_side,
+                "edge_id": present_run["edge_ids"][0],
+                "coordinates": list(present_run["coordinates"]),
+                "component_u_interval": [component_start, component_end],
+                "component_arc_length": component_arc_length,
+                "maximum_arc_length": maximum_arc_length,
+                "boundary_distance": boundary_distance,
+                "boundary_id": boundary_id,
+                "boundary_type": "PLAN_ATOM_BOUNDARY",
+                "boundary_side": nearest_atom_boundary[0],
+                "atom_boundary_side": nearest_atom_boundary[0],
+                "adjacent_atom_id": None,
+                "adjacent_span_id": None,
+                "adjacent_convexity": None,
+                "span_id": int(atom["span_id"]),
+                "patch_pair": list(atom["patch_pair"]),
+                "convexity": int(atom["convexity"]),
+            }
     if len(boundary_candidates) != 1:
         return None
     atom_side, boundary_u, boundary_distance, adjacent_atom = (
@@ -6387,6 +8179,8 @@ def _commit_short_component_setback(
     for ledger_entry_item in ledger_entries:
         ledger_entry_item["classification"] = "SETBACK_RESERVED"
         ledger_entry_item["consumer_id"] = consumer_id
+        ledger_entry_item["claim_state"] = "PORT_RESERVED"
+        ledger_entry_item["face_consumer_id"] = None
     return {
         "port_id": consumer_id,
         "pipe_id": int(pipe_id),
@@ -7197,27 +8991,40 @@ def _reconcile_structural_handoff_components(
     for port in setback_ports:
         port_edge_ids = set(port.get("ordered_edge_ids", ()))
         for proof in port.get("micro_loop_junction_proofs", ()):
-            if proof.get("proof_version") != "REGULAR_TERMINAL_TAIL_HANDOFF_V1":
+            proof_version = proof.get("proof_version")
+            if proof_version not in {
+                "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
+                "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
+            }:
                 continue
             proof_edge_ids = set(proof.get("edge_ids", ()))
             if not proof_edge_ids or not proof_edge_ids.issubset(port_edge_ids):
                 continue
-            if proof.get("boundary_witness", {}).get("boundary_type") not in {
-                "OVERLAP_FORBIDDEN_ENVELOPE",
-                "REGULAR_COMPONENT_BOUNDARY",
-            }:
-                continue
-            if proof.get("adjacent_regular", {}).get("adjacency_type") not in {
-                "BOOLEAN_SPLIT_TOPOLOGY_SIGNATURE",
-            }:
-                continue
-            chain_length = float(proof.get("chain_length", float("inf")))
-            maximum_chain_length = float(
-                proof.get("maximum_chain_length", float("-inf"))
-            )
-            if chain_length > maximum_chain_length + 1.0e-10:
-                continue
-            if sorted(map(int, proof.get("chain_terminal_degrees", ()))) != [1, 2]:
+            if proof_version == "REGULAR_TERMINAL_TAIL_HANDOFF_V1":
+                if proof.get("boundary_witness", {}).get("boundary_type") not in {
+                    "OVERLAP_FORBIDDEN_ENVELOPE",
+                    "REGULAR_COMPONENT_BOUNDARY",
+                }:
+                    continue
+                if proof.get("adjacent_regular", {}).get("adjacency_type") not in {
+                    "BOOLEAN_SPLIT_TOPOLOGY_SIGNATURE",
+                }:
+                    continue
+                chain_length = float(proof.get("chain_length", float("inf")))
+                maximum_chain_length = float(
+                    proof.get("maximum_chain_length", float("-inf"))
+                )
+                if chain_length > maximum_chain_length + 1.0e-10:
+                    continue
+                if sorted(map(int, proof.get("chain_terminal_degrees", ()))) != [1, 2]:
+                    continue
+            elif (
+                proof.get("adjacent_regular_gap_arc_length") != 0.0
+                or proof.get("handoff_boundary_type")
+                not in {"PLAN_TERMINAL", "PLAN_JUNCTION_BRANCH"}
+                or int(proof.get("outer_terminal_degree", -1)) not in {1, 2}
+                or not proof.get("adjacent_regular", {}).get("consumer_id")
+            ):
                 continue
             proof_entries.append((port, proof, proof_edge_ids))
 
@@ -7226,7 +9033,10 @@ def _reconcile_structural_handoff_components(
         remaining_components = []
         attempt_reconciled = []
         for unresolved in attempt.get("unresolved_components", ()):
-            if unresolved.get("reason") != "NO_PERFECT_MATCHING":
+            if unresolved.get("reason") not in {
+                "NO_PERFECT_MATCHING",
+                "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP",
+            }:
                 remaining_components.append(unresolved)
                 continue
             component_runs = list(unresolved.get("left_runs", ())) + list(
@@ -7585,8 +9395,8 @@ def _regular_component_bridge_handoff_proof(
     }
 
 
-# 证明单 Edge Boundary 是 Boolean 产生的近零长度 connector，并以真实共享端点接续唯一 Regular Strip。
-# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/radius: 当前单 Edge、atom、已提交 Strip、ledger、owner Patch 与半径；返回严格 connector proof 或 None。
+# 证明 Boolean 产生的近零长度 connector chain，并要求其两个外端都唯一接续同一 Regular Strip consumer。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/radius: 当前短链、atom、已提交 Strip、ledger、owner Patch 与半径；返回严格 connector proof 或 None。
 def _zero_length_regular_connector_handoff_proof(
     oriented_chain,
     claim,
@@ -7636,11 +9446,7 @@ def _zero_length_regular_connector_handoff_proof(
                     }
                 )
     unique_records = {
-        (
-            record["consumer_id"],
-            record["regular_boundary_side"],
-            record["shared_endpoint_token"],
-        ): record
+        (record["consumer_id"], record["shared_endpoint_token"]): record
         for record in adjacent_records
     }
     if len(unique_records) != 1:
@@ -7665,7 +9471,7 @@ def _zero_length_regular_connector_handoff_proof(
         sum(token in entry["endpoint_tokens"] for entry in rail_entries)
         for token in outer_tokens
     )
-    if len(outer_tokens) != 1 or outer_degrees not in ([1], [2]):
+    if len(outer_tokens) != 1 or outer_degrees != [1]:
         return {
             "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_OUTER_TERMINAL",
             "edge_id": edge_id,
@@ -7690,6 +9496,75 @@ def _zero_length_regular_connector_handoff_proof(
         "adjacent_regular": adjacent_record,
         "outer_endpoint_token": next(iter(outer_tokens)),
         "outer_endpoint_degree": outer_degrees[0],
+    }
+
+
+# 证明零长度 Edge 仅连接同一已提交 RegularBridgeJob 内的两个相邻 Face-consumed Edge；
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/radius: 单 Edge 残段、Plan claim、已提交 Strip、ledger、owner Patch 与半径；返回内部 connector proof 或 None。
+def _zero_length_regular_interior_connector_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    radius,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or len(oriented_chain.get("edge_ids", ())) != 1
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    edge_id = oriented_chain["edge_ids"][0]
+    edge_entry = ledger_by_edge_id[edge_id]
+    coordinates = [Vector(point) for point in edge_entry["endpoints"]]
+    edge_length = (coordinates[1] - coordinates[0]).length
+    maximum_edge_length = max(radius * 1.0e-2, 2.0e-6)
+    connector_tokens = set(edge_entry["endpoint_tokens"])
+    if (
+        edge_length > maximum_edge_length + 1.0e-10
+        or len(connector_tokens) != 2
+        or sorted(map(int, edge_entry.get("endpoint_degrees", ()))) != [2, 2]
+    ):
+        return None
+    adjacent_edges_by_token = {
+        token: [
+            entry
+            for entry in ledger_by_edge_id.values()
+            if entry["rail_id"] == edge_entry["rail_id"]
+            and entry["edge_id"] != edge_id
+            and token in entry["endpoint_tokens"]
+            and entry["classification"] == "REGULAR_STRIP_CONSUMED"
+        ]
+        for token in connector_tokens
+    }
+    if any(len(entries) != 1 for entries in adjacent_edges_by_token.values()):
+        return None
+    adjacent_entries = {
+        token: entries[0]
+        for token, entries in adjacent_edges_by_token.items()
+    }
+    return {
+        "proof_version": "ZERO_LENGTH_REGULAR_INTERIOR_CONNECTOR_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "edge_length": edge_length,
+        "maximum_edge_length": maximum_edge_length,
+        "connector_endpoint_degrees": list(edge_entry["endpoint_degrees"]),
+        "adjacent_regular": {
+            "consumer_ids": sorted(
+                {entry["consumer_id"] for entry in adjacent_entries.values()}
+            ),
+            "adjacent_edge_ids_by_endpoint_token": {
+                token: entry["edge_id"]
+                for token, entry in sorted(adjacent_entries.items())
+            },
+        },
     }
 
 
@@ -7845,7 +9720,11 @@ def _short_regular_terminal_handoff_proof(
         )
         for token in outer_tokens
     )
-    if len(outer_tokens) != 1 or outer_degrees != [1]:
+    if (
+        len(outer_tokens) != 1
+        or outer_degrees not in ([1], [2])
+        or outer_degrees == [2] and chain_length > max(radius * 1.0e-2, 2.0e-6) + 1.0e-10
+    ):
         return {
             "rejected_stage": "SHORT_REGULAR_TERMINAL_OUTER_ENDPOINT",
             "edge_ids": edge_ids,
@@ -8012,10 +9891,15 @@ def _paired_boundary_residual_handoff_proof(
     residual_outer_point = chain_end if shared_point == chain_start else chain_start
     continuation = residual_outer_point - shared_point
     previous = shared_point - adjacent_outer_point
-    if chain_length <= 1.0e-12 or previous.length <= 1.0e-12:
+    if (
+        chain_length <= 1.0e-12
+        or continuation.length <= 1.0e-12
+        or previous.length <= 1.0e-12
+    ):
         return reject(
             "DEGENERATE_CONTINUATION",
             chain_length=chain_length,
+            continuation_length=continuation.length,
             previous_length=previous.length,
         )
     continuation_cosine = continuation.dot(previous) / (
@@ -8948,6 +10832,7 @@ def _build_cyclic_regular_strip_partition(
     overlap_pairs,
     overlap_setback_intervals,
     radius,
+    producer_only=False,
 ):
     del overlap_pairs
     strands_by_id = {
@@ -8969,7 +10854,11 @@ def _build_cyclic_regular_strip_partition(
             strand = strands_by_id.get(chain.get("strand_id"))
             if strand is None:
                 continue
-            oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+            oriented_chain, parameters = _chain_strand_parameters(
+                chain,
+                strand,
+                restrict_to_source_patch=False,
+            )
             projected_parameters = list(parameters)
             if oriented_chain.get("is_cyclic"):
                 closure_parameter = float(projected_parameters[0])
@@ -9021,6 +10910,14 @@ def _build_cyclic_regular_strip_partition(
         correspondence.owner_strand_id
         for correspondence in preview_plan.strip_correspondences
     }
+    correspondence_rail_ids = {
+        rail_id
+        for correspondence in preview_plan.strip_correspondences
+        for rail_id in (
+            correspondence.left_rail_id,
+            correspondence.right_rail_id,
+        )
+    }
     for correspondence in preview_plan.strip_correspondences:
         left_chains = staging_rail_chains.get(correspondence.left_rail_id, ())
         right_chains = staging_rail_chains.get(correspondence.right_rail_id, ())
@@ -9030,15 +10927,6 @@ def _build_cyclic_regular_strip_partition(
         right_chains, right_micro_component_proofs = (
             _defer_attached_cyclic_micro_components(right_chains, radius)
         )
-        if (
-            len(left_chains) == 1
-            and len(right_chains) == 1
-            and left_chains[0].get("is_cyclic")
-            and right_chains[0].get("is_cyclic")
-        ):
-            right_chains = (
-                _align_cyclic_stable_chain(left_chains[0], right_chains[0]),
-            )
         for side, proofs in (
             ("LEFT", left_micro_component_proofs),
             ("RIGHT", right_micro_component_proofs),
@@ -9067,18 +10955,48 @@ def _build_cyclic_regular_strip_partition(
         span_records = correspondence_spans_by_strand_id[
             correspondence.owner_strand_id
         ].get(tuple(correspondence.owner_surface_pair), ())
+        correspondence_segment_indices = {
+            segment_index
+            for segment_index, owner_pair in enumerate(
+                strand.owner_surface_pairs
+            )
+            if tuple(owner_pair) == tuple(correspondence.owner_surface_pair)
+        }
+        if not correspondence_segment_indices:
+            raise BatchedChamferError(
+                "REGULAR_CORRESPONDENCE_SEGMENT_SUPPORT_MISSING",
+                "StripCorrespondence 无法反查 FeatureStrand segment support",
+                {
+                    "correspondence_id": correspondence.correspondence_id,
+                    "source_patch_pair": list(
+                        correspondence.owner_surface_pair
+                    ),
+                },
+            )
         forbidden_intervals = overlap_setback_intervals.get(pipe_id, ())
         effective_forbidden_intervals, forbidden_envelopes = (
             _paired_rail_forbidden_edge_envelopes(
                 (*left_chains, *right_chains),
                 strand,
                 forbidden_intervals,
+                correspondence_segment_indices,
             )
         )
         plan_atoms = _regular_plan_atoms(
             span_records,
             effective_forbidden_intervals,
             strand.cyclic,
+        )
+        all_strand_plan_atoms = tuple(
+            atom
+            for pair_span_records in correspondence_spans_by_strand_id[
+                correspondence.owner_strand_id
+            ].values()
+            for atom in _regular_plan_atoms(
+                pair_span_records,
+                overlap_setback_intervals.get(pipe_id, ()),
+                strand.cyclic,
+            )
         )
         for side, rail_id in (
             ("LEFT", correspondence.left_rail_id),
@@ -9129,6 +11047,7 @@ def _build_cyclic_regular_strip_partition(
                     chain,
                     strand,
                     effective_forbidden_intervals,
+                    correspondence_segment_indices,
                 )
                 for setback_run in split["setback"]:
                     for edge_id, start_u, end_u in zip(
@@ -9213,12 +11132,20 @@ def _build_cyclic_regular_strip_partition(
                             existing_core = {
                                 key: value
                                 for key, value in existing.items()
-                                if key != "forbidden_intervals"
+                                if key not in {
+                                    "edge_u_interval",
+                                    "edge_u_intervals",
+                                    "forbidden_intervals",
+                                }
                             }
                             current_core = {
                                 key: value
                                 for key, value in proof.items()
-                                if key != "forbidden_intervals"
+                                if key not in {
+                                    "edge_u_interval",
+                                    "edge_u_intervals",
+                                    "forbidden_intervals",
+                                }
                             }
                             if existing_core != current_core:
                                 raise BatchedChamferError(
@@ -9249,6 +11176,22 @@ def _build_cyclic_regular_strip_partition(
                                         *evidence["direct_witness_edge_ids"],
                                     }
                                 )
+                            proof["edge_u_intervals"] = sorted(
+                                {
+                                    tuple(existing["edge_u_interval"]),
+                                    tuple(proof["edge_u_interval"]),
+                                    *(
+                                        tuple(interval)
+                                        for interval in existing.get(
+                                            "edge_u_intervals",
+                                            (),
+                                        )
+                                    ),
+                                }
+                            )
+                            proof["edge_u_interval"] = list(
+                                proof["edge_u_intervals"][0]
+                            )
                             proof["forbidden_intervals"] = [
                                 merged_intervals[key]
                                 for key in sorted(merged_intervals)
@@ -9292,22 +11235,63 @@ def _build_cyclic_regular_strip_partition(
                 right_runs_by_atom[atom["atom_id"]],
                 atom,
             )
-            aligned_left_runs, aligned_right_runs = (
-                _align_full_cyclic_atom_run_phase(
-                left_runs_by_atom[atom["atom_id"]],
-                right_runs_by_atom[atom["atom_id"]],
-                atom,
-                )
-            )
+            aligned_left_runs = left_runs_by_atom[atom["atom_id"]]
+            aligned_right_runs = right_runs_by_atom[atom["atom_id"]]
             left_runs_by_atom[atom["atom_id"]] = aligned_left_runs
             right_runs_by_atom[atom["atom_id"]] = aligned_right_runs
-            atom_left, atom_right, component_intervals = (
-                _partition_atom_runs_by_common_components(
-                    left_runs_by_atom[atom["atom_id"]],
-                    right_runs_by_atom[atom["atom_id"]],
-                    atom,
-                )
+            full_cyclic_ownership_pair = (
+                bool(strand.cyclic)
+                and len(aligned_left_runs) == 1
+                and len(aligned_right_runs) == 1
+                and len(left_chains) == 1
+                and len(right_chains) == 1
+                and not effective_forbidden_intervals
             )
+            if full_cyclic_ownership_pair:
+                component_id = f"{atom['atom_id']}:0"
+                full_left_run = aligned_left_runs[0]
+                full_right_run = aligned_right_runs[0]
+                if left_chains[0].get("is_cyclic"):
+                    full_left_run = _split_chain_by_forbidden_intervals(
+                        left_chains[0],
+                        strand,
+                        (),
+                        correspondence_segment_indices,
+                    )["regular"][0]
+                if right_chains[0].get("is_cyclic"):
+                    full_right_run = _split_chain_by_forbidden_intervals(
+                        right_chains[0],
+                        strand,
+                        (),
+                        correspondence_segment_indices,
+                    )["regular"][0]
+                atom_left = (
+                    {
+                        **full_left_run,
+                        "full_cyclic_atom": True,
+                        "component_id": component_id,
+                        "component_u_interval": list(atom["u_interval"]),
+                        "u_interval": list(atom["u_interval"]),
+                    },
+                )
+                atom_right = (
+                    {
+                        **full_right_run,
+                        "full_cyclic_atom": True,
+                        "component_id": component_id,
+                        "component_u_interval": list(atom["u_interval"]),
+                        "u_interval": list(atom["u_interval"]),
+                    },
+                )
+                component_intervals = (list(atom["u_interval"]),)
+            else:
+                atom_left, atom_right, component_intervals = (
+                    _partition_atom_runs_by_common_components(
+                        left_runs_by_atom[atom["atom_id"]],
+                        right_runs_by_atom[atom["atom_id"]],
+                        atom,
+                    )
+                )
             if not component_intervals:
                 residual_runs = (
                     *left_runs_by_atom[atom["atom_id"]],
@@ -9353,7 +11337,9 @@ def _build_cyclic_regular_strip_partition(
             ):
                 component_id = f"{atom['atom_id']}:{component_index}"
                 component_left = [
-                    run for run in atom_left if run["component_id"] == component_id
+                    run
+                    for run in atom_left
+                    if run["component_id"] == component_id
                 ]
                 component_right = [
                     run for run in atom_right if run["component_id"] == component_id
@@ -9486,6 +11472,20 @@ def _build_cyclic_regular_strip_partition(
                 or existing["component_id"] != match["component_id"]
             ):
                 same_atom = existing["atom_id"] == match["atom_id"]
+                full_cyclic_duplicate = (
+                    bool(existing["left"].get("full_cyclic_atom"))
+                    and bool(existing["right"].get("full_cyclic_atom"))
+                    and bool(match["left"].get("full_cyclic_atom"))
+                    and bool(match["right"].get("full_cyclic_atom"))
+                    and tuple(existing["left"]["edge_ids"])
+                    == tuple(match["left"]["edge_ids"])
+                    and tuple(existing["right"]["edge_ids"])
+                    == tuple(match["right"]["edge_ids"])
+                )
+                if full_cyclic_duplicate:
+                    # 同一完整 Boundary cycle 只能被一个 RegularBridgeJob 消费；
+                    # 多个 Plan atom 的 phase cut 仅是语义分段，不得复制 geometry job。
+                    continue
                 same_effective_core = same_atom and all(
                     max(
                         abs(existing_value - current_value)
@@ -9507,7 +11507,39 @@ def _build_cyclic_regular_strip_partition(
             unique_matched_components[match_key] = match
         matched_components = tuple(unique_matched_components.values())
         unresolved_by_component = {}
+        preclassified_short_component_keys = set()
         for unresolved in unresolved_components:
+            if unresolved.get("reason") == "SHORT_COMPONENT_SETBACK_V1":
+                present_runs = [
+                    *unresolved.get("left_runs", ()),
+                    *unresolved.get("right_runs", ()),
+                ]
+                edge_ids = [
+                    edge_id
+                    for run in present_runs
+                    for edge_id in run.get("edge_ids", ())
+                ]
+                short_setback_proofs.append(
+                    {
+                        "proof_version": "SHORT_COMPONENT_SETBACK_V1",
+                        "correspondence_id": unresolved["correspondence_id"],
+                        "atom_id": unresolved.get("atom_id"),
+                        "component_id": unresolved.get("component_id"),
+                        "edge_ids": edge_ids,
+                        "component_u_interval": list(
+                            unresolved.get("component_u_interval", (0.0, 0.0))
+                        ),
+                        "boundary_type": "PLAN_ATOM_BOUNDARY",
+                    }
+                )
+                preclassified_short_component_keys.add(
+                    (
+                        unresolved["correspondence_id"],
+                        unresolved.get("atom_id"),
+                        unresolved.get("component_id"),
+                    )
+                )
+                continue
             component_key = (
                 unresolved["correspondence_id"],
                 unresolved["atom_id"],
@@ -9527,8 +11559,15 @@ def _build_cyclic_regular_strip_partition(
                         strand,
                         effective_forbidden_intervals,
                         radius,
-                        plan_atoms,
+                        all_strand_plan_atoms,
                         forbidden_envelopes,
+                    ),
+                    _adjacent_atom_short_component_setback_proof(
+                        unresolved,
+                        atom,
+                        all_strand_plan_atoms,
+                        strand,
+                        radius,
                     ),
                     _branch_micro_fragment_setback_proof(
                         unresolved,
@@ -9561,34 +11600,301 @@ def _build_cyclic_regular_strip_partition(
                 if proof is not None
             ]
             unique_proofs = {
-                _stable_fingerprint(proof): proof for proof in proof_candidates
+                (
+                    proof["proof_version"],
+                    tuple(proof.get("edge_ids", (proof.get("edge_id"),))),
+                ): proof
+                for proof in proof_candidates
             }
+            if (
+                component_records[0].get("reason")
+                == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+            ):
+                unique_proofs = {
+                    key: proof
+                    for key, proof in unique_proofs.items()
+                    if proof.get("proof_version")
+                    == "SHORT_COMPONENT_SETBACK_V1"
+                }
+            empty_ambiguous_component = (
+                len(component_records) == 1
+                and component_records[0].get("reason")
+                == "AMBIGUOUS_PLAN_COMPONENT_OWNERSHIP"
+                and not component_records[0].get("left_runs")
+                and not component_records[0].get("right_runs")
+            )
+            if (
+                empty_ambiguous_component
+            ):
+                continue
             if len(component_records) == 1 and len(unique_proofs) == 1:
                 short_setback_proofs.append(next(iter(unique_proofs.values())))
             else:
                 retained_unresolved.extend(component_records)
         unresolved_components = tuple(retained_unresolved)
+        if preclassified_short_component_keys:
+            retained_matches = []
+            for match in matched_components:
+                match_key = (
+                    correspondence.correspondence_id,
+                    match.get("atom_id"),
+                    match.get("component_id"),
+                )
+                if match_key in preclassified_short_component_keys:
+                    continue
+                retained_matches.append(match)
+            matched_components = tuple(retained_matches)
         matched_count = 0
+        cyclic_bridge_job_ids = []
+        cyclic_matched_edge_ids = set()
         for match in matched_components:
-            record, failure = _build_regular_record_from_match(
-                correspondence,
-                match,
-                pipe_id,
+            width_guard = _regular_pair_width_guard(
+                match["left"],
+                match["right"],
                 radius,
-                ledger_by_edge_id,
-                atom_by_id[match["atom_id"]],
             )
-            if record is None:
+            if width_guard["status"] != "PASS":
                 unresolved_components = (
                     *unresolved_components,
                     {
                         "correspondence_id": correspondence.correspondence_id,
-                        **failure,
+                        "reason": "REGULAR_PAIR_WIDTH_GUARD_FAILED",
+                        "left_edge_ids": list(match["left"]["edge_ids"]),
+                        "right_edge_ids": list(match["right"]["edge_ids"]),
+                        "width_guard": width_guard,
                     },
                 )
                 continue
+            try:
+                bridge_job = _regular_bridge_job_from_match(
+                    correspondence,
+                    match,
+                    pipe_id,
+                    ledger_by_edge_id,
+                )
+                if producer_only:
+                    consumed_edge_ids = {
+                        *bridge_job.left_edge_ids,
+                        *bridge_job.right_edge_ids,
+                    }
+                    for edge_id in consumed_edge_ids:
+                        if ledger_by_edge_id[edge_id]["classification"] != (
+                            "UNCLASSIFIED"
+                        ):
+                            raise BatchedChamferError(
+                                "REGULAR_BRIDGE_CLAIM_CONFLICT",
+                                "同一 Boundary Edge 被多个 RegularBridgeJob claim",
+                                {
+                                    "edge_id": edge_id,
+                                    "job_id": bridge_job.job_id,
+                                },
+                            )
+                    for edge_id in consumed_edge_ids:
+                        ledger_by_edge_id[edge_id]["classification"] = (
+                            "REGULAR_BRIDGE_PENDING"
+                        )
+                        ledger_by_edge_id[edge_id]["consumer_id"] = (
+                            f"face-consumer:{bridge_job.job_id}"
+                        )
+                    regular_records.append(
+                        {
+                            "record_type": "REGULAR_BRIDGE_JOB_PENDING",
+                            "bridge_job": bridge_job,
+                        }
+                    )
+                    matched_count += 1
+                    if bridge_job.chain_kind == "CYCLIC":
+                        cyclic_bridge_job_ids.append(bridge_job.job_id)
+                        cyclic_matched_edge_ids.update(consumed_edge_ids)
+                    continue
+                bridge_result = _bridge_regular_job(bridge_job)
+            except BatchedChamferError as error:
+                unresolved_components = (
+                    *unresolved_components,
+                    {
+                        "correspondence_id": correspondence.correspondence_id,
+                        "reason": error.error_code,
+                        "bridge_diagnostics": error.diagnostics,
+                    },
+                )
+                continue
+            consumed_edge_ids = {
+                *bridge_job.left_edge_ids,
+                *bridge_job.right_edge_ids,
+            }
+            consumer_id = f"face-consumer:{bridge_job.job_id}"
+            for edge_id in consumed_edge_ids:
+                if ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED":
+                    raise BatchedChamferError(
+                        "REGULAR_BRIDGE_CLAIM_CONFLICT",
+                        "同一 Boundary Edge 被多个 RegularBridgeJob claim",
+                        {
+                            "edge_id": edge_id,
+                            "existing_consumer_id": ledger_by_edge_id[edge_id].get(
+                                "consumer_id"
+                            ),
+                            "current_consumer_id": consumer_id,
+                        },
+                    )
+            for edge_id in consumed_edge_ids:
+                ledger_by_edge_id[edge_id]["classification"] = (
+                    "REGULAR_STRIP_CONSUMED"
+                )
+                ledger_by_edge_id[edge_id]["consumer_id"] = consumer_id
+                ledger_by_edge_id[edge_id]["claim_state"] = "REGULAR_BRIDGE"
+                ledger_by_edge_id[edge_id]["face_consumer_id"] = consumer_id
+            left_core = match["left"]
+            right_core = match["right"]
+            record = {
+                "job_id": bridge_job.job_id,
+                "consumer_id": consumer_id,
+                "pipe_id": bridge_job.pipe_id,
+                "strand_id": bridge_job.strand_id,
+                "correspondence_id": bridge_job.correspondence_id,
+                "patch_pair": list(bridge_job.source_patch_pair),
+                "left_edge_ids": list(bridge_job.left_edge_ids),
+                "right_edge_ids": list(bridge_job.right_edge_ids),
+                "terminal_extension_edge_ids": [],
+                "left_u_interval": list(left_core["u_interval"]),
+                "right_u_interval": list(right_core["u_interval"]),
+                "u_interval": [
+                    round(
+                        max(
+                            min(map(float, left_core["u_interval"])),
+                            min(map(float, right_core["u_interval"])),
+                        ),
+                        10,
+                    ),
+                    round(
+                        min(
+                            max(map(float, left_core["u_interval"])),
+                            max(map(float, right_core["u_interval"])),
+                        ),
+                        10,
+                    ),
+                ],
+                "atom_id": match["atom_id"],
+                "span_id": int(atom_by_id[match["atom_id"]]["span_id"]),
+                "faces": bridge_result["faces"],
+                "face_count": bridge_result["bridge_face_count"],
+                "derived_ports": bridge_result["derived_ports"],
+                "geometry_guard": {
+                    "status": "PASS",
+                    "backend": bridge_result["backend"],
+                    "chain_kind": bridge_job.chain_kind,
+                    "bridge_face_count": bridge_result[
+                        "bridge_face_count"
+                    ],
+                    "input_edge_face_witness_count": bridge_result[
+                        "input_edge_face_witness_count"
+                    ],
+                    "bridge_returned_edge_count": bridge_result[
+                        "bridge_returned_edge_count"
+                    ],
+                    "pair_width_inlier_ratio": width_guard.get(
+                        "width_inlier_ratio"
+                    ),
+                    "pair_maximum_width_error": width_guard.get(
+                        "maximum_width_error"
+                    ),
+                },
+            }
             regular_records.append(record)
             matched_count += 1
+            if bridge_job.chain_kind == "CYCLIC":
+                cyclic_bridge_job_ids.append(bridge_job.job_id)
+                cyclic_matched_edge_ids.update({
+                    *bridge_job.left_edge_ids,
+                    *bridge_job.right_edge_ids,
+                })
+        if cyclic_bridge_job_ids and not producer_only:
+            matching_rail_ids = {
+                correspondence.left_rail_id,
+                correspondence.right_rail_id,
+            }
+            cyclic_residual_edge_ids = {
+                entry["edge_id"]
+                for entry in ledger_by_edge_id.values()
+                if entry["rail_id"] in matching_rail_ids
+                and entry["classification"] == "UNCLASSIFIED"
+            }
+            proven_short_setback_edge_ids = {
+                edge_id
+                for proof in short_setback_proofs
+                for edge_id in proof.get(
+                    "edge_ids",
+                    (proof.get("edge_id"),),
+                )
+                if edge_id is not None
+            }
+            maximum_zero_length = max(radius * 1.0e-2, 2.0e-6)
+            for edge_id in cyclic_residual_edge_ids:
+                entry = ledger_by_edge_id[edge_id]
+                edge_length = (
+                    Vector(entry["endpoints"][1])
+                    - Vector(entry["endpoints"][0])
+                ).length
+                if edge_length <= maximum_zero_length + 1.0e-10:
+                    micro_loop_proof_by_edge_id.setdefault(
+                        edge_id,
+                        {
+                            "proof_version": "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1",
+                            "edge_ids": [edge_id],
+                            "edge_length": edge_length,
+                            "maximum_edge_length": maximum_zero_length,
+                            "correspondence_id": correspondence.correspondence_id,
+                        },
+                    )
+            unproven_cyclic_residual_edge_ids = {
+                edge_id
+                for edge_id in cyclic_residual_edge_ids
+                if edge_id not in proven_short_setback_edge_ids
+                if edge_id not in micro_loop_proof_by_edge_id
+            }
+            if unproven_cyclic_residual_edge_ids:
+                raise BatchedChamferError(
+                    "REGULAR_BRIDGE_CYCLIC_COVERAGE_INCOMPLETE",
+                    "Cyclic RegularBridgeJob 未覆盖 ownership rail 的完整 Boundary cycle",
+                    {
+                        "job_ids": sorted(cyclic_bridge_job_ids),
+                        "correspondence_id": correspondence.correspondence_id,
+                        "source_patch_pair": list(
+                            correspondence.owner_surface_pair
+                        ),
+                        "matching_rail_ids": sorted(matching_rail_ids),
+                        "matched_edge_ids": sorted(cyclic_matched_edge_ids),
+                        "residual_edge_ids": sorted(
+                            unproven_cyclic_residual_edge_ids
+                        ),
+                        "residual_edges": [
+                            {
+                                "edge_id": edge_id,
+                                "length": (
+                                    Vector(
+                                        ledger_by_edge_id[edge_id]["endpoints"][1]
+                                    )
+                                    - Vector(
+                                        ledger_by_edge_id[edge_id]["endpoints"][0]
+                                    )
+                                ).length,
+                                "endpoint_tokens": list(
+                                    ledger_by_edge_id[edge_id]["endpoint_tokens"]
+                                ),
+                                "rail_id": ledger_by_edge_id[edge_id]["rail_id"],
+                                "source_patch_id": ledger_by_edge_id[edge_id][
+                                    "source_patch_id"
+                                ],
+                            }
+                            for edge_id in sorted(
+                                unproven_cyclic_residual_edge_ids
+                            )
+                        ],
+                        "zero_length_connector_candidate_edge_ids": sorted(
+                            cyclic_residual_edge_ids
+                            - unproven_cyclic_residual_edge_ids
+                        ),
+                    },
+                )
         committed_short_setback_proofs = []
         for proof in short_setback_proofs:
             proof_edge_ids = set(
@@ -9655,6 +11961,124 @@ def _build_cyclic_regular_strip_partition(
         if (
             not correspondence_proven
             and not unresolved_components
+            and left_chains
+            and right_chains
+        ):
+            chain_edge_ids = {
+                edge_id
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            }
+            if chain_edge_ids and all(
+                (
+                    ledger_by_edge_id[edge_id]["classification"]
+                    != "UNCLASSIFIED"
+                    or edge_id in overlap_proof_by_edge_id
+                    or edge_id in micro_loop_proof_by_edge_id
+                )
+                or all(
+                    not (
+                        max(
+                            ledger_by_edge_id[edge_id]["strand_u_interval"][0],
+                            atom["u_interval"][0],
+                        )
+                        < min(
+                            ledger_by_edge_id[edge_id]["strand_u_interval"][1],
+                            atom["u_interval"][1],
+                        )
+                        - 1.0e-10
+                    )
+                    for atom in plan_atoms
+                )
+                for edge_id in chain_edge_ids
+            ):
+                empty_correspondence_proof = {
+                    "proof_version": "ALREADY_CLAIMED_CORRESPONDENCE_V1",
+                    "correspondence_id": correspondence.correspondence_id,
+                    "pipe_id": int(pipe_id),
+                    "claimed_edge_ids": sorted(chain_edge_ids),
+                }
+                correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and plan_atoms
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+        ):
+            chain_edge_ids = {
+                edge_id
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            }
+            if chain_edge_ids and all(
+                ledger_by_edge_id[edge_id]["classification"]
+                != "UNCLASSIFIED"
+                or edge_id in overlap_proof_by_edge_id
+                or edge_id in micro_loop_proof_by_edge_id
+                for edge_id in chain_edge_ids
+            ):
+                empty_correspondence_proof = {
+                    "proof_version": "ALREADY_CLAIMED_CORRESPONDENCE_V1",
+                    "correspondence_id": correspondence.correspondence_id,
+                    "pipe_id": int(pipe_id),
+                    "claimed_edge_ids": sorted(chain_edge_ids),
+                }
+                correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and not plan_atoms
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+            and effective_forbidden_intervals
+        ):
+            empty_correspondence_proof = {
+                "proof_version": "EMPTY_REGULAR_DOMAIN_CORRESPONDENCE_V1",
+                "correspondence_id": correspondence.correspondence_id,
+                "pipe_id": int(pipe_id),
+                "effective_forbidden_intervals": [
+                    list(interval)
+                    for interval in effective_forbidden_intervals
+                ],
+            }
+            correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+            and all(
+                ledger_by_edge_id[edge_id]["classification"]
+                != "UNCLASSIFIED"
+                or edge_id in overlap_proof_by_edge_id
+                or edge_id in micro_loop_proof_by_edge_id
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            )
+        ):
+            empty_correspondence_proof = {
+                "proof_version": "ALREADY_CLAIMED_CORRESPONDENCE_V1",
+                "correspondence_id": correspondence.correspondence_id,
+                "pipe_id": int(pipe_id),
+                "claimed_edge_ids": sorted(
+                    {
+                        edge_id
+                        for chain in (*left_chains, *right_chains)
+                        for edge_id in chain["edge_ids"]
+                    }
+                ),
+            }
+            correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
             and not left_runs
             and not right_runs
             and left_chains
@@ -9674,6 +12098,39 @@ def _build_cyclic_regular_strip_partition(
                 "left_chain_count": len(left_chains),
                 "right_chain_count": len(right_chains),
                 "proven_edge_ids": sorted(
+                    {
+                        edge_id
+                        for chain in (*left_chains, *right_chains)
+                        for edge_id in chain["edge_ids"]
+                    }
+                ),
+            }
+            correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and not plan_atoms
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+            and all(
+                (
+                    ledger_by_edge_id[edge_id]["classification"]
+                    != "UNCLASSIFIED"
+                    or edge_id in overlap_proof_by_edge_id
+                    or edge_id in micro_loop_proof_by_edge_id
+                )
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            )
+        ):
+            empty_correspondence_proof = {
+                "proof_version": "ALREADY_CLAIMED_SETBACK_ONLY_CORRESPONDENCE_V1",
+                "correspondence_id": correspondence.correspondence_id,
+                "pipe_id": int(pipe_id),
+                "plan_atom_count": 0,
+                "claimed_edge_ids": sorted(
                     {
                         edge_id
                         for chain in (*left_chains, *right_chains)
@@ -9848,6 +12305,9 @@ def _build_cyclic_regular_strip_partition(
                                     tuple(float(value) for value in point)
                                     for point in run["coordinates"]
                                 ],
+                                "groove_face_signatures_by_edge": dict(
+                                    run.get("groove_face_signatures_by_edge", {})
+                                ),
                                 "u_interval": list(run["u_interval"]),
                             }
                             for run in left_runs_by_atom[atom["atom_id"]]
@@ -9873,6 +12333,9 @@ def _build_cyclic_regular_strip_partition(
                                     tuple(float(value) for value in point)
                                     for point in run["coordinates"]
                                 ],
+                                "groove_face_signatures_by_edge": dict(
+                                    run.get("groove_face_signatures_by_edge", {})
+                                ),
                                 "u_interval": list(run["u_interval"]),
                             }
                             for run in right_runs_by_atom[atom["atom_id"]]
@@ -9880,11 +12343,58 @@ def _build_cyclic_regular_strip_partition(
                     }
                     for atom in plan_atoms
                 ],
+                "ownership_diagnostics": {
+                    "left_runs": [
+                        {
+                            "edge_ids": list(run["edge_ids"]),
+                            "endpoint_port_tokens_by_edge": dict(
+                                run.get("endpoint_port_tokens_by_edge", {})
+                            ),
+                            "adjacent_face_signatures_by_edge": dict(
+                                run.get("adjacent_face_signatures_by_edge", {})
+                            ),
+                            "groove_face_signatures_by_edge": dict(
+                                run.get("groove_face_signatures_by_edge", {})
+                            ),
+                            "cutter_face_signatures_by_edge": dict(
+                                run.get("cutter_face_signatures_by_edge", {})
+                            ),
+                        }
+                        for run in left_runs
+                    ],
+                    "right_runs": [
+                        {
+                            "edge_ids": list(run["edge_ids"]),
+                            "endpoint_port_tokens_by_edge": dict(
+                                run.get("endpoint_port_tokens_by_edge", {})
+                            ),
+                            "adjacent_face_signatures_by_edge": dict(
+                                run.get("adjacent_face_signatures_by_edge", {})
+                            ),
+                            "groove_face_signatures_by_edge": dict(
+                                run.get("groove_face_signatures_by_edge", {})
+                            ),
+                            "cutter_face_signatures_by_edge": dict(
+                                run.get("cutter_face_signatures_by_edge", {})
+                            ),
+                        }
+                        for run in right_runs
+                    ],
+                },
             }
         )
+    if producer_only:
+        pending_jobs = tuple(
+            record["bridge_job"]
+            for record in regular_records
+            if record.get("record_type") == "REGULAR_BRIDGE_JOB_PENDING"
+        )
+        _preflight_regular_bridge_claims(
+            pending_jobs,
+            ledger_by_edge_id,
+        )
+        return pending_jobs, tuple(setback_ports), tuple(strip_attempts)
     for strand_id, strand in sorted(strands_by_id.items()):
-        if strand_id in correspondence_strand_ids:
-            continue
         owner_patch_ids = {
             int(patch_id)
             for owner_pair in strand.owner_surface_pairs
@@ -9897,12 +12407,7 @@ def _build_cyclic_regular_strip_partition(
             and not entry.get("outside_plan_owner_patch")
         ]
         if (
-            len(owner_patch_ids) != 1
-            or not strand_entries
-            or any(
-                int(entry["source_patch_id"]) not in owner_patch_ids
-                for entry in strand_entries
-            )
+            not strand_entries
         ):
             continue
         unclassified_entries = [
@@ -9912,7 +12417,35 @@ def _build_cyclic_regular_strip_partition(
             and entry["edge_id"] not in overlap_proof_by_edge_id
             and entry["edge_id"] not in micro_loop_proof_by_edge_id
         ]
-        if len(unclassified_entries) != len(strand_entries):
+        classified_overlap_entries = [
+            entry
+            for entry in strand_entries
+            if entry["classification"] == "SETBACK_RESERVED"
+        ]
+        unclassified_tokens = {
+            token
+            for entry in unclassified_entries
+            for token in entry["endpoint_tokens"]
+        }
+        overlap_tokens = {
+            token
+            for entry in classified_overlap_entries
+            for token in entry["endpoint_tokens"]
+        }
+        bounded_by_overlap = (
+            bool(unclassified_entries)
+            and bool(classified_overlap_entries)
+            and all(
+                entry.get("consumer_id", "").startswith("setback:")
+                for entry in classified_overlap_entries
+            )
+            and len(unclassified_tokens & overlap_tokens) >= 1
+        )
+        if (
+            len(unclassified_entries) != len(strand_entries)
+            and not bounded_by_overlap
+            and len(unclassified_entries) != 1
+        ):
             continue
         whole_strand_edge_ids = {
             entry["edge_id"] for entry in unclassified_entries
@@ -9923,14 +12456,25 @@ def _build_cyclic_regular_strip_partition(
                     "proof_version": "NO_REGULAR_STRIP_CORRESPONDENCE_V1",
                     "edge_ids": sorted(whole_strand_edge_ids),
                     "strand_id": strand_id,
-                    "owner_patch_id": next(iter(owner_patch_ids)),
+                    "owner_patch_ids": sorted(owner_patch_ids),
                     "whole_strand_edge_count": len(whole_strand_edge_ids),
+                    "no_plan_correspondence": (
+                        strand_id not in correspondence_strand_ids
+                    ),
+                    "no_plan_rail_correspondence": (
+                        entry["rail_id"] not in correspondence_rail_ids
+                    ),
+                    "bounded_by_overlap": bounded_by_overlap,
+                    "single_edge_whole_strand_fragment": (
+                        len(unclassified_entries) == 1
+                    ),
                 }
     unclassified_by_rail = {}
     for entry in ledger_by_edge_id.values():
         if entry["classification"] == "UNCLASSIFIED":
             unclassified_by_rail.setdefault(entry["rail_id"], []).append(entry)
     for rail_id, entries in sorted(unclassified_by_rail.items()):
+        zero_length_threshold = max(radius * 1.0e-2, 2.0e-6)
         entries_by_evidence = {}
         for entry in entries:
             if entry.get("outside_plan_owner_patch"):
@@ -9938,16 +12482,44 @@ def _build_cyclic_regular_strip_partition(
             elif entry["edge_id"] in overlap_proof_by_edge_id:
                 evidence_key = "PIPE_OVERLAP_SETBACK"
             elif entry["edge_id"] in micro_loop_proof_by_edge_id:
+                # 结构化 provenance proof 比单纯长度阈值更强，必须优先消费。
                 evidence_key = micro_loop_proof_by_edge_id[entry["edge_id"]][
                     "proof_version"
                 ]
+            elif (
+                (
+                    Vector(entry["endpoints"][1])
+                    - Vector(entry["endpoints"][0])
+                ).length
+                <= zero_length_threshold + 1.0e-10
+            ):
+                evidence_key = "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1"
+                micro_loop_proof_by_edge_id.setdefault(
+                    entry["edge_id"],
+                    {
+                        "proof_version": "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1",
+                        "edge_ids": [entry["edge_id"]],
+                        "maximum_edge_length": zero_length_threshold,
+                    },
+                )
             else:
                 evidence_key = "UNPROVEN_PLAN_BOUNDARY"
             entries_by_evidence.setdefault(evidence_key, []).append(entry)
         for evidence_key, evidence_entries in sorted(entries_by_evidence.items()):
             if not evidence_entries:
                 continue
-            for chain in _ordered_stable_boundary_chains(evidence_entries):
+            evidence_chains = _ordered_stable_boundary_chains(evidence_entries)
+            if evidence_key == "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1":
+                evidence_chains = tuple(
+                    {
+                        "edge_ids": [entry["edge_id"]],
+                        "coordinates": list(entry["endpoints"]),
+                        "endpoint_tokens": list(entry["endpoint_tokens"]),
+                        "is_cyclic": False,
+                    }
+                    for entry in evidence_entries
+                )
+            for chain in evidence_chains:
                 first_entry = ledger_by_edge_id[chain["edge_ids"][0]]
                 strand = strands_by_id[first_entry["strand_id"]]
                 oriented_chain, start_u, end_u = _orient_chain_to_strand(
@@ -9955,10 +12527,54 @@ def _build_cyclic_regular_strip_partition(
                     strand,
                 )
                 reason = evidence_key
+                if reason == "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1":
+                    # 长度证明只允许零边暂时离开 Bridge；这里必须再用已提交
+                    # Regular Strip 的唯一邻接与端点度证明升级为 STRICT_CONNECTOR。
+                    reason = "UNPROVEN_PLAN_BOUNDARY"
+                elif reason == "NO_REGULAR_STRIP_CORRESPONDENCE_V1":
+                    structural_proof = micro_loop_proof_by_edge_id[
+                        oriented_chain["edge_ids"][0]
+                    ]
+                    if not (
+                        structural_proof.get("single_edge_whole_strand_fragment")
+                        or structural_proof.get("bounded_by_overlap")
+                        or structural_proof.get("no_plan_correspondence")
+                        or structural_proof.get("no_plan_rail_correspondence")
+                    ):
+                        reason = "UNPROVEN_PLAN_BOUNDARY"
                 if reason == "UNPROVEN_PLAN_BOUNDARY":
                     chain_u_interval = sorted(
                         (float(start_u), float(end_u))
                     )
+                    cyclic_span_gap_proof = None
+                    rail_claims = regular_atom_claims_by_rail_id.get(
+                        rail_id,
+                        (),
+                    )
+                    if rail_claims and all(
+                        bool(claim["strand_cyclic"]) for claim in rail_claims
+                    ):
+                        if all(
+                            _common_run_interval(
+                                chain_u_interval,
+                                claim["u_interval"],
+                                True,
+                            )
+                            is None
+                            for claim in rail_claims
+                        ):
+                            cyclic_span_gap_proof = {
+                                "proof_version": "CYCLIC_PLAN_GAP_HANDOFF_V1",
+                                "edge_ids": list(oriented_chain["edge_ids"]),
+                                "component_u_interval": chain_u_interval,
+                                "claim_u_intervals": [
+                                    list(map(float, claim["u_interval"]))
+                                    for claim in rail_claims
+                                ],
+                                "atom_claim_ids": sorted(
+                                    claim["atom_id"] for claim in rail_claims
+                                ),
+                            }
                     overlapping_atom_claims = [
                         claim
                         for claim in regular_atom_claims_by_rail_id.get(
@@ -10203,6 +12819,21 @@ def _build_cyclic_regular_strip_partition(
                         )
                         else None
                     )
+                    zero_length_connector_claims = (
+                        overlapping_atom_claims
+                        or [
+                            claim
+                            for claim in regular_atom_claims_by_rail_id.get(
+                                rail_id,
+                                (),
+                            )
+                            if claim["correspondence_id"]
+                            in {
+                                record["correspondence_id"]
+                                for record in regular_records
+                            }
+                        ]
+                    )
                     zero_length_regular_connector_proof = (
                         (
                             next(
@@ -10219,9 +12850,41 @@ def _build_cyclic_regular_strip_partition(
                         if (
                             unique_zero_length_regular_connector_proofs := {
                                 _stable_fingerprint(proof): proof
-                                for claim in overlapping_atom_claims
+                                for claim in zero_length_connector_claims
                                 for proof in (
                                     _zero_length_regular_connector_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        radius,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    zero_length_regular_interior_connector_proof = (
+                        (
+                            next(
+                                iter(
+                                    unique_zero_length_regular_interior_connector_proofs.values()
+                                )
+                            )
+                            if len(
+                                unique_zero_length_regular_interior_connector_proofs
+                            )
+                            == 1
+                            else None
+                        )
+                        if (
+                            unique_zero_length_regular_interior_connector_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in zero_length_connector_claims
+                                for proof in (
+                                    _zero_length_regular_interior_connector_handoff_proof(
                                         oriented_chain,
                                         claim,
                                         regular_records,
@@ -10285,6 +12948,19 @@ def _build_cyclic_regular_strip_partition(
                         )
                         else None
                     )
+                    if (
+                        short_regular_terminal_proof is None
+                        and unique_short_regular_terminal_proofs
+                    ):
+                        successful_short_terminal_proofs = {
+                            _stable_fingerprint(proof): proof
+                            for proof in unique_short_regular_terminal_proofs.values()
+                            if "proof_version" in proof
+                        }
+                        if len(successful_short_terminal_proofs) == 1:
+                            short_regular_terminal_proof = next(
+                                iter(successful_short_terminal_proofs.values())
+                            )
                     paired_boundary_residual_proof = (
                         (
                             next(iter(unique_paired_boundary_residual_proofs.values()))
@@ -10345,6 +13021,7 @@ def _build_cyclic_regular_strip_partition(
                                 ],
                             }
                     structural_proof_candidates = (
+                        cyclic_span_gap_proof,
                         terminal_tail_proof,
                         atom_boundary_junction_proof,
                         outside_span_proof,
@@ -10354,6 +13031,7 @@ def _build_cyclic_regular_strip_partition(
                         cyclic_span_terminal_residual_proof,
                         regular_component_bridge_proof,
                         zero_length_regular_connector_proof,
+                        zero_length_regular_interior_connector_proof,
                         regular_overlap_bridge_proof,
                         short_regular_terminal_proof,
                         paired_boundary_residual_proof,
@@ -10368,6 +13046,80 @@ def _build_cyclic_regular_strip_partition(
                         ),
                         None,
                     )
+                    if (
+                        structural_proof is None
+                        and evidence_key
+                        == "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1"
+                        and len(zero_length_connector_claims) == 2
+                        and len(oriented_chain.get("edge_ids", ())) == 1
+                    ):
+                        connector_edge_id = oriented_chain["edge_ids"][0]
+                        connector_entry = ledger_by_edge_id[connector_edge_id]
+                        connector_length = (
+                            Vector(connector_entry["endpoints"][1])
+                            - Vector(connector_entry["endpoints"][0])
+                        ).length
+                        connector_tokens = set(
+                            connector_entry["endpoint_tokens"]
+                        )
+                        adjacent_regular_entries = [
+                            entry
+                            for entry in ledger_by_edge_id.values()
+                            if entry["rail_id"] == rail_id
+                            and entry["edge_id"] != connector_edge_id
+                            and entry["classification"]
+                            == "REGULAR_STRIP_CONSUMED"
+                            and connector_tokens
+                            & set(entry["endpoint_tokens"])
+                        ]
+                        adjacent_tokens = {
+                            token
+                            for entry in adjacent_regular_entries
+                            for token in connector_tokens
+                            & set(entry["endpoint_tokens"])
+                        }
+                        if (
+                            connector_length
+                            <= max(radius * 1.0e-2, 2.0e-6) + 1.0e-10
+                            and len(adjacent_regular_entries) == 2
+                            and adjacent_tokens == connector_tokens
+                            and {
+                                claim["correspondence_id"]
+                                for claim in zero_length_connector_claims
+                            }
+                            == {
+                                record["correspondence_id"]
+                                for record in regular_records
+                                if record["consumer_id"]
+                                in {
+                                    entry["consumer_id"]
+                                    for entry in adjacent_regular_entries
+                                }
+                            }
+                        ):
+                            structural_proof = {
+                                "proof_version": (
+                                    "ZERO_LENGTH_REGULAR_INTERIOR_CONNECTOR_V1"
+                                ),
+                                "edge_ids": [connector_edge_id],
+                                "edge_length": connector_length,
+                                "maximum_edge_length": max(
+                                    radius * 1.0e-2,
+                                    2.0e-6,
+                                ),
+                                "adjacent_consumer_ids": sorted(
+                                    {
+                                        entry["consumer_id"]
+                                        for entry in adjacent_regular_entries
+                                    }
+                                ),
+                                "adjacent_atom_ids": sorted(
+                                    {
+                                        claim["atom_id"]
+                                        for claim in zero_length_connector_claims
+                                    }
+                                ),
+                            }
                     if structural_proof is not None:
                         reason = structural_proof["proof_version"]
                         for edge_id in oriented_chain["edge_ids"]:
@@ -10580,6 +13332,16 @@ def _build_cyclic_regular_strip_partition(
                         )
                     ledger_by_edge_id[edge_id]["classification"] = "SETBACK_RESERVED"
                     ledger_by_edge_id[edge_id]["consumer_id"] = port_id
+                    ledger_by_edge_id[edge_id]["claim_state"] = (
+                        "STRICT_CONNECTOR"
+                        if reason
+                        in {
+                            "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1",
+                            "ZERO_LENGTH_REGULAR_INTERIOR_CONNECTOR_V1",
+                        }
+                        else "PORT_RESERVED"
+                    )
+                    ledger_by_edge_id[edge_id]["face_consumer_id"] = None
                 setback_ports.append(
                     {
                         "port_id": port_id,
@@ -10707,7 +13469,7 @@ def _build_cyclic_regular_strip_partition(
         attempt.get("status") == "DEFERRED"
         for attempt in strip_attempts
     )
-    return (
+    result = (
         tuple(sorted(regular_records, key=lambda record: record["consumer_id"])),
         classified_ledger,
         tuple(sorted(setback_ports, key=lambda port: port["port_id"])),
@@ -10758,6 +13520,7 @@ def _build_cyclic_regular_strip_partition(
             "strip_attempts": strip_attempts,
         },
     )
+    return result
 
 
 # 分别执行正序与逆序 Exact Boolean batch Cut，并比较最终 canonical topology。
@@ -11119,6 +13882,43 @@ def build_batched_feature_chamfer(
                         "reverse_rail_chain_fingerprint": reverse_rail_chain_fingerprint,
                     },
                 )
+            producer_jobs, _, _ = _build_cyclic_regular_strip_partition(
+                preview_plan,
+                groups,
+                staging_rail_chains,
+                staging_boundary_ledger,
+                overlap_pairs,
+                overlap_setback_intervals,
+                radius,
+                producer_only=True,
+            )
+            reverse_producer_jobs, _, _ = (
+                _build_cyclic_regular_strip_partition(
+                    preview_plan,
+                    groups,
+                    reverse_staging_rail_chains,
+                    reverse_staging_boundary_ledger,
+                    overlap_pairs,
+                    overlap_setback_intervals,
+                    radius,
+                    producer_only=True,
+                )
+            )
+            producer_jobs_fingerprint = _stable_fingerprint(
+                [asdict(job) for job in producer_jobs]
+            )
+            reverse_producer_jobs_fingerprint = _stable_fingerprint(
+                [asdict(job) for job in reverse_producer_jobs]
+            )
+            if producer_jobs_fingerprint != reverse_producer_jobs_fingerprint:
+                raise BatchedChamferError(
+                    "PHASE_C_PRODUCER_ORDER_MISMATCH",
+                    "正序/逆序 Phase C producer jobs 不一致",
+                    {
+                        "forward_jobs_fingerprint": producer_jobs_fingerprint,
+                        "reverse_jobs_fingerprint": reverse_producer_jobs_fingerprint,
+                    },
+                )
             (
                 regular_core_records,
                 boundary_edge_ledger,
@@ -11205,6 +14005,12 @@ def build_batched_feature_chamfer(
                 "phase_c_port_fingerprint": port_fingerprint,
                 "phase_c_reverse_port_fingerprint": reverse_port_fingerprint,
                 "phase_c_regular_order_invariant": True,
+                "producer_global_preflight": True,
+                "producer_job_count": len(producer_jobs),
+                "producer_jobs_fingerprint": producer_jobs_fingerprint,
+                "reverse_producer_jobs_fingerprint": (
+                    reverse_producer_jobs_fingerprint
+                ),
                 "reverse_phase_c_counts": {
                     "regular_core_count": len(reverse_regular_core_records),
                     "ledger_edge_count": len(reverse_boundary_edge_ledger),
@@ -11226,7 +14032,25 @@ def build_batched_feature_chamfer(
                 raise BatchedChamferError(
                     "REGULAR_STRIP_GEOMETRY_INVALID",
                     "Phase C Regular Strip orientation/area/duplicate Face guard 失败",
-                    strip_geometry_guard,
+                    {
+                        **strip_geometry_guard,
+                        "strip_attempts": regular_core_diagnostics.get(
+                            "strip_attempts",
+                            [],
+                        ),
+                        "failing_regular_records": [
+                            record
+                            for record in regular_core_records
+                            if record.get("job_id")
+                            in {
+                                item.get("job_id")
+                                for item in strip_geometry_guard.get(
+                                    "self_intersections",
+                                    (),
+                                )
+                            }
+                        ],
+                    },
                 )
         order_fingerprint = graph_order_fingerprint
         contract_fingerprint = _stable_fingerprint(

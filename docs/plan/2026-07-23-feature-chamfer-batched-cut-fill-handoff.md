@@ -1,7 +1,7 @@
 # Feature Chamfer — 分组 Cut / Regular Fill / Junction 收口 Handoff
 
 > 日期：2026-07-23  
-> 状态：`PAUSED / PROTOTYPE / PHASE B GO / PHASE C STOP (SPEC AUDIT)`
+> 状态：`EXECUTED / PROTOTYPE / PHASE B GO / PHASE C STOP (STEP 6 PIVOT)`
 > 最终目标入口：UI `Feature Chamfer GN Preview` → `hst.feature_chamfer_gn` → `PREVIEW / FINALIZE`  
 > 目的：替代当前“Combined Boolean 后反推全部 Rail 归属”的高复杂度 Finalize 路线；保持已经验证通过的 Preview Pipe Cut 不变。
 
@@ -27,6 +27,8 @@
 Phase A/B 已通过，用户无需操作。下一步按硬门禁进入 Phase C：从 independent staging 提取有明确 Pipe/Patch owner 的 regular rails，建立 exactly-once consumption ledger，并在 overlap 邻域 setback。
 
 ### Phase C 当前进度（2026-07-23）
+
+- 2026-07-24 续作已按新 recovery plan 到达 Step 6 硬 Stop：ownership-driven `RegularBridgeJob`、全局 claim preflight、job-local `bmesh.ops.bridge_loops()`、Face provenance 与 runner fake-green 合同已实现；真实 `Solid.004 r0.03` L5/R3 生成 8 Faces且 width guard PASS，但仍有 3 条真实 Plan Boundary Edge 无相对 cutter Face witness。`Solid.004 r0.01`/mixed r0.03 另有 18/71 条未分类 Edge，因此未运行 Phase C 14×3、未声明 candidate GO。后续只可按 `2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md` 重新设计 residual ownership；Phase D/E 与正式 FINALIZE 仍禁止。
 
 - 已开始实现 Preview Plan owner span 还原、隐藏 Adapter `PHASE_C_REGULAR_CORE`、Phase C runner 门槛与 per-Pipe direct provenance rail probe。
 - 单个无 overlap cell 已能稳定产出 regular-core contract；但当前 probe 仍通过二次 per-Pipe Boolean 取得坐标 Rail，尚未直接消费 Phase B 的 per-batch staging Boundary Edge，且没有生成可见 strip Faces/有序 setback ports。

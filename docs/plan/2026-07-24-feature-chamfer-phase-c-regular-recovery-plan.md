@@ -1,13 +1,17 @@
 # Feature Chamfer Phase C — Ownership-driven Blender Bridge 续作计划
 
 日期：2026-07-24
-状态：`PAUSED / PROTOTYPE / PHASE A GO / PHASE B GO / PHASE C STOP`
+状态：`CHECKPOINTED / PROTOTYPE / PHASE A GO / PHASE B GO / PHASE C STOP (STEP 6 PIVOT)`
 策略决定：`OWNERSHIP_DRIVEN_BLENDER_BRIDGE_THEN_LOCAL_FILL_V2`
 本轮审查基线：`24766e2` (`Clarify Phase C ownership-driven bridge and local fill recovery plan`) + 保留现有 dirty worktree
 Phase C runtime baseline：`1b8f120` (`wip(feature-chamfer): checkpoint phase c regular diagnostics`)
 上游权威 handoff：`docs/plan/2026-07-23-feature-chamfer-batched-cut-fill-handoff.md`
 
 本文是下一次 Session 的执行入口。权威顺序固定为：项目 `AGENTS.md` → 上游 handoff 的产品语义与 Phase A→E Stop/Go → 本文。本文不重新定义上游 Phase：**Phase C 只完成 regular core；Phase D 才做 product assembly 与 junction/terminal 收口；Phase E 才接入正式 `FINALIZE`。**
+
+执行结论（2026-07-24）：Gate 0A–0C 与 Step 1 的 synthetic/contract 层完成；真实 `tricky__solid_004__r0p030` 已由 Blender 单次 Bridge 证明 L5/R3（8 Faces，width guard PASS），但同一 ownership rail 仍留下 3 条、总长 `0.187935` 的真实 Plan Boundary Edges，且 cutter 四边 profile topology 中找不到其相对 Face witness。`tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030` 分别还有 18/71 条未分类 Edge。按 Step 1/6 硬 Stop，未运行 Step 8 的完整 14×3，也未进入 Phase D/E。完整 regression 为 `139/142`：本轮暴露的两个 Phase C helper 合同已定向修复并通过，另一个是已冻结的 mixed 正式 FINALIZE 产品回归；pivot 见 `docs/plan/2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md`。
+
+5 小时 checkpoint、独立审计处置与非技术进度说明见 `docs/plan/2026-07-24-feature-chamfer-phase-c-five-hour-checkpoint.md`。本 checkpoint 只安全保存 PROTOTYPE/STOP 进度，不代表 Phase C GO。
 
 本文替代旧版“canonical cyclic rail + circular DP”主路线，也修正上一版把 Junction Fill 提前放进 Phase C 的阶段冲突。旧代码和 diagnostics 只可作为证据或反例，不能因为已经存在就继续叠加 matching、trim 或 handoff 例外。
 
