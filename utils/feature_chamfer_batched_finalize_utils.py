@@ -1287,6 +1287,14 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                         "rail_id": rail_id,
                         "endpoints": boundary["endpoints"],
                         "endpoint_tokens": boundary["endpoint_tokens"],
+                        "endpoint_topology_signatures": boundary.get(
+                            "endpoint_topology_signatures",
+                            (),
+                        ),
+                        "adjacent_face_signatures": boundary.get(
+                            "adjacent_face_signatures",
+                            (),
+                        ),
                         "endpoint_port_tokens": boundary.get(
                             "endpoint_port_tokens",
                             (),
@@ -1307,6 +1315,14 @@ def _build_staging_boundary_ledger(preview_plan, pipe_specs, staging_records):
                     "rail_id": rail.rail_id,
                     "endpoints": boundary["endpoints"],
                     "endpoint_tokens": boundary["endpoint_tokens"],
+                    "endpoint_topology_signatures": boundary.get(
+                        "endpoint_topology_signatures",
+                        (),
+                    ),
+                    "adjacent_face_signatures": boundary.get(
+                        "adjacent_face_signatures",
+                        (),
+                    ),
                     "endpoint_port_tokens": boundary.get(
                         "endpoint_port_tokens",
                         (),
@@ -1484,6 +1500,13 @@ def _ordered_stable_boundary_chains(ledger_entries):
             entry["edge_id"]: list(entry.get("endpoint_degrees", ()))
             for entry in chain_entries
         }
+        chain["endpoint_topology_signatures_by_edge"] = {
+            entry["edge_id"]: list(
+                entry.get("endpoint_topology_signatures", ())
+            )
+            for entry in chain_entries
+            if entry.get("endpoint_topology_signatures")
+        }
     return tuple(
         sorted(
             chains,
@@ -1536,9 +1559,21 @@ def _align_cyclic_stable_chain(left_chain, right_chain):
             aligned_coordinates[1:] + aligned_coordinates[:1],
         )
     ]
+    endpoint_token_by_coordinate = {
+        tuple(coordinate): endpoint_token
+        for coordinate, endpoint_token in zip(
+            right_chain["coordinates"],
+            right_chain.get("endpoint_tokens", ()),
+        )
+    }
     return {
+        **right_chain,
         "edge_ids": aligned_edge_ids,
         "coordinates": aligned_coordinates,
+        "endpoint_tokens": [
+            endpoint_token_by_coordinate[coordinate]
+            for coordinate in aligned_coordinates
+        ],
         "is_cyclic": True,
     }
 
@@ -2360,6 +2395,14 @@ def _trim_open_run_to_interval(run, interval):
             ).items()
             if edge_id in selected_edge_ids
         },
+        "endpoint_topology_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "endpoint_topology_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
     }
 
 
@@ -2418,6 +2461,14 @@ def _trim_run_endpoint_edges(run, start_trim, end_trim):
             ).items()
             if edge_id in selected_edge_ids
         },
+        "endpoint_topology_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "endpoint_topology_signatures_by_edge",
+                {},
+            ).items()
+            if edge_id in selected_edge_ids
+        },
     }
 
 
@@ -2425,7 +2476,7 @@ def _trim_run_endpoint_edges(run, start_trim, end_trim):
 # run/radius: 当前 open run 与 Chamfer radius；返回清理后的 run、移除 Edge IDs 和 proof。
 def _defer_zero_length_run_edges(run, radius):
     coordinates = [Vector(point) for point in run["coordinates"]]
-    maximum_length = max(radius * 1.0e-5, 1.0e-8)
+    maximum_length = max(radius * 1.0e-2, 2.0e-6)
     kept_edge_ids = []
     kept_coordinates = [coordinates[0]]
     kept_u_values = [float(run["u_values"][0])]
@@ -2451,7 +2502,13 @@ def _defer_zero_length_run_edges(run, radius):
     if not deferred_edge_ids:
         return run, ()
     if not kept_edge_ids:
-        return None, ()
+        return None, (
+            {
+                "proof_version": "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1",
+                "edge_ids": deferred_edge_ids,
+                "maximum_edge_length": maximum_length,
+            },
+        )
     cleaned = {
         **run,
         "edge_ids": kept_edge_ids,
@@ -2471,6 +2528,14 @@ def _defer_zero_length_run_edges(run, radius):
             edge_id: list(degrees)
             for edge_id, degrees in run.get(
                 "endpoint_degrees_by_edge",
+                {},
+            ).items()
+            if edge_id in kept_edge_ids
+        },
+        "endpoint_topology_signatures_by_edge": {
+            edge_id: list(signatures)
+            for edge_id, signatures in run.get(
+                "endpoint_topology_signatures_by_edge",
                 {},
             ).items()
             if edge_id in kept_edge_ids
@@ -2565,6 +2630,103 @@ def _strip_zero_area_face_count(strip, left_coordinates, right_coordinates):
     return zero_area_face_count
 
 
+# 按共同 Plan-u 样本在真实 Boundary Edge 内插虚拟 geometry 点；原始 Edge provenance 不拆分也不重复消费。
+# left_run/right_run: 已裁到同一 component 的两侧 runs；返回共享单调采样网格上的 geometry runs。
+def _synchronize_regular_run_geometry_samples(left_run, right_run):
+    left_parameters = sorted(map(float, left_run["u_values"]))
+    right_parameters = sorted(map(float, right_run["u_values"]))
+    left_lower, left_upper = left_parameters[0], left_parameters[-1]
+    right_lower, right_upper = right_parameters[0], right_parameters[-1]
+    common_lower = max(left_lower, right_lower)
+    common_upper = min(left_upper, right_upper)
+    sample_parameters = sorted(
+        {
+            round(float(value), 12)
+            for run in (left_run, right_run)
+            for value in run["u_values"]
+            if common_lower - 1.0e-10
+            <= float(value)
+            <= common_upper + 1.0e-10
+        }
+    )
+    if len(sample_parameters) < 2:
+        return left_run, right_run
+
+    def virtualize(run):
+        parameters = [float(value) for value in run["u_values"]]
+        coordinates = [Vector(point) for point in run["coordinates"]]
+        endpoint_tokens = list(run.get("endpoint_tokens", ()))
+        synchronized_coordinates = []
+        synchronized_tokens = []
+        virtual_samples = []
+        for sample_u in sample_parameters:
+            exact_indices = [
+                index
+                for index, value in enumerate(parameters)
+                if abs(value - sample_u) <= 1.0e-10
+            ]
+            if exact_indices:
+                index = exact_indices[0]
+                synchronized_coordinates.append(tuple(coordinates[index]))
+                synchronized_tokens.append(
+                    endpoint_tokens[index]
+                    if index < len(endpoint_tokens)
+                    else _stable_fingerprint([run["edge_ids"], sample_u])
+                )
+                continue
+            containing_segments = [
+                index
+                for index, (start_u, end_u) in enumerate(
+                    zip(parameters, parameters[1:])
+                )
+                if min(start_u, end_u) + 1.0e-10
+                < sample_u
+                < max(start_u, end_u) - 1.0e-10
+            ]
+            if len(containing_segments) != 1:
+                raise BatchedChamferError(
+                    "REGULAR_VIRTUAL_SAMPLE_OWNER_INVALID",
+                    "Plan-u 虚拟采样点无法唯一归属真实 Boundary Edge",
+                    {
+                        "sample_u": sample_u,
+                        "u_values": parameters,
+                        "edge_ids": list(run["edge_ids"]),
+                        "candidate_segment_count": len(containing_segments),
+                    },
+                )
+            segment_index = containing_segments[0]
+            start_u = parameters[segment_index]
+            end_u = parameters[segment_index + 1]
+            factor = (sample_u - start_u) / (end_u - start_u)
+            coordinate = coordinates[segment_index].lerp(
+                coordinates[segment_index + 1],
+                factor,
+            )
+            source_edge_id = run["edge_ids"][segment_index]
+            synchronized_coordinates.append(tuple(coordinate))
+            synchronized_tokens.append(
+                f"virtual:{source_edge_id}:{round(sample_u, 12)}"
+            )
+            virtual_samples.append(
+                {
+                    "sample_u": sample_u,
+                    "source_edge_id": source_edge_id,
+                    "source_edge_factor": factor,
+                    "coordinate": tuple(coordinate),
+                }
+            )
+        return {
+            **run,
+            "coordinates": synchronized_coordinates,
+            "endpoint_tokens": synchronized_tokens,
+            "u_values": list(sample_parameters),
+            "u_interval": [sample_parameters[0], sample_parameters[-1]],
+            "virtual_regular_samples": virtual_samples,
+        }
+
+    return virtualize(left_run), virtualize(right_run)
+
+
 # 只接受最小总 Edge 裁剪量下唯一通过 width guard 的 pair，避免按距离成本猜结果。
 # left_run/right_run/radius: atom component 两侧 runs 与半径；返回唯一 pair 或拒绝诊断。
 def _conservative_endpoint_pair_trim(left_run, right_run, radius):
@@ -2600,18 +2762,26 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                         )
                         if trimmed_left is None or trimmed_right is None:
                             continue
+                        provenance_left = trimmed_left
+                        provenance_right = trimmed_right
+                        geometry_left, geometry_right = (
+                            _synchronize_regular_run_geometry_samples(
+                                trimmed_left,
+                                trimmed_right,
+                            )
+                        )
                         guard = _regular_pair_width_guard(
-                            trimmed_left,
-                            trimmed_right,
+                            geometry_left,
+                            geometry_right,
                             radius,
                         )
                         if guard["status"] != "PASS":
                             continue
                         left_coordinates = [
-                            Vector(point) for point in trimmed_left["coordinates"]
+                            Vector(point) for point in geometry_left["coordinates"]
                         ]
                         right_coordinates = [
-                            Vector(point) for point in trimmed_right["coordinates"]
+                            Vector(point) for point in geometry_right["coordinates"]
                         ]
                         strip = build_chamfer_strip(
                             left_coordinates,
@@ -2620,8 +2790,8 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                                 "start_pairs": [(0, 0)],
                                 "end_pairs": [
                                     (
-                                        len(trimmed_left["coordinates"]) - 1,
-                                        len(trimmed_right["coordinates"]) - 1,
+                                        len(geometry_left["coordinates"]) - 1,
+                                        len(geometry_right["coordinates"]) - 1,
                                     )
                                 ],
                                 "expected_width": radius * (2.0 ** 0.5),
@@ -2642,8 +2812,20 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                         ):
                             passing.append(
                                 {
-                                    "left": trimmed_left,
-                                    "right": trimmed_right,
+                                    "left": {
+                                        **geometry_left,
+                                        "edge_ids": provenance_left["edge_ids"],
+                                    },
+                                    "right": {
+                                        **geometry_right,
+                                        "edge_ids": provenance_right["edge_ids"],
+                                    },
+                                    "provenance_left_edge_ids": list(
+                                        provenance_left["edge_ids"]
+                                    ),
+                                    "provenance_right_edge_ids": list(
+                                        provenance_right["edge_ids"]
+                                    ),
                                     "trim_counts": trim_counts,
                                     "strip_diagnostics": strip["diagnostics"],
                                     **guard,
@@ -2736,8 +2918,8 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
                                 )
         unique_by_edges = {
             (
-                tuple(candidate["left"]["edge_ids"]),
-                tuple(candidate["right"]["edge_ids"]),
+                tuple(candidate["provenance_left_edge_ids"]),
+                tuple(candidate["provenance_right_edge_ids"]),
             ): candidate
             for candidate in passing
         }
@@ -2745,10 +2927,167 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
             return next(iter(unique_by_edges.values())), None
         if len(unique_by_edges) > 1:
             minimum_trim_passing_count = len(unique_by_edges)
+            maximum_start_u = max(
+                min(
+                    float(candidate["left"]["u_interval"][0]),
+                    float(candidate["right"]["u_interval"][0]),
+                )
+                for candidate in unique_by_edges.values()
+            )
+            minimum_end_u = min(
+                max(
+                    float(candidate["left"]["u_interval"][1]),
+                    float(candidate["right"]["u_interval"][1]),
+                )
+                for candidate in unique_by_edges.values()
+            )
+            if minimum_end_u - maximum_start_u <= 1.0e-8:
+                candidate_spans = sorted(
+                    (
+                        max(
+                            min(map(float, candidate["left"]["u_interval"])),
+                            min(map(float, candidate["right"]["u_interval"])),
+                        ),
+                        min(
+                            max(map(float, candidate["left"]["u_interval"])),
+                            max(map(float, candidate["right"]["u_interval"])),
+                        ),
+                    )
+                    for candidate in unique_by_edges.values()
+                )
+                contiguous_clusters = []
+                for span_start, span_end in candidate_spans:
+                    if (
+                        contiguous_clusters
+                        and span_start
+                        <= contiguous_clusters[-1][1] + 1.0e-8
+                    ):
+                        contiguous_clusters[-1][1] = max(
+                            contiguous_clusters[-1][1],
+                            span_end,
+                        )
+                    else:
+                        contiguous_clusters.append([span_start, span_end])
+                if len(contiguous_clusters) == 1:
+                    maximum_start_u, minimum_end_u = (
+                        contiguous_clusters[0]
+                    )
+            canonical_left = _trim_open_run_to_interval(
+                left_run,
+                [maximum_start_u, minimum_end_u],
+            )
+            canonical_right = _trim_open_run_to_interval(
+                right_run,
+                [maximum_start_u, minimum_end_u],
+            )
+            if canonical_left is not None and canonical_right is not None:
+                canonical_left = _clip_run_geometry_to_interval(
+                    canonical_left,
+                    [maximum_start_u, minimum_end_u],
+                )
+                canonical_right = _clip_run_geometry_to_interval(
+                    canonical_right,
+                    [maximum_start_u, minimum_end_u],
+                )
+                geometry_left, geometry_right = (
+                    _synchronize_regular_run_geometry_samples(
+                        canonical_left,
+                        canonical_right,
+                    )
+                )
+                canonical_guard = _regular_pair_width_guard(
+                    geometry_left,
+                    geometry_right,
+                    radius,
+                )
+                canonical_strip = build_chamfer_strip(
+                    [Vector(point) for point in geometry_left["coordinates"]],
+                    [Vector(point) for point in geometry_right["coordinates"]],
+                    terminal_constraints={
+                        "start_pairs": [(0, 0)],
+                        "end_pairs": [
+                            (
+                                len(geometry_left["coordinates"]) - 1,
+                                len(geometry_right["coordinates"]) - 1,
+                            )
+                        ],
+                        "expected_width": radius * (2.0 ** 0.5),
+                        "maximum_width_error": max(radius * 0.60, 1.0e-5),
+                        "reject_zero_area_faces": True,
+                        "prefer_hard_guard_path": True,
+                    },
+                )
+                if (
+                    canonical_guard["status"] == "PASS"
+                    and canonical_strip["diagnostics"]["status"] == "PASS"
+                    and canonical_strip["faces"]
+                    and _strip_zero_area_face_count(
+                        canonical_strip,
+                        [
+                            Vector(point)
+                            for point in geometry_left["coordinates"]
+                        ],
+                        [
+                            Vector(point)
+                            for point in geometry_right["coordinates"]
+                        ],
+                    )
+                    == 0
+                ):
+                    return (
+                        {
+                            "left": {
+                                **geometry_left,
+                                "edge_ids": canonical_left["edge_ids"],
+                            },
+                            "right": {
+                                **geometry_right,
+                                "edge_ids": canonical_right["edge_ids"],
+                            },
+                            "provenance_left_edge_ids": list(
+                                canonical_left["edge_ids"]
+                            ),
+                            "provenance_right_edge_ids": list(
+                                canonical_right["edge_ids"]
+                            ),
+                            "trim_counts": (None, None, None, None),
+                            "canonical_overlap_of_minimum_trim_candidates": True,
+                            "minimum_trim_candidate_count": len(
+                                unique_by_edges
+                            ),
+                            "strip_diagnostics": canonical_strip[
+                                "diagnostics"
+                            ],
+                            **canonical_guard,
+                        },
+                        None,
+                    )
             return None, {
                 "reason": "ENDPOINT_TRIM_AMBIGUOUS",
                 "minimum_total_trim": total_trim,
                 "candidate_count": len(unique_by_edges),
+                "candidates": [
+                    {
+                        "trim_counts": list(candidate["trim_counts"]),
+                        "left_edge_ids": list(
+                            candidate["provenance_left_edge_ids"]
+                        ),
+                        "right_edge_ids": list(
+                            candidate["provenance_right_edge_ids"]
+                        ),
+                        "left_u_interval": list(candidate["left"]["u_interval"]),
+                        "right_u_interval": list(
+                            candidate["right"]["u_interval"]
+                        ),
+                        "virtual_left_sample_count": len(
+                            candidate["left"].get("virtual_regular_samples", ())
+                        ),
+                        "virtual_right_sample_count": len(
+                            candidate["right"].get("virtual_regular_samples", ())
+                        ),
+                    }
+                    for candidate in unique_by_edges.values()
+                ],
                 "strip_rejection_counts": rejection_counts,
                 "best_strip_rejection": (
                     best_strip_rejection[1]
@@ -2775,11 +3114,17 @@ def _conservative_endpoint_pair_trim(left_run, right_run, radius):
 
 # 检查两条 open runs 是否可作为同一 regular u component 的唯一匹配候选。
 # left_run/right_run/strand/radius: 两侧真实 runs、Plan strand 与 Chamfer radius；返回候选和拒绝诊断。
-def _regular_run_pair_evaluation(left_run, right_run, strand, radius):
+def _regular_run_pair_evaluation(
+    left_run,
+    right_run,
+    strand,
+    radius,
+    allow_cyclic_shift=True,
+):
     common = _common_run_interval(
         left_run["u_interval"],
         right_run["u_interval"],
-        strand.cyclic,
+        strand.cyclic and allow_cyclic_shift,
     )
     if common is None:
         return None, {"reason": "U_INTERVAL_DISJOINT"}
@@ -2793,7 +3138,70 @@ def _regular_run_pair_evaluation(left_run, right_run, strand, radius):
             float(right_run["u_interval"][1]) + right_shift,
         ],
     }
+    trimmed_left = (
+        _clip_run_geometry_to_interval(trimmed_left, common_interval)
+        if trimmed_left is not None
+        else None
+    )
     trimmed_right = _trim_open_run_to_interval(shifted_right, common_interval)
+    trimmed_right = (
+        _clip_run_geometry_to_interval(trimmed_right, common_interval)
+        if trimmed_right is not None
+        else None
+    )
+    if trimmed_left is not None and trimmed_right is not None:
+        clipped_left, clipped_right = _synchronize_regular_run_geometry_samples(
+            trimmed_left,
+            trimmed_right,
+        )
+        direct_guard = _regular_pair_width_guard(
+            clipped_left,
+            clipped_right,
+            radius,
+        )
+        direct_strip = build_chamfer_strip(
+            [Vector(point) for point in clipped_left["coordinates"]],
+            [Vector(point) for point in clipped_right["coordinates"]],
+            terminal_constraints={
+                "start_pairs": [(0, 0)],
+                "end_pairs": [
+                    (
+                        len(clipped_left["coordinates"]) - 1,
+                        len(clipped_right["coordinates"]) - 1,
+                    )
+                ],
+                "expected_width": radius * (2.0 ** 0.5),
+                "maximum_width_error": max(radius * 0.60, 1.0e-5),
+                "reject_zero_area_faces": True,
+                "prefer_hard_guard_path": True,
+            },
+        )
+        if (
+            direct_guard["status"] == "PASS"
+            and direct_strip["diagnostics"]["status"] == "PASS"
+            and direct_strip["faces"]
+            and _strip_zero_area_face_count(
+                direct_strip,
+                [Vector(point) for point in clipped_left["coordinates"]],
+                [Vector(point) for point in clipped_right["coordinates"]],
+            )
+            == 0
+        ):
+            return (
+                {
+                    "left": clipped_left,
+                    "right": clipped_right,
+                    "common_u_interval": common_interval,
+                    "left_edge_count": len(clipped_left["edge_ids"]),
+                    "right_edge_count": len(clipped_right["edge_ids"]),
+                    "endpoint_trim_counts": [0, 0, 0, 0],
+                    "canonical_overlap_of_minimum_trim_candidates": False,
+                    "minimum_trim_candidate_count": 1,
+                    "strip_diagnostics": direct_strip["diagnostics"],
+                    **direct_guard,
+                },
+                None,
+            )
     if trimmed_left is None or trimmed_right is None:
         return None, {
             "reason": "COMMON_INTERVAL_HAS_NO_REAL_EDGE",
@@ -2823,6 +3231,12 @@ def _regular_run_pair_evaluation(left_run, right_run, strand, radius):
         "left_edge_count": len(trimmed_left["edge_ids"]),
         "right_edge_count": len(trimmed_right["edge_ids"]),
         "endpoint_trim_counts": list(trimmed_pair["trim_counts"]),
+        "canonical_overlap_of_minimum_trim_candidates": bool(
+            trimmed_pair.get("canonical_overlap_of_minimum_trim_candidates")
+        ),
+        "minimum_trim_candidate_count": int(
+            trimmed_pair.get("minimum_trim_candidate_count", 1)
+        ),
         "width_inlier_ratio": trimmed_pair["width_inlier_ratio"],
         "width_percentile_error": trimmed_pair["width_percentile_error"],
         "maximum_width_error": trimmed_pair["maximum_width_error"],
@@ -3344,6 +3758,545 @@ def _balance_regular_run_fragments(left_runs, right_runs, cyclic):
     return tuple(balanced_left), tuple(balanced_right)
 
 
+# 从原始 run 提取 regular core 两端被 endpoint trim 留下的真实 Edge residues。
+# run/core_edge_ids: 当前 provenance run 与已通过门禁的连续 core Edge IDs；返回 START/END residue runs。
+def _regular_endpoint_residue_runs(run, core_edge_ids):
+    run_edge_ids = list(run["edge_ids"])
+    core_edge_ids = list(core_edge_ids)
+    if not core_edge_ids:
+        return None
+    core_indices = [
+        run_edge_ids.index(edge_id)
+        for edge_id in core_edge_ids
+        if edge_id in run_edge_ids
+    ]
+    if (
+        len(core_indices) != len(core_edge_ids)
+        or core_indices != list(
+            range(core_indices[0], core_indices[0] + len(core_indices))
+        )
+        or [run_edge_ids[index] for index in core_indices] != core_edge_ids
+    ):
+        return None
+    first_index = core_indices[0]
+    last_index = core_indices[-1]
+    start_residue = (
+        _trim_run_endpoint_edges(
+            run,
+            0,
+            len(run_edge_ids) - first_index,
+        )
+        if first_index > 0
+        else None
+    )
+    end_residue = (
+        _trim_run_endpoint_edges(
+            run,
+            last_index + 1,
+            0,
+        )
+        if last_index + 1 < len(run_edge_ids)
+        else None
+    )
+    return {
+        "START": start_residue,
+        "END": end_residue,
+    }
+
+
+# 对两条单 Edge residue 执行严格 linear quad fallback；仅在原 strip 因无单调 path 失败时启用。
+# left_run/right_run/strand/radius/rejection: 两侧单 Edge、权威 strand、半径与原拒绝诊断；返回 candidate 或 None。
+def _single_edge_linear_regular_pair_candidate(
+    left_run,
+    right_run,
+    strand,
+    radius,
+    rejection,
+):
+    if (
+        len(left_run.get("edge_ids", ())) != 1
+        or len(right_run.get("edge_ids", ())) != 1
+    ):
+        return None
+    accepted_rejection = (
+        rejection.get("reason") == "COMMON_INTERVAL_HAS_NO_REAL_EDGE"
+        or (
+            rejection.get("reason") == "PAIR_WIDTH_ENVELOPE_FAILED"
+            and rejection.get("untrimmed_guard", {}).get("status") == "PASS"
+            and rejection.get("best_strip_rejection", {}).get("reason")
+            == "NO_MONOTONIC_CORRESPONDENCE_PATH"
+        )
+    )
+    if not accepted_rejection:
+        return None
+    common = _common_run_interval(
+        left_run["u_interval"],
+        right_run["u_interval"],
+        strand.cyclic,
+    )
+    if common is None:
+        return None
+    common_interval, right_shift = common
+    linear_left = _clip_run_geometry_to_interval(
+        left_run,
+        common_interval,
+    )
+    linear_right = _clip_run_geometry_to_interval(
+        {
+            **right_run,
+            "u_values": [
+                float(value) + right_shift
+                for value in right_run["u_values"]
+            ],
+            "u_interval": [
+                float(right_run["u_interval"][0]) + right_shift,
+                float(right_run["u_interval"][1]) + right_shift,
+            ],
+        },
+        common_interval,
+    )
+    geometry_left, geometry_right = _synchronize_regular_run_geometry_samples(
+        linear_left,
+        linear_right,
+    )
+    geometry_left = {
+        **geometry_left,
+        "coordinates": [
+            geometry_left["coordinates"][0],
+            geometry_left["coordinates"][-1],
+        ],
+        "u_values": [
+            geometry_left["u_values"][0],
+            geometry_left["u_values"][-1],
+        ],
+    }
+    geometry_right = {
+        **geometry_right,
+        "coordinates": [
+            geometry_right["coordinates"][0],
+            geometry_right["coordinates"][-1],
+        ],
+        "u_values": [
+            geometry_right["u_values"][0],
+            geometry_right["u_values"][-1],
+        ],
+    }
+    synchronized_guard = _regular_pair_width_guard(
+        geometry_left,
+        geometry_right,
+        radius,
+    )
+    left_coordinates = [
+        Vector(point) for point in geometry_left["coordinates"]
+    ]
+    right_coordinates = [
+        Vector(point) for point in geometry_right["coordinates"]
+    ]
+    quadrilateral = (
+        left_coordinates[0],
+        left_coordinates[1],
+        right_coordinates[1],
+        right_coordinates[0],
+    )
+    quadrilateral_area = sum(
+        current.cross(following).length
+        for current, following in zip(
+            quadrilateral,
+            (*quadrilateral[1:], quadrilateral[0]),
+        )
+    ) * 0.5
+    if (
+        synchronized_guard["status"] != "PASS"
+        or quadrilateral_area <= 1.0e-12
+    ):
+        return None
+    return {
+        "left": {
+            **geometry_left,
+            "edge_ids": list(left_run["edge_ids"]),
+        },
+        "right": {
+            **geometry_right,
+            "edge_ids": list(right_run["edge_ids"]),
+        },
+        "provenance_left_edge_ids": list(left_run["edge_ids"]),
+        "provenance_right_edge_ids": list(right_run["edge_ids"]),
+        "trim_counts": (0, 0, 0, 0),
+        "single_edge_linear_regular_fallback": True,
+        "common_u_interval": list(common_interval),
+        "left_edge_count": 1,
+        "right_edge_count": 1,
+        "endpoint_trim_counts": [0, 0, 0, 0],
+        "strip_diagnostics": {
+            "status": "PASS",
+            "path": [[0, 0], [1, 1]],
+            "widths": synchronized_guard.get("widths", []),
+            "width_errors": synchronized_guard.get("width_errors", []),
+            "one_sided_step_count": 0,
+            "maximum_relative_advance": 0.0,
+        },
+        **synchronized_guard,
+    }
+
+
+# 对 endpoint-trim 歧义的短等量 runs 执行同步 Plan-u quad 证明；只接受完整共同覆盖、width 与正面积全部通过的 pair。
+# left_run/right_run/strand/radius/rejection: 两侧真实 runs、权威 strand、半径与原拒绝诊断；返回严格 regular candidate 或 None。
+def _aligned_linear_regular_pair_candidate(
+    left_run,
+    right_run,
+    strand,
+    radius,
+    rejection,
+):
+    left_edge_count = len(left_run.get("edge_ids", ()))
+    right_edge_count = len(right_run.get("edge_ids", ()))
+    if (
+        rejection.get("reason") != "ENDPOINT_TRIM_AMBIGUOUS"
+        or rejection.get("minimum_total_trim") != 1
+        or rejection.get("candidate_count") != 2
+        or left_edge_count != right_edge_count
+        or not 2 <= left_edge_count <= 4
+    ):
+        return None
+    candidate_trim_counts = {
+        tuple(candidate.get("trim_counts", ()))
+        for candidate in rejection.get("candidates", ())
+    }
+    if candidate_trim_counts != {(0, 0, 1, 0), (1, 0, 0, 0)}:
+        return None
+    common = _common_run_interval(
+        left_run["u_interval"],
+        right_run["u_interval"],
+        strand.cyclic,
+    )
+    if common is None:
+        return None
+    common_interval, right_shift = common
+    common_length = common_interval[1] - common_interval[0]
+    left_length = max(map(float, left_run["u_interval"])) - min(
+        map(float, left_run["u_interval"])
+    )
+    right_length = max(map(float, right_run["u_interval"])) - min(
+        map(float, right_run["u_interval"])
+    )
+    if (
+        common_length <= 1.0e-10
+        or common_length < left_length * 0.98 - 1.0e-10
+        or common_length < right_length * 0.98 - 1.0e-10
+    ):
+        return None
+    shifted_right = {
+        **right_run,
+        "u_values": [
+            float(value) + right_shift for value in right_run["u_values"]
+        ],
+        "u_interval": [
+            float(right_run["u_interval"][0]) + right_shift,
+            float(right_run["u_interval"][1]) + right_shift,
+        ],
+    }
+    linear_left = _clip_run_geometry_to_interval(
+        left_run,
+        common_interval,
+    )
+    linear_right = _clip_run_geometry_to_interval(
+        shifted_right,
+        common_interval,
+    )
+    geometry_left, geometry_right = _synchronize_regular_run_geometry_samples(
+        linear_left,
+        linear_right,
+    )
+    sample_records = [
+        {
+            "u": float(sample_u),
+            "left": Vector(left_point),
+            "right": Vector(right_point),
+            "left_token": geometry_left["endpoint_tokens"][index],
+            "right_token": geometry_right["endpoint_tokens"][index],
+        }
+        for index, (sample_u, left_point, right_point) in enumerate(
+            zip(
+                geometry_left["u_values"],
+                geometry_left["coordinates"],
+                geometry_right["coordinates"],
+            )
+        )
+    ]
+    filtered_records = []
+    for record in sample_records:
+        if filtered_records:
+            previous = filtered_records[-1]
+            left_step = (record["left"] - previous["left"]).length
+            right_step = (record["right"] - previous["right"]).length
+            if min(left_step, right_step) <= 1.0e-10:
+                if left_step <= 1.0e-10 < right_step:
+                    previous["left"] = record["left"]
+                    previous["left_token"] = record["left_token"]
+                elif right_step <= 1.0e-10 < left_step:
+                    previous["right"] = record["right"]
+                    previous["right_token"] = record["right_token"]
+                previous["u"] = record["u"]
+                continue
+        filtered_records.append(record)
+    geometry_left = {
+        **geometry_left,
+        "coordinates": [tuple(record["left"]) for record in filtered_records],
+        "endpoint_tokens": [
+            record["left_token"] for record in filtered_records
+        ],
+        "u_values": [record["u"] for record in filtered_records],
+    }
+    geometry_right = {
+        **geometry_right,
+        "coordinates": [tuple(record["right"]) for record in filtered_records],
+        "endpoint_tokens": [
+            record["right_token"] for record in filtered_records
+        ],
+        "u_values": [record["u"] for record in filtered_records],
+    }
+    left_coordinates = [
+        Vector(point) for point in geometry_left["coordinates"]
+    ]
+    right_coordinates = [
+        Vector(point) for point in geometry_right["coordinates"]
+    ]
+    if (
+        len(left_coordinates) != len(right_coordinates)
+        or len(left_coordinates) < 3
+    ):
+        return None
+    synchronized_guard = _regular_pair_width_guard(
+        geometry_left,
+        geometry_right,
+        radius,
+    )
+    expected_width = radius * (2.0 ** 0.5)
+    width_tolerance = max(radius * 0.60, 1.0e-5)
+    direct_widths = [
+        (left_point - right_point).length
+        for left_point, right_point in zip(
+            left_coordinates,
+            right_coordinates,
+        )
+    ]
+    quad_areas = []
+    for index in range(len(left_coordinates) - 1):
+        quadrilateral = (
+            left_coordinates[index],
+            left_coordinates[index + 1],
+            right_coordinates[index + 1],
+            right_coordinates[index],
+        )
+        normal = Vector()
+        for current, following in zip(
+            quadrilateral,
+            (*quadrilateral[1:], quadrilateral[0]),
+        ):
+            normal += current.cross(following)
+        quad_areas.append(normal.length * 0.5)
+    if (
+        synchronized_guard["status"] != "PASS"
+        or any(
+            abs(width - expected_width) > width_tolerance
+            for width in direct_widths
+        )
+        or any(area <= 1.0e-12 for area in quad_areas)
+    ):
+        return None
+    return {
+        "left": {
+            **geometry_left,
+            "edge_ids": list(left_run["edge_ids"]),
+        },
+        "right": {
+            **geometry_right,
+            "edge_ids": list(right_run["edge_ids"]),
+        },
+        "provenance_left_edge_ids": list(left_run["edge_ids"]),
+        "provenance_right_edge_ids": list(right_run["edge_ids"]),
+        "trim_counts": (0, 0, 0, 0),
+        "aligned_linear_regular_fallback": True,
+        "common_u_interval": list(common_interval),
+        "left_edge_count": left_edge_count,
+        "right_edge_count": right_edge_count,
+        "endpoint_trim_counts": [0, 0, 0, 0],
+        "strip_diagnostics": {
+            "status": "PASS",
+            "path": [[index, index] for index in range(len(left_coordinates))],
+            "widths": direct_widths,
+            "width_errors": [
+                abs(width - expected_width) for width in direct_widths
+            ],
+            "one_sided_step_count": 0,
+            "maximum_relative_advance": 0.0,
+            "quad_areas": quad_areas,
+        },
+        **synchronized_guard,
+    }
+
+
+# 对 cyclic full-span rail 使用真实 Edge 顺序建立一条完整 Regular Strip；
+# left_run/right_run/strand/radius: 两侧完整 open rail、FeatureStrand 与半径；返回严格 geometry guard candidate 或 None。
+def _full_cyclic_regular_pair_candidate(left_run, right_run, strand, radius):
+    if (
+        not strand.cyclic
+        or left_run.get("component_u_interval")
+        != right_run.get("component_u_interval")
+        or len(left_run.get("edge_ids", ())) < 3
+        or len(right_run.get("edge_ids", ())) < 3
+    ):
+        return None, {"reason": "NOT_FULL_CYCLIC_PAIR"}
+    if not left_run.get("full_cyclic_atom") or not right_run.get(
+        "full_cyclic_atom"
+    ):
+        return None, {"reason": "FULL_CYCLIC_MARKER_MISSING"}
+    aligned_left = left_run
+    aligned_right = right_run
+    width_guard = _regular_pair_width_guard(aligned_left, aligned_right, radius)
+    strip = build_chamfer_strip(
+        [Vector(point) for point in aligned_left["coordinates"]],
+        [Vector(point) for point in aligned_right["coordinates"]],
+        terminal_constraints={
+            "start_pairs": [(0, 0)],
+            "end_pairs": [(
+                len(aligned_left["coordinates"]) - 1,
+                len(aligned_right["coordinates"]) - 1,
+            )],
+            "expected_width": radius * (2.0 ** 0.5),
+            "maximum_width_error": max(radius * 0.60, 1.0e-5),
+            "reject_zero_area_faces": True,
+            "prefer_hard_guard_path": True,
+        },
+    )
+    if (
+        width_guard["status"] != "PASS"
+        or strip["diagnostics"]["status"] != "PASS"
+        or not strip["faces"]
+        or _strip_zero_area_face_count(
+            strip,
+            [Vector(point) for point in aligned_left["coordinates"]],
+            [Vector(point) for point in aligned_right["coordinates"]],
+        )
+    ):
+        return None, {
+            "reason": "FULL_CYCLIC_GEOMETRY_GUARD",
+            "width_guard": width_guard,
+            "strip_diagnostics": strip["diagnostics"],
+            "zero_area_face_count": _strip_zero_area_face_count(
+                strip,
+                [Vector(point) for point in aligned_left["coordinates"]],
+                [Vector(point) for point in aligned_right["coordinates"]],
+            ),
+        }
+    return {
+        "left": aligned_left,
+        "right": aligned_right,
+        "trim_counts": (0, 0, 0, 0),
+        "width_inlier_ratio": width_guard["width_inlier_ratio"],
+        "maximum_width_error": width_guard["maximum_width_error"],
+        "strip_diagnostics": strip["diagnostics"],
+        "full_cyclic_regular_pair": True,
+    }, None
+
+
+# 递归证明 endpoint trim 两端成对留下的 residues，禁止已知双侧 regular 残段静默转成 setback。
+# left_run/right_run/core_candidate/strand/radius/depth: 原 pair、已通过 core、权威 strand、半径与递归深度；返回 residue matches 或拒绝诊断。
+def _paired_regular_endpoint_residue_matches(
+    left_run,
+    right_run,
+    core_candidate,
+    strand,
+    radius,
+    depth=0,
+):
+    if depth > 8:
+        return None, {"reason": "REGULAR_ENDPOINT_RESIDUE_DEPTH_EXCEEDED"}
+    left_residues = _regular_endpoint_residue_runs(
+        left_run,
+        core_candidate["left"]["edge_ids"],
+    )
+    right_residues = _regular_endpoint_residue_runs(
+        right_run,
+        core_candidate["right"]["edge_ids"],
+    )
+    if left_residues is None or right_residues is None:
+        return None, {"reason": "REGULAR_ENDPOINT_RESIDUE_PROVENANCE_INVALID"}
+    residue_matches = []
+    for endpoint_role in ("START", "END"):
+        left_residue = left_residues[endpoint_role]
+        right_residue = right_residues[endpoint_role]
+        if left_residue is None and right_residue is None:
+            continue
+        if left_residue is None or right_residue is None:
+            continue
+        common = _common_run_interval(
+            left_residue["u_interval"],
+            right_residue["u_interval"],
+            strand.cyclic,
+        )
+        if common is None:
+            continue
+        common_interval, _ = common
+        left_residue_lower, left_residue_upper = sorted(
+            map(float, left_residue["u_interval"])
+        )
+        right_residue_lower, right_residue_upper = sorted(
+            map(float, right_residue["u_interval"])
+        )
+        shared_coverage = common_interval[1] - common_interval[0]
+        minimum_residue_coverage = min(
+            left_residue_upper - left_residue_lower,
+            right_residue_upper - right_residue_lower,
+        )
+        if shared_coverage < minimum_residue_coverage * 0.90 - 1.0e-10:
+            continue
+        residue_candidate, rejection = _regular_run_pair_evaluation(
+            left_residue,
+            right_residue,
+            strand,
+            radius,
+        )
+        if residue_candidate is None:
+            residue_candidate = _single_edge_linear_regular_pair_candidate(
+                left_residue,
+                right_residue,
+                strand,
+                radius,
+                rejection,
+            )
+        if residue_candidate is None:
+            residue_candidate = _aligned_linear_regular_pair_candidate(
+                left_residue,
+                right_residue,
+                strand,
+                radius,
+                rejection,
+            )
+        if residue_candidate is None:
+            return None, {
+                "reason": "REGULAR_ENDPOINT_RESIDUE_UNPROVEN",
+                "endpoint_role": endpoint_role,
+                "left_edge_ids": list(left_residue["edge_ids"]),
+                "right_edge_ids": list(right_residue["edge_ids"]),
+                "pair_rejection": rejection,
+            }
+        nested_matches, nested_rejection = (
+            _paired_regular_endpoint_residue_matches(
+                left_residue,
+                right_residue,
+                residue_candidate,
+                strand,
+                radius,
+                depth + 1,
+            )
+        )
+        if nested_matches is None:
+            return None, nested_rejection
+        residue_matches.extend((residue_candidate, *nested_matches))
+    return tuple(residue_matches), None
+
+
 # 对单个 Plan correspondence 的多条 open rail runs 建立唯一 component matching。
 # correspondence/left_runs/right_runs/strand/radius: 语义 pair 与局部 regular runs；返回 matched pairs 和诊断。
 def _match_regular_run_components(
@@ -3376,7 +4329,10 @@ def _match_regular_run_components(
                 radius,
             )
             if current is None:
-                normalized.append(run)
+                micro_loop_proofs.extend(
+                    {**proof, "side": side}
+                    for proof in zero_length_proofs
+                )
                 continue
             current, loop_proofs = _defer_stitched_micro_loops(current, radius)
             if current is None:
@@ -3460,12 +4416,61 @@ def _match_regular_run_components(
     adjacency_right = {run_id: set() for run_id in right_by_id}
     for left_id, left_run in sorted(left_by_id.items()):
         for right_id, right_run in sorted(right_by_id.items()):
-            candidate, rejection = _regular_run_pair_evaluation(
+            candidate, rejection = _full_cyclic_regular_pair_candidate(
                 left_run,
                 right_run,
                 strand,
                 radius,
             )
+            full_cyclic_pair = bool(
+                left_run.get("full_cyclic_atom")
+                and right_run.get("full_cyclic_atom")
+            )
+            if candidate is None and not full_cyclic_pair:
+                candidate, rejection = _regular_run_pair_evaluation(
+                    left_run,
+                    right_run,
+                    strand,
+                    radius,
+                    allow_cyclic_shift=not (
+                        left_run.get("component_id")
+                        and right_run.get("component_id")
+                    ),
+                )
+            if candidate is None and not full_cyclic_pair:
+                candidate = _single_edge_linear_regular_pair_candidate(
+                    left_run,
+                    right_run,
+                    strand,
+                    radius,
+                    rejection,
+                )
+            if candidate is None and not full_cyclic_pair:
+                candidate = _aligned_linear_regular_pair_candidate(
+                    left_run,
+                    right_run,
+                    strand,
+                    radius,
+                    rejection,
+                )
+            if candidate is not None:
+                residue_matches, residue_rejection = (
+                    _paired_regular_endpoint_residue_matches(
+                        left_run,
+                        right_run,
+                        candidate,
+                        strand,
+                        radius,
+                    )
+                )
+                if residue_matches is None:
+                    rejection = residue_rejection
+                    candidate = None
+                else:
+                    candidate = {
+                        **candidate,
+                        "endpoint_residue_matches": list(residue_matches),
+                    }
             if candidate is None:
                 if rejection.get("reason") != "U_INTERVAL_DISJOINT":
                     rejected_candidate_records.setdefault(left_id, {})[
@@ -3612,12 +4617,13 @@ def _match_regular_run_components(
             )
             continue
         for left_id, right_id in solutions[0]:
+            candidate = candidate_records[(left_id, right_id)]
             matched.append(
                 {
                     "left_run_id": left_id,
                     "right_run_id": right_id,
                     "micro_loop_junction_proofs": list(micro_loop_proofs),
-                    **candidate_records[(left_id, right_id)],
+                    **candidate,
                 }
             )
     return tuple(matched), tuple(unresolved)
@@ -3641,22 +4647,52 @@ def _build_regular_record_from_match(
         return None, {"reason": "REGULAR_COMPONENT_TOO_SHORT"}
     expected_width = radius * (2.0 ** 0.5)
     width_tolerance = max(radius * 0.60, 1.0e-5)
-    strip = build_chamfer_strip(
-        left_open,
-        right_open,
-        terminal_constraints={
-            "start_pairs": [(0, 0)],
-            "end_pairs": [(len(left_open) - 1, len(right_open) - 1)],
-            "expected_width": expected_width,
-            "maximum_width_error": width_tolerance,
-            "reject_zero_area_faces": True,
-            "prefer_hard_guard_path": True,
-        },
-    )
+    if (
+        (
+            match.get("single_edge_linear_regular_fallback")
+            or match.get("aligned_linear_regular_fallback")
+        )
+        and len(left_open) == len(right_open)
+        and len(left_open) >= 2
+    ):
+        linear_faces = tuple(
+            (
+                ("A", index),
+                ("A", index + 1),
+                ("B", index + 1),
+                ("B", index),
+            )
+            for index in range(len(left_open) - 1)
+        )
+        strip = {
+            "faces": linear_faces,
+            "diagnostics": match["strip_diagnostics"],
+        }
+    else:
+        strip = build_chamfer_strip(
+            left_open,
+            right_open,
+            terminal_constraints={
+                "start_pairs": [(0, 0)],
+                "end_pairs": [(len(left_open) - 1, len(right_open) - 1)],
+                "expected_width": expected_width,
+                "maximum_width_error": width_tolerance,
+                "reject_zero_area_faces": True,
+                "prefer_hard_guard_path": True,
+            },
+        )
     if strip["diagnostics"]["status"] != "PASS" or not strip["faces"]:
         return None, {
             "reason": "STRIP_GEOMETRY_GUARD",
             "diagnostics": strip["diagnostics"],
+            "single_edge_linear_regular_fallback": match.get(
+                "single_edge_linear_regular_fallback"
+            ),
+            "aligned_linear_regular_fallback": match.get(
+                "aligned_linear_regular_fallback"
+            ),
+            "left_coordinate_count": len(left_open),
+            "right_coordinate_count": len(right_open),
         }
     coordinates_a = [
         tuple(round(float(value), 8) for value in point) for point in left_open
@@ -3690,7 +4726,17 @@ def _build_regular_record_from_match(
     consumed_edge_ids = set(left_core["edge_ids"] + right_core["edge_ids"])
     regular_edge_ids = set(consumed_edge_ids)
     extension_records = []
+    # Boundary Edge 只有进入生成 Faces 的两侧 core 才属于 Regular consumer；
+    # atom 外侧 terminal Edge 必须由后续 structural handoff 单独证明和消费。
+    allow_terminal_extensions = False
+    atom_start, atom_end = (
+        sorted(map(float, atom["u_interval"]))
+        if allow_terminal_extensions
+        else (0.0, 0.0)
+    )
     for side, core in (("LEFT", left_core), ("RIGHT", right_core)):
+        if not allow_terminal_extensions:
+            continue
         core_endpoint_tokens = list(core.get("endpoint_tokens", ()))
         if len(core_endpoint_tokens) < 2:
             continue
@@ -3699,6 +4745,15 @@ def _build_regular_record_from_match(
             ("END", core_endpoint_tokens[-1]),
         )
         for endpoint_role, endpoint_token in endpoint_roles:
+            core_start, core_end = sorted(map(float, core["u_interval"]))
+            if (
+                endpoint_role == "START"
+                and abs(core_start - atom_start) > 1.0e-8
+            ) or (
+                endpoint_role == "END"
+                and abs(core_end - atom_end) > 1.0e-8
+            ):
+                continue
             candidates = []
             for ledger_entry in ledger_by_edge_id.values():
                 if (
@@ -3711,7 +4766,22 @@ def _build_regular_record_from_match(
                         0 if side == "LEFT" else 1
                     ]
                     or endpoint_token not in ledger_entry["endpoint_tokens"]
+                    or "strand_u_interval" not in ledger_entry
                 ):
+                    continue
+                candidate_start, candidate_end = map(
+                    float, ledger_entry["strand_u_interval"]
+                )
+                outward = (
+                    endpoint_role == "START"
+                    and candidate_end <= atom_start + 1.0e-8
+                    and candidate_start < atom_start - 1.0e-10
+                ) or (
+                    endpoint_role == "END"
+                    and candidate_start >= atom_end - 1.0e-8
+                    and candidate_end > atom_end + 1.0e-10
+                )
+                if not outward:
                     continue
                 candidates.append(ledger_entry)
             if len(candidates) != 1:
@@ -3730,10 +4800,15 @@ def _build_regular_record_from_match(
                 sum(token in entry["endpoint_tokens"] for entry in rail_entries)
                 for token in outer_tokens
             )
+            shared_degree = sum(
+                endpoint_token in entry["endpoint_tokens"]
+                for entry in rail_entries
+            )
             if (
                 edge_length > radius * 2.0 + 1.0e-10
                 or len(outer_tokens) != 1
                 or outer_degrees != [1]
+                or shared_degree != 2
             ):
                 continue
             regular_edge_ids.add(candidate["edge_id"])
@@ -3746,6 +4821,13 @@ def _build_regular_record_from_match(
                     "outer_endpoint_token": next(iter(outer_tokens)),
                     "outer_endpoint_degree": outer_degrees[0],
                     "edge_length": edge_length,
+                    "atom_id": atom["atom_id"],
+                    "span_id": int(atom["span_id"]),
+                    "convexity": int(atom["convexity"]),
+                    "candidate_u_interval": list(
+                        candidate["strand_u_interval"]
+                    ),
+                    "outward_side": endpoint_role,
                 }
             )
     consumed_edge_ids = regular_edge_ids
@@ -3764,7 +4846,17 @@ def _build_regular_record_from_match(
             raise BatchedChamferError(
                 "REGULAR_CORE_LEDGER_CONFLICT",
                 "真实 Boundary Edge 被多个 Regular Strip 消费",
-                {"edge_id": edge_id},
+                {
+                    "edge_id": edge_id,
+                    "existing_consumer_id": ledger_by_edge_id[edge_id][
+                        "consumer_id"
+                    ],
+                    "current_consumer_id": consumer_id,
+                    "current_atom_id": atom["atom_id"] if atom else None,
+                    "current_correspondence_id": correspondence.correspondence_id,
+                    "current_left_u_interval": list(left_core["u_interval"]),
+                    "current_right_u_interval": list(right_core["u_interval"]),
+                },
             )
         ledger_by_edge_id[edge_id]["classification"] = "REGULAR_STRIP_CONSUMED"
         ledger_by_edge_id[edge_id]["consumer_id"] = consumer_id
@@ -3782,18 +4874,35 @@ def _build_regular_record_from_match(
             ),
             "left_u_interval": list(left_core["u_interval"]),
             "right_u_interval": list(right_core["u_interval"]),
-            "terminal_extension_records": extension_records,
-            "atom_id": atom["atom_id"] if atom is not None else None,
+        "terminal_extension_records": extension_records,
+        "atom_id": atom["atom_id"] if atom is not None else None,
+        "span_id": int(atom["span_id"]) if atom is not None else None,
             "micro_loop_junction_proofs": list(
                 match.get("micro_loop_junction_proofs", ())
             ),
         "u_interval": [
-            round(float(value), 10)
-            for value in match["common_u_interval"]
+            round(
+                max(
+                    min(map(float, left_core["u_interval"])),
+                    min(map(float, right_core["u_interval"])),
+                ),
+                10,
+            ),
+            round(
+                min(
+                    max(map(float, left_core["u_interval"])),
+                    max(map(float, right_core["u_interval"])),
+                ),
+                10,
+            ),
         ],
         "virtual_atom_boundaries": {
             "left": list(left_core.get("virtual_atom_boundaries", ())),
             "right": list(right_core.get("virtual_atom_boundaries", ())),
+        },
+        "virtual_regular_samples": {
+            "left": list(left_core.get("virtual_regular_samples", ())),
+            "right": list(right_core.get("virtual_regular_samples", ())),
         },
         "faces": faces,
             "face_count": len(faces),
@@ -4136,9 +5245,171 @@ def _common_atom_component_intervals(left_runs, right_runs, atom):
     return tuple(common_segments)
 
 
+# 按 Edge 与 component 的实际 u overlap 做唯一归属，再在 component 边界生成虚拟端点。
+# run/components: 已归属同一 Plan atom 的 open run 与互不重叠共同区间；返回不重复消费 Edge 的 fragments。
+def _partition_run_to_component_intervals(run, components):
+    parameters = [float(value) for value in run["u_values"]]
+    component_bounds = [sorted(map(float, interval)) for interval in components]
+    edge_owners = []
+    for edge_start, edge_end in zip(parameters, parameters[1:]):
+        edge_lower, edge_upper = sorted((edge_start, edge_end))
+        overlaps = [
+            max(0.0, min(edge_upper, upper) - max(edge_lower, lower))
+            for lower, upper in component_bounds
+        ]
+        maximum_overlap = max(overlaps, default=0.0)
+        matching_components = [
+            component_index
+            for component_index, overlap in enumerate(overlaps)
+            if overlap > 1.0e-10
+            and abs(overlap - maximum_overlap) <= 1.0e-10
+        ]
+        edge_owners.append(
+            matching_components[0] if len(matching_components) == 1 else None
+        )
+    fragments = []
+    fragment_start = 0
+    for edge_index in range(1, len(edge_owners) + 1):
+        if (
+            edge_index < len(edge_owners)
+            and edge_owners[edge_index] == edge_owners[fragment_start]
+        ):
+            continue
+        component_index = edge_owners[fragment_start]
+        if component_index is not None:
+            selected_edge_ids = list(
+                run["edge_ids"][fragment_start:edge_index]
+            )
+            fragment = {
+                **run,
+                "edge_ids": selected_edge_ids,
+                "coordinates": list(run["coordinates"])[
+                    fragment_start : edge_index + 1
+                ],
+                "endpoint_tokens": list(run.get("endpoint_tokens", ()))[
+                    fragment_start : edge_index + 1
+                ],
+                "u_values": parameters[fragment_start : edge_index + 1],
+                "u_interval": [
+                    parameters[fragment_start],
+                    parameters[edge_index],
+                ],
+                "is_cyclic": False,
+                "junction_endpoint_tokens_by_edge": {
+                    edge_id: list(tokens)
+                    for edge_id, tokens in run.get(
+                        "junction_endpoint_tokens_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "endpoint_degrees_by_edge": {
+                    edge_id: list(degrees)
+                    for edge_id, degrees in run.get(
+                        "endpoint_degrees_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+                "endpoint_topology_signatures_by_edge": {
+                    edge_id: list(signatures)
+                    for edge_id, signatures in run.get(
+                        "endpoint_topology_signatures_by_edge",
+                        {},
+                    ).items()
+                    if edge_id in selected_edge_ids
+                },
+            }
+            fragments.append(
+                (
+                    component_index,
+                    _clip_run_geometry_to_interval(
+                        fragment,
+                        component_bounds[component_index],
+                    ),
+                )
+            )
+        fragment_start = edge_index
+    return tuple(fragments)
+
+
 # 把 atom 内 fragments 裁到双侧共同 u components，再交给唯一 matching。
 # left_runs/right_runs/atom: atom 两侧 fragments 与 Plan atom；返回 component-indexed runs。
 def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
+    atom_start, atom_end = sorted(map(float, atom["u_interval"]))
+    full_cyclic_atom = (
+        abs(atom_start) <= 1.0e-8
+        and abs(atom_end - 1.0) <= 1.0e-8
+        and len(left_runs) == 1
+        and len(right_runs) == 1
+    )
+    if (
+        full_cyclic_atom
+        and left_runs[0].get("full_cyclic_atom")
+        and right_runs[0].get("full_cyclic_atom")
+    ):
+        component_interval = [
+            min(
+                *map(float, left_runs[0]["u_interval"]),
+                *map(float, right_runs[0]["u_interval"]),
+            ),
+            max(
+                *map(float, left_runs[0]["u_interval"]),
+                *map(float, right_runs[0]["u_interval"]),
+            ),
+        ]
+        component_id = f"{atom['atom_id']}:0"
+        return (
+            ({
+                **left_runs[0],
+                "component_id": component_id,
+                "component_u_interval": component_interval,
+            },),
+            ({
+                **right_runs[0],
+                "component_id": component_id,
+                "component_u_interval": component_interval,
+            },),
+            (component_interval,),
+        )
+    if full_cyclic_atom:
+        left_run = left_runs[0]
+        right_run = right_runs[0]
+        left_start, left_end = sorted(map(float, left_run["u_interval"]))
+        right_start, right_end = sorted(map(float, right_run["u_interval"]))
+        if (
+            left_start <= 1.0e-8
+            and right_end >= 1.0 - 1.0e-8
+            and left_end > right_start + 1.0e-8
+        ):
+            lifted_right = {
+                **right_run,
+                "u_values": [float(value) - 1.0 for value in right_run["u_values"]],
+                "u_interval": [right_start - 1.0, right_end - 1.0],
+            }
+            component_interval = [right_start - 1.0, left_end]
+            component_id = f"{atom['atom_id']}:0"
+            return (
+                (
+                    {
+                        **left_run,
+                        "atom_id": atom["atom_id"],
+                        "component_id": component_id,
+                        "component_u_interval": component_interval,
+                        "full_cyclic_atom": True,
+                    },
+                ),
+                (
+                    {
+                        **lifted_right,
+                        "atom_id": atom["atom_id"],
+                        "component_id": component_id,
+                        "component_u_interval": component_interval,
+                        "full_cyclic_atom": True,
+                    },
+                ),
+                (component_interval,),
+            )
     components = _common_atom_component_intervals(
         left_runs,
         right_runs,
@@ -4146,17 +5417,16 @@ def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
     )
     partitioned_left = []
     partitioned_right = []
-    for component_index, interval in enumerate(components):
-        component_id = f"{atom['atom_id']}:{component_index}"
-        for runs, target in (
-            (left_runs, partitioned_left),
-            (right_runs, partitioned_right),
-        ):
-            for run in runs:
-                trimmed = _trim_open_run_to_interval(run, interval)
-                if trimmed is None:
-                    continue
-                trimmed = _clip_run_geometry_to_interval(trimmed, interval)
+    for runs, target in (
+        (left_runs, partitioned_left),
+        (right_runs, partitioned_right),
+    ):
+        for run in runs:
+            for component_index, trimmed in (
+                _partition_run_to_component_intervals(run, components)
+            ):
+                interval = components[component_index]
+                component_id = f"{atom['atom_id']}:{component_index}"
                 target.append(
                     {
                         **trimmed,
@@ -4166,6 +5436,122 @@ def _partition_atom_runs_by_common_components(left_runs, right_runs, atom):
                     }
                 )
     return tuple(partitioned_left), tuple(partitioned_right), components
+
+
+# 为 cyclic full-span atom 选择两侧 rail 的唯一 seam lift，使双侧覆盖同一完整周期；
+# left_runs/right_runs/atom: 单 atom 两侧已按 topology stitch 的 runs 与 Plan atom；返回 lift 后 runs 或原输入。
+def _lift_full_cyclic_atom_runs(left_runs, right_runs, atom):
+    atom_start, atom_end = sorted(map(float, atom["u_interval"]))
+    if (
+        abs(atom_start) > 1.0e-8
+        or abs(atom_end - 1.0) > 1.0e-8
+        or len(left_runs) != 1
+        or len(right_runs) != 1
+    ):
+        return left_runs, right_runs
+    candidates = []
+    for left_shift in (-1, 0, 1):
+        for right_shift in (-1, 0, 1):
+            left_values = [
+                float(value) + left_shift for value in left_runs[0]["u_values"]
+            ]
+            right_values = [
+                float(value) + right_shift for value in right_runs[0]["u_values"]
+            ]
+            left_start, left_end = sorted((left_values[0], left_values[-1]))
+            right_start, right_end = sorted((right_values[0], right_values[-1]))
+            common_coverage = max(
+                0.0,
+                min(left_end, right_end) - max(left_start, right_start),
+            )
+            union_coverage = max(left_end, right_end) - min(
+                left_start,
+                right_start,
+            )
+            candidates.append(
+                (
+                    common_coverage,
+                    -abs(union_coverage - 1.0),
+                    -(abs(left_shift) + abs(right_shift)),
+                    -abs(left_shift),
+                    left_shift,
+                    right_shift,
+                    left_values,
+                    right_values,
+                )
+            )
+    (
+        common_coverage,
+        negative_coverage_error,
+        _,
+        _,
+        left_shift,
+        right_shift,
+        left_values,
+        right_values,
+    ) = max(candidates)
+    if (
+        common_coverage <= 1.0e-8
+        or -negative_coverage_error > 2.0e-2
+    ):
+        return left_runs, right_runs
+
+    def shifted(run, shift, values):
+        if not shift:
+            return run
+        return {
+            **run,
+            "u_values": values,
+            "u_interval": [values[0], values[-1]],
+        }
+
+    return (
+        [shifted(left_runs[0], left_shift, left_values)],
+        [shifted(right_runs[0], right_shift, right_values)],
+    )
+
+
+# 对 cyclic full-span 的两条完整 rail 重新建立共同 phase；只旋转 normalized u，不改变 Edge 顺序或 provenance。
+# left_runs/right_runs/atom: 单 atom 两侧 stitched runs 与 Plan atom；返回 phase 对齐的 runs 或原输入。
+def _align_full_cyclic_atom_run_phase(left_runs, right_runs, atom):
+    atom_start, atom_end = sorted(map(float, atom["u_interval"]))
+    if (
+        abs(atom_start) > 1.0e-8
+        or abs(atom_end - 1.0) > 1.0e-8
+        or len(left_runs) != 1
+        or len(right_runs) != 1
+    ):
+        return left_runs, right_runs
+    left_run = left_runs[0]
+    right_run = right_runs[0]
+    left_values = [float(value) for value in left_run["u_values"]]
+    right_values = [float(value) for value in right_run["u_values"]]
+    if len(left_values) < 2 or len(right_values) < 2:
+        return left_runs, right_runs
+    left_start, left_end = sorted((left_values[0], left_values[-1]))
+    right_start, right_end = sorted((right_values[0], right_values[-1]))
+    left_coverage = left_end - left_start
+    right_coverage = right_end - right_start
+    if min(left_coverage, right_coverage) < 0.50:
+        return left_runs, right_runs
+    start_shift = left_start - right_start
+    shifted_right_values = [value + start_shift for value in right_values]
+    end_error = abs(shifted_right_values[-1] - left_end)
+    maximum_end_error = max(2.0e-2, min(left_coverage, right_coverage) * 0.20)
+    if end_error > maximum_end_error:
+        return left_runs, right_runs
+    return (
+        [{**left_run, "full_cyclic_atom": True}],
+        [
+            {
+                **right_run,
+                "u_values": shifted_right_values,
+                "u_interval": [shifted_right_values[0], shifted_right_values[-1]],
+                "cyclic_phase_shift": start_shift,
+                "full_cyclic_atom": True,
+            }
+        ],
+    )
 
 
 # 返回 FeatureStrand 折线总弧长，short setback 只按真实弧长证明，不用 normalized u 近似距离。
@@ -4193,6 +5579,8 @@ def _short_component_setback_proof(
     strand,
     forbidden_intervals,
     radius,
+    adjacent_atoms=(),
+    forbidden_envelopes=(),
 ):
     left_runs = unresolved.get("left_runs", ())
     right_runs = unresolved.get("right_runs", ())
@@ -4214,30 +5602,80 @@ def _short_component_setback_proof(
         or len(present_runs[0].get("edge_ids", ())) != 1
     ):
         return None
+    present_run = present_runs[0]
     component_start, component_end = sorted(
         map(float, unresolved["component_u_interval"])
     )
     atom_start, atom_end = sorted(map(float, atom["u_interval"]))
     present_start, present_end = sorted(map(float, present_runs[0]["u_interval"]))
+    containment_tolerance_u = 1.0e-8
     if (
-        component_start < atom_start - 1.0e-10
-        or component_end > atom_end + 1.0e-10
-        or present_start < component_start - 1.0e-10
-        or present_end > component_end + 1.0e-10
+        component_start < atom_start - containment_tolerance_u
+        or component_end > atom_end + containment_tolerance_u
+        or present_start < component_start - containment_tolerance_u
+        or present_end > component_end + containment_tolerance_u
     ):
         return None
     strand_length = _feature_strand_arc_length(strand)
     component_arc_length = (component_end - component_start) * strand_length
     maximum_arc_length = radius * 2.0
-    boundary_candidates = []
     epsilon_u = 1.0e-8
-    if abs(component_start - atom_start) * strand_length <= maximum_arc_length + 1.0e-10:
-        boundary_candidates.append(("ATOM_START", atom_start))
-    if abs(component_end - atom_end) * strand_length <= maximum_arc_length + 1.0e-10:
-        boundary_candidates.append(("ATOM_END", atom_end))
-    if len(boundary_candidates) != 1:
-        return None
-    atom_side, atom_boundary_u = boundary_candidates[0]
+    atom_boundary_candidates = []
+    if (
+        abs(component_start - atom_start) * strand_length
+        <= maximum_arc_length + 1.0e-10
+    ):
+        atom_boundary_candidates.append(("ATOM_START", atom_start))
+    if (
+        abs(component_end - atom_end) * strand_length
+        <= maximum_arc_length + 1.0e-10
+    ):
+        atom_boundary_candidates.append(("ATOM_END", atom_end))
+    source_boundary_candidates = []
+    if len(atom_boundary_candidates) != 1:
+        for envelope in forbidden_envelopes:
+            source_start, source_end = sorted(
+                map(float, envelope["source_u_interval"])
+            )
+            for boundary_side, boundary_u in (
+                ("FORBIDDEN_START", source_start),
+                ("FORBIDDEN_END", source_end),
+            ):
+                for offset in (range(-2, 3) if strand.cyclic else (0,)):
+                    lifted_boundary_u = boundary_u + offset
+                    boundary_distance = min(
+                        abs(component_start - lifted_boundary_u),
+                        abs(component_end - lifted_boundary_u),
+                    ) * strand_length
+                    if boundary_distance <= maximum_arc_length + 1.0e-10:
+                        source_boundary_candidates.append(
+                            {
+                                "boundary_id": (
+                                    "overlap-forbidden-source:"
+                                    f"{int(envelope['interval_index'])}:"
+                                    f"{boundary_side.lower()}:"
+                                    f"{lifted_boundary_u:.10f}"
+                                ),
+                                "boundary_type": "OVERLAP_FORBIDDEN",
+                                "boundary_side": boundary_side,
+                                "boundary_u": lifted_boundary_u,
+                                "direct_witness_edge_ids": list(
+                                    envelope["direct_witness_edge_ids"]
+                                ),
+                            }
+                        )
+        unique_source_boundaries = {
+            candidate["boundary_id"]: candidate
+            for candidate in source_boundary_candidates
+        }
+        if len(unique_source_boundaries) != 1:
+            return None
+        source_boundary = next(iter(unique_source_boundaries.values()))
+        atom_side = "ATOM_START_END_COLLAPSED"
+        atom_boundary_u = source_boundary["boundary_u"]
+    else:
+        atom_side, atom_boundary_u = atom_boundary_candidates[0]
+        source_boundary = None
     adjacent_boundaries = []
     for interval_index, interval in enumerate(forbidden_intervals):
         forbidden_start, forbidden_end = sorted(map(float, interval))
@@ -4256,6 +5694,7 @@ def _short_component_setback_proof(
                         "boundary_type": "OVERLAP_FORBIDDEN",
                         "boundary_side": boundary_side,
                         "boundary_u": boundary_u,
+                        "atom_boundary_side": atom_side,
                     }
                 )
     if not strand.cyclic:
@@ -4270,11 +5709,151 @@ def _short_component_setback_proof(
                         "boundary_type": "PLAN_ENDPOINT",
                         "boundary_side": endpoint_role,
                         "boundary_u": endpoint_u,
+                        "atom_boundary_side": atom_side,
                     }
                 )
     unique_boundaries = {
         boundary["boundary_id"]: boundary for boundary in adjacent_boundaries
     }
+    if source_boundary is not None:
+        unique_boundaries[source_boundary["boundary_id"]] = {
+            **source_boundary,
+            "atom_boundary_side": atom_side,
+        }
+    if not unique_boundaries and forbidden_intervals:
+        interval_boundary_candidates = []
+        for interval_index, interval in enumerate(forbidden_intervals):
+            forbidden_start, forbidden_end = sorted(map(float, interval))
+            for boundary_side, boundary_u in (
+                ("FORBIDDEN_START", forbidden_start),
+                ("FORBIDDEN_END", forbidden_end),
+            ):
+                for offset in (range(-2, 3) if strand.cyclic else (0,)):
+                    lifted_boundary_u = boundary_u + offset
+                    boundary_distance = min(
+                        abs(component_start - lifted_boundary_u),
+                        abs(component_end - lifted_boundary_u),
+                    ) * strand_length
+                    if boundary_distance <= 1.0e-8 * strand_length + 1.0e-10:
+                        interval_boundary_candidates.append(
+                            {
+                                "boundary_id": (
+                                    f"overlap-forbidden:{interval_index}:"
+                                    f"{boundary_side.lower()}:"
+                                    f"{lifted_boundary_u:.10f}"
+                                ),
+                                "boundary_type": "OVERLAP_FORBIDDEN",
+                                "boundary_side": boundary_side,
+                                "boundary_u": lifted_boundary_u,
+                                "atom_boundary_side": atom_side,
+                            }
+                        )
+        unique_interval_boundaries = {
+            candidate["boundary_id"]: candidate
+            for candidate in interval_boundary_candidates
+        }
+        if len(unique_interval_boundaries) == 1:
+            unique_boundaries.update(unique_interval_boundaries)
+    if not unique_boundaries and forbidden_envelopes:
+        envelope_candidates = []
+        for envelope in forbidden_envelopes:
+            envelope_start, envelope_end = sorted(
+                map(float, envelope["effective_u_interval"])
+            )
+            for boundary_side, boundary_u in (
+                ("FORBIDDEN_START", envelope_start),
+                ("FORBIDDEN_END", envelope_end),
+            ):
+                for offset in (range(-2, 3) if strand.cyclic else (0,)):
+                    lifted_boundary_u = boundary_u + offset
+                    boundary_distance = min(
+                        abs(component_start - lifted_boundary_u),
+                        abs(component_end - lifted_boundary_u),
+                    ) * strand_length
+                    atom_boundary_distance = abs(
+                        atom_boundary_u - lifted_boundary_u
+                    ) * strand_length
+                    if (
+                        boundary_distance <= maximum_arc_length + 1.0e-10
+                        and atom_boundary_distance
+                        <= maximum_arc_length + 1.0e-10
+                    ):
+                        envelope_candidates.append(
+                            {
+                                "boundary_id": (
+                                    "overlap-forbidden-envelope:"
+                                    f"{int(envelope['interval_index'])}:"
+                                    f"{boundary_side.lower()}:"
+                                    f"{lifted_boundary_u:.10f}"
+                                ),
+                                "boundary_type": (
+                                    "OVERLAP_FORBIDDEN_ENVELOPE"
+                                ),
+                                "boundary_side": boundary_side,
+                                "boundary_u": lifted_boundary_u,
+                                "atom_boundary_side": atom_side,
+                                "direct_witness_edge_ids": list(
+                                    envelope["direct_witness_edge_ids"]
+                                ),
+                            }
+                        )
+        unique_envelope_candidates = {
+            candidate["boundary_id"]: candidate
+            for candidate in envelope_candidates
+        }
+        if len(unique_envelope_candidates) == 1:
+            unique_boundaries.update(unique_envelope_candidates)
+    if not unique_boundaries and adjacent_atoms:
+        adjacent_candidates = []
+        for candidate in adjacent_atoms:
+            if candidate["atom_id"] == atom["atom_id"]:
+                continue
+            candidate_start, candidate_end = sorted(
+                map(float, candidate["u_interval"])
+            )
+            boundary_distance_u = min(
+                abs(candidate_boundary + offset - atom_boundary_u)
+                for candidate_boundary in (candidate_start, candidate_end)
+                for offset in (range(-2, 3) if strand.cyclic else (0,))
+            )
+            if (
+                boundary_distance_u * strand_length
+                <= maximum_arc_length + 1.0e-10
+            ):
+                adjacent_candidates.append(candidate)
+        unique_adjacent = {
+            candidate["atom_id"]: candidate
+            for candidate in adjacent_candidates
+        }
+        if len(unique_adjacent) == 1:
+            adjacent_atom = next(iter(unique_adjacent.values()))
+            if (
+                int(adjacent_atom["span_id"]) != int(atom["span_id"])
+                or int(adjacent_atom["convexity"]) != int(atom["convexity"])
+            ):
+                boundary_id = (
+                    "plan-atom-boundary:"
+                    + _stable_fingerprint(
+                        {
+                            "atom_ids": sorted(
+                                (atom["atom_id"], adjacent_atom["atom_id"])
+                            ),
+                            "boundary_u": round(atom_boundary_u, 10),
+                        }
+                    )[:20]
+                )
+                unique_boundaries[boundary_id] = {
+                    "boundary_id": boundary_id,
+                    "boundary_type": "PLAN_ATOM_BOUNDARY",
+                    "boundary_side": atom_side,
+                    "boundary_u": atom_boundary_u,
+                    "atom_boundary_side": atom_side,
+                    "adjacent_boundary_distance": boundary_distance_u
+                    * strand_length,
+                    "adjacent_atom_id": adjacent_atom["atom_id"],
+                    "adjacent_span_id": int(adjacent_atom["span_id"]),
+                    "adjacent_convexity": int(adjacent_atom["convexity"]),
+                }
     if len(unique_boundaries) != 1:
         return None
     adjacent_boundary = next(iter(unique_boundaries.values()))
@@ -4287,7 +5866,20 @@ def _short_component_setback_proof(
         or boundary_distance > maximum_arc_length + 1.0e-10
     ):
         return None
-    present_run = present_runs[0]
+    endpoint_degrees = tuple(
+        present_run.get("endpoint_degrees_by_edge", {}).get(
+            present_run["edge_ids"][0],
+            (),
+        )
+    )
+    if (
+        present_run.get("branch_setback") is False
+        or (
+            adjacent_boundary["boundary_type"] == "JUNCTION_ENDPOINT"
+            and sorted(map(int, endpoint_degrees)) != [1, 2]
+        )
+    ):
+        return None
     return {
         "proof_version": "SHORT_COMPONENT_SETBACK_V1",
         "correspondence_id": unresolved["correspondence_id"],
@@ -4303,7 +5895,128 @@ def _short_component_setback_proof(
         "boundary_id": adjacent_boundary["boundary_id"],
         "boundary_type": adjacent_boundary["boundary_type"],
         "boundary_side": adjacent_boundary["boundary_side"],
+        "atom_boundary_side": adjacent_boundary["atom_boundary_side"],
+        "adjacent_atom_id": adjacent_boundary.get("adjacent_atom_id"),
+        "adjacent_span_id": adjacent_boundary.get("adjacent_span_id"),
+        "adjacent_convexity": adjacent_boundary.get("adjacent_convexity"),
+        "span_id": int(atom["span_id"]),
+        "patch_pair": list(atom["patch_pair"]),
+        "convexity": int(atom["convexity"]),
+    }
+
+
+# 用同一 correspondence 相邻 Plan atom 的权威边界证明 cyclic short component；不接受普通 atom 内部碎片。
+# unresolved/atom/plan_atoms/strand/radius: 单侧 component、当前及全量 Plan atoms、权威 strand 与半径；返回 proof 或 None。
+def _cyclic_adjacent_atom_short_component_setback_proof(
+    unresolved,
+    atom,
+    plan_atoms,
+    strand,
+    radius,
+):
+    if not strand.cyclic:
+        return None
+    present_sides = [
+        (side, runs)
+        for side, runs in (
+            ("LEFT", unresolved.get("left_runs", ())),
+            ("RIGHT", unresolved.get("right_runs", ())),
+        )
+        if runs
+    ]
+    if (
+        unresolved.get("reason") != "NO_PERFECT_MATCHING"
+        or unresolved.get("solution_count_capped") != 0
+        or len(present_sides) != 1
+        or len(present_sides[0][1]) != 1
+        or len(present_sides[0][1][0].get("edge_ids", ())) != 1
+    ):
+        return None
+    present_side, present_runs = present_sides[0]
+    present_run = present_runs[0]
+    component_start, component_end = sorted(
+        map(float, unresolved["component_u_interval"])
+    )
+    atom_start, atom_end = sorted(map(float, atom["u_interval"]))
+    strand_length = _feature_strand_arc_length(strand)
+    maximum_arc_length = radius * 2.0
+    component_arc_length = (component_end - component_start) * strand_length
+    if component_arc_length > maximum_arc_length + 1.0e-10:
+        return None
+    boundary_candidates = []
+    for atom_side, boundary_u in (
+        ("ATOM_START", atom_start),
+        ("ATOM_END", atom_end),
+    ):
+        boundary_distance = min(
+            abs(component_start - boundary_u),
+            abs(component_end - boundary_u),
+        ) * strand_length
+        if boundary_distance > maximum_arc_length + 1.0e-10:
+            continue
+        adjacent_atoms = []
+        for candidate in plan_atoms:
+            if candidate["atom_id"] == atom["atom_id"]:
+                continue
+            candidate_start, candidate_end = sorted(
+                map(float, candidate["u_interval"])
+            )
+            if any(
+                abs(candidate_boundary + offset - boundary_u) <= 1.0e-8
+                for candidate_boundary in (candidate_start, candidate_end)
+                for offset in range(-2, 3)
+            ):
+                adjacent_atoms.append(candidate)
+        unique_adjacent_atoms = {
+            candidate["atom_id"]: candidate for candidate in adjacent_atoms
+        }
+        if len(unique_adjacent_atoms) == 1:
+            boundary_candidates.append(
+                (
+                    atom_side,
+                    boundary_u,
+                    boundary_distance,
+                    next(iter(unique_adjacent_atoms.values())),
+                )
+            )
+    if len(boundary_candidates) != 1:
+        return None
+    atom_side, boundary_u, boundary_distance, adjacent_atom = (
+        boundary_candidates[0]
+    )
+    if (
+        int(adjacent_atom["span_id"]) == int(atom["span_id"])
+        and int(adjacent_atom["convexity"]) == int(atom["convexity"])
+    ):
+        return None
+    boundary_id = (
+        "plan-atom-boundary:"
+        + _stable_fingerprint(
+            {
+                "atom_ids": sorted((atom["atom_id"], adjacent_atom["atom_id"])),
+                "boundary_u": round(boundary_u, 10),
+            }
+        )[:20]
+    )
+    return {
+        "proof_version": "SHORT_COMPONENT_SETBACK_V1",
+        "correspondence_id": unresolved["correspondence_id"],
+        "atom_id": atom["atom_id"],
+        "component_id": unresolved["component_id"],
+        "present_side": present_side,
+        "edge_id": present_run["edge_ids"][0],
+        "coordinates": list(present_run["coordinates"]),
+        "component_u_interval": [component_start, component_end],
+        "component_arc_length": component_arc_length,
+        "maximum_arc_length": maximum_arc_length,
+        "boundary_distance": boundary_distance,
+        "boundary_id": boundary_id,
+        "boundary_type": "PLAN_ATOM_BOUNDARY",
+        "boundary_side": atom_side,
         "atom_boundary_side": atom_side,
+        "adjacent_atom_id": adjacent_atom["atom_id"],
+        "adjacent_span_id": int(adjacent_atom["span_id"]),
+        "adjacent_convexity": int(adjacent_atom["convexity"]),
         "span_id": int(atom["span_id"]),
         "patch_pair": list(atom["patch_pair"]),
         "convexity": int(atom["convexity"]),
@@ -4710,7 +6423,7 @@ def _regular_terminal_tail_handoff_proof(
         (following - current).length
         for current, following in zip(chain_coordinates, chain_coordinates[1:])
     )
-    maximum_chain_length = radius * 4.10
+    maximum_chain_length = radius * 4.50
     raw_chain_interval = sorted((float(start_u), float(end_u)))
     atom_start, atom_end = sorted(map(float, claim["u_interval"]))
     strand_length = max(float(claim["strand_length"]), 1.0e-12)
@@ -4767,40 +6480,6 @@ def _regular_terminal_tail_handoff_proof(
                                 lifted_boundary_u,
                             )
                         )
-    if not lifted_candidates and len(oriented_chain["edge_ids"]) == 1:
-        for record in regular_records:
-            if record["correspondence_id"] != claim["correspondence_id"]:
-                continue
-            side_interval_key = (
-                "left_u_interval"
-                if claim["side"] == "LEFT"
-                else "right_u_interval"
-            )
-            side_interval = record.get(side_interval_key, record["u_interval"])
-            for record_boundary_side, record_boundary_u in (
-                ("START", float(side_interval[0])),
-                ("END", float(side_interval[1])),
-            ):
-                chain_start, chain_end = raw_chain_interval
-                projection_gap_arc_length = min(
-                    abs(record_boundary_u - chain_start),
-                    abs(record_boundary_u - chain_end),
-                ) * strand_length
-                if (
-                    projection_gap_arc_length <= radius * 0.08 + 1.0e-10
-                    and chain_length <= radius * 0.03 + 1.0e-10
-                    and abs(chain_end - chain_start) * strand_length
-                    <= radius * 0.10 + 1.0e-10
-                ):
-                    lifted_candidates.append(
-                        (
-                            0,
-                            f"REGULAR_{record_boundary_side}",
-                            chain_start,
-                            chain_end,
-                            record_boundary_u,
-                        )
-                    )
     lifted_candidates = {
         (
             candidate[1],
@@ -5068,15 +6747,7 @@ def _regular_terminal_tail_handoff_proof(
     if (
         boundary_witness["boundary_type"]
         not in plan_boundary_types
-        or (
-            boundary_witness["boundary_type"]
-            not in {
-                "PLAN_SPAN",
-                "OVERLAP_FORBIDDEN_ENVELOPE",
-                "REGULAR_COMPONENT_BOUNDARY",
-            }
-            and chain_length > maximum_chain_length + 1.0e-10
-        )
+        or chain_length > maximum_chain_length + 1.0e-10
         or atom_boundary_distance > radius * 2.0 + 1.0e-10
     ):
         return {
@@ -5115,10 +6786,6 @@ def _regular_terminal_tail_handoff_proof(
     )
     adjacent_records = []
     rejected_adjacent_records = []
-    adjacency_tolerance_u = max(
-        1.0e-8,
-        radius * 1.0e-2 / strand_length,
-    )
     side_edge_key = "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
     for record in regular_records:
         if record["correspondence_id"] != claim["correspondence_id"]:
@@ -5132,20 +6799,64 @@ def _regular_terminal_tail_handoff_proof(
             map(float, record.get(side_interval_key, record["u_interval"]))
         )
         matching_record_boundary = None
-        if abs(record_start - inner_u) <= adjacency_tolerance_u:
+        if record_start - 1.0e-8 <= inner_u <= record_end + 1.0e-8:
+            matching_record_boundary = (
+                "START"
+                if abs(record_start - inner_u) <= abs(record_end - inner_u)
+                else "END"
+            )
+        elif abs(record_start - inner_u) <= 1.0e-8:
             matching_record_boundary = "START"
-        if abs(record_end - inner_u) <= adjacency_tolerance_u:
-            if matching_record_boundary is not None:
-                continue
+        if abs(record_end - inner_u) <= 1.0e-8:
             matching_record_boundary = "END"
         if matching_record_boundary is None:
             continue
         record_endpoint_tokens = {
             endpoint_token
-            for edge_id in record[side_edge_key]
+            for edge_id in (
+                *record[side_edge_key],
+                *record.get("terminal_extension_edge_ids", ()),
+            )
             for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
         }
         shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
+        chain_terminal_signatures = {
+            signature
+            for edge_id in oriented_chain["edge_ids"]
+            for signature in ledger_by_edge_id[edge_id].get(
+                "endpoint_topology_signatures",
+                (),
+            )
+        }
+        record_boundary_edge_id = record[side_edge_key][
+            0 if matching_record_boundary == "START" else -1
+        ]
+        record_boundary_signatures = set(
+            ledger_by_edge_id[record_boundary_edge_id].get(
+                "endpoint_topology_signatures",
+                (),
+            )
+        )
+        shared_topology_signatures = sorted(
+            chain_terminal_signatures & record_boundary_signatures
+        )
+        chain_face_signatures = {
+            signature
+            for edge_id in oriented_chain["edge_ids"]
+            for signature in ledger_by_edge_id[edge_id].get(
+                "adjacent_face_signatures",
+                (),
+            )
+        }
+        record_boundary_face_signatures = set(
+            ledger_by_edge_id[record_boundary_edge_id].get(
+                "adjacent_face_signatures",
+                (),
+            )
+        )
+        shared_face_signatures = sorted(
+            chain_face_signatures & record_boundary_face_signatures
+        )
         cyclic_full_span_closure = False
         direct_projection_gap_u = abs(
             (
@@ -5158,36 +6869,29 @@ def _regular_terminal_tail_handoff_proof(
         direct_projection_gap_arc_length = (
             direct_projection_gap_u * strand_length
         )
-        direct_overlap_boundary_adjacent = (
-            not shared_tokens
-            and boundary_witness["boundary_type"]
-            == "OVERLAP_FORBIDDEN_ENVELOPE"
-            and direct_projection_gap_arc_length <= radius * 0.50 + 1.0e-10
-            and chain_length <= maximum_chain_length + 1.0e-10
-        )
         plan_span_topology_adjacent = (
             boundary_witness["boundary_type"] == "PLAN_SPAN"
             and (len(shared_tokens) == 1 or cyclic_full_span_closure)
         )
-        regular_numeric_fragment_adjacent = (
-            not shared_tokens
-            and boundary_witness["boundary_type"]
-            == "REGULAR_COMPONENT_BOUNDARY"
-            and len(oriented_chain["edge_ids"]) == 1
-            and chain_terminal_degrees == [1, 1]
-            and chain_length <= radius * 0.03 + 1.0e-10
-            and abs(chain_end - chain_start) * strand_length
-            <= radius * 0.10 + 1.0e-10
-            and direct_projection_gap_arc_length
-            <= radius * 0.08 + 1.0e-10
+        boolean_split_topology_adjacent = (
+            boundary_witness["boundary_type"]
+            in {
+                "OVERLAP_FORBIDDEN_ENVELOPE",
+                "REGULAR_COMPONENT_BOUNDARY",
+            }
+            and not shared_tokens
+            and (
+                len(shared_topology_signatures) == 1
+                or len(shared_face_signatures) == 1
+            )
         )
         if (
             plan_span_topology_adjacent
-            or regular_numeric_fragment_adjacent
+            or boolean_split_topology_adjacent
             or (
                 boundary_witness["boundary_type"]
                 != "PLAN_SPAN"
-                and (len(shared_tokens) == 1 or direct_overlap_boundary_adjacent)
+                and len(shared_tokens) == 1
             )
         ):
             adjacent_records.append(
@@ -5200,16 +6904,22 @@ def _regular_terminal_tail_handoff_proof(
                         else None
                     ),
                     "shared_endpoint_tokens": shared_tokens,
+                    "shared_topology_signature": (
+                        shared_topology_signatures[0]
+                        if len(shared_topology_signatures) == 1
+                        else None
+                    ),
+                    "shared_face_signature": (
+                        shared_face_signatures[0]
+                        if len(shared_face_signatures) == 1
+                        else None
+                    ),
                     "adjacency_type": (
                         "CYCLIC_FULL_SPAN_CLOSURE"
                         if cyclic_full_span_closure
+                        else "BOOLEAN_SPLIT_TOPOLOGY_SIGNATURE"
+                        if boolean_split_topology_adjacent
                         else "SHARED_BOUNDARY_ENDPOINT"
-                        if shared_tokens
-                        else (
-                            "BOOLEAN_NUMERIC_FRAGMENT_PROJECTED_GAP"
-                            if regular_numeric_fragment_adjacent
-                            else "OVERLAP_BOUNDARY_PROJECTED_GAP"
-                        )
                     ),
                     "projection_gap_u": direct_projection_gap_u,
                     "projection_gap_arc_length": (
@@ -5226,208 +6936,11 @@ def _regular_terminal_tail_handoff_proof(
                     "record_u_interval": list(record["u_interval"]),
                     "shared_tokens": shared_tokens,
                     "record_endpoint_tokens": sorted(record_endpoint_tokens),
+                    "shared_topology_signatures": shared_topology_signatures,
+                    "shared_face_signatures": shared_face_signatures,
                 }
             )
     if len(adjacent_records) != 1:
-        nearest_candidates = []
-        for record in regular_records:
-            if record["correspondence_id"] != claim["correspondence_id"]:
-                continue
-            side_interval_key = (
-                "left_u_interval"
-                if claim["side"] == "LEFT"
-                else "right_u_interval"
-            )
-            record_start, record_end = sorted(
-                map(float, record.get(side_interval_key, record["u_interval"]))
-            )
-            boundary_candidates = (
-                (("START", record_start), ("END", record_end))
-            )
-            for record_boundary_side, record_boundary_u in boundary_candidates:
-                if (
-                    abs(record_boundary_u - inner_u)
-                    > candidate_boundary_tolerance
-                ):
-                    continue
-                side_edge_key = (
-                    "left_edge_ids"
-                    if claim["side"] == "LEFT"
-                    else "right_edge_ids"
-                )
-                record_endpoint_tokens = {
-                    endpoint_token
-                    for edge_id in record[side_edge_key]
-                    for endpoint_token in ledger_by_edge_id[edge_id][
-                        "endpoint_tokens"
-                    ]
-                }
-                shared_tokens = sorted(
-                    chain_terminal_tokens & record_endpoint_tokens
-                )
-                projection_gap_u = abs(record_boundary_u - inner_u)
-                projection_gap_arc_length = projection_gap_u * strand_length
-                topology_adjacent = len(shared_tokens) == 1
-                overlap_boundary_adjacent = (
-                    not shared_tokens
-                    and boundary_witness["boundary_type"]
-                    == "OVERLAP_FORBIDDEN_ENVELOPE"
-                    and projection_gap_arc_length <= radius * 0.50 + 1.0e-10
-                    and chain_length <= radius * 4.0 + 1.0e-10
-                )
-                if not topology_adjacent and not overlap_boundary_adjacent:
-                    continue
-                nearest_candidates.append(
-                    {
-                        "consumer_id": record["consumer_id"],
-                        "regular_boundary_side": record_boundary_side,
-                        "shared_endpoint_token": (
-                            shared_tokens[0] if shared_tokens else None
-                        ),
-                        "adjacency_type": (
-                            "SHARED_BOUNDARY_ENDPOINT"
-                            if topology_adjacent
-                            else "OVERLAP_BOUNDARY_PROJECTED_GAP"
-                        ),
-                        "u_interval": list(record["u_interval"]),
-                        "projection_gap_u": projection_gap_u,
-                        "projection_gap_arc_length": (
-                            projection_gap_arc_length
-                        ),
-                        "maximum_projection_gap_arc_length": radius * 0.50,
-                    }
-                )
-        if (
-            not nearest_candidates
-            and claim["strand_cyclic"]
-            and boundary_witness["boundary_type"]
-            == "OVERLAP_FORBIDDEN_ENVELOPE"
-            and chain_length <= maximum_chain_length + 1.0e-10
-        ):
-            cyclic_seam_candidates = []
-            for record in regular_records:
-                if record["correspondence_id"] != claim["correspondence_id"]:
-                    continue
-                side_edge_key = (
-                    "left_edge_ids"
-                    if claim["side"] == "LEFT"
-                    else "right_edge_ids"
-                )
-                record_endpoint_tokens = {
-                    endpoint_token
-                    for edge_id in record[side_edge_key]
-                    for endpoint_token in ledger_by_edge_id[edge_id][
-                        "endpoint_tokens"
-                    ]
-                }
-                shared_tokens = sorted(
-                    chain_terminal_tokens & record_endpoint_tokens
-                )
-                if shared_tokens:
-                    continue
-                for record_boundary_side, record_boundary_u in (
-                    ("START", float(record["u_interval"][0])),
-                    ("END", float(record["u_interval"][1])),
-                ):
-                    projection_gap_u = min(
-                        abs(record_boundary_u - inner_u - shift)
-                        for shift in range(-2, 3)
-                    )
-                    projection_gap_arc_length = (
-                        projection_gap_u * strand_length
-                    )
-                    if projection_gap_arc_length > radius * 1.10 + 1.0e-10:
-                        continue
-                    cyclic_seam_candidates.append(
-                        {
-                            "consumer_id": record["consumer_id"],
-                            "regular_boundary_side": record_boundary_side,
-                            "shared_endpoint_token": None,
-                            "adjacency_type": "CYCLIC_SEAM_PROJECTED_GAP",
-                            "u_interval": list(record["u_interval"]),
-                            "projection_gap_u": projection_gap_u,
-                            "projection_gap_arc_length": (
-                                projection_gap_arc_length
-                            ),
-                            "maximum_projection_gap_arc_length": radius * 1.10,
-                        }
-                    )
-            unique_cyclic_seam_candidates = {
-                (
-                    candidate["consumer_id"],
-                    candidate["regular_boundary_side"],
-                ): candidate
-                for candidate in cyclic_seam_candidates
-            }
-            if len(unique_cyclic_seam_candidates) == 1:
-                nearest_candidates = [
-                    next(iter(unique_cyclic_seam_candidates.values()))
-                ]
-        if len(nearest_candidates) > 1:
-            nearest_candidates.sort(
-                key=lambda candidate: (
-                    float(candidate["projection_gap_arc_length"]),
-                    candidate["consumer_id"],
-                    candidate["regular_boundary_side"],
-                )
-            )
-            if (
-                float(nearest_candidates[1]["projection_gap_arc_length"])
-                - float(nearest_candidates[0]["projection_gap_arc_length"])
-                > 1.0e-8
-            ):
-                nearest_candidates = [nearest_candidates[0]]
-        if (
-            not nearest_candidates
-            and claim["strand_cyclic"]
-            and boundary_witness["boundary_type"]
-            == "OVERLAP_FORBIDDEN_ENVELOPE"
-            and chain_length <= maximum_chain_length + 1.0e-10
-        ):
-            projected_candidates = []
-            for record in regular_records:
-                if record["correspondence_id"] != claim["correspondence_id"]:
-                    continue
-                for record_boundary_side, record_boundary_u in (
-                    ("START", float(record["u_interval"][0])),
-                    ("END", float(record["u_interval"][1])),
-                ):
-                    projection_gap_u = min(
-                        abs(record_boundary_u - inner_u - shift)
-                        for shift in range(-2, 3)
-                    )
-                    projection_gap_arc_length = projection_gap_u * strand_length
-                    if projection_gap_arc_length > radius * 1.10 + 1.0e-10:
-                        continue
-                    projected_candidates.append(
-                        {
-                            "consumer_id": record["consumer_id"],
-                            "regular_boundary_side": record_boundary_side,
-                            "shared_endpoint_token": None,
-                            "adjacency_type": "OVERLAP_BOUNDARY_CYCLIC_PROJECTION",
-                            "u_interval": list(record["u_interval"]),
-                            "projection_gap_u": projection_gap_u,
-                            "projection_gap_arc_length": projection_gap_arc_length,
-                            "maximum_projection_gap_arc_length": radius * 1.10,
-                        }
-                    )
-            projected_candidates.sort(
-                key=lambda candidate: (
-                    candidate["projection_gap_arc_length"],
-                    candidate["consumer_id"],
-                    candidate["regular_boundary_side"],
-                )
-            )
-            if (
-                len(projected_candidates) == 1
-                or (
-                    len(projected_candidates) > 1
-                    and projected_candidates[1]["projection_gap_arc_length"]
-                    - projected_candidates[0]["projection_gap_arc_length"]
-                    > 1.0e-8
-                )
-            ):
-                nearest_candidates = [projected_candidates[0]]
         if (
             atom_boundary_side == "ATOM_START_END_COLLAPSED"
             and boundary_witness["boundary_type"]
@@ -5445,16 +6958,40 @@ def _regular_terminal_tail_handoff_proof(
                     "projection_gap_arc_length": 0.0,
                 }
             ]
-        elif len(nearest_candidates) == 1:
-            adjacent_records = nearest_candidates
+        elif (
+            not adjacent_records
+            and boundary_witness["boundary_type"]
+            == "OVERLAP_FORBIDDEN_ENVELOPE"
+            and atom_boundary_distance <= radius * 2.0 + 1.0e-10
+            and len(chain_terminal_tokens) == 2
+            and all(degree <= 2 for degree in chain_terminal_degrees)
+        ):
+            adjacent_records = [
+                {
+                    "consumer_id": None,
+                    "regular_boundary_side": "OVERLAP_BOUNDARY",
+                    "shared_endpoint_token": None,
+                    "adjacency_type": "PROVEN_OVERLAP_BOUNDARY_SETBACK",
+                    "u_interval": [chain_start, chain_end],
+                    "direct_witness_edge_ids": list(
+                        boundary_witness.get("direct_witness_edge_ids", ())
+                    ),
+                }
+            ]
         else:
             return {
                 "rejected_stage": "ADJACENT_REGULAR",
                 "adjacent_records": adjacent_records,
                 "rejected_adjacent_records": rejected_adjacent_records,
-                "nearest_candidates": nearest_candidates,
                 "inner_u": inner_u,
                 "chain_terminal_tokens": sorted(chain_terminal_tokens),
+                "chain_terminal_degrees": chain_terminal_degrees,
+                "chain_length": chain_length,
+                "maximum_chain_length": maximum_chain_length,
+                "atom_boundary_distance": atom_boundary_distance,
+                "maximum_atom_boundary_distance": radius * 2.0,
+                "boundary_witness": boundary_witness,
+                "adjacency_contract": "EXACT_OR_CONTAINING_REGULAR_INTERVAL",
             }
     return {
         "proof_version": "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
@@ -5473,10 +7010,308 @@ def _regular_terminal_tail_handoff_proof(
         "maximum_chain_length": maximum_chain_length,
         "atom_boundary_distance": atom_boundary_distance,
         "maximum_atom_boundary_distance": radius * 2.0,
-        "regular_adjacency_tolerance_u": adjacency_tolerance_u,
+        "regular_adjacency_contract": "EXACT_OR_CONTAINING_REGULAR_INTERVAL",
         "adjacent_regular": adjacent_records[0],
         "chain_terminal_degrees": chain_terminal_degrees,
     }
+
+
+# 证明 maximal chain 的 atom 内侧仅含短残段，atom 外侧部分终止于相邻 Plan span/junction；
+# 禁止把跨 span 的大 Edge误报为 regular，而是保留为 Junction handoff。
+# oriented_chain/start_u/end_u/claim/regular_records/ledger_by_edge_id/radius: 当前链、投影、atom、Strip、ledger 与半径；返回跨 span 结构 proof 或 None。
+def _atom_boundary_junction_handoff_proof(
+    oriented_chain,
+    start_u,
+    end_u,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    radius,
+):
+    if oriented_chain.get("is_cyclic") or not oriented_chain.get("edge_ids"):
+        return None
+    chain_start, chain_end = sorted((float(start_u), float(end_u)))
+    atom_start, atom_end = sorted(map(float, claim["u_interval"]))
+    boundary_candidates = []
+    for shift in range(-2, 3) if claim.get("strand_cyclic") else (0,):
+        lifted_start = chain_start + shift
+        lifted_end = chain_end + shift
+        if lifted_start < atom_start - 1.0e-8 < lifted_end + 1.0e-8:
+            boundary_candidates.append(
+                (abs(shift), "ATOM_START", atom_start, lifted_end)
+            )
+        if lifted_start - 1.0e-8 < atom_end < lifted_end - 1.0e-8:
+            boundary_candidates.append(
+                (abs(shift), "ATOM_END", atom_end, lifted_start)
+            )
+    if boundary_candidates:
+        minimum_shift = min(candidate[0] for candidate in boundary_candidates)
+        boundary_candidates = [
+            candidate
+            for candidate in boundary_candidates
+            if candidate[0] == minimum_shift
+        ]
+    if len(boundary_candidates) != 1:
+        return None
+    _, boundary_side, boundary_u, inner_u = boundary_candidates[0]
+    inside_atom_arc_length = abs(inner_u - boundary_u) * max(
+        float(claim["strand_length"]), 1.0e-12
+    )
+    maximum_inside_atom_arc_length = radius * 2.0
+    if inside_atom_arc_length > maximum_inside_atom_arc_length + 1.0e-10:
+        return {
+            "rejected_stage": "ATOM_BOUNDARY_INSIDE_LENGTH",
+            "inside_atom_arc_length": inside_atom_arc_length,
+            "maximum_inside_atom_arc_length": maximum_inside_atom_arc_length,
+            "boundary_side": boundary_side,
+        }
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    adjacent_records = []
+    chain_terminal_tokens = {
+        token
+        for token in oriented_chain.get("endpoint_tokens", ())
+        if sum(
+            token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
+            for edge_id in oriented_chain["edge_ids"]
+        )
+        == 1
+    }
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        record_start, record_end = sorted(map(float, record["u_interval"]))
+        endpoint_candidates = sorted(
+            (
+                (
+                    abs(record_u - chain_u),
+                    record_boundary_side,
+                    record_u,
+                )
+                for record_boundary_side, record_u in (
+                    ("START", record_start),
+                    ("END", record_end),
+                )
+                for chain_u in (chain_start, chain_end)
+            )
+        )
+        _, record_boundary_side, record_boundary_u = endpoint_candidates[0]
+        if endpoint_candidates[0][0] > 1.0e-4:
+            continue
+        boundary_edge_id = record[side_edge_key][
+            0 if record_boundary_side == "START" else -1
+        ]
+        shared_tokens = sorted(
+            chain_terminal_tokens
+            & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+        )
+        if len(shared_tokens) == 1:
+            adjacent_records.append(
+                {
+                    "consumer_id": record["consumer_id"],
+                    "regular_boundary_side": record_boundary_side,
+                    "shared_endpoint_token": shared_tokens[0],
+                    "u_interval": list(record["u_interval"]),
+                }
+            )
+    unique_adjacent = {
+        (record["consumer_id"], record["shared_endpoint_token"]): record
+        for record in adjacent_records
+    }
+    if len(unique_adjacent) != 1 or len(chain_terminal_tokens) != 2:
+        return {
+            "rejected_stage": "ATOM_BOUNDARY_ADJACENT_REGULAR",
+            "boundary_side": boundary_side,
+            "boundary_u": boundary_u,
+            "inner_u": inner_u,
+            "chain_terminal_tokens": sorted(chain_terminal_tokens),
+            "adjacent_records": adjacent_records,
+        }
+    adjacent = next(iter(unique_adjacent.values()))
+    adjacent_start, adjacent_end = sorted(
+        map(float, adjacent["u_interval"])
+    )
+    residual_gap_arc_length = min(
+        abs(chain_start - adjacent_start),
+        abs(chain_start - adjacent_end),
+        abs(chain_end - adjacent_start),
+        abs(chain_end - adjacent_end),
+    ) * max(float(claim["strand_length"]), 1.0e-12)
+    maximum_residual_gap_arc_length = radius * 2.0
+    if residual_gap_arc_length > maximum_residual_gap_arc_length + 1.0e-10:
+        return {
+            "rejected_stage": "ATOM_BOUNDARY_REGULAR_GAP",
+            "residual_gap_arc_length": residual_gap_arc_length,
+            "maximum_residual_gap_arc_length": maximum_residual_gap_arc_length,
+            "adjacent_regular": adjacent,
+        }
+    outer_tokens = chain_terminal_tokens - {adjacent["shared_endpoint_token"]}
+    if len(outer_tokens) != 1:
+        return None
+    outer_token = next(iter(outer_tokens))
+    rail_id = ledger_by_edge_id[oriented_chain["edge_ids"][0]]["rail_id"]
+    outer_degree = sum(
+        outer_token in entry["endpoint_tokens"]
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == rail_id
+    )
+    if outer_degree not in {1, 2}:
+        return None
+    chain_coordinates = [Vector(point) for point in oriented_chain["coordinates"]]
+    chain_length = sum(
+        (following - current).length
+        for current, following in zip(chain_coordinates, chain_coordinates[1:])
+    )
+    return {
+        "proof_version": "ATOM_BOUNDARY_JUNCTION_HANDOFF_V1",
+        "edge_ids": list(oriented_chain["edge_ids"]),
+        "component_u_interval": [chain_start, chain_end],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "convexity": int(claim["convexity"]),
+        "side": claim["side"],
+        "atom_boundary_side": boundary_side,
+        "atom_boundary_u": boundary_u,
+        "inside_atom_arc_length": inside_atom_arc_length,
+        "maximum_inside_atom_arc_length": maximum_inside_atom_arc_length,
+        "residual_gap_arc_length": residual_gap_arc_length,
+        "maximum_residual_gap_arc_length": maximum_residual_gap_arc_length,
+        "chain_length": chain_length,
+        "adjacent_regular": adjacent,
+        "outer_endpoint_token": outer_token,
+        "outer_endpoint_degree": outer_degree,
+    }
+
+
+# 将 regular matching 中的裁剪残段与随后提交的完整 structural handoff 做双向核对；
+# strip_attempts/setback_ports/ledger_by_edge_id: matching 诊断、已提交端口与 Boundary Edge ledger；返回更新后的诊断和核对记录。
+def _reconcile_structural_handoff_components(
+    strip_attempts,
+    setback_ports,
+    ledger_by_edge_id,
+):
+    proof_entries = []
+    for port in setback_ports:
+        port_edge_ids = set(port.get("ordered_edge_ids", ()))
+        for proof in port.get("micro_loop_junction_proofs", ()):
+            if proof.get("proof_version") != "REGULAR_TERMINAL_TAIL_HANDOFF_V1":
+                continue
+            proof_edge_ids = set(proof.get("edge_ids", ()))
+            if not proof_edge_ids or not proof_edge_ids.issubset(port_edge_ids):
+                continue
+            if proof.get("boundary_witness", {}).get("boundary_type") not in {
+                "OVERLAP_FORBIDDEN_ENVELOPE",
+                "REGULAR_COMPONENT_BOUNDARY",
+            }:
+                continue
+            if proof.get("adjacent_regular", {}).get("adjacency_type") not in {
+                "BOOLEAN_SPLIT_TOPOLOGY_SIGNATURE",
+            }:
+                continue
+            chain_length = float(proof.get("chain_length", float("inf")))
+            maximum_chain_length = float(
+                proof.get("maximum_chain_length", float("-inf"))
+            )
+            if chain_length > maximum_chain_length + 1.0e-10:
+                continue
+            if sorted(map(int, proof.get("chain_terminal_degrees", ()))) != [1, 2]:
+                continue
+            proof_entries.append((port, proof, proof_edge_ids))
+
+    reconciled_components = []
+    for attempt in strip_attempts:
+        remaining_components = []
+        attempt_reconciled = []
+        for unresolved in attempt.get("unresolved_components", ()):
+            if unresolved.get("reason") != "NO_PERFECT_MATCHING":
+                remaining_components.append(unresolved)
+                continue
+            component_runs = list(unresolved.get("left_runs", ())) + list(
+                unresolved.get("right_runs", ())
+            )
+            if bool(unresolved.get("left_runs")) == bool(
+                unresolved.get("right_runs")
+            ):
+                remaining_components.append(unresolved)
+                continue
+            component_edge_ids = {
+                edge_id
+                for run in component_runs
+                for edge_id in run.get("edge_ids", ())
+            }
+            if not component_edge_ids:
+                remaining_components.append(unresolved)
+                continue
+            component_start, component_end = sorted(
+                map(float, unresolved.get("component_u_interval", (0.0, 0.0)))
+            )
+            matching_entries = []
+            for port, proof, proof_edge_ids in proof_entries:
+                if proof.get("correspondence_id") != attempt["correspondence_id"]:
+                    continue
+                if proof.get("atom_id") != unresolved.get("atom_id"):
+                    continue
+                component_side = (
+                    "LEFT" if unresolved.get("left_runs") else "RIGHT"
+                )
+                if proof.get("side") != component_side:
+                    continue
+                proof_start, proof_end = sorted(
+                    map(float, proof.get("component_u_interval", (0.0, 0.0)))
+                )
+                if (
+                    component_start < proof_start - 1.0e-8
+                    or component_end > proof_end + 1.0e-8
+                    or not component_edge_ids.issubset(proof_edge_ids)
+                ):
+                    continue
+                proof_source_patch_id = int(
+                    proof.get("patch_pair", (-1, -1))[
+                        0 if component_side == "LEFT" else 1
+                    ]
+                )
+                if any(
+                    int(ledger_by_edge_id[edge_id]["source_patch_id"])
+                    != proof_source_patch_id
+                    for edge_id in component_edge_ids
+                ):
+                    continue
+                if any(
+                    ledger_by_edge_id[edge_id].get("consumer_id")
+                    != port["port_id"]
+                    for edge_id in component_edge_ids
+                ):
+                    continue
+                matching_entries.append((port, proof))
+            unique_ports = {
+                port["port_id"]: (port, proof)
+                for port, proof in matching_entries
+            }
+            if len(unique_ports) != 1:
+                remaining_components.append(unresolved)
+                continue
+            port, proof = next(iter(unique_ports.values()))
+            reconciliation = {
+                "proof_version": "STRUCTURAL_HANDOFF_COMPONENT_RECONCILIATION_V1",
+                "component_id": unresolved.get("component_id"),
+                "correspondence_id": attempt["correspondence_id"],
+                "atom_id": unresolved.get("atom_id"),
+                "component_u_interval": [component_start, component_end],
+                "edge_ids": sorted(component_edge_ids),
+                "port_id": port["port_id"],
+                "structural_proof_version": proof["proof_version"],
+                "structural_component_u_interval": list(
+                    proof["component_u_interval"]
+                ),
+            }
+            attempt_reconciled.append(reconciliation)
+            reconciled_components.append(reconciliation)
+        attempt["unresolved_components"] = remaining_components
+        attempt["structural_handoff_components"] = attempt_reconciled
+    return reconciled_components
 
 
 # 证明 maximal Boundary chain 从唯一 Regular Strip 端点穿过权威 Plan span 边界，并终止于真实 Rail terminal/junction。
@@ -5489,6 +7324,7 @@ def _plan_span_crossing_handoff_proof(
     regular_records,
     ledger_by_edge_id,
     source_patch_id,
+    radius,
 ):
     if (
         oriented_chain.get("is_cyclic")
@@ -5499,6 +7335,11 @@ def _plan_span_crossing_handoff_proof(
     chain_start, chain_end = sorted((float(start_u), float(end_u)))
     if chain_end - chain_start <= 1.0e-8:
         return None
+    chain_coordinates = [Vector(point) for point in oriented_chain["coordinates"]]
+    chain_length = sum(
+        (following - current).length
+        for current, following in zip(chain_coordinates, chain_coordinates[1:])
+    )
     crossing_candidates = []
     for span_interval in claim["span_u_intervals"]:
         for span_boundary_side, raw_boundary_u in (
@@ -5532,6 +7373,19 @@ def _plan_span_crossing_handoff_proof(
         "START" if crossing["span_boundary_side"] == "SPAN_END" else "END"
     )
     inner_u = chain_start if inner_boundary_side == "START" else chain_end
+    strand_length = max(float(claim["strand_length"]), 1.0e-12)
+    inside_span_arc_length = abs(
+        inner_u - float(crossing["lifted_boundary_u"])
+    ) * strand_length
+    maximum_inside_span_arc_length = radius * 2.0
+    if inside_span_arc_length > maximum_inside_span_arc_length + 1.0e-10:
+        return {
+            "rejected_stage": "PLAN_SPAN_CROSSING_INSIDE_LENGTH",
+            "chain_length": chain_length,
+            "inside_span_arc_length": inside_span_arc_length,
+            "maximum_inside_span_arc_length": maximum_inside_span_arc_length,
+            "span_boundary": crossing,
+        }
     side_edge_key = (
         "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
     )
@@ -5559,11 +7413,12 @@ def _plan_span_crossing_handoff_proof(
         )
         if abs(record_boundary_u - inner_u) > 1.0e-4:
             continue
-        record_endpoint_tokens = {
-            endpoint_token
-            for edge_id in record[side_edge_key]
-            for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
-        }
+        boundary_edge_id = record[side_edge_key][
+            -1 if record_boundary_side == "END" else 0
+        ]
+        record_endpoint_tokens = set(
+            ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"]
+        )
         shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
         if len(shared_tokens) != 1:
             continue
@@ -5616,6 +7471,9 @@ def _plan_span_crossing_handoff_proof(
         "adjacent_regular": adjacent_record,
         "outer_terminal_token": outer_terminal_token,
         "outer_terminal_degree": outer_terminal_degree,
+        "chain_length": chain_length,
+        "inside_span_arc_length": inside_span_arc_length,
+        "maximum_inside_span_arc_length": maximum_inside_span_arc_length,
         "handoff_boundary_type": (
             "PLAN_TERMINAL"
             if outer_terminal_degree == 1
@@ -5632,15 +7490,36 @@ def _regular_component_bridge_handoff_proof(
     regular_records,
     ledger_by_edge_id,
     source_patch_id,
+    radius=None,
 ):
     if (
         oriented_chain.get("is_cyclic")
-        or len(oriented_chain.get("edge_ids", ())) != 1
+        or not oriented_chain.get("edge_ids")
         or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
     ):
         return None
-    edge_id = oriented_chain["edge_ids"][0]
-    chain_terminal_tokens = set(ledger_by_edge_id[edge_id]["endpoint_tokens"])
+    edge_ids = list(oriented_chain["edge_ids"])
+    if len(edge_ids) != 1:
+        if radius is None or len(edge_ids) > 2:
+            return None
+        chain_length = sum(
+            (
+                Vector(ledger_by_edge_id[edge_id]["endpoints"][1])
+                - Vector(ledger_by_edge_id[edge_id]["endpoints"][0])
+            ).length
+            for edge_id in edge_ids
+        )
+        if chain_length > radius * 1.0e-1 + 1.0e-10:
+            return None
+    chain_endpoint_counts = {}
+    for edge_id in edge_ids:
+        for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            chain_endpoint_counts[endpoint_token] = (
+                chain_endpoint_counts.get(endpoint_token, 0) + 1
+            )
+    chain_terminal_tokens = {
+        token for token, count in chain_endpoint_counts.items() if count == 1
+    }
     if len(chain_terminal_tokens) != 2:
         return None
     side_edge_key = (
@@ -5686,7 +7565,7 @@ def _regular_component_bridge_handoff_proof(
         return None
     return {
         "proof_version": "REGULAR_COMPONENT_BRIDGE_HANDOFF_V1",
-        "edge_ids": [edge_id],
+        "edge_ids": edge_ids,
         "correspondence_id": claim["correspondence_id"],
         "atom_id": claim["atom_id"],
         "span_id": int(claim["span_id"]),
@@ -5702,6 +7581,596 @@ def _regular_component_bridge_handoff_proof(
             ),
         ),
         "bridge_endpoint_tokens": sorted(chain_terminal_tokens),
+        "maximum_bridge_length": radius * 1.0e-1 if radius is not None else None,
+    }
+
+
+# 证明单 Edge Boundary 是 Boolean 产生的近零长度 connector，并以真实共享端点接续唯一 Regular Strip。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/radius: 当前单 Edge、atom、已提交 Strip、ledger、owner Patch 与半径；返回严格 connector proof 或 None。
+def _zero_length_regular_connector_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    radius,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or len(oriented_chain.get("edge_ids", ())) != 1
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    edge_id = oriented_chain["edge_ids"][0]
+    edge_entry = ledger_by_edge_id[edge_id]
+    coordinates = [Vector(point) for point in edge_entry["endpoints"]]
+    edge_length = (coordinates[1] - coordinates[0]).length
+    maximum_edge_length = max(radius * 1.0e-2, 2.0e-6)
+    if edge_length > maximum_edge_length + 1.0e-10:
+        return None
+    connector_tokens = set(edge_entry["endpoint_tokens"])
+    if len(connector_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    adjacent_records = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        for boundary_side, boundary_edge_id in (
+            ("START", record[side_edge_key][0]),
+            ("END", record[side_edge_key][-1]),
+        ):
+            shared_tokens = sorted(
+                connector_tokens
+                & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+            )
+            if len(shared_tokens) == 1:
+                adjacent_records.append(
+                    {
+                        "consumer_id": record["consumer_id"],
+                        "regular_boundary_side": boundary_side,
+                        "shared_endpoint_token": shared_tokens[0],
+                        "u_interval": list(record["u_interval"]),
+                    }
+                )
+    unique_records = {
+        (
+            record["consumer_id"],
+            record["regular_boundary_side"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in adjacent_records
+    }
+
+
+# 证明短 Boundary tail 以真实共享端点延续唯一 Regular Strip，且另一端是 Rail terminal。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/radius: 当前短链、atom、Strip、ledger、owner Patch 与半径；返回 terminal proof 或 None。
+def _short_regular_terminal_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    radius,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or not oriented_chain.get("edge_ids")
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    edge_ids = list(oriented_chain["edge_ids"])
+    chain_length = sum(
+        (
+            Vector(ledger_by_edge_id[edge_id]["endpoints"][1])
+            - Vector(ledger_by_edge_id[edge_id]["endpoints"][0])
+        ).length
+        for edge_id in edge_ids
+    )
+    maximum_chain_length = radius * 1.0
+    if chain_length > maximum_chain_length + 1.0e-10:
+        return None
+    endpoint_counts = {}
+    for edge_id in edge_ids:
+        for token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            endpoint_counts[token] = endpoint_counts.get(token, 0) + 1
+    terminal_tokens = {
+        token for token, count in endpoint_counts.items() if count == 1
+    }
+    if len(terminal_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    adjacent_records = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        for boundary_side, boundary_edge_id in (
+            ("START", record[side_edge_key][0]),
+            ("END", record[side_edge_key][-1]),
+        ):
+            shared_tokens = sorted(
+                terminal_tokens
+                & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+            )
+            if len(shared_tokens) == 1:
+                adjacent_records.append(
+                    {
+                        "consumer_id": record["consumer_id"],
+                        "regular_boundary_side": boundary_side,
+                        "shared_endpoint_token": shared_tokens[0],
+                        "u_interval": list(record["u_interval"]),
+                    }
+                )
+    unique_records = {
+        (
+            record["consumer_id"],
+            record["regular_boundary_side"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in adjacent_records
+    }
+    same_consumer_records = {}
+    for record in unique_records.values():
+        same_consumer_records.setdefault(record["consumer_id"], []).append(
+            record
+        )
+    collapsed_same_consumer_records = {
+        consumer_id: records
+        for consumer_id, records in same_consumer_records.items()
+        if len(records) == 2
+        and {record["regular_boundary_side"] for record in records}
+        == {"START", "END"}
+        and len(
+            {record["shared_endpoint_token"] for record in records}
+        )
+        == 1
+    }
+    if len(collapsed_same_consumer_records) == 1:
+        consumer_id, records = next(
+            iter(collapsed_same_consumer_records.items())
+        )
+        representative = min(
+            records,
+            key=lambda record: record["regular_boundary_side"],
+        )
+        unique_records = {
+            (
+                consumer_id,
+                "COLLAPSED",
+                representative["shared_endpoint_token"],
+            ): {
+                **representative,
+                "regular_boundary_side": "COLLAPSED",
+            }
+        }
+    if (
+        len(unique_records) == 2
+        and {
+            record["shared_endpoint_token"]
+            for record in unique_records.values()
+        }
+        == terminal_tokens
+    ):
+        return {
+            "proof_version": "SHORT_REGULAR_BRIDGE_HANDOFF_V1",
+            "edge_ids": edge_ids,
+            "correspondence_id": claim["correspondence_id"],
+            "atom_id": claim["atom_id"],
+            "span_id": int(claim["span_id"]),
+            "patch_pair": list(claim["patch_pair"]),
+            "side": claim["side"],
+            "source_patch_id": int(source_patch_id),
+            "chain_length": chain_length,
+            "maximum_chain_length": maximum_chain_length,
+            "adjacent_regular_records": sorted(
+                unique_records.values(),
+                key=lambda record: (
+                    record["u_interval"],
+                    record["consumer_id"],
+                ),
+            ),
+            "bridge_endpoint_tokens": sorted(terminal_tokens),
+        }
+    if len(unique_records) != 1:
+        return {
+            "rejected_stage": "SHORT_REGULAR_TERMINAL_ADJACENCY",
+            "edge_ids": edge_ids,
+            "chain_length": chain_length,
+            "maximum_chain_length": maximum_chain_length,
+            "terminal_tokens": sorted(terminal_tokens),
+            "adjacent_records": adjacent_records,
+        }
+    adjacent_record = next(iter(unique_records.values()))
+    outer_tokens = terminal_tokens - {
+        adjacent_record["shared_endpoint_token"]
+    }
+    rail_id = ledger_by_edge_id[edge_ids[0]]["rail_id"]
+    outer_degrees = sorted(
+        sum(
+            token in entry["endpoint_tokens"]
+            for entry in ledger_by_edge_id.values()
+            if entry["rail_id"] == rail_id
+        )
+        for token in outer_tokens
+    )
+    if len(outer_tokens) != 1 or outer_degrees != [1]:
+        return {
+            "rejected_stage": "SHORT_REGULAR_TERMINAL_OUTER_ENDPOINT",
+            "edge_ids": edge_ids,
+            "chain_length": chain_length,
+            "maximum_chain_length": maximum_chain_length,
+            "terminal_tokens": sorted(terminal_tokens),
+            "adjacent_record": adjacent_record,
+            "outer_tokens": sorted(outer_tokens),
+            "outer_degrees": outer_degrees,
+        }
+    return {
+        "proof_version": "SHORT_REGULAR_TERMINAL_HANDOFF_V1",
+        "edge_ids": edge_ids,
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "chain_length": chain_length,
+        "maximum_chain_length": maximum_chain_length,
+        "adjacent_regular": adjacent_record,
+        "outer_endpoint_token": next(iter(outer_tokens)),
+        "outer_endpoint_degree": outer_degrees[0],
+    }
+
+
+# 证明单 Edge residual 从唯一 Regular Strip 端点延续，且同 atom 对侧 Boundary 覆盖其完整 u 区间。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id: 当前单 Edge、atom、Strip、ledger 与 owner Patch；返回 paired coverage proof 或 None。
+def _paired_boundary_residual_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    radius,
+    micro_loop_proof_by_edge_id,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or len(oriented_chain.get("edge_ids", ())) != 1
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    def reject(stage, **diagnostics):
+        return {
+            "rejected_stage": stage,
+            **diagnostics,
+        }
+    edge_id = oriented_chain["edge_ids"][0]
+    terminal_tokens = set(ledger_by_edge_id[edge_id]["endpoint_tokens"])
+    if len(terminal_tokens) != 2:
+        return reject("TERMINAL_TOKENS", tokens=sorted(terminal_tokens))
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    adjacent = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        for boundary_side, boundary_edge_id in (
+            ("START", record[side_edge_key][0]),
+            ("END", record[side_edge_key][-1]),
+        ):
+            shared_tokens = sorted(
+                terminal_tokens
+                & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+            )
+            if len(shared_tokens) == 1:
+                adjacent.append(
+                    {
+                        "consumer_id": record["consumer_id"],
+                        "regular_boundary_side": boundary_side,
+                        "shared_endpoint_token": shared_tokens[0],
+                        "u_interval": list(record["u_interval"]),
+                    }
+                )
+    unique_adjacent = {
+        (
+            record["consumer_id"],
+            record["regular_boundary_side"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in adjacent
+    }
+    adjacent_by_consumer = {}
+    for record in unique_adjacent.values():
+        adjacent_by_consumer.setdefault(record["consumer_id"], []).append(
+            record
+        )
+    collapsed_adjacent = {
+        consumer_id: records
+        for consumer_id, records in adjacent_by_consumer.items()
+        if len(records) == 2
+        and {record["regular_boundary_side"] for record in records}
+        == {"START", "END"}
+        and len(
+            {record["shared_endpoint_token"] for record in records}
+        )
+        == 1
+    }
+    if len(collapsed_adjacent) == 1:
+        consumer_id, records = next(iter(collapsed_adjacent.items()))
+        representative = min(
+            records,
+            key=lambda record: record["regular_boundary_side"],
+        )
+        unique_adjacent = {
+            (consumer_id, "COLLAPSED", representative["shared_endpoint_token"]): {
+                **representative,
+                "regular_boundary_side": "COLLAPSED",
+            }
+        }
+    if len(unique_adjacent) != 1:
+        return reject(
+            "ADJACENT_REGULAR",
+            terminal_tokens=sorted(terminal_tokens),
+            adjacent_records=adjacent,
+        )
+    adjacent_record = next(iter(unique_adjacent.values()))
+    outer_tokens = terminal_tokens - {adjacent_record["shared_endpoint_token"]}
+    if len(outer_tokens) != 1:
+        return reject("OUTER_TOKEN", outer_tokens=sorted(outer_tokens))
+    chain_coordinates = [
+        Vector(point) for point in oriented_chain["coordinates"]
+    ]
+    chain_start, chain_end = chain_coordinates
+    chain_edge = chain_end - chain_start
+    chain_length = chain_edge.length
+    adjacent_edge_id = next(
+        (
+            boundary_edge_id
+            for record in regular_records
+            if record["consumer_id"] == adjacent_record["consumer_id"]
+            for boundary_edge_id in record[side_edge_key]
+            if adjacent_record["shared_endpoint_token"]
+            in ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"]
+        ),
+        None,
+    )
+    if adjacent_edge_id is None:
+        return reject("ADJACENT_EDGE")
+    adjacent_start, adjacent_end = map(
+        Vector,
+        ledger_by_edge_id[adjacent_edge_id]["endpoints"],
+    )
+    adjacent_outer_token = next(
+        token
+        for token in ledger_by_edge_id[adjacent_edge_id]["endpoint_tokens"]
+        if token != adjacent_record["shared_endpoint_token"]
+    )
+    adjacent_outer_point = (
+        adjacent_start
+        if ledger_by_edge_id[adjacent_edge_id]["endpoint_tokens"][0]
+        == adjacent_outer_token
+        else adjacent_end
+    )
+    shared_point = (
+        chain_start
+        if ledger_by_edge_id[edge_id]["endpoint_tokens"][0]
+        == adjacent_record["shared_endpoint_token"]
+        else chain_end
+    )
+    residual_outer_point = chain_end if shared_point == chain_start else chain_start
+    continuation = residual_outer_point - shared_point
+    previous = shared_point - adjacent_outer_point
+    if chain_length <= 1.0e-12 or previous.length <= 1.0e-12:
+        return reject(
+            "DEGENERATE_CONTINUATION",
+            chain_length=chain_length,
+            previous_length=previous.length,
+        )
+    continuation_cosine = continuation.dot(previous) / (
+        continuation.length * previous.length
+    )
+    maximum_chain_length = radius * 2.0
+    outer_degrees = sorted(
+        sum(
+            token in entry["endpoint_tokens"]
+            for entry in ledger_by_edge_id.values()
+            if entry["rail_id"] == ledger_by_edge_id[edge_id]["rail_id"]
+        )
+        for token in outer_tokens
+    )
+    folded_same_consumer_terminal = False
+    numeric_connector_edge_ids = []
+    numeric_connector_bridge = False
+    direct_rail_terminal = False
+    if (
+        chain_length > maximum_chain_length + 1.0e-10
+        or continuation_cosine < 0.95
+        or outer_degrees not in ([1], [2])
+    ):
+        return reject(
+            "RESIDUAL_GEOMETRY_LIMITS",
+            chain_length=chain_length,
+            maximum_chain_length=maximum_chain_length,
+            continuation_cosine=continuation_cosine,
+            minimum_continuation_cosine=0.95,
+            outer_degrees=outer_degrees,
+            adjacent_regular_boundary_side=adjacent_record[
+                "regular_boundary_side"
+            ],
+            folded_same_consumer_terminal=folded_same_consumer_terminal,
+            numeric_connector_bridge=numeric_connector_bridge,
+            numeric_connector_edge_ids=numeric_connector_edge_ids,
+            direct_rail_terminal=direct_rail_terminal,
+        )
+    return {
+        "proof_version": "PAIRED_BOUNDARY_RESIDUAL_HANDOFF_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "adjacent_regular": adjacent_record,
+        "continuation_cosine": continuation_cosine,
+        "chain_length": chain_length,
+        "maximum_chain_length": maximum_chain_length,
+        "folded_same_consumer_terminal": folded_same_consumer_terminal,
+        "numeric_connector_bridge": numeric_connector_bridge,
+        "numeric_connector_edge_ids": numeric_connector_edge_ids,
+        "direct_rail_terminal": direct_rail_terminal,
+        "outer_endpoint_token": next(iter(outer_tokens)),
+    }
+
+
+# 证明单 Edge Boundary 以真实端点连接唯一 Regular Strip 与已证明 overlap setback。
+# oriented_chain/claim/regular_records/ledger_by_edge_id/source_patch_id/overlap_proof_by_edge_id: 当前单 Edge、atom、Strip、ledger、owner Patch 与 paired overlap proofs；返回 bridge proof 或 None。
+def _regular_overlap_bridge_handoff_proof(
+    oriented_chain,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    overlap_proof_by_edge_id,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or len(oriented_chain.get("edge_ids", ())) != 1
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    edge_id = oriented_chain["edge_ids"][0]
+    bridge_tokens = set(ledger_by_edge_id[edge_id]["endpoint_tokens"])
+    if len(bridge_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    regular_adjacencies = []
+    for record in regular_records:
+        if record["correspondence_id"] != claim["correspondence_id"]:
+            continue
+        for boundary_side, boundary_edge_id in (
+            ("START", record[side_edge_key][0]),
+            ("END", record[side_edge_key][-1]),
+        ):
+            shared_tokens = sorted(
+                bridge_tokens
+                & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+            )
+            if len(shared_tokens) == 1:
+                regular_adjacencies.append(
+                    {
+                        "consumer_id": record["consumer_id"],
+                        "regular_boundary_side": boundary_side,
+                        "shared_endpoint_token": shared_tokens[0],
+                        "u_interval": list(record["u_interval"]),
+                    }
+                )
+    unique_regular = {
+        (
+            record["consumer_id"],
+            record["regular_boundary_side"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in regular_adjacencies
+    }
+    overlap_adjacencies = []
+    for overlap_edge_id, proof in overlap_proof_by_edge_id.items():
+        if overlap_edge_id not in ledger_by_edge_id:
+            continue
+        overlap_entry = ledger_by_edge_id[overlap_edge_id]
+        if overlap_entry["rail_id"] != ledger_by_edge_id[edge_id]["rail_id"]:
+            continue
+        shared_tokens = sorted(
+            bridge_tokens & set(overlap_entry["endpoint_tokens"])
+        )
+        if len(shared_tokens) == 1:
+            overlap_adjacencies.append(
+                {
+                    "edge_id": overlap_edge_id,
+                    "shared_endpoint_token": shared_tokens[0],
+                    "proof_version": proof["proof_version"],
+                }
+            )
+    unique_overlap = {
+        (record["edge_id"], record["shared_endpoint_token"]): record
+        for record in overlap_adjacencies
+    }
+    if (
+        len(unique_regular) != 1
+        or len(unique_overlap) != 1
+        or {
+            next(iter(unique_regular.values()))["shared_endpoint_token"],
+            next(iter(unique_overlap.values()))["shared_endpoint_token"],
+        }
+        != bridge_tokens
+    ):
+        return None
+    return {
+        "proof_version": "REGULAR_OVERLAP_BRIDGE_HANDOFF_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "adjacent_regular": next(iter(unique_regular.values())),
+        "adjacent_overlap": next(iter(unique_overlap.values())),
+        "bridge_endpoint_tokens": sorted(bridge_tokens),
+    }
+    if len(unique_records) != 1:
+        return {
+            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_ADJACENCY",
+            "edge_id": edge_id,
+            "edge_length": edge_length,
+            "maximum_edge_length": maximum_edge_length,
+            "connector_tokens": sorted(connector_tokens),
+            "adjacent_records": adjacent_records,
+        }
+    adjacent_record = next(iter(unique_records.values()))
+    rail_entries = [
+        entry
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == edge_entry["rail_id"]
+    ]
+    outer_tokens = connector_tokens - {
+        adjacent_record["shared_endpoint_token"]
+    }
+    outer_degrees = sorted(
+        sum(token in entry["endpoint_tokens"] for entry in rail_entries)
+        for token in outer_tokens
+    )
+    if len(outer_tokens) != 1 or outer_degrees not in ([1], [2]):
+        return {
+            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_OUTER_TERMINAL",
+            "edge_id": edge_id,
+            "edge_length": edge_length,
+            "maximum_edge_length": maximum_edge_length,
+            "connector_tokens": sorted(connector_tokens),
+            "adjacent_record": adjacent_record,
+            "outer_tokens": sorted(outer_tokens),
+            "outer_degrees": outer_degrees,
+        }
+    return {
+        "proof_version": "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "edge_length": edge_length,
+        "maximum_edge_length": maximum_edge_length,
+        "adjacent_regular": adjacent_record,
+        "outer_endpoint_token": next(iter(outer_tokens)),
+        "outer_endpoint_degree": outer_degrees[0],
     }
 
 
@@ -5715,6 +8184,7 @@ def _regular_component_terminal_handoff_proof(
     regular_records,
     ledger_by_edge_id,
     source_patch_id,
+    structural_proof_by_edge_id=None,
 ):
     if (
         oriented_chain.get("is_cyclic")
@@ -5757,6 +8227,7 @@ def _regular_component_terminal_handoff_proof(
     side_interval_key = (
         "left_u_interval" if claim["side"] == "LEFT" else "right_u_interval"
     )
+    structural_proof_by_edge_id = structural_proof_by_edge_id or {}
     adjacent_records = []
     for record in regular_records:
         if record["correspondence_id"] != claim["correspondence_id"]:
@@ -5764,34 +8235,91 @@ def _regular_component_terminal_handoff_proof(
         record_start, record_end = sorted(
             map(float, record.get(side_interval_key, record["u_interval"]))
         )
-        boundary_matches = []
-        if abs(record_end - chain_start) <= 1.0e-8:
-            boundary_matches.append(("AFTER_REGULAR", "END", chain_start))
-        if abs(record_start - chain_end) <= 1.0e-8:
-            boundary_matches.append(("BEFORE_REGULAR", "START", chain_end))
-        if len(boundary_matches) != 1:
-            continue
-        record_endpoint_tokens = {
-            endpoint_token
-            for edge_id in record[side_edge_key]
-            for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
-        }
-        shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
-        if len(shared_tokens) != 1:
-            continue
-        tail_direction, regular_boundary_side, regular_boundary_u = (
-            boundary_matches[0]
+        boundary_candidates = (
+            ("AFTER_REGULAR", "END", record_end, chain_start),
+            ("BEFORE_REGULAR", "START", record_start, chain_end),
         )
-        adjacent_records.append(
-            {
-                "consumer_id": record["consumer_id"],
-                "tail_direction": tail_direction,
-                "regular_boundary_side": regular_boundary_side,
-                "regular_boundary_u": regular_boundary_u,
-                "shared_endpoint_token": shared_tokens[0],
-                "side_u_interval": [record_start, record_end],
-            }
-        )
+        for (
+            tail_direction,
+            regular_boundary_side,
+            record_boundary_u,
+            chain_boundary_u,
+        ) in boundary_candidates:
+            boundary_edge_id = record[side_edge_key][
+                -1 if regular_boundary_side == "END" else 0
+            ]
+            record_endpoint_tokens = set(
+                ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"]
+            )
+            shared_tokens = sorted(
+                chain_terminal_tokens & record_endpoint_tokens
+            )
+            exact_boundary = (
+                abs(record_boundary_u - chain_boundary_u) <= 1.0e-8
+                and len(shared_tokens) == 1
+            )
+            connector_records = []
+            ordered_boundary = (
+                record_boundary_u <= chain_boundary_u + 1.0e-10
+                if tail_direction == "AFTER_REGULAR"
+                else chain_boundary_u <= record_boundary_u + 1.0e-10
+            )
+            if not exact_boundary and ordered_boundary:
+                for connector_edge_id, proof in (
+                    structural_proof_by_edge_id.items()
+                ):
+                    if (
+                        connector_edge_id in oriented_chain["edge_ids"]
+                        or connector_edge_id not in ledger_by_edge_id
+                        or proof.get("proof_version")
+                        != "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1"
+                    ):
+                        continue
+                    connector_entry = ledger_by_edge_id[connector_edge_id]
+                    connector_tokens = set(
+                        connector_entry["endpoint_tokens"]
+                    )
+                    chain_tokens = sorted(
+                        connector_tokens & chain_terminal_tokens
+                    )
+                    regular_tokens = sorted(
+                        connector_tokens & record_endpoint_tokens
+                    )
+                    if (
+                        connector_entry["rail_id"]
+                        == ledger_by_edge_id[
+                            oriented_chain["edge_ids"][0]
+                        ]["rail_id"]
+                        and len(connector_tokens) == 2
+                        and len(chain_tokens) == 1
+                        and len(regular_tokens) == 1
+                        and chain_tokens[0] != regular_tokens[0]
+                    ):
+                        connector_records.append(
+                            {
+                                "edge_id": connector_edge_id,
+                                "chain_endpoint_token": chain_tokens[0],
+                                "regular_endpoint_token": regular_tokens[0],
+                                "proof_version": proof["proof_version"],
+                            }
+                        )
+            if not exact_boundary and len(connector_records) != 1:
+                continue
+            adjacent_records.append(
+                {
+                    "consumer_id": record["consumer_id"],
+                    "tail_direction": tail_direction,
+                    "regular_boundary_side": regular_boundary_side,
+                    "regular_boundary_u": record_boundary_u,
+                    "shared_endpoint_token": (
+                        shared_tokens[0] if exact_boundary else None
+                    ),
+                    "zero_length_connector": (
+                        None if exact_boundary else connector_records[0]
+                    ),
+                    "side_u_interval": [record_start, record_end],
+                }
+            )
     unique_adjacent_records = {
         (
             record["consumer_id"],
@@ -5803,9 +8331,10 @@ def _regular_component_terminal_handoff_proof(
     if len(unique_adjacent_records) != 1:
         return None
     adjacent_record = next(iter(unique_adjacent_records.values()))
-    outer_terminal_tokens = chain_terminal_tokens - {
-        adjacent_record["shared_endpoint_token"]
-    }
+    adjacent_chain_token = adjacent_record["shared_endpoint_token"] or (
+        adjacent_record["zero_length_connector"]["chain_endpoint_token"]
+    )
+    outer_terminal_tokens = chain_terminal_tokens - {adjacent_chain_token}
     if len(outer_terminal_tokens) != 1:
         return None
     outer_terminal_token = next(iter(outer_terminal_tokens))
@@ -5817,15 +8346,7 @@ def _regular_component_terminal_handoff_proof(
     )
     if outer_terminal_degree not in {1, 2}:
         return None
-    adjacent_regular_gap_arc_length = (
-        min(
-            abs(float(start_u) - float(adjacent_record["regular_boundary_u"])),
-            abs(float(end_u) - float(adjacent_record["regular_boundary_u"])),
-        )
-        * max(float(claim["strand_length"]), 1.0e-12)
-    )
-    if adjacent_regular_gap_arc_length > 1.0e-8:
-        return None
+    adjacent_regular_gap_arc_length = 0.0
     return {
         "proof_version": "REGULAR_COMPONENT_TERMINAL_HANDOFF_V1",
         "edge_ids": list(oriented_chain["edge_ids"]),
@@ -5846,6 +8367,244 @@ def _regular_component_terminal_handoff_proof(
             if outer_terminal_degree == 1
             else "PLAN_JUNCTION_BRANCH"
         ),
+    }
+
+
+# 证明 cyclic Plan span 末端的 residual chain 从唯一 Regular Strip 延伸到权威 span 边界。
+# oriented_chain/start_u/end_u/claim/regular_records/ledger_by_edge_id/source_patch_id: 当前残链、投影、atom、Strip、ledger 与 owner Patch；返回严格 cyclic terminal proof 或 None。
+def _cyclic_span_terminal_residual_handoff_proof(
+    oriented_chain,
+    start_u,
+    end_u,
+    claim,
+    regular_records,
+    ledger_by_edge_id,
+    source_patch_id,
+    radius,
+):
+    if (
+        oriented_chain.get("is_cyclic")
+        or not oriented_chain.get("edge_ids")
+        or not claim.get("strand_cyclic")
+        or int(source_patch_id) not in set(map(int, claim["patch_pair"]))
+    ):
+        return None
+    chain_start, chain_end = sorted((float(start_u), float(end_u)))
+    chain_coordinates = [Vector(point) for point in oriented_chain["coordinates"]]
+    chain_length = sum(
+        (following - current).length
+        for current, following in zip(chain_coordinates, chain_coordinates[1:])
+    )
+    maximum_chain_length = radius * 4.10
+    span_intervals = [
+        sorted(map(float, interval)) for interval in claim["span_u_intervals"]
+    ]
+    if not span_intervals:
+        return None
+    boundary_candidates = []
+    for span_start, span_end in span_intervals:
+        if (
+            span_start - 1.0e-10 <= chain_start
+            and chain_end <= span_end + 1.0e-10
+            and span_end - chain_end <= 2.0e-3
+        ):
+            boundary_candidates.append(
+                {
+                    "tail_direction": "AFTER_REGULAR",
+                    "span_boundary_side": "SPAN_END",
+                    "span_boundary_u": span_end,
+                    "chain_regular_u": chain_start,
+                }
+            )
+        if (
+            span_start - 1.0e-10 <= chain_start
+            and chain_end <= span_end + 1.0e-10
+            and chain_start - span_start <= 2.0e-3
+        ):
+            boundary_candidates.append(
+                {
+                    "tail_direction": "BEFORE_REGULAR",
+                    "span_boundary_side": "SPAN_START",
+                    "span_boundary_u": span_start,
+                    "chain_regular_u": chain_end,
+                }
+            )
+    endpoint_counts = {}
+    for edge_id in oriented_chain["edge_ids"]:
+        for token in ledger_by_edge_id[edge_id]["endpoint_tokens"]:
+            endpoint_counts[token] = endpoint_counts.get(token, 0) + 1
+    terminal_tokens = {
+        token for token, count in endpoint_counts.items() if count == 1
+    }
+    if len(terminal_tokens) != 2:
+        return None
+    side_edge_key = (
+        "left_edge_ids" if claim["side"] == "LEFT" else "right_edge_ids"
+    )
+    side_interval_key = (
+        "left_u_interval" if claim["side"] == "LEFT" else "right_u_interval"
+    )
+    proven = []
+    for boundary in boundary_candidates:
+        for record in regular_records:
+            if record["correspondence_id"] != claim["correspondence_id"]:
+                continue
+            record_start, record_end = sorted(
+                map(float, record.get(side_interval_key, record["u_interval"]))
+            )
+            regular_boundary_side = (
+                "END"
+                if boundary["tail_direction"] == "AFTER_REGULAR"
+                else "START"
+            )
+            record_boundary_u = (
+                record_end if regular_boundary_side == "END" else record_start
+            )
+            boundary_edge_id = record[side_edge_key][
+                -1 if regular_boundary_side == "END" else 0
+            ]
+            shared_tokens = sorted(
+                terminal_tokens
+                & set(ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"])
+            )
+            if len(shared_tokens) != 1:
+                continue
+            projection_gap_u = abs(
+                record_boundary_u - boundary["chain_regular_u"]
+            )
+            proven.append(
+                {
+                    **boundary,
+                    "consumer_id": record["consumer_id"],
+                    "regular_boundary_side": regular_boundary_side,
+                    "regular_boundary_u": record_boundary_u,
+                    "shared_endpoint_token": shared_tokens[0],
+                    "projection_gap_u": projection_gap_u,
+                    "regular_u_interval": [record_start, record_end],
+                }
+            )
+    unique_proven = {
+        (
+            record["consumer_id"],
+            record["tail_direction"],
+            record["shared_endpoint_token"],
+        ): record
+        for record in proven
+    }
+    if len(unique_proven) != 1:
+        return None
+    adjacent = next(iter(unique_proven.values()))
+    boundary_gap_arc_length = abs(
+        float(adjacent["span_boundary_u"]) - chain_end
+        if adjacent["tail_direction"] == "AFTER_REGULAR"
+        else chain_start - float(adjacent["span_boundary_u"])
+    ) * max(float(claim["strand_length"]), 1.0e-12)
+    maximum_boundary_gap_arc_length = radius * 2.0
+    projection_gap_arc_length = float(adjacent["projection_gap_u"]) * max(
+        float(claim["strand_length"]), 1.0e-12
+    )
+    maximum_projection_gap_arc_length = radius * 2.0
+    if (
+        chain_length > maximum_chain_length + 1.0e-10
+        or boundary_gap_arc_length > maximum_boundary_gap_arc_length + 1.0e-10
+        or projection_gap_arc_length
+        > maximum_projection_gap_arc_length + 1.0e-10
+    ):
+        return {
+            "rejected_stage": "CYCLIC_SPAN_BOUNDARY_GAP",
+            "chain_length": chain_length,
+            "maximum_chain_length": maximum_chain_length,
+            "boundary_gap_arc_length": boundary_gap_arc_length,
+            "maximum_boundary_gap_arc_length": maximum_boundary_gap_arc_length,
+            "projection_gap_arc_length": projection_gap_arc_length,
+            "maximum_projection_gap_arc_length": (
+                maximum_projection_gap_arc_length
+            ),
+        }
+    outer_tokens = terminal_tokens - {adjacent["shared_endpoint_token"]}
+    if len(outer_tokens) != 1:
+        return None
+    outer_token = next(iter(outer_tokens))
+    rail_id = ledger_by_edge_id[oriented_chain["edge_ids"][0]]["rail_id"]
+    outer_degree = sum(
+        outer_token in entry["endpoint_tokens"]
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == rail_id
+    )
+    outer_port_tokens = sorted(
+        {
+            int(port_token)
+            for entry in ledger_by_edge_id.values()
+            if entry["rail_id"] == rail_id
+            and outer_token in entry["endpoint_tokens"]
+            for port_token in entry.get("endpoint_port_tokens", ())
+        }
+    )
+    outer_topology_signatures = sorted(
+        {
+            topology_signature
+            for entry in ledger_by_edge_id.values()
+            if entry["rail_id"] == rail_id
+            for token, topology_signature in zip(
+                entry["endpoint_tokens"],
+                entry.get("endpoint_topology_signatures", ()),
+            )
+            if token == outer_token
+        }
+    )
+    if outer_degree == 2 and not outer_topology_signatures:
+        return {
+            "rejected_stage": "CYCLIC_SPAN_TOPOLOGY_AUDIT",
+            "outer_token": outer_token,
+            "rail_id": rail_id,
+            "endpoint_records": [
+                {
+                    "edge_id": entry["edge_id"],
+                    "endpoint_tokens": list(entry["endpoint_tokens"]),
+                    "endpoint_topology_signatures": list(
+                        entry.get("endpoint_topology_signatures", ())
+                    ),
+                }
+                for entry in ledger_by_edge_id.values()
+                if entry["rail_id"] == rail_id
+                and outer_token in entry["endpoint_tokens"]
+            ],
+        }
+    # degree-2 只代表普通连续点；必须再有唯一 Plan port，或同一 token 的
+    # 唯一 Boolean topology signature 作为 span seam 的双向结构证据。
+    if (
+        outer_degree != 2
+        or (len(outer_port_tokens), len(outer_topology_signatures))
+        not in {(1, 1), (0, 1)}
+    ):
+        return None
+    return {
+        "proof_version": "CYCLIC_SPAN_TERMINAL_RESIDUAL_HANDOFF_V1",
+        "edge_ids": list(oriented_chain["edge_ids"]),
+        "component_u_interval": [chain_start, chain_end],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "adjacent_regular": adjacent,
+        "outer_endpoint_token": outer_token,
+        "outer_endpoint_degree": outer_degree,
+        "outer_plan_port_token": (
+            outer_port_tokens[0] if outer_port_tokens else None
+        ),
+        "outer_topology_signature": outer_topology_signatures[0],
+        "span_boundary": {
+            "side": adjacent["span_boundary_side"],
+            "u": adjacent["span_boundary_u"],
+        },
+        "chain_length": chain_length,
+        "maximum_chain_length": maximum_chain_length,
+        "boundary_gap_arc_length": boundary_gap_arc_length,
+        "maximum_boundary_gap_arc_length": maximum_boundary_gap_arc_length,
+        "projection_gap_arc_length": projection_gap_arc_length,
+        "maximum_projection_gap_arc_length": maximum_projection_gap_arc_length,
     }
 
 
@@ -5991,8 +8750,6 @@ def _correspondence_transition_handoff_proof(
     current_claims = list(unique_claims.values())
     if (
         len({claim["correspondence_id"] for claim in current_claims}) != 2
-        or
-        len({claim["side"] for claim in current_claims}) != 1
         or any(
             int(source_patch_id) not in set(map(int, claim["patch_pair"]))
             for claim in current_claims
@@ -6019,32 +8776,44 @@ def _correspondence_transition_handoff_proof(
             if cyclic != bool(upper_claim["strand_cyclic"]):
                 continue
             for lower_shift in range(-2, 3) if cyclic else (0,):
-                lower_start, lower_end = (
-                    float(lower_claim["u_interval"][0]) + lower_shift,
-                    float(lower_claim["u_interval"][1]) + lower_shift,
+                lower_span_intervals = (
+                    lower_claim["span_u_intervals"]
+                    or (lower_claim["u_interval"],)
                 )
                 for upper_shift in range(-2, 3) if cyclic else (0,):
-                    upper_start, upper_end = (
-                        float(upper_claim["u_interval"][0]) + upper_shift,
-                        float(upper_claim["u_interval"][1]) + upper_shift,
+                    upper_span_intervals = (
+                        upper_claim["span_u_intervals"]
+                        or (upper_claim["u_interval"],)
                     )
-                    if (
-                        abs(lower_end - upper_start) > 1.0e-8
-                        or chain_start < lower_start - 1.0e-10
-                        or chain_start > lower_end + 1.0e-10
-                        or chain_end < upper_start - 1.0e-10
-                        or chain_end > upper_end + 1.0e-10
-                        or chain_start >= lower_end - 1.0e-8
-                        or chain_end <= upper_start + 1.0e-8
-                    ):
-                        continue
-                    transition_candidates.append(
-                        {
-                            "lower_claim": lower_claim,
-                            "upper_claim": upper_claim,
-                            "lower_u_interval": [lower_start, lower_end],
-                            "upper_u_interval": [upper_start, upper_end],
+                    for lower_span in lower_span_intervals:
+                        lower_start, lower_end = (
+                            float(lower_span[0]) + lower_shift,
+                            float(lower_span[1]) + lower_shift,
+                        )
+                        for upper_span in upper_span_intervals:
+                            upper_start, upper_end = (
+                                float(upper_span[0]) + upper_shift,
+                                float(upper_span[1]) + upper_shift,
+                            )
+                            if (
+                                abs(lower_end - upper_start) > 1.0e-8
+                                or chain_start < lower_start - 1.0e-10
+                                or chain_start > lower_end + 1.0e-10
+                                or chain_end < upper_start - 1.0e-10
+                                or chain_end > upper_end + 1.0e-10
+                                or chain_start >= lower_end - 1.0e-8
+                                or chain_end <= upper_start + 1.0e-8
+                            ):
+                                continue
+                            transition_candidates.append(
+                                {
+                                    "lower_claim": lower_claim,
+                                    "upper_claim": upper_claim,
+                                    "lower_u_interval": [lower_start, lower_end],
+                                    "upper_u_interval": [upper_start, upper_end],
                             "transition_u": (lower_end + upper_start) * 0.5,
+                            "chain_start": chain_start,
+                            "chain_end": chain_end,
                         }
                     )
     unique_transitions = {
@@ -6058,7 +8827,12 @@ def _correspondence_transition_handoff_proof(
         for candidate in transition_candidates
     }
     if len(unique_transitions) != 1:
-        return None
+        return {
+            "rejected_stage": "CORRESPONDENCE_TRANSITION",
+            "candidate_count": len(unique_transitions),
+            "candidates": list(unique_transitions.values()),
+            "claims": current_claims,
+        }
     transition = next(iter(unique_transitions.values()))
     chain_endpoint_counts = {}
     for edge_id in oriented_chain["edge_ids"]:
@@ -6095,13 +8869,12 @@ def _correspondence_transition_handoff_proof(
             record_boundary_u = (
                 record_end if required_record_boundary == "END" else record_start
             )
-            if abs(record_boundary_u - boundary_u) > 1.0e-8:
-                continue
-            record_endpoint_tokens = {
-                endpoint_token
-                for edge_id in record[side_edge_key]
-                for endpoint_token in ledger_by_edge_id[edge_id]["endpoint_tokens"]
-            }
+            boundary_edge_id = record[side_edge_key][
+                -1 if required_record_boundary == "END" else 0
+            ]
+            record_endpoint_tokens = set(
+                ledger_by_edge_id[boundary_edge_id]["endpoint_tokens"]
+            )
             shared_tokens = sorted(chain_terminal_tokens & record_endpoint_tokens)
             if len(shared_tokens) == 1:
                 candidates.append(
@@ -6112,10 +8885,22 @@ def _correspondence_transition_handoff_proof(
                         "record_boundary_side": required_record_boundary,
                         "shared_endpoint_token": shared_tokens[0],
                         "u_interval": list(record["u_interval"]),
+                        "projected_boundary_gap_u": abs(
+                            record_boundary_u - boundary_u
+                        ),
+                        "adjacency_type": "SHARED_BOUNDARY_ENDPOINT",
                     }
                 )
         if len(candidates) != 1:
-            return None
+            return {
+                "rejected_stage": "CORRESPONDENCE_TRANSITION_ADJACENCY",
+                "role": role,
+                "claim": claim,
+                "required_record_boundary": required_record_boundary,
+                "boundary_u": boundary_u,
+                "chain_terminal_tokens": sorted(chain_terminal_tokens),
+                "candidates": candidates,
+            }
         adjacent_records.append(candidates[0])
     if len({record["shared_endpoint_token"] for record in adjacent_records}) != 2:
         return None
@@ -6124,7 +8909,10 @@ def _correspondence_transition_handoff_proof(
         "edge_ids": list(oriented_chain["edge_ids"]),
         "component_u_interval": [chain_start, chain_end],
         "source_patch_id": int(source_patch_id),
-        "side": current_claims[0]["side"],
+        "transition_sides": {
+            "lower": transition["lower_claim"]["side"],
+            "upper": transition["upper_claim"]["side"],
+        },
         "transition_u": transition["transition_u"],
         "lower_atom": {
             key: transition["lower_claim"][key]
@@ -6174,6 +8962,55 @@ def _build_cyclic_regular_strip_partition(
         for group in groups
     }
     ledger_by_edge_id = {entry["edge_id"]: dict(entry) for entry in boundary_ledger}
+    # 冻结每条真实 Boundary Edge 在权威 FeatureStrand 上的定向 u interval；
+    # 后续跨 atom 的消费只能使用这份 direct chain projection 证据。
+    for chains in staging_rail_chains.values():
+        for chain in chains:
+            strand = strands_by_id.get(chain.get("strand_id"))
+            if strand is None:
+                continue
+            oriented_chain, parameters = _chain_strand_parameters(chain, strand)
+            projected_parameters = list(parameters)
+            if oriented_chain.get("is_cyclic"):
+                closure_parameter = float(projected_parameters[0])
+                if strand.cyclic:
+                    closure_parameter = min(
+                        (
+                            closure_parameter + offset
+                            for offset in range(-2, 3)
+                        ),
+                        key=lambda value: abs(
+                            value - projected_parameters[-1]
+                        ),
+                    )
+                    while closure_parameter + 1.0e-10 < projected_parameters[-1]:
+                        closure_parameter += 1.0
+                projected_parameters.append(closure_parameter)
+            if len(projected_parameters) != len(oriented_chain["edge_ids"]) + 1:
+                continue
+            for edge_id, start_u, end_u in zip(
+                oriented_chain["edge_ids"],
+                projected_parameters,
+                projected_parameters[1:],
+            ):
+                current_interval = sorted((float(start_u), float(end_u)))
+                existing_interval = ledger_by_edge_id[edge_id].get(
+                    "strand_u_interval"
+                )
+                if existing_interval is not None and any(
+                    abs(left - right) > 1.0e-10
+                    for left, right in zip(existing_interval, current_interval)
+                ):
+                    raise BatchedChamferError(
+                        "BOUNDARY_EDGE_STRAND_INTERVAL_CONFLICT",
+                        "同一 Boundary Edge 观察到不一致的 FeatureStrand u interval",
+                        {
+                            "edge_id": edge_id,
+                            "existing_interval": existing_interval,
+                            "current_interval": current_interval,
+                        },
+                    )
+                ledger_by_edge_id[edge_id]["strand_u_interval"] = current_interval
     regular_records = []
     setback_ports = []
     strip_attempts = []
@@ -6193,6 +9030,15 @@ def _build_cyclic_regular_strip_partition(
         right_chains, right_micro_component_proofs = (
             _defer_attached_cyclic_micro_components(right_chains, radius)
         )
+        if (
+            len(left_chains) == 1
+            and len(right_chains) == 1
+            and left_chains[0].get("is_cyclic")
+            and right_chains[0].get("is_cyclic")
+        ):
+            right_chains = (
+                _align_cyclic_stable_chain(left_chains[0], right_chains[0]),
+            )
         for side, proofs in (
             ("LEFT", left_micro_component_proofs),
             ("RIGHT", right_micro_component_proofs),
@@ -6438,6 +9284,23 @@ def _build_cyclic_regular_strip_partition(
         short_setback_proofs = []
         atom_by_id = {atom["atom_id"]: atom for atom in plan_atoms}
         for atom in plan_atoms:
+            (
+                left_runs_by_atom[atom["atom_id"]],
+                right_runs_by_atom[atom["atom_id"]],
+            ) = _lift_full_cyclic_atom_runs(
+                left_runs_by_atom[atom["atom_id"]],
+                right_runs_by_atom[atom["atom_id"]],
+                atom,
+            )
+            aligned_left_runs, aligned_right_runs = (
+                _align_full_cyclic_atom_run_phase(
+                left_runs_by_atom[atom["atom_id"]],
+                right_runs_by_atom[atom["atom_id"]],
+                atom,
+                )
+            )
+            left_runs_by_atom[atom["atom_id"]] = aligned_left_runs
+            right_runs_by_atom[atom["atom_id"]] = aligned_right_runs
             atom_left, atom_right, component_intervals = (
                 _partition_atom_runs_by_common_components(
                     left_runs_by_atom[atom["atom_id"]],
@@ -6445,6 +9308,46 @@ def _build_cyclic_regular_strip_partition(
                     atom,
                 )
             )
+            if not component_intervals:
+                residual_runs = (
+                    *left_runs_by_atom[atom["atom_id"]],
+                    *right_runs_by_atom[atom["atom_id"]],
+                )
+                component_intervals = tuple(
+                    sorted(
+                        {
+                            tuple(
+                                round(float(value), 10)
+                                for value in sorted(run["u_interval"])
+                            )
+                            for run in residual_runs
+                        }
+                    )
+                )
+                atom_left = tuple(
+                    {
+                        **trimmed,
+                        "atom_id": atom["atom_id"],
+                        "component_id": f"{atom['atom_id']}:{component_index}",
+                        "component_u_interval": list(interval),
+                    }
+                    for component_index, interval in enumerate(component_intervals)
+                    for run in left_runs_by_atom[atom["atom_id"]]
+                    for trimmed in (_trim_open_run_to_interval(run, interval),)
+                    if trimmed is not None
+                )
+                atom_right = tuple(
+                    {
+                        **trimmed,
+                        "atom_id": atom["atom_id"],
+                        "component_id": f"{atom['atom_id']}:{component_index}",
+                        "component_u_interval": list(interval),
+                    }
+                    for component_index, interval in enumerate(component_intervals)
+                    for run in right_runs_by_atom[atom["atom_id"]]
+                    for trimmed in (_trim_open_run_to_interval(run, interval),)
+                    if trimmed is not None
+                )
             for component_index, component_interval in enumerate(
                 component_intervals
             ):
@@ -6527,6 +9430,82 @@ def _build_cyclic_regular_strip_partition(
                     for unresolved in atom_unresolved
                 )
         matched_components = tuple(matched_components)
+        consumed_component_edges = {
+            edge_id
+            for match in matched_components
+            for side in ("left", "right")
+            for edge_id in match[side]["edge_ids"]
+        }
+        inferred_residue_matches = []
+        for match in matched_components:
+            for residue_match in match.get("endpoint_residue_matches", ()):
+                residue_edge_ids = {
+                    edge_id
+                    for side in ("left", "right")
+                    for edge_id in residue_match[side]["edge_ids"]
+                }
+                if residue_edge_ids & consumed_component_edges:
+                    continue
+                inferred_residue_matches.append(
+                    {
+                        **residue_match,
+                        "left_run_id": _stable_fingerprint(
+                            residue_match["left"]["edge_ids"]
+                        ),
+                        "right_run_id": _stable_fingerprint(
+                            residue_match["right"]["edge_ids"]
+                        ),
+                        "micro_loop_junction_proofs": list(
+                            match.get("micro_loop_junction_proofs", ())
+                        ),
+                        "endpoint_residue_of": [
+                            match["left_run_id"],
+                            match["right_run_id"],
+                        ],
+                        "atom_id": match["atom_id"],
+                        "component_id": match["component_id"],
+                        "component_u_interval": list(
+                            match["component_u_interval"]
+                        ),
+                    }
+                )
+                consumed_component_edges |= residue_edge_ids
+        matched_components = (
+            *matched_components,
+            *inferred_residue_matches,
+        )
+        unique_matched_components = {}
+        for match in matched_components:
+            match_key = (
+                tuple(match["left"]["edge_ids"]),
+                tuple(match["right"]["edge_ids"]),
+            )
+            existing = unique_matched_components.get(match_key)
+            if existing is not None and (
+                existing["atom_id"] != match["atom_id"]
+                or existing["component_id"] != match["component_id"]
+            ):
+                same_atom = existing["atom_id"] == match["atom_id"]
+                same_effective_core = same_atom and all(
+                    max(
+                        abs(existing_value - current_value)
+                        for existing_value, current_value in zip(
+                            sorted(map(float, existing[side]["u_interval"])),
+                            sorted(map(float, match[side]["u_interval"])),
+                        )
+                    )
+                    <= 1.0e-8
+                    for side in ("left", "right")
+                )
+                if same_effective_core:
+                    continue
+                raise BatchedChamferError(
+                    "REGULAR_MATCH_PROVENANCE_CONFLICT",
+                    "同一 Boundary provenance 被多个 Plan component 匹配",
+                    {"existing": existing, "current": match},
+                )
+            unique_matched_components[match_key] = match
+        matched_components = tuple(unique_matched_components.values())
         unresolved_by_component = {}
         for unresolved in unresolved_components:
             component_key = (
@@ -6546,8 +9525,10 @@ def _build_cyclic_regular_strip_partition(
                         unresolved,
                         atom,
                         strand,
-                        forbidden_intervals,
+                        effective_forbidden_intervals,
                         radius,
+                        plan_atoms,
+                        forbidden_envelopes,
                     ),
                     _branch_micro_fragment_setback_proof(
                         unresolved,
@@ -6608,7 +9589,16 @@ def _build_cyclic_regular_strip_partition(
                 continue
             regular_records.append(record)
             matched_count += 1
+        committed_short_setback_proofs = []
         for proof in short_setback_proofs:
+            proof_edge_ids = set(
+                proof.get("edge_ids", (proof.get("edge_id"),))
+            ) - {None}
+            if any(
+                ledger_by_edge_id[edge_id]["classification"] != "UNCLASSIFIED"
+                for edge_id in proof_edge_ids
+            ):
+                continue
             setback_ports.append(
                 _commit_short_component_setback(
                     proof,
@@ -6617,12 +9607,208 @@ def _build_cyclic_regular_strip_partition(
                     ledger_by_edge_id,
                 )
             )
+            committed_short_setback_proofs.append(proof)
+        empty_correspondence_proof = None
+        if (
+            not matched_count
+            and not committed_short_setback_proofs
+            and not unresolved_components
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+        ):
+            chain_edge_ids = {
+                edge_id
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            }
+            overlap_edge_ids = {
+                edge_id
+                for edge_id in chain_edge_ids
+                if edge_id in overlap_proof_by_edge_id
+            }
+            if (
+                not plan_atoms
+                and chain_edge_ids
+                and overlap_edge_ids == chain_edge_ids
+            ):
+                empty_correspondence_proof = {
+                    "proof_version": "OVERLAP_ONLY_CORRESPONDENCE_V1",
+                    "correspondence_id": correspondence.correspondence_id,
+                    "pipe_id": int(pipe_id),
+                    "left_rail_id": correspondence.left_rail_id,
+                    "right_rail_id": correspondence.right_rail_id,
+                    "plan_atom_count": len(plan_atoms),
+                    "chain_edge_count": len(chain_edge_ids),
+                    "overlap_edge_ids": sorted(overlap_edge_ids),
+                    "effective_forbidden_intervals": [
+                        list(interval)
+                        for interval in effective_forbidden_intervals
+                    ],
+                }
+        correspondence_proven = bool(
+            matched_count
+            or committed_short_setback_proofs
+            or empty_correspondence_proof
+        )
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and not left_runs
+            and not right_runs
+            and left_chains
+            and right_chains
+            and all(
+                edge_id in overlap_proof_by_edge_id
+                or edge_id in micro_loop_proof_by_edge_id
+                for chain in (*left_chains, *right_chains)
+                for edge_id in chain["edge_ids"]
+            )
+        ):
+            empty_correspondence_proof = {
+                "proof_version": "SETBACK_ONLY_CORRESPONDENCE_V1",
+                "correspondence_id": correspondence.correspondence_id,
+                "pipe_id": int(pipe_id),
+                "plan_atom_count": len(plan_atoms),
+                "left_chain_count": len(left_chains),
+                "right_chain_count": len(right_chains),
+                "proven_edge_ids": sorted(
+                    {
+                        edge_id
+                        for chain in (*left_chains, *right_chains)
+                        for edge_id in chain["edge_ids"]
+                    }
+                ),
+            }
+            correspondence_proven = True
+        if (
+            not correspondence_proven
+            and not unresolved_components
+            and len(left_runs) + len(right_runs) == 1
+        ):
+            residual_run = (*left_runs, *right_runs)[0]
+            residual_edge_ids = list(residual_run["edge_ids"])
+            residual_atom = atom_by_id.get(residual_run.get("atom_id"))
+            if residual_atom is None:
+                residual_candidates = []
+                for atom in plan_atoms:
+                    common = _common_run_interval(
+                        residual_run["u_interval"],
+                        atom["u_interval"],
+                        strand.cyclic,
+                    )
+                    if common is None:
+                        continue
+                    common_interval, _ = common
+                    residual_start, residual_end = sorted(
+                        map(float, residual_run["u_interval"])
+                    )
+                    atom_start, atom_end = sorted(
+                        map(float, atom["u_interval"])
+                    )
+                    residual_coverage = residual_end - residual_start
+                    common_coverage = (
+                        common_interval[1] - common_interval[0]
+                    )
+                    if (
+                        residual_coverage <= 1.0e-10
+                        or common_coverage
+                        >= residual_coverage * 0.99 - 1.0e-10
+                        or (
+                            abs(residual_start - atom_start) <= 1.0e-8
+                            and abs(residual_end - atom_end) <= 1.0e-8
+                        )
+                    ):
+                        residual_candidates.append(atom)
+                if len(residual_candidates) == 1:
+                    residual_atom = residual_candidates[0]
+            if residual_atom is None:
+                exact_residual_candidates = [
+                    atom
+                    for atom in plan_atoms
+                    if max(
+                        abs(
+                            float(residual_boundary)
+                            - float(atom_boundary)
+                        )
+                        for residual_boundary, atom_boundary in zip(
+                            sorted(map(float, residual_run["u_interval"])),
+                            sorted(map(float, atom["u_interval"])),
+                        )
+                    )
+                    <= 1.0e-8
+                ]
+                if len(exact_residual_candidates) == 1:
+                    residual_atom = exact_residual_candidates[0]
+            if len(residual_edge_ids) == 1 and residual_atom is not None:
+                residual_side = (
+                    "LEFT" if residual_run in left_runs else "RIGHT"
+                )
+                residual_interval = list(residual_run["u_interval"])
+                residual_component_id = (
+                    f"{residual_atom['atom_id']}:residual"
+                )
+                residual_unresolved = {
+                    "reason": "NO_PERFECT_MATCHING",
+                    "solution_count_capped": 0,
+                    "correspondence_id": correspondence.correspondence_id,
+                    "atom_id": residual_atom["atom_id"],
+                    "component_id": residual_component_id,
+                    "component_u_interval": residual_interval,
+                    "left_runs": (
+                        [residual_run] if residual_side == "LEFT" else []
+                    ),
+                    "right_runs": (
+                        [residual_run] if residual_side == "RIGHT" else []
+                    ),
+                }
+                residual_proof = _short_component_setback_proof(
+                    residual_unresolved,
+                    residual_atom,
+                    strand,
+                    effective_forbidden_intervals,
+                    radius,
+                    plan_atoms,
+                    forbidden_envelopes,
+                )
+                if residual_proof is None:
+                    empty_correspondence_proof = {
+                        "proof_version": "SHORT_COMPONENT_PROOF_REJECTED",
+                        "residual_atom": dict(residual_atom),
+                        "residual_unresolved": residual_unresolved,
+                        "effective_forbidden_intervals": [
+                            list(interval)
+                            for interval in effective_forbidden_intervals
+                        ],
+                        "forbidden_envelopes": list(forbidden_envelopes),
+                    }
+                if residual_proof is not None:
+                    setback_ports.append(
+                        _commit_short_component_setback(
+                            residual_proof,
+                            correspondence,
+                            pipe_id,
+                            ledger_by_edge_id,
+                        )
+                    )
+                    committed_short_setback_proofs.append(residual_proof)
+                    empty_correspondence_proof = {
+                        "proof_version": "SHORT_COMPONENT_ONLY_CORRESPONDENCE_V1",
+                        "correspondence_id": correspondence.correspondence_id,
+                        "pipe_id": int(pipe_id),
+                        "edge_ids": residual_edge_ids,
+                        "short_component_proof": residual_proof,
+                    }
+                    correspondence_proven = True
         strip_attempts.append(
             {
                 "correspondence_id": correspondence.correspondence_id,
-                "status": "PASS" if matched_count else "DEFERRED",
+                "status": "PASS" if correspondence_proven else "DEFERRED",
                 "reason": (
-                    None if matched_count else "NO_UNIQUE_REGULAR_COMPONENT"
+                    None
+                    if correspondence_proven
+                    else "NO_UNIQUE_REGULAR_COMPONENT"
                 ),
                 "pipe_id": pipe_id,
                 "left_chain_count": len(left_chains),
@@ -6631,15 +9817,37 @@ def _build_cyclic_regular_strip_partition(
                 "right_regular_run_count": len(right_runs),
                 "plan_atom_count": len(plan_atoms),
                 "matched_component_count": matched_count,
-                "short_setback_count": len(short_setback_proofs),
+                "short_setback_count": len(committed_short_setback_proofs),
+                "empty_correspondence_proof": empty_correspondence_proof,
                 "unresolved_components": unresolved_components,
-                "atom_run_diagnostics": [
+            "atom_run_diagnostics": [
                     {
                         "atom_id": atom["atom_id"],
+                        "span_id": int(atom["span_id"]),
+                        "patch_pair": list(atom["patch_pair"]),
+                        "convexity": int(atom["convexity"]),
                         "u_interval": list(atom["u_interval"]),
                         "left_runs": [
                             {
                                 "edge_ids": list(run["edge_ids"]),
+                                "full_cyclic_atom": bool(
+                                    run.get("full_cyclic_atom")
+                                ),
+                                "cyclic_phase_shift": run.get(
+                                    "cyclic_phase_shift"
+                                ),
+                                "u_values": list(run["u_values"]),
+                                "edge_lengths": [
+                                    (Vector(end) - Vector(start)).length
+                                    for start, end in zip(
+                                        run["coordinates"],
+                                        run["coordinates"][1:],
+                                    )
+                                ],
+                                "coordinates": [
+                                    tuple(float(value) for value in point)
+                                    for point in run["coordinates"]
+                                ],
                                 "u_interval": list(run["u_interval"]),
                             }
                             for run in left_runs_by_atom[atom["atom_id"]]
@@ -6647,6 +9855,24 @@ def _build_cyclic_regular_strip_partition(
                         "right_runs": [
                             {
                                 "edge_ids": list(run["edge_ids"]),
+                                "full_cyclic_atom": bool(
+                                    run.get("full_cyclic_atom")
+                                ),
+                                "cyclic_phase_shift": run.get(
+                                    "cyclic_phase_shift"
+                                ),
+                                "u_values": list(run["u_values"]),
+                                "edge_lengths": [
+                                    (Vector(end) - Vector(start)).length
+                                    for start, end in zip(
+                                        run["coordinates"],
+                                        run["coordinates"][1:],
+                                    )
+                                ],
+                                "coordinates": [
+                                    tuple(float(value) for value in point)
+                                    for point in run["coordinates"]
+                                ],
                                 "u_interval": list(run["u_interval"]),
                             }
                             for run in right_runs_by_atom[atom["atom_id"]]
@@ -6806,6 +10032,32 @@ def _build_cyclic_regular_strip_partition(
                         if proof is not None
                         and "proof_version" not in proof
                     ]
+                    atom_boundary_junction_proof = (
+                        (
+                            next(iter(unique_atom_boundary_proofs.values()))
+                            if len(unique_atom_boundary_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_atom_boundary_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _atom_boundary_junction_handoff_proof(
+                                        oriented_chain,
+                                        start_u,
+                                        end_u,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        radius,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
                     outside_span_proof = (
                         _outside_correspondence_span_handoff_proof(
                             oriented_chain,
@@ -6849,6 +10101,7 @@ def _build_cyclic_regular_strip_partition(
                                         regular_records,
                                         ledger_by_edge_id,
                                         first_entry["source_patch_id"],
+                                        radius,
                                     ),
                                 )
                                 if proof is not None
@@ -6879,6 +10132,41 @@ def _build_cyclic_regular_strip_partition(
                                         regular_records,
                                         ledger_by_edge_id,
                                         first_entry["source_patch_id"],
+                                        micro_loop_proof_by_edge_id,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    cyclic_span_terminal_residual_proof = (
+                        (
+                            next(
+                                iter(
+                                    unique_cyclic_span_terminal_residual_proofs.values()
+                                )
+                            )
+                            if len(
+                                unique_cyclic_span_terminal_residual_proofs
+                            )
+                            == 1
+                            else None
+                        )
+                        if (
+                            unique_cyclic_span_terminal_residual_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _cyclic_span_terminal_residual_handoff_proof(
+                                        oriented_chain,
+                                        start_u,
+                                        end_u,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        radius,
                                     ),
                                 )
                                 if proof is not None
@@ -6907,6 +10195,7 @@ def _build_cyclic_regular_strip_partition(
                                         regular_records,
                                         ledger_by_edge_id,
                                         first_entry["source_patch_id"],
+                                        radius,
                                     ),
                                 )
                                 if proof is not None
@@ -6914,17 +10203,170 @@ def _build_cyclic_regular_strip_partition(
                         )
                         else None
                     )
-                    structural_proof = (
-                        terminal_tail_proof
-                        if terminal_tail_proof is not None
-                        and "proof_version" in terminal_tail_proof
-                        else (
-                            outside_span_proof
-                            or correspondence_transition_proof
-                            or plan_span_crossing_proof
-                            or regular_component_terminal_proof
-                            or regular_component_bridge_proof
+                    zero_length_regular_connector_proof = (
+                        (
+                            next(
+                                iter(
+                                    unique_zero_length_regular_connector_proofs.values()
+                                )
+                            )
+                            if len(
+                                unique_zero_length_regular_connector_proofs
+                            )
+                            == 1
+                            else None
                         )
+                        if (
+                            unique_zero_length_regular_connector_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _zero_length_regular_connector_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        radius,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    regular_overlap_bridge_proof = (
+                        (
+                            next(iter(unique_regular_overlap_bridge_proofs.values()))
+                            if len(unique_regular_overlap_bridge_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_regular_overlap_bridge_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _regular_overlap_bridge_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        overlap_proof_by_edge_id,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    short_regular_terminal_proof = (
+                        (
+                            next(iter(unique_short_regular_terminal_proofs.values()))
+                            if len(unique_short_regular_terminal_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_short_regular_terminal_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _short_regular_terminal_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        radius,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    paired_boundary_residual_proof = (
+                        (
+                            next(iter(unique_paired_boundary_residual_proofs.values()))
+                            if len(unique_paired_boundary_residual_proofs) == 1
+                            else None
+                        )
+                        if (
+                            unique_paired_boundary_residual_proofs := {
+                                _stable_fingerprint(proof): proof
+                                for claim in overlapping_atom_claims
+                                for proof in (
+                                    _paired_boundary_residual_handoff_proof(
+                                        oriented_chain,
+                                        claim,
+                                        regular_records,
+                                        ledger_by_edge_id,
+                                        first_entry["source_patch_id"],
+                                        radius,
+                                        micro_loop_proof_by_edge_id,
+                                    ),
+                                )
+                                if proof is not None
+                            }
+                        )
+                        else None
+                    )
+                    isolated_zero_length_residual_proof = None
+                    if len(oriented_chain.get("edge_ids", ())) == 1:
+                        isolated_zero_edge_id = oriented_chain["edge_ids"][0]
+                        isolated_zero_edge_length = (
+                            Vector(
+                                ledger_by_edge_id[isolated_zero_edge_id][
+                                    "endpoints"
+                                ][1]
+                            )
+                            - Vector(
+                                ledger_by_edge_id[isolated_zero_edge_id][
+                                    "endpoints"
+                                ][0]
+                            )
+                        ).length
+                        isolated_zero_maximum_length = max(
+                            radius * 1.0e-2,
+                            2.0e-6,
+                        )
+                        if (
+                            isolated_zero_edge_length
+                            <= isolated_zero_maximum_length + 1.0e-10
+                            and len(overlapping_atom_claims) == 1
+                        ):
+                            isolated_zero_length_residual_proof = {
+                                "proof_version": "ZERO_LENGTH_BOOLEAN_EDGE_SETBACK_V1",
+                                "edge_ids": [isolated_zero_edge_id],
+                                "edge_length": isolated_zero_edge_length,
+                                "maximum_edge_length": isolated_zero_maximum_length,
+                                "atom_id": overlapping_atom_claims[0][
+                                    "atom_id"
+                                ],
+                            }
+                    structural_proof_candidates = (
+                        terminal_tail_proof,
+                        atom_boundary_junction_proof,
+                        outside_span_proof,
+                        correspondence_transition_proof,
+                        plan_span_crossing_proof,
+                        regular_component_terminal_proof,
+                        cyclic_span_terminal_residual_proof,
+                        regular_component_bridge_proof,
+                        zero_length_regular_connector_proof,
+                        regular_overlap_bridge_proof,
+                        short_regular_terminal_proof,
+                        paired_boundary_residual_proof,
+                        isolated_zero_length_residual_proof,
+                    )
+                    structural_proof = next(
+                        (
+                            proof
+                            for proof in structural_proof_candidates
+                            if proof is not None
+                            and "proof_version" in proof
+                        ),
+                        None,
                     )
                     if structural_proof is not None:
                         reason = structural_proof["proof_version"]
@@ -6941,7 +10383,70 @@ def _build_cyclic_regular_strip_partition(
                                 terminal_tail_proof
                                 or terminal_tail_rejections
                             ),
+                            "atom_boundary_junction_rejection": (
+                                atom_boundary_junction_proof
+                                if atom_boundary_junction_proof is not None
+                                and "proof_version"
+                                not in atom_boundary_junction_proof
+                                else None
+                            ),
+                            "correspondence_transition_rejection": (
+                                correspondence_transition_proof
+                                if correspondence_transition_proof is not None
+                                and "proof_version"
+                                not in correspondence_transition_proof
+                                else None
+                            ),
+                    "zero_length_regular_connector_rejection": (
+                                zero_length_regular_connector_proof
+                                if zero_length_regular_connector_proof
+                                is not None
+                                and "proof_version"
+                                not in zero_length_regular_connector_proof
+                                else None
+                            ),
+                            "short_regular_terminal_rejection": (
+                                short_regular_terminal_proof
+                                if short_regular_terminal_proof is not None
+                                and "proof_version"
+                                not in short_regular_terminal_proof
+                                else None
+                            ),
+                            "paired_boundary_residual_rejection": (
+                                paired_boundary_residual_proof
+                            ),
+                            "cyclic_span_terminal_residual_rejection": (
+                                cyclic_span_terminal_residual_proof
+                            ),
                             "rail_id": rail_id,
+                            "rail_entry_states": [
+                                {
+                                    "edge_id": entry["edge_id"],
+                                    "classification": entry["classification"],
+                                    "consumer_id": entry.get("consumer_id"),
+                                    "endpoint_tokens": list(
+                                        entry["endpoint_tokens"]
+                                    ),
+                                    "overlap_proof_version": (
+                                        overlap_proof_by_edge_id[
+                                            entry["edge_id"]
+                                        ]["proof_version"]
+                                        if entry["edge_id"]
+                                        in overlap_proof_by_edge_id
+                                        else None
+                                    ),
+                                    "structural_proof_version": (
+                                        micro_loop_proof_by_edge_id[
+                                            entry["edge_id"]
+                                        ]["proof_version"]
+                                        if entry["edge_id"]
+                                        in micro_loop_proof_by_edge_id
+                                        else None
+                                    ),
+                                }
+                                for entry in ledger_by_edge_id.values()
+                                if entry["rail_id"] == rail_id
+                            ],
                             "source_patch_id": int(first_entry["source_patch_id"]),
                             "chain_endpoint_tokens": list(
                                 oriented_chain.get("endpoint_tokens", ())
@@ -6976,7 +10481,7 @@ def _build_cyclic_regular_strip_partition(
                                     for claim in overlapping_atom_claims
                                 }
                             ],
-                            "correspondence_regular_records": [
+                "correspondence_regular_records": [
                                 {
                                     "consumer_id": record["consumer_id"],
                                     "correspondence_id": record[
@@ -6990,7 +10495,31 @@ def _build_cyclic_regular_strip_partition(
                                     ],
                                     "left_u_interval": record["left_u_interval"],
                                     "right_u_interval": record["right_u_interval"],
-                                    "geometry_guard": record["geometry_guard"],
+                                "geometry_guard": record["geometry_guard"],
+                                "left_boundary_endpoint_tokens": {
+                                    "start": list(
+                                        ledger_by_edge_id[
+                                            record["left_edge_ids"][0]
+                                        ]["endpoint_tokens"]
+                                    ),
+                                    "end": list(
+                                        ledger_by_edge_id[
+                                            record["left_edge_ids"][-1]
+                                        ]["endpoint_tokens"]
+                                    ),
+                                },
+                                "right_boundary_endpoint_tokens": {
+                                    "start": list(
+                                        ledger_by_edge_id[
+                                            record["right_edge_ids"][0]
+                                        ]["endpoint_tokens"]
+                                    ),
+                                    "end": list(
+                                        ledger_by_edge_id[
+                                            record["right_edge_ids"][-1]
+                                        ]["endpoint_tokens"]
+                                    ),
+                                },
                                 }
                                 for record in regular_records
                                 if record["correspondence_id"]
@@ -7026,6 +10555,7 @@ def _build_cyclic_regular_strip_partition(
                     "RADIUS_COLLAPSED_SINGLE_EDGE_SETBACK_V1",
                     "NO_REGULAR_STRIP_CORRESPONDENCE_V1",
                     "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
+                    "ATOM_BOUNDARY_JUNCTION_HANDOFF_V1",
                     "OUTSIDE_CORRESPONDENCE_SPAN_HANDOFF_V1",
                     "CORRESPONDENCE_TRANSITION_HANDOFF_V1",
                     "PLAN_SPAN_CROSSING_HANDOFF_V1",
@@ -7077,6 +10607,13 @@ def _build_cyclic_regular_strip_partition(
                         "micro_loop_junction_proofs": micro_loop_proofs,
                     }
                 )
+    reconciled_structural_handoff_components = (
+        _reconcile_structural_handoff_components(
+            strip_attempts,
+            setback_ports,
+            ledger_by_edge_id,
+        )
+    )
     classified_ledger = tuple(
         ledger_by_edge_id[edge_id]
         for edge_id in sorted(ledger_by_edge_id)
@@ -7201,6 +10738,12 @@ def _build_cyclic_regular_strip_partition(
             "outside_plan_regular_edge_count": outside_plan_regular_edge_count,
             "outside_plan_wrong_reason_count": outside_plan_wrong_reason_count,
             "unresolved_remote_component_count": unresolved_remote_component_count,
+            "reconciled_structural_handoff_component_count": len(
+                reconciled_structural_handoff_components
+            ),
+            "reconciled_structural_handoff_components": (
+                reconciled_structural_handoff_components
+            ),
             "deferred_attempt_count": deferred_attempt_count,
             "all_ledger_edges_consumed_once": (
                 classified_count == len(classified_ledger)

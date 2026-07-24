@@ -8433,6 +8433,8 @@ def test_feature_chamfer_batched_collapsed_forbidden_gap_contract(
     claim = {
         "correspondence_id": "corr:test",
         "atom_id": "atom:test",
+        "side": "LEFT",
+        "patch_pair": [2, 4],
         "span_id": 5,
         "patch_pair": [0, 5],
         "convexity": 1,
@@ -8581,6 +8583,7 @@ def test_feature_chamfer_batched_plan_span_crossing_handoff_contract(
         regular_records,
         ledger,
         5,
+        0.1,
     )
     ensure(
         proof is not None
@@ -8619,6 +8622,7 @@ def test_feature_chamfer_batched_plan_span_crossing_handoff_contract(
                 regular_records,
                 unsafe_ledger,
                 5,
+                0.1,
             )
             is None
             for unsafe_ledger in unsafe_ledgers
@@ -8634,11 +8638,118 @@ def test_feature_chamfer_batched_plan_span_crossing_handoff_contract(
             regular_records,
             ledger,
             5,
+            0.1,
         )
         is None,
         "Non-crossing Plan component received a span crossing proof",
     )
     result.add_detail("Plan span crossing requires Regular topology adjacency and terminal/junction degree")
+
+
+# 验证 matching 裁剪残段只能与同 correspondence/atom/Edge 的唯一已提交 structural handoff 对账；
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_structural_handoff_reconciliation_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    unresolved = {
+        "reason": "NO_PERFECT_MATCHING",
+        "component_id": "atom:test:1",
+        "atom_id": "atom:test",
+        "component_u_interval": [1.19719, 1.19731],
+        "left_runs": [
+            {
+                "edge_ids": ["tail:0"],
+                "u_interval": [1.19719, 1.19731],
+            }
+        ],
+        "right_runs": [],
+    }
+    attempt = {
+        "correspondence_id": "corr:test",
+        "unresolved_components": [unresolved],
+    }
+    proof = {
+        "proof_version": "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "side": "LEFT",
+        "patch_pair": [2, 4],
+        "edge_ids": ["tail:0", "tail:1"],
+        "component_u_interval": [1.19719, 1.20684],
+        "boundary_witness": {
+            "boundary_type": "OVERLAP_FORBIDDEN_ENVELOPE",
+        },
+        "adjacent_regular": {
+            "adjacency_type": "BOOLEAN_SPLIT_TOPOLOGY_SIGNATURE",
+        },
+        "chain_length": 0.0402,
+        "maximum_chain_length": 0.045,
+        "chain_terminal_degrees": [1, 2],
+    }
+    port = {
+        "port_id": "setback:tail",
+        "ordered_edge_ids": ["tail:0", "tail:1"],
+        "micro_loop_junction_proofs": [proof],
+    }
+    ledger = {
+        "tail:0": {
+            "consumer_id": "setback:tail",
+            "source_patch_id": 2,
+        },
+        "tail:1": {
+            "consumer_id": "setback:tail",
+            "source_patch_id": 2,
+        },
+    }
+    reconciled = module._reconcile_structural_handoff_components(
+        [attempt],
+        [port],
+        ledger,
+    )
+    ensure(
+        len(reconciled) == 1
+        and attempt["unresolved_components"] == []
+        and reconciled[0]["structural_proof_version"]
+        == "REGULAR_TERMINAL_TAIL_HANDOFF_V1",
+        f"Direct structural handoff did not reconcile: {reconciled}, {attempt}",
+    )
+    unsafe_variants = (
+        ({**unresolved, "atom_id": "atom:other"}, [port], ledger),
+        (
+            {**unresolved, "component_u_interval": [1.10, 1.11]},
+            [port],
+            ledger,
+        ),
+        (
+            unresolved,
+            [port],
+            {
+                **ledger,
+                "tail:0": {
+                    "consumer_id": "setback:other",
+                    "source_patch_id": 2,
+                },
+            },
+        ),
+    )
+    for unsafe_unresolved, unsafe_ports, unsafe_ledger in unsafe_variants:
+        unsafe_attempt = {
+            "correspondence_id": "corr:test",
+            "unresolved_components": [unsafe_unresolved],
+        }
+        unsafe_reconciled = module._reconcile_structural_handoff_components(
+            [unsafe_attempt],
+            unsafe_ports,
+            unsafe_ledger,
+        )
+        ensure(
+            not unsafe_reconciled
+            and len(unsafe_attempt["unresolved_components"]) == 1,
+            f"Unsafe structural handoff reconciled: {unsafe_reconciled}",
+        )
+    result.add_detail("structural handoff reconciliation requires unique bidirectional provenance")
 
 
 # 验证 atom 内单侧 tail 只有在与唯一 Regular Strip 共享端点、且另一端为真实 Rail terminal/junction 时才 handoff。
@@ -8780,7 +8891,7 @@ def test_feature_chamfer_batched_regular_component_terminal_handoff_contract(
     result.add_detail("Regular component tail requires shared topology and a Rail terminal/junction")
 
 
-# 验证零投影单 Edge Boolean 数值碎片仅在极短、真实 terminal 且唯一邻接 Regular Strip 时才 handoff。
+# 验证无共享 topology 的单 Edge Boolean 数值碎片不得按投影距离归属 Regular Strip。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_regular_numeric_fragment_handoff_contract(
     test_context: TestContext,
@@ -8838,13 +8949,8 @@ def test_feature_chamfer_batched_regular_numeric_fragment_handoff_contract(
         0.01,
     )
     ensure(
-        proof is not None
-        and proof.get("proof_version") == "REGULAR_TERMINAL_TAIL_HANDOFF_V1"
-        and proof["boundary_witness"]["boundary_type"]
-        == "REGULAR_COMPONENT_BOUNDARY"
-        and proof["adjacent_regular"]["adjacency_type"]
-        == "BOOLEAN_NUMERIC_FRAGMENT_PROJECTED_GAP",
-        f"Strict Boolean numeric fragment was not proven: {proof}",
+        proof is None or "proof_version" not in proof,
+        f"Projection-only Boolean fragment received a Regular owner: {proof}",
     )
     unsafe_variants = (
         ({**oriented_chain, "coordinates": [(0.0, 0.0, 0.0), (0.001, 0.0, 0.0)]}, ledger),
@@ -8875,10 +8981,10 @@ def test_feature_chamfer_batched_regular_numeric_fragment_handoff_contract(
         ),
         "Oversized or non-terminal Boolean fragment received a handoff proof",
     )
-    result.add_detail("numeric fragment requires <=0.03r geometry, <=0.10r projected span, one Edge, and terminal topology")
+    result.add_detail("projection-only numeric fragments fail closed without shared endpoint topology")
 
 
-# 验证已构建 Regular Strip 可原子消费与其端点共享 topology 的唯一 terminal/junction Edge，且 consumer 双向引用一致。
+# 验证缺少逐 Edge Plan-u / atom 归属时，不得把 topology-adjacent Edge 扩进 Regular consumer。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_regular_terminal_extension_contract(
     test_context: TestContext,
@@ -8951,13 +9057,12 @@ def test_feature_chamfer_batched_regular_terminal_extension_contract(
     ensure(
         failure is None
         and record is not None
-        and record["terminal_extension_edge_ids"] == ["left:extension"]
-        and ledger["left:extension"]["classification"]
-        == "REGULAR_STRIP_CONSUMED"
-        and ledger["left:extension"]["consumer_id"] == record["consumer_id"],
-        f"Unique terminal extension was not atomically consumed: {record}, {failure}, {ledger}",
+        and record["terminal_extension_edge_ids"] == []
+        and ledger["left:extension"]["classification"] == "UNCLASSIFIED"
+        and ledger["left:extension"]["consumer_id"] is None,
+        f"Unproven terminal extension was consumed: {record}, {failure}, {ledger}",
     )
-    result.add_detail("unique topology-adjacent terminal Edge is bound to the Regular consumer")
+    result.add_detail("topology adjacency alone cannot extend a Regular consumer across atom boundaries")
 
 
 # 验证单 Edge bridge 必须分别连接同一 correspondence 的两个不同 Regular Strip terminals。
@@ -9950,6 +10055,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_plan_span_crossing_handoff_contract",
         test_feature_chamfer_batched_plan_span_crossing_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_structural_handoff_reconciliation_contract",
+        test_feature_chamfer_batched_structural_handoff_reconciliation_contract,
     )
     context.run_case(
         "feature_chamfer_batched_regular_component_terminal_handoff_contract",
