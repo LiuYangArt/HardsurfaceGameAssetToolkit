@@ -69,7 +69,7 @@
 - Feature Chamfer batched Phase C：`SHORT_COMPONENT_SETBACK_V1` 只允许贴近唯一 Plan/overlap 边界的单侧单 Edge；双侧、atom 内部、跨 span/convexity 或超长 component 必须 fail-closed
 - Feature Chamfer regular strip：DP 在 Phase C 可拒绝会生成零面积 Face 的 correspondence step；若无替代单调路径则返回结构化 `NO_MONOTONIC_CORRESPONDENCE_PATH`
 - Feature Chamfer regular strip：Phase C DP 可优先选择满足既有 signed-width/relative-advance hard guard 的路径，不放宽任何验收阈值
-- Feature Chamfer Phase C `ResidualOwnershipGraph`：synthetic occluded-opposite-face 的 constrained normalization、raw→normalized exactly-once lineage、longitudinal Face path、全局 claim subtraction、missing/ambiguous fail-closed 与 authoritative Plan port incidence 合同
+- Feature Chamfer Phase C pre-Boolean boundary pairing：synthetic single-Pipe 的 constrained normalization、raw→normalized exactly-once、strand-scoped Plan Patch pair、相邻 Cutter Face→Edge/chain incidence，以及 missing/duplicate/conflict fail-closed 合同；C4 几何 opposite Face 不得冒充 Boundary consumer
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。

@@ -3,6 +3,8 @@
 日期：2026-07-24  
 状态：`PROTOTYPE / CLEAN PREPROCESS VALID / GRAPH WITNESS REQUIRED / PHASE C STOP`
 
+> 后续更正：本报告证明的 normalization 结论仍有效；“C4 opposite Face witness 为 0”仅是当时旧 pairing 定义的结果。用户截图和后续 lineage census 已证明真实 Boundary 对侧 Edge 存在，权威后续见 `phase-c-pre-boolean-profile-lineage-probe.md`。
+
 ## 目标入口
 
 ```text
@@ -31,7 +33,7 @@ Feature Chamfer GN
 - `ab75b54a…`；
 - `ab75b54a…` 与 `e10b8c9b…`。
 
-在 2115 条 Boundary Edge 的完整 independent staging universe 中，两者的 direct opposite Boundary witness 数量均为 `0`。probe 没有使用 nearest、坐标匹配、synthetic owner 或 synthetic port。
+在当时使用的 C4 `+2` 几何相对面定义下，两者的 witness 数量均为 `0`。后续已确认 C4 几何相对面不等于 Boundary rail partner，因此该数值不能解释为 Boolean 没有产生对侧 Edge。probe 没有使用 nearest、坐标匹配、synthetic owner 或 synthetic port。
 
 结论：近共线碎点确实能解释 3 Edge 中的一次多余分段，但 dissolve 后仍无法独立恢复 regular consumer。原报告的 `clean_route_go=false` 只表示“clean 单独不足以让 Phase C GO”，不应解释为 clean 本身无用。用户检查 `.blend` 后确认被移除点正对应原蓝色问题区域；因此 constrained normalization 保留为 pre-Boolean profile lineage resolver 的预处理，resolver 消费 normalized chain，同时保留 raw → normalized lineage。
 
@@ -40,7 +42,8 @@ Feature Chamfer GN
 ```text
 raw fragmented Boundary Edge
 → constrained normalization（已证明有用）
-→ pre-Boolean profile lineage（恢复 opposite-side ownership）
+→ pre-Boolean profile lineage（恢复 partner Patch 与相邻 Cutter Face incidence）
+→ maximal source/candidate chain pairing
 → regular consumer
 ```
 
@@ -61,5 +64,5 @@ SHA-256：
 - diff 未修改正式 runtime path、`auto_load.py` 或 `FINALIZE`；新增实现仅是只读 probe tool 与结果文档。
 - 证据从目标 PREVIEW → Phase C Adapter 开始，而非离线 builder；Adapter 以同三条 Edge 和 `UNPROVEN_PLAN_BOUNDARY_EDGE` fail-closed，A/B 使用 forward/reverse independently-built staging 且 ledger fingerprint 一致。
 - raw → normalized lineage、几何、关键 token、Pipe/Patch/Rail provenance 和 exactly-once 合同均有直接 JSON 字段。
-- direct witness 缺失触发计划规定的 hard Stop；未越级进入 Phase D/E，也未把 `.blend` 可打开误报为 Operator/Product 验证。
+- 当时按错误 C4 `+2` 定义计算的 direct witness 缺失触发了 hard Stop；后续已由 partner Patch + 相邻 Cutter Face incidence 纠正。整个过程未越级进入 Phase D/E，也未把 `.blend` 可打开误报为 Operator/Product 验证。
 - 当前状态保持 `PROTOTYPE`，不是 `INTEGRATED/VERIFIED/ACCEPTED`。

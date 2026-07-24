@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pre-Boolean Profile Lineage Plan
 
 日期：2026-07-24
-状态：`AUTHORIZED / PRE-BOOLEAN PROFILE LINEAGE FIRST / CLEAN NORMALIZATION RETAINED / PHASE C STOP / PROTOTYPE`
+状态：`AUTHORIZED / PRE-BOOLEAN LINEAGE RETAINED / BOUNDARY PAIRING CORRECTED / MAXIMAL-CHAIN NEXT / PHASE C STOP / PROTOTYPE`
 
 ## 0. 目标入口与阶段范围
 
@@ -18,8 +18,8 @@ UI Feature Chamfer GN
 - 用户操作：对 `tricky__solid_004__r0p030` 运行 PREVIEW，再从 hidden Phase C Adapter 进入只读 probe。
 - 预期可见变化：只生成 diagnostics / `.blend` artifact；正式 `FINALIZE` 和 source Mesh 不变。
 - 自动证据：目标 Operator 入口、raw → normalized exactly-once lineage、pre/post Boolean Face/Edge incidence、Pipe/profile-side/opposite-side/longitudinal-segment 身份、source unchanged。
-- 本阶段 Go：目标 normalized residual 获得唯一、非几何猜测的 opposite consumer；正逆 batch 结果一致。
-- 本阶段 Stop：仍需 nearest/坐标匹配、合成 owner/port、fixture 特判，或 pre-Boolean identity 在 Boolean 后丢失/冲突。
+- 本阶段 Go：一个 maximal source chain 获得唯一、连续、全局 exactly-once 的 Boundary consumer chain；正逆 batch 结果一致。
+- 本阶段 Stop：consumer Edge 被多个 source chain 重复占用、候选不形成唯一连续 chain、仍需 nearest/坐标匹配、合成 owner/port、fixture 特判，或 pre-Boolean identity 在 Boolean 后丢失/冲突。
 
 本计划不授权正式 producer/`FINALIZE` 接入，不授权 Phase D/E。
 
@@ -28,9 +28,10 @@ UI Feature Chamfer GN
 1. 目标 3 条 raw Edge 已有唯一 `Pipe 1 / Patch 1 / Rail` owner；问题不是“属于哪条 Pipe”。
 2. clean A/B 只安全 dissolve 一个近共线 degree-2 内点：3 raw Edge → 2 normalized Edge。被移除点正对应用户观察的蓝色问题区域。
 3. 几何容差、terminal/port token、Pipe/Patch/Rail provenance、source unchanged、raw Edge exactly-once lineage 均通过；constrained normalization 应保留。
-4. clean 后两个 normalized Edge 的直接 opposite Boundary witness 仍为 `0`。因此缺的是“和哪条对侧 Edge 补面”，不是单侧 chain 连续性。
-5. 每条 residual 已能追到 `PROVEN_C4_PIPE` cutter Face、profile ring 和预期 opposite Face signature；但预期 opposite Face 在 post-Boolean Boundary universe 中不可见。
-6. 局部只有一条 Pipe 只消除了 Pipe owner 歧义；同一 Pipe 仍有四个 profile sides 和沿程多个 Face ring，不能仅凭单 Pipe 推导唯一对侧 consumer。
+4. 旧 probe 把 C4 几何相对面当 Boundary pairing，因此错误报告 direct witness 为 `0`；这不是 Boolean 没有生成边。
+5. 每条 residual 已能追到 `PROVEN_C4_PIPE` cutter Face、profile ring 和 C4 几何 opposite Face signature；用户截图和后续全量 incidence census 已确认对侧 Boundary Edge 实际存在。旧结论把 C4 `+2` Face 错当成两条 Boundary rails 的 pairing。
+6. 修正后找到 Patch 2 / side 0 的真实 Edge `d08fa882…` 与 `78c620a9…`；但逐 normalized Edge 解析让 `d08fa882…` 被两个 consumer chain 重复占用，证明 pairing 粒度必须提升为 maximal chain。
+7. 局部只有一条 Pipe 只消除了 Pipe owner 歧义；同一 Pipe 仍有四个 profile sides 和沿程多个 Face ring，不能仅凭单 Pipe 推导唯一对侧 consumer。
 
 证据：
 
@@ -69,7 +70,7 @@ Go：相同 cutter 在正逆 batch 中身份图完全一致；C4 ring 每个 sid
 
 几何“是否接触”可以作为结果一致性验证，但不得用 nearest distance 或坐标阈值产生 owner。
 
-Go：每条目标 Boundary Edge 恰有一个 `(Pipe, profile side, source Patch, longitudinal segment)` direct witness；missing/conflict 必须 fail-closed。
+Go：每条目标 Boundary Edge 恰有一个 `(Pipe, profile side, source Patch, longitudinal segment)` direct witness；这是 identity transfer 门禁，不等于最终 fragment-to-fragment pairing。missing/conflict 必须 fail-closed。
 
 ### Step 3 — Constrained normalization
 
@@ -81,9 +82,9 @@ Go：每条目标 Boundary Edge 恰有一个 `(Pipe, profile side, source Patch,
 
 Go：A/B 合同保持，normalized Edge 的 lineage 是其所有 raw Edge lineage 的无冲突并集。
 
-### Step 4 — Opposite consumer 解析
+### Step 4 — Boundary consumer 解析
 
-对 normalized subchain，直接从同一 Pipe 的 `opposite_profile_side_id + longitudinal segment` 查找对侧 Boundary chain。只允许：
+对 normalized subchain，使用同一 `strand_id` 的唯一权威 `StripCorrespondence` 取得 partner Patch，再从当前 Cutter Face 的 `profile_neighbor_face_signatures + longitudinal segment` 查找对侧 Boundary chain。C4 `opposite_profile_side_id` 保留为几何诊断，不能再直接充当 Boundary pairing。只允许：
 
 1. 唯一 direct opposite Edge/chain；
 2. 唯一权威 Plan port incidence；
@@ -91,11 +92,17 @@ Go：A/B 合同保持，normalized Edge 的 lineage 是其所有 raw Edge lineag
 
 禁止把“沿 graph 最近的已消费 Edge”自动当作当前 residual 的 consumer；longitudinal graph 只能证明身份连续性，不能跨 segment 借用 unrelated sink。
 
-### Step 5 — 目标 cell 只读验收
+### Step 5 — Maximal chain pairing
 
-先用 synthetic single-Pipe occluded-opposite-face fixture 证明 missing/duplicate/conflict 均 fail-closed，再从目标 Operator 重跑 `tricky__solid_004__r0p030`。
+先按共享 endpoint token、完整 source lineage 和同一 Plan component，把连续 normalized Edge 合并为 maximal source chain；再验证 candidate Edge 形成唯一连续 open chain。pairing 以整条 source chain 为单位，禁止要求每条 normalized fragment 独占一条对边。
 
-Go：两个 normalized Edge 都获得唯一 direct opposite consumer，且 raw exactly-once、source unchanged、正逆 batch 一致。否则保持 Phase C STOP，并输出缺失发生在 Face identity、Boolean transfer 还是 opposite Edge visibility。
+Go：source/candidate chain 都连通、端点与 chain kind 唯一；candidate Edge 在不同 maximal source chains 之间全局 exactly-once。missing、断链、重复 chain、跨 component overlap 均 fail-closed。
+
+### Step 6 — 目标 cell 只读验收
+
+先用 synthetic single-Pipe fixture 证明 missing/duplicate/conflict、candidate overlap、重复 StripCorrespondence 与断链均 fail-closed，再从目标 Operator 重跑 `tricky__solid_004__r0p030`。
+
+Go：目标 maximal source chain 获得唯一 direct Boundary consumer chain，且 raw/normalized/candidate exactly-once、source unchanged、正逆 batch 一致。否则保持 Phase C STOP，并输出缺失发生在 Face identity、Boolean transfer、chain connectivity 还是全局 overlap。
 
 ## 4. 后续 Stop / Go
 
@@ -119,6 +126,6 @@ Go：两个 normalized Edge 都获得唯一 direct opposite consumer，且 raw e
 - `Visual/Product: NOT VERIFIED`
 - `Phase C: STOP`
 
-下一交付是从目标 PREVIEW → Phase C Adapter 产生的只读 `pre_boolean_profile_lineage` report 和可检查 `.blend`。报告必须明确区分：Pipe owner、profile side、opposite side、longitudinal segment、post-Boolean Edge incidence、normalized lineage、resolved consumer。
+下一交付是从目标 PREVIEW → Phase C Adapter 产生的只读 maximal-chain pairing report 和可检查 `.blend`。报告必须明确区分：Pipe owner、profile side、C4 geometric opposite、Boundary partner Patch、longitudinal segment、post-Boolean Edge incidence、raw→normalized lineage、source/candidate chain connectivity、全局 candidate exactly-once 与 resolved consumer。
 
 完成声明前独立 Spec Audit 必须检查：runtime 未越级修改；测试从目标 Operator 开始；consumer 不是最近 sink；计划、代码、artifact 的阶段状态一致。

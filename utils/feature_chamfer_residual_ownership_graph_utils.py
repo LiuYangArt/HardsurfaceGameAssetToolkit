@@ -6,12 +6,11 @@ import bpy
 import hashlib
 import json
 import math
-from collections import deque
 
 from mathutils import Vector
 
 
-GRAPH_CONTRACT = "HST_PHASE_C_RESIDUAL_OWNERSHIP_GRAPH_V1"
+GRAPH_CONTRACT = "HST_PHASE_C_PRE_BOOLEAN_BOUNDARY_PAIRING_V2"
 
 
 # 对稳定 JSON payload 生成 SHA-256。
@@ -25,6 +24,34 @@ def _stable_fingerprint(payload):
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+
+
+# 提取一个 post-Boolean Boundary Edge 的唯一完整 pre-Boolean profile lineage。
+# entry: staging Boundary ledger 条目；返回 Pipe/profile-side/opposite-side/segment identity，缺失或冲突时返回 None。
+def _complete_lineage_identity(entry):
+    identities = {
+        (
+            int(topology["pipe_id"]),
+            entry.get("strand_id"),
+            int(topology["profile_side_id"]),
+            int(topology["opposite_profile_side_id"]),
+            topology["longitudinal_segment_id"],
+        )
+        for topology in entry.get("cutter_face_topology", ())
+        if topology.get("topology_status") == "PROVEN_C4_PIPE"
+        and topology.get("profile_side_id") is not None
+        and topology.get("opposite_profile_side_id") is not None
+        and topology.get("longitudinal_segment_id")
+    }
+    if len(identities) != 1:
+        return None
+    identity = next(iter(identities))
+    if (
+        identity[0] != int(entry["pipe_id"])
+        or identity[3] != (identity[2] + 2) % 4
+    ):
+        return None
+    return identity
 
 
 # 按 endpoint token 把 raw Boundary Edge 排成唯一 open chain。
@@ -128,8 +155,10 @@ def constrained_normalize_boundary_chain(
             (
                 tuple(entry.get("semantic_batch_key", ())),
                 int(entry["pipe_id"]),
+                entry.get("strand_id"),
                 int(entry["source_patch_id"]),
                 entry["rail_id"],
+                _complete_lineage_identity(entry),
             )
             for entry in incident_entries
         }
@@ -138,8 +167,8 @@ def constrained_normalize_boundary_chain(
             for entry in incident_entries
             for port_token in entry.get("endpoint_port_tokens", ())
         }
-        direct_topology_complete = all(
-            entry.get("cutter_face_topology")
+        direct_topology_complete = bool(target_incident_entries) and all(
+            _complete_lineage_identity(entry) is not None
             and entry.get("groove_face_signatures")
             and entry.get("adjacent_face_signatures")
             for entry in target_incident_entries
@@ -211,11 +240,13 @@ def constrained_normalize_boundary_chain(
                 entry.get("strand_id"),
                 int(entry["source_patch_id"]),
                 entry["rail_id"],
+                _complete_lineage_identity(entry),
             )
             for entry in source_entries
         }
-        if len(owner_signatures) != 1:
-            raise ValueError("Normalization 试图合并不同 Pipe/Patch/Rail provenance")
+        if len(owner_signatures) != 1 or next(iter(owner_signatures))[-1] is None:
+            raise ValueError("Normalization 试图合并不同完整 profile lineage")
+        lineage_identity = next(iter(owner_signatures))[-1]
         normalized_edge_id = "normalized:" + _stable_fingerprint(
             {
                 "raw_edge_ids": segment["raw_edge_ids"],
@@ -243,6 +274,15 @@ def constrained_normalize_boundary_chain(
             "strand_id": source_entries[0].get("strand_id"),
             "source_patch_id": int(source_entries[0]["source_patch_id"]),
             "rail_id": source_entries[0]["rail_id"],
+            "profile_side_id": lineage_identity[2],
+            "opposite_profile_side_id": lineage_identity[3],
+            "longitudinal_segment_ids": sorted(
+                {
+                    identity[4]
+                    for entry in source_entries
+                    for identity in (_complete_lineage_identity(entry),)
+                }
+            ),
             "endpoint_port_tokens": sorted(
                 {
                     token
@@ -302,199 +342,8 @@ def constrained_normalize_boundary_chain(
     }
 
 
-# 把 normalized Edge 排成 maximal token-connected open subchains。
-# normalized_records: constrained normalization 输出；返回稳定 subchain 列表。
-def _normalized_token_subchains(normalized_records):
-    records_by_id = {
-        record["normalized_edge_id"]: record for record in normalized_records
-    }
-    record_ids_by_token = {}
-    for record in normalized_records:
-        for token in record["endpoint_tokens"]:
-            record_ids_by_token.setdefault(token, set()).add(
-                record["normalized_edge_id"]
-            )
-    remaining = set(records_by_id)
-    subchains = []
-    while remaining:
-        seed_id = min(remaining)
-        component = set()
-        queue = [seed_id]
-        while queue:
-            record_id = queue.pop()
-            if record_id in component:
-                continue
-            component.add(record_id)
-            for token in records_by_id[record_id]["endpoint_tokens"]:
-                queue.extend(record_ids_by_token[token] - component)
-        remaining -= component
-        component_records = [records_by_id[record_id] for record_id in component]
-        owner_signatures = {
-            (
-                int(record["pipe_id"]),
-                record.get("strand_id"),
-                int(record["source_patch_id"]),
-                record["rail_id"],
-            )
-            for record in component_records
-        }
-        if len(owner_signatures) != 1:
-            raise ValueError("Normalized subchain 混入不同 owner provenance")
-        degrees = {
-            token: len(record_ids_by_token[token] & component)
-            for record in component_records
-            for token in record["endpoint_tokens"]
-        }
-        endpoints = sorted(token for token, degree in degrees.items() if degree == 1)
-        if len(endpoints) != 2:
-            raise ValueError("Normalized residual component 不是唯一 open subchain")
-        current_token = endpoints[0]
-        remaining_component = set(component)
-        ordered_records = []
-        ordered_tokens = [current_token]
-        while remaining_component:
-            candidates = sorted(
-                record_ids_by_token[current_token] & remaining_component
-            )
-            if len(candidates) != 1:
-                raise ValueError("Normalized residual token walk 存在歧义")
-            record = records_by_id[candidates[0]]
-            ordered_records.append(record)
-            remaining_component.remove(record["normalized_edge_id"])
-            current_token = next(
-                token
-                for token in record["endpoint_tokens"]
-                if token != current_token
-            )
-            ordered_tokens.append(current_token)
-        subchains.append(
-            {
-                "subchain_id": "residual-subchain:" + _stable_fingerprint(
-                    [record["normalized_edge_id"] for record in ordered_records]
-                ),
-                "records": ordered_records,
-                "endpoint_tokens": ordered_tokens,
-            }
-        )
-    return tuple(sorted(subchains, key=lambda item: item["subchain_id"]))
-
-
-# 从一个 opposite Face seed 沿同 Pipe longitudinal adjacency 查找最近的直接 Boundary/consumer sink。
-# seed/pipe/graph/face-boundary/claims/setback/excluded/patches: graph 上下文；返回最短路径与候选身份。
-def _nearest_longitudinal_sinks(
-    seed_face_signature,
-    pipe_id,
-    face_records_by_signature,
-    longitudinal_adjacency,
-    boundary_entries_by_face,
-    regular_claim_by_edge_id,
-    setback_edge_ids,
-    excluded_edge_ids,
-    source_patch_ids,
-    allowed_patch_pair=None,
-):
-    seed_record = face_records_by_signature.get(seed_face_signature)
-    if seed_record is None or int(seed_record.get("pipe_id", -1)) != int(pipe_id):
-        return {
-            "seed_face_signature": seed_face_signature,
-            "status": "MISSING_FACE_NODE",
-            "distance": None,
-            "candidates": [],
-        }
-    queue = deque([seed_face_signature])
-    distance_by_face = {seed_face_signature: 0}
-    path_count_by_face = {seed_face_signature: 1}
-    predecessor_by_face = {seed_face_signature: None}
-    found_distance = None
-    candidate_records = []
-    while queue:
-        face_signature = queue.popleft()
-        distance = distance_by_face[face_signature]
-        if found_distance is not None and distance > found_distance:
-            break
-        face_candidates = []
-        for entry in boundary_entries_by_face.get(face_signature, ()):
-            edge_id = entry["edge_id"]
-            if (
-                edge_id in excluded_edge_ids
-                or edge_id in setback_edge_ids
-                or int(entry["pipe_id"]) != int(pipe_id)
-                or int(entry["source_patch_id"]) in source_patch_ids
-                or (
-                    allowed_patch_pair is not None
-                    and int(entry["source_patch_id"]) not in allowed_patch_pair
-                )
-            ):
-                continue
-            claim = regular_claim_by_edge_id.get(edge_id)
-            if claim is None:
-                sink_id = f"BOUNDARY_EDGE:{edge_id}"
-                sink_kind = "UNCLAIMED_BOUNDARY_EDGE"
-            else:
-                consumer_id = claim.get("face_consumer_id") or (
-                    f"face-consumer:{claim['job_id']}"
-                )
-                sink_id = f"REGULAR_CONSUMER:{consumer_id}"
-                sink_kind = "REGULAR_CONSUMER"
-            path = [face_signature]
-            predecessor = predecessor_by_face[face_signature]
-            while predecessor is not None:
-                path.append(predecessor)
-                predecessor = predecessor_by_face[predecessor]
-            face_candidates.append(
-                {
-                    "sink_id": sink_id,
-                    "sink_kind": sink_kind,
-                    "boundary_edge_id": edge_id,
-                    "boundary_source_patch_id": int(entry["source_patch_id"]),
-                    "distance": distance,
-                    "face_path": list(reversed(path)),
-                    "shortest_path_count": path_count_by_face[face_signature],
-                }
-            )
-        if face_candidates:
-            found_distance = distance
-            candidate_records.extend(face_candidates)
-            continue
-        for neighbor in sorted(longitudinal_adjacency.get(face_signature, ())):
-            neighbor_record = face_records_by_signature.get(neighbor)
-            if (
-                neighbor_record is None
-                or int(neighbor_record.get("pipe_id", -1)) != int(pipe_id)
-            ):
-                continue
-            next_distance = distance + 1
-            existing_distance = distance_by_face.get(neighbor)
-            if existing_distance is None:
-                distance_by_face[neighbor] = next_distance
-                path_count_by_face[neighbor] = path_count_by_face[face_signature]
-                predecessor_by_face[neighbor] = face_signature
-                queue.append(neighbor)
-            elif existing_distance == next_distance:
-                path_count_by_face[neighbor] += path_count_by_face[face_signature]
-    candidate_records = sorted(
-        candidate_records,
-        key=lambda item: (item["sink_id"], item["boundary_edge_id"]),
-    )
-    sink_ids = sorted({item["sink_id"] for item in candidate_records})
-    unique_path = (
-        len(candidate_records) == 1
-        and len(sink_ids) == 1
-        and candidate_records[0]["shortest_path_count"] == 1
-    )
-    return {
-        "seed_face_signature": seed_face_signature,
-        "status": (
-            "UNIQUE" if unique_path else "MISSING" if not candidate_records else "AMBIGUOUS"
-        ),
-        "distance": found_distance,
-        "sink_ids": sink_ids,
-        "candidates": candidate_records,
-    }
-
-
-# 构建只读 ResidualOwnershipGraph，并对每条 maximal normalized subchain 输出唯一 direct witness 或 UNRESOLVED。
-# normalized/universe/faces/claims/setbacks/ports: graph 输入合同；返回机器可读 graph artifact。
+# 构建只读 pre-Boolean profile lineage graph；每条 normalized Edge 只接受权威 Patch pair 上相邻 Cutter Face 的 direct Edge chain。
+# normalized/universe/faces/claims/setbacks/ports/pairs: lineage 输入合同；pairs 使用 strand_id+Patch pair；返回 Face→Edge incidence artifact。
 def build_residual_ownership_graph(
     normalized_records,
     boundary_universe,
@@ -546,7 +395,6 @@ def build_residual_ownership_graph(
     if set(raw_edge_ids) & (claim_edge_ids | setback_edge_ids):
         raise ValueError("Residual normalized lineage 已被 claim/setback 消费")
     face_records_by_signature = {}
-    longitudinal_adjacency = {}
     for record in complete_cutter_face_records:
         if record.get("topology_status") != "PROVEN_C4_PIPE":
             continue
@@ -557,23 +405,6 @@ def build_residual_ownership_graph(
         if existing is not None and existing != record:
             raise ValueError("Cutter Face signature 对应冲突 topology")
         face_records_by_signature[face_signature] = dict(record)
-        longitudinal_adjacency.setdefault(face_signature, set()).update(
-            record.get("longitudinal_neighbor_face_signatures", ())
-        )
-    for face_signature, neighbors in tuple(longitudinal_adjacency.items()):
-        for neighbor in tuple(neighbors):
-            if neighbor in face_records_by_signature:
-                longitudinal_adjacency.setdefault(neighbor, set()).add(
-                    face_signature
-                )
-    boundary_entries_by_face = {}
-    for entry in boundary_universe:
-        for topology in entry.get("cutter_face_topology", ()):
-            if topology.get("topology_status") != "PROVEN_C4_PIPE":
-                continue
-            boundary_entries_by_face.setdefault(
-                topology.get("face_signature"), []
-            ).append(entry)
     port_incidences_by_token = {}
     for incidence in authoritative_plan_port_incidences:
         if not incidence.get("authoritative", False):
@@ -581,86 +412,188 @@ def build_residual_ownership_graph(
         port_incidences_by_token.setdefault(
             incidence["endpoint_token"], []
         ).append(dict(incidence))
-    normalized_allowed_patch_pairs = {
-        frozenset(int(patch_id) for patch_id in pair)
-        for pair in allowed_source_patch_pairs
-        if len(pair) == 2
-    }
-    subchain_results = []
-    for subchain in _normalized_token_subchains(normalized_records):
-        records = subchain["records"]
-        pipe_ids = {int(record["pipe_id"]) for record in records}
-        source_patch_ids = {
-            int(record["source_patch_id"]) for record in records
-        }
-        if len(pipe_ids) != 1:
-            raise ValueError("Residual subchain 混入不同 Pipe")
-        pipe_id = next(iter(pipe_ids))
+    normalized_allowed_patch_pair_counts = {}
+    for pair_record in allowed_source_patch_pairs:
+        if isinstance(pair_record, dict):
+            pair = tuple(pair_record.get("patch_pair", ()))
+            pair_strand_id = pair_record.get("strand_id")
+        else:
+            pair = tuple(pair_record)
+            pair_strand_id = None
+        if len(pair) != 2:
+            continue
+        normalized_pair = frozenset(int(patch_id) for patch_id in pair)
+        pair_key = (pair_strand_id, normalized_pair)
+        normalized_allowed_patch_pair_counts[pair_key] = (
+            normalized_allowed_patch_pair_counts.get(pair_key, 0) + 1
+        )
+    normalized_edge_results = []
+    for record in sorted(
+        normalized_records,
+        key=lambda item: item["normalized_edge_id"],
+    ):
+        pipe_id = int(record["pipe_id"])
+        strand_id = record.get("strand_id")
+        source_patch_id = int(record["source_patch_id"])
         matching_patch_pairs = [
             pair
-            for pair in normalized_allowed_patch_pairs
-            if source_patch_ids < pair
+            for (pair_strand_id, pair), count
+            in normalized_allowed_patch_pair_counts.items()
+            if count == 1
+            and pair_strand_id in {None, strand_id}
+            and source_patch_id in pair
         ]
+        duplicate_matching_patch_pair = any(
+            count > 1
+            and pair_strand_id in {None, strand_id}
+            and source_patch_id in pair
+            for (pair_strand_id, pair), count
+            in normalized_allowed_patch_pair_counts.items()
+        )
         if len(matching_patch_pairs) == 1:
             allowed_patch_pair = matching_patch_pairs[0]
         else:
             allowed_patch_pair = None
-        opposite_face_signatures = sorted(
-            {
-                topology.get("profile_opposite_face_signature")
-                for record in records
-                for topology in record.get("cutter_face_topology", ())
-                if topology.get("topology_status") == "PROVEN_C4_PIPE"
-                and topology.get("profile_opposite_face_signature")
-            }
+        raw_edge_id_set = set(record.get("raw_edge_ids", ()))
+        longitudinal_segment_ids = tuple(record["longitudinal_segment_ids"])
+        profile_side_id = int(record["profile_side_id"])
+        opposite_profile_side_id = int(record["opposite_profile_side_id"])
+        direct_candidates = []
+        patch_pair_identity_complete = (
+            allowed_patch_pair is not None
+            and not duplicate_matching_patch_pair
         )
-        excluded_edge_ids = {
-            raw_edge_id
-            for record in records
-            for raw_edge_id in record.get("raw_edge_ids", ())
-        }
-        seed_witnesses = [
-            _nearest_longitudinal_sinks(
-                seed_face_signature,
-                pipe_id,
-                face_records_by_signature,
-                longitudinal_adjacency,
-                boundary_entries_by_face,
-                regular_claim_by_edge_id,
-                setback_edge_ids,
-                excluded_edge_ids,
-                source_patch_ids,
-                allowed_patch_pair,
+        residual_topologies = tuple(
+            topology
+            for topology in record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("longitudinal_segment_id")
+            in longitudinal_segment_ids
+        )
+        direct_candidates_by_edge_id = {}
+        for residual_topology in residual_topologies:
+            expected_neighbor_signatures = set(
+                residual_topology.get("profile_neighbor_face_signatures", ())
             )
-            for seed_face_signature in opposite_face_signatures
-        ]
-        unique_seed_sink_ids = {
-            witness["sink_ids"][0]
-            for witness in seed_witnesses
-            if witness["status"] == "UNIQUE"
-            and len(witness.get("sink_ids", ())) == 1
-        }
-        all_seeds_unique = bool(seed_witnesses) and all(
-            witness["status"] == "UNIQUE" for witness in seed_witnesses
-        )
-        opposite_path_unique = (
-            all_seeds_unique and len(unique_seed_sink_ids) == 1
-        )
+            for candidate in boundary_universe:
+                edge_id = candidate["edge_id"]
+                if (
+                    not patch_pair_identity_complete
+                    or edge_id in raw_edge_id_set
+                    or edge_id in setback_edge_ids
+                    or int(candidate["pipe_id"]) != pipe_id
+                    or candidate.get("strand_id") != strand_id
+                    or int(candidate["source_patch_id"]) == source_patch_id
+                    or (
+                        allowed_patch_pair is not None
+                        and int(candidate["source_patch_id"])
+                        not in allowed_patch_pair
+                    )
+                ):
+                    continue
+                claim = regular_claim_by_edge_id.get(edge_id)
+                candidate_topologies = [
+                    topology
+                    for topology in candidate.get(
+                        "cutter_face_topology",
+                        (),
+                    )
+                    if topology.get("topology_status")
+                    == "PROVEN_C4_PIPE"
+                    and topology.get("longitudinal_segment_id")
+                    == residual_topology["longitudinal_segment_id"]
+                    and topology.get("face_signature")
+                    in expected_neighbor_signatures
+                ]
+                if len(candidate_topologies) != 1:
+                    continue
+                candidate_topology = candidate_topologies[0]
+                candidate_face_signature = candidate_topology.get(
+                    "face_signature"
+                )
+                pre_boolean_face_record = face_records_by_signature.get(
+                    candidate_face_signature
+                )
+                face_identity_matches = (
+                    candidate_topology is not None
+                    and pre_boolean_face_record == candidate_topology
+                    and candidate_face_signature
+                    in expected_neighbor_signatures
+                )
+                existing_candidate = direct_candidates_by_edge_id.get(edge_id)
+                if (
+                    existing_candidate is not None
+                    and existing_candidate["source_face_signature"]
+                    != residual_topology.get("face_signature")
+                ):
+                    raise ValueError(
+                        "同一 direct consumer Edge 对应多个 residual Cutter Face"
+                    )
+                direct_candidates_by_edge_id[edge_id] = {
+                    "boundary_edge_id": edge_id,
+                    "boundary_source_patch_id": int(candidate["source_patch_id"]),
+                    "claim_state": (
+                        claim.get("claim_state") if claim is not None else None
+                    ),
+                    "face_consumer_id": (
+                        claim.get("face_consumer_id") if claim is not None else None
+                    ),
+                    "direct_lineage_identity": list(
+                        _complete_lineage_identity(candidate) or ()
+                    ),
+                    "source_face_signature": residual_topology.get(
+                        "face_signature"
+                    ),
+                    "candidate_face_signature": candidate_face_signature,
+                    "pre_boolean_face_identity_matches": face_identity_matches,
+                }
+        direct_candidates = list(direct_candidates_by_edge_id.values())
+        direct_candidates.sort(key=lambda item: item["boundary_edge_id"])
         endpoint_port_incidences = [
             incidence
-            for endpoint_token in (
-                subchain["endpoint_tokens"][0],
-                subchain["endpoint_tokens"][-1],
-            )
+            for endpoint_token in record["endpoint_tokens"]
             for incidence in port_incidences_by_token.get(endpoint_token, ())
             if int(incidence.get("pipe_id", pipe_id)) == pipe_id
+            and incidence.get("lineage_source") == "CHAMFER_PLAN"
         ]
         unique_port_ids = sorted(
             {incidence["port_id"] for incidence in endpoint_port_incidences}
         )
-        if opposite_path_unique:
-            status = "UNIQUE_OPPOSITE_FACE_PATH"
-            resolved_consumer_id = next(iter(unique_seed_sink_ids))
+        pre_boolean_face_identity_complete = bool(direct_candidates) and all(
+            candidate["pre_boolean_face_identity_matches"]
+            for candidate in direct_candidates
+        )
+        expected_consumer_face_signatures = {
+            topology.get("face_signature")
+            for topology in residual_topologies
+            if topology.get("face_signature")
+        }
+        direct_candidate_count_by_source_face = {
+            face_signature: sum(
+                candidate["source_face_signature"] == face_signature
+                for candidate in direct_candidates
+            )
+            for face_signature in expected_consumer_face_signatures
+        }
+        complete_direct_chain = (
+            bool(expected_consumer_face_signatures)
+            and all(
+                count == 1
+                for count in direct_candidate_count_by_source_face.values()
+            )
+        )
+        if (
+            direct_candidates
+            and pre_boolean_face_identity_complete
+            and complete_direct_chain
+        ):
+            status = "UNIQUE_DIRECT_OPPOSITE_CONSUMER"
+            resolved_consumer_id = "BOUNDARY_CHAIN:" + _stable_fingerprint(
+                [
+                    candidate["boundary_edge_id"]
+                    for candidate in direct_candidates
+                ]
+            )
             rejection_reason = None
         elif len(unique_port_ids) == 1:
             status = "UNIQUE_PLAN_PORT_INCIDENCE"
@@ -669,42 +602,87 @@ def build_residual_ownership_graph(
         else:
             status = "UNRESOLVED"
             resolved_consumer_id = None
-            if not opposite_face_signatures:
-                rejection_reason = "MISSING_PROVEN_C4_OPPOSITE_FACE"
-            elif any(
-                witness["status"] == "AMBIGUOUS" for witness in seed_witnesses
-            ):
-                rejection_reason = "AMBIGUOUS_OPPOSITE_FACE_PATH"
+            if direct_candidates and not pre_boolean_face_identity_complete:
+                rejection_reason = "MISSING_PRE_BOOLEAN_OPPOSITE_FACE_IDENTITY"
+            elif duplicate_matching_patch_pair:
+                rejection_reason = "DUPLICATE_AUTHORITATIVE_PLAN_PATCH_PAIR"
+            elif not patch_pair_identity_complete:
+                rejection_reason = "MISSING_AUTHORITATIVE_PLAN_PATCH_PAIR"
+            elif direct_candidates and not complete_direct_chain:
+                rejection_reason = (
+                    "DUPLICATE_DIRECT_OPPOSITE_CONSUMER"
+                    if any(
+                        count > 1
+                        for count in direct_candidate_count_by_source_face.values()
+                    )
+                    else "INCOMPLETE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+                )
             elif len(unique_port_ids) > 1:
                 rejection_reason = "AMBIGUOUS_PLAN_PORT_INCIDENCE"
             else:
-                rejection_reason = "MISSING_DIRECT_WITNESS"
-        subchain_results.append(
+                rejection_reason = "MISSING_DIRECT_OPPOSITE_CONSUMER"
+        normalized_edge_results.append(
             {
-                "subchain_id": subchain["subchain_id"],
                 "status": status,
                 "resolved_consumer_id": resolved_consumer_id,
                 "rejection_reason": rejection_reason,
-                "normalized_edge_ids": [
-                    record["normalized_edge_id"] for record in records
-                ],
-                "raw_edge_ids": sorted(excluded_edge_ids),
-                "endpoint_tokens": list(subchain["endpoint_tokens"]),
+                "normalized_edge_id": record["normalized_edge_id"],
+                "raw_edge_ids": sorted(raw_edge_id_set),
+                "endpoint_tokens": list(record["endpoint_tokens"]),
                 "pipe_id": pipe_id,
-                "source_patch_ids": sorted(source_patch_ids),
+                "strand_id": strand_id,
+                "source_patch_id": source_patch_id,
                 "allowed_source_patch_pair": (
                     sorted(allowed_patch_pair)
                     if allowed_patch_pair is not None
                     else None
                 ),
-                "profile_opposite_face_signatures": opposite_face_signatures,
-                "opposite_face_seed_witnesses": seed_witnesses,
+                "profile_side_id": profile_side_id,
+                "opposite_profile_side_id": opposite_profile_side_id,
+                "longitudinal_segment_ids": list(longitudinal_segment_ids),
+                "direct_opposite_lineage_identities": [
+                    candidate["direct_lineage_identity"]
+                    for candidate in direct_candidates
+                ],
+                "direct_face_edge_incidence": direct_candidates,
+                "direct_candidate_count_by_source_face": (
+                    direct_candidate_count_by_source_face
+                ),
+                "pre_boolean_face_identity_complete": (
+                    pre_boolean_face_identity_complete
+                ),
                 "authoritative_plan_port_incidences": endpoint_port_incidences,
             }
         )
-    all_subchains_resolved = bool(subchain_results) and all(
-        result["status"] != "UNRESOLVED" for result in subchain_results
+    all_normalized_edges_resolved = bool(normalized_edge_results) and all(
+        result["status"] == "UNIQUE_DIRECT_OPPOSITE_CONSUMER"
+        for result in normalized_edge_results
     )
+    candidate_edge_to_normalized_edges = {}
+    for result in normalized_edge_results:
+        for candidate in result["direct_face_edge_incidence"]:
+            candidate_edge_to_normalized_edges.setdefault(
+                candidate["boundary_edge_id"],
+                [],
+            ).append(result["normalized_edge_id"])
+    overlapping_candidate_edges = {
+        edge_id: sorted(normalized_edge_ids)
+        for edge_id, normalized_edge_ids
+        in candidate_edge_to_normalized_edges.items()
+        if len(normalized_edge_ids) > 1
+    }
+    if overlapping_candidate_edges:
+        all_normalized_edges_resolved = False
+        for result in normalized_edge_results:
+            if any(
+                candidate["boundary_edge_id"] in overlapping_candidate_edges
+                for candidate in result["direct_face_edge_incidence"]
+            ):
+                result["status"] = "UNRESOLVED"
+                result["resolved_consumer_id"] = None
+                result["rejection_reason"] = (
+                    "OVERLAPPING_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+                )
     return {
         "contract": GRAPH_CONTRACT,
         "status": "PROTOTYPE",
@@ -725,16 +703,22 @@ def build_residual_ownership_graph(
             "claim_setback_disjoint": True,
             "subtraction_outside_universe": [],
         },
-        "subchains": subchain_results,
-        "all_subchains_resolved": all_subchains_resolved,
+        "normalized_edges": normalized_edge_results,
+        "subchains": normalized_edge_results,
+        "all_normalized_edges_resolved": all_normalized_edges_resolved,
+        "all_subchains_resolved": all_normalized_edges_resolved,
+        "candidate_edge_exactly_once": not overlapping_candidate_edges,
+        "overlapping_candidate_edges": overlapping_candidate_edges,
         "raw_edge_exactly_once": len(raw_edge_ids) == len(set(raw_edge_ids)),
         "nearest_or_coordinate_matching_used": False,
-        "synthetic_owner_or_port_used": False,
+        "consumer_resolution_mode": (
+            "PLAN_PATCH_PAIR_ADJACENT_CUTTER_FACE_EDGE_INCIDENCE_ONLY"
+        ),
         "lineage_fingerprint": _stable_fingerprint(
             {
                 record["normalized_edge_id"]: sorted(record["raw_edge_ids"])
                 for record in normalized_records
             }
         ),
-        "graph_fingerprint": _stable_fingerprint(subchain_results),
+        "graph_fingerprint": _stable_fingerprint(normalized_edge_results),
     }

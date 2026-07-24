@@ -20,6 +20,8 @@ from .experimental_pipe_chamfer_utils import PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIB
 from .experimental_pipe_chamfer_utils import BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import CUTTER_END_PORT_TOKEN_ATTRIBUTE
+from .experimental_pipe_chamfer_utils import CUTTER_START_PORT_TOKEN_ATTRIBUTE
 from .experimental_pipe_chamfer_utils import ORIGINAL_FACE_ATTRIBUTE
 from .experimental_pipe_chamfer_utils import SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import _bounds_overlap
@@ -672,7 +674,25 @@ def _extract_staging_boundary_records(
             "source_patch_id": source_patch_id,
             "endpoint_port_tokens": endpoint_port_tokens,
         }
-        semantic_base_id = _stable_fingerprint(stable_payload)
+        semantic_identity_payload = {
+            **stable_payload,
+            "cutter_face_topology": [
+                {
+                    key: value
+                    for key, value in topology.items()
+                    if key
+                    not in {
+                        "profile_side_id",
+                        "opposite_profile_side_id",
+                        "longitudinal_segment_id",
+                        "longitudinal_segment_neighbor_ids",
+                        "port_incidences",
+                    }
+                }
+                for topology in cutter_face_topology
+            ],
+        }
+        semantic_base_id = _stable_fingerprint(semantic_identity_payload)
         edge_id = semantic_base_id
         record = {
             "edge_id": edge_id,
@@ -697,8 +717,12 @@ def _extract_staging_boundary_records(
 
 
 # 为 joined Cutter 的每个输入 Face 写稳定 ID，并在 source duplicate 建立同名空 attribute 供 Exact Boolean 传播。
-# working_object/cutter: independent source duplicate 与当前 joined Cutter；返回 face ID→stable semantic signature。
-def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
+# working_object/cutter: independent source duplicate 与当前 joined Cutter；freeze_complete_profile_lineage: probe-only 完整 identity 开关；返回 face ID→stable semantic signature。
+def _initialize_phase_c_cutter_face_provenance(
+    working_object,
+    cutter,
+    freeze_complete_profile_lineage=False,
+):
     source_attribute = working_object.data.attributes.get(
         PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
     )
@@ -903,6 +927,141 @@ def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
             face_indices,
             adjacency_by_face_index,
         )
+        if not freeze_complete_profile_lineage:
+            for face_index in face_indices:
+                ring = ring_by_face_index.get(face_index)
+                if ring is None:
+                    topology_by_face_index[face_index] = {
+                        "topology_status": "UNRESOLVED",
+                        "pipe_id": owner_pipe_id,
+                    }
+                    continue
+                profile_neighbors = adjacency_by_face_index[face_index] & set(ring)
+                opposite_faces = set(ring) - profile_neighbors - {face_index}
+                if len(profile_neighbors) != 2 or len(opposite_faces) != 1:
+                    topology_by_face_index[face_index] = {
+                        "topology_status": "UNRESOLVED",
+                        "pipe_id": owner_pipe_id,
+                    }
+                    continue
+                topology_by_face_index[face_index] = {
+                    "topology_status": "PROVEN_C4_PIPE",
+                    "pipe_id": owner_pipe_id,
+                    "profile_ring_id": _stable_fingerprint(sorted(
+                        face_signature_by_index[index] for index in ring
+                    )),
+                    "profile_neighbor_face_signatures": sorted(
+                        face_signature_by_index[index]
+                        for index in profile_neighbors
+                    ),
+                    "profile_opposite_face_signature": face_signature_by_index[
+                        next(iter(opposite_faces))
+                    ],
+                    "longitudinal_neighbor_face_signatures": sorted(
+                        face_signature_by_index[index]
+                        for index in (
+                            adjacency_by_face_index[face_index] - set(ring)
+                        )
+                        if index in face_indices
+                    ),
+                }
+            continue
+        unique_rings = {
+            frozenset(ring)
+            for ring in ring_by_face_index.values()
+        }
+        ring_id_by_ring = {
+            ring: _stable_fingerprint(
+                sorted(face_signature_by_index[index] for index in ring)
+            )
+            for ring in unique_rings
+        }
+        ring_by_id = {
+            ring_id: ring for ring, ring_id in ring_id_by_ring.items()
+        }
+        ring_neighbors_by_id = {ring_id: set() for ring_id in ring_by_id}
+        for face_index, ring in ring_by_face_index.items():
+            ring_id = ring_id_by_ring[frozenset(ring)]
+            for neighbor_index in adjacency_by_face_index[face_index] - set(ring):
+                neighbor_ring = ring_by_face_index.get(neighbor_index)
+                if neighbor_ring is None:
+                    continue
+                neighbor_ring_id = ring_id_by_ring[frozenset(neighbor_ring)]
+                if neighbor_ring_id != ring_id:
+                    ring_neighbors_by_id[ring_id].add(neighbor_ring_id)
+        segment_components = []
+        remaining_ring_ids = set(ring_by_id)
+        while remaining_ring_ids:
+            component = set()
+            stack = [min(remaining_ring_ids)]
+            while stack:
+                ring_id = stack.pop()
+                if ring_id in component:
+                    continue
+                component.add(ring_id)
+                stack.extend(ring_neighbors_by_id[ring_id] - component)
+            remaining_ring_ids -= component
+            segment_components.append(component)
+        segment_id_by_ring_id = {
+            ring_id: _stable_fingerprint(
+                {
+                    "pipe_id": owner_pipe_id,
+                    "profile_ring_ids": sorted(component),
+                }
+            )
+            for component in segment_components
+            for ring_id in component
+        }
+        profile_side_by_face_index = {}
+        unresolved_components = set()
+        for component in segment_components:
+            anchor_ring_id = min(component)
+            anchor_ring = ring_by_id[anchor_ring_id]
+            anchor_face = min(
+                anchor_ring,
+                key=lambda index: face_signature_by_index[index],
+            )
+            anchor_neighbors = sorted(
+                adjacency_by_face_index[anchor_face] & set(anchor_ring),
+                key=lambda index: face_signature_by_index[index],
+            )
+            anchor_opposite = set(anchor_ring) - set(anchor_neighbors) - {anchor_face}
+            if len(anchor_neighbors) != 2 or len(anchor_opposite) != 1:
+                unresolved_components.add(segment_id_by_ring_id[anchor_ring_id])
+                continue
+            profile_side_by_face_index.update(
+                {
+                    anchor_face: 0,
+                    anchor_neighbors[0]: 1,
+                    next(iter(anchor_opposite)): 2,
+                    anchor_neighbors[1]: 3,
+                }
+            )
+            queue = list(anchor_ring)
+            while queue:
+                face_index = queue.pop()
+                side_id = profile_side_by_face_index[face_index]
+                ring = ring_by_face_index[face_index]
+                for neighbor_index in adjacency_by_face_index[face_index] - set(ring):
+                    if neighbor_index not in ring_by_face_index:
+                        continue
+                    existing_side_id = profile_side_by_face_index.get(neighbor_index)
+                    if existing_side_id is not None and existing_side_id != side_id:
+                        unresolved_components.add(
+                            segment_id_by_ring_id[
+                                ring_id_by_ring[frozenset(ring)]
+                            ]
+                        )
+                        continue
+                    if existing_side_id is None:
+                        profile_side_by_face_index[neighbor_index] = side_id
+                        queue.append(neighbor_index)
+        start_port_attribute = cutter.data.attributes.get(
+            CUTTER_START_PORT_TOKEN_ATTRIBUTE
+        )
+        end_port_attribute = cutter.data.attributes.get(
+            CUTTER_END_PORT_TOKEN_ATTRIBUTE
+        )
         for face_index in face_indices:
             ring = ring_by_face_index.get(face_index)
             if ring is None:
@@ -919,18 +1078,55 @@ def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
                     "pipe_id": owner_pipe_id,
                 }
                 continue
+            ring_id = ring_id_by_ring[frozenset(ring)]
+            longitudinal_segment_id = segment_id_by_ring_id[ring_id]
+            profile_side_id = profile_side_by_face_index.get(face_index)
+            opposite_face_index = next(iter(opposite_faces))
+            opposite_profile_side_id = profile_side_by_face_index.get(
+                opposite_face_index
+            )
+            if (
+                profile_side_id is None
+                or opposite_profile_side_id is None
+                or opposite_profile_side_id != (profile_side_id + 2) % 4
+                or longitudinal_segment_id in unresolved_components
+            ):
+                topology_by_face_index[face_index] = {
+                    "topology_status": "UNRESOLVED",
+                    "pipe_id": owner_pipe_id,
+                }
+                continue
+            port_incidences = []
+            for port_role, attribute in (
+                ("START", start_port_attribute),
+                ("END", end_port_attribute),
+            ):
+                if attribute is None or attribute.domain != "FACE":
+                    continue
+                token = int(attribute.data[face_index].value)
+                if token > 0:
+                    port_incidences.append(
+                        {"port_role": port_role, "port_token": token}
+                    )
             topology_by_face_index[face_index] = {
                 "topology_status": "PROVEN_C4_PIPE",
                 "pipe_id": owner_pipe_id,
-                "profile_ring_id": _stable_fingerprint(sorted(
-                    face_signature_by_index[index] for index in ring
-                )),
+                "profile_side_id": profile_side_id,
+                "opposite_profile_side_id": opposite_profile_side_id,
+                "profile_ring_id": ring_id,
+                "longitudinal_segment_id": longitudinal_segment_id,
+                "longitudinal_segment_neighbor_ids": sorted(
+                    segment_id_by_ring_id[neighbor_ring_id]
+                    for neighbor_ring_id in ring_neighbors_by_id[ring_id]
+                    if segment_id_by_ring_id[neighbor_ring_id]
+                    != longitudinal_segment_id
+                ),
                 "profile_neighbor_face_signatures": sorted(
                     face_signature_by_index[index]
                     for index in profile_neighbors
                 ),
                 "profile_opposite_face_signature": face_signature_by_index[
-                    next(iter(opposite_faces))
+                    opposite_face_index
                 ],
                 "longitudinal_neighbor_face_signatures": sorted(
                     face_signature_by_index[index]
@@ -939,6 +1135,7 @@ def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
                     )
                     if index in face_indices
                 ),
+                "port_incidences": port_incidences,
             }
     provenance = {}
     for polygon in cutter.data.polygons:
@@ -958,15 +1155,30 @@ def _initialize_phase_c_cutter_face_provenance(working_object, cutter):
                     "owner_pipe_ids": sorted(owner_pipe_ids),
                 },
             )
+        topology = topology_by_face_index.get(
+            polygon.index,
+            {
+                "topology_status": "UNRESOLVED",
+                "pipe_id": next(iter(owner_pipe_ids)),
+            },
+        )
+        if not freeze_complete_profile_lineage:
+            topology = {
+                key: value
+                for key, value in topology.items()
+                if key
+                in {
+                    "topology_status",
+                    "pipe_id",
+                    "profile_ring_id",
+                    "profile_neighbor_face_signatures",
+                    "profile_opposite_face_signature",
+                    "longitudinal_neighbor_face_signatures",
+                }
+            }
         provenance[face_id] = {
             "face_signature": face_signature_by_index[polygon.index],
-            **topology_by_face_index.get(
-                polygon.index,
-                {
-                    "topology_status": "UNRESOLVED",
-                    "pipe_id": next(iter(owner_pipe_ids)),
-                },
-            ),
+            **topology,
         }
     return provenance
 
@@ -1503,6 +1715,7 @@ def _run_independent_batch_cut_probe(
     plan_id,
     execution_order,
     include_complete_cutter_face_records=False,
+    freeze_complete_profile_lineage=False,
 ):
     pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
     _synchronize_cutter_membership_schema(pipes)
@@ -1540,6 +1753,7 @@ def _run_independent_batch_cut_probe(
                 _initialize_phase_c_cutter_face_provenance(
                     working_object,
                     cutter,
+                    freeze_complete_profile_lineage,
                 )
             )
             _initialize_boundary_witness_schema(

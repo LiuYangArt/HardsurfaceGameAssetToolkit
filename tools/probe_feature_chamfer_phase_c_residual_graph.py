@@ -123,6 +123,7 @@ def build_graph_staging_contract(
         preview_plan.plan_id,
         "FORWARD",
         include_complete_cutter_face_records=True,
+        freeze_complete_profile_lineage=True,
     )
     reverse = batched_module._run_independent_batch_cut_probe(
         source_object,
@@ -132,6 +133,7 @@ def build_graph_staging_contract(
         preview_plan.plan_id,
         "REVERSE",
         include_complete_cutter_face_records=True,
+        freeze_complete_profile_lineage=True,
     )
     forward_ledger = batched_module._build_staging_boundary_ledger(
         preview_plan,
@@ -239,6 +241,163 @@ def build_global_subtraction_contract(
     }
 
 
+# 统计 normalized residual 的 C4 几何 opposite Face 在 post-Boolean Boundary universe 中的真实 Edge incidence。
+# normalization/boundary_ledger/regular_claims: normalization 合同、完整 Boundary universe 与 producer claims；返回不参与决策的诊断 census。
+def build_direct_opposite_incidence_census(
+    normalization,
+    boundary_ledger,
+    regular_claims,
+):
+    claims_by_edge_id = {
+        claim["edge_id"]: claim for claim in regular_claims
+    }
+    census = []
+    for normalized_record in normalization["records"]:
+        pipe_id = int(normalized_record["pipe_id"])
+        strand_id = normalized_record.get("strand_id")
+        source_patch_id = int(normalized_record["source_patch_id"])
+        expected_opposite_face_signatures = sorted({
+            topology["profile_opposite_face_signature"]
+            for topology in normalized_record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("profile_opposite_face_signature")
+        })
+        expected_opposite_side_ids = sorted({
+            int(topology["opposite_profile_side_id"])
+            for topology in normalized_record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("opposite_profile_side_id") is not None
+        })
+        expected_segment_ids = sorted({
+            topology["longitudinal_segment_id"]
+            for topology in normalized_record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("longitudinal_segment_id")
+        })
+        exact_face_incidences = []
+        opposite_side_incidences = []
+        paired_boundary_neighbor_incidences = []
+        same_pipe_profile_incidence_summary = {}
+        for boundary_entry in boundary_ledger:
+            if (
+                int(boundary_entry["pipe_id"]) != pipe_id
+                or boundary_entry.get("strand_id") != strand_id
+            ):
+                continue
+            for topology in boundary_entry.get("cutter_face_topology", ()):
+                if topology.get("topology_status") != "PROVEN_C4_PIPE":
+                    continue
+                summary_key = (
+                    int(boundary_entry["source_patch_id"]),
+                    int(topology["profile_side_id"]),
+                    topology["longitudinal_segment_id"],
+                )
+                summary = same_pipe_profile_incidence_summary.setdefault(
+                    summary_key,
+                    {
+                        "source_patch_id": summary_key[0],
+                        "profile_side_id": summary_key[1],
+                        "longitudinal_segment_id": summary_key[2],
+                        "boundary_edge_ids": set(),
+                        "face_signatures": set(),
+                    },
+                )
+                summary["boundary_edge_ids"].add(boundary_entry["edge_id"])
+                if topology.get("face_signature"):
+                    summary["face_signatures"].add(topology["face_signature"])
+                incidence = {
+                    "boundary_edge_id": boundary_entry["edge_id"],
+                    "source_patch_id": int(boundary_entry["source_patch_id"]),
+                    "same_source_patch": (
+                        int(boundary_entry["source_patch_id"]) == source_patch_id
+                    ),
+                    "face_signature": topology.get("face_signature"),
+                    "profile_side_id": topology.get("profile_side_id"),
+                    "opposite_profile_side_id": topology.get(
+                        "opposite_profile_side_id"
+                    ),
+                    "longitudinal_segment_id": topology.get(
+                        "longitudinal_segment_id"
+                    ),
+                    "claim": claims_by_edge_id.get(boundary_entry["edge_id"]),
+                }
+                if topology.get("face_signature") in set(
+                    expected_opposite_face_signatures
+                ):
+                    exact_face_incidences.append(incidence)
+                if (
+                    topology.get("profile_side_id")
+                    in expected_opposite_side_ids
+                    and topology.get("longitudinal_segment_id")
+                    in expected_segment_ids
+                ):
+                    opposite_side_incidences.append(incidence)
+                if topology.get("face_signature") in {
+                    signature
+                    for residual_topology in normalized_record.get(
+                        "cutter_face_topology",
+                        (),
+                    )
+                    for signature in residual_topology.get(
+                        "profile_neighbor_face_signatures",
+                        (),
+                    )
+                }:
+                    paired_boundary_neighbor_incidences.append(incidence)
+        census.append(
+            {
+                "normalized_edge_id": normalized_record["normalized_edge_id"],
+                "source_patch_id": source_patch_id,
+                "expected_opposite_face_signatures": (
+                    expected_opposite_face_signatures
+                ),
+                "expected_opposite_side_ids": expected_opposite_side_ids,
+                "expected_segment_ids": expected_segment_ids,
+                "exact_face_incidences": sorted(
+                    exact_face_incidences,
+                    key=lambda item: (
+                        item["boundary_edge_id"],
+                        str(item["face_signature"]),
+                    ),
+                ),
+                "opposite_side_incidences": sorted(
+                    opposite_side_incidences,
+                    key=lambda item: (
+                        item["boundary_edge_id"],
+                        str(item["face_signature"]),
+                    ),
+                ),
+                "paired_boundary_neighbor_incidences": sorted(
+                    paired_boundary_neighbor_incidences,
+                    key=lambda item: (
+                        item["boundary_edge_id"],
+                        str(item["face_signature"]),
+                    ),
+                ),
+                "same_pipe_profile_incidence_summary": sorted(
+                    (
+                        {
+                            **summary,
+                            "boundary_edge_ids": sorted(
+                                summary["boundary_edge_ids"]
+                            ),
+                            "face_signatures": sorted(
+                                summary["face_signatures"]
+                            ),
+                        }
+                        for summary in same_pipe_profile_incidence_summary.values()
+                    ),
+                    key=lambda item: (
+                        item["source_patch_id"],
+                        item["profile_side_id"],
+                        item["longitudinal_segment_id"],
+                    ),
+                ),
+            }
+        )
+    return census
+
+
 # 执行目标入口与只读 graph probe，并写 machine-readable artifact。
 # arguments: Blender CLI 参数；无返回值。
 def main(arguments):
@@ -297,7 +456,19 @@ def main(arguments):
             f"Unexpected Phase C failure: {adapter_diagnostics.get('failure_code')}"
         )
     if set(adapter_residual_edge_ids) != set(target_edge_ids):
-        raise RuntimeError("Fresh Phase C residual Edge IDs changed")
+        print(
+            "[HST_PHASE_C_RESIDUAL_IDS_CHANGED]"
+            + json.dumps(
+                {
+                    "expected": sorted(target_edge_ids),
+                    "actual": sorted(adapter_residual_edge_ids),
+                },
+                separators=(",", ":"),
+            )
+        )
+        target_identity_changed = True
+    else:
+        target_identity_changed = False
     if preview_utils.source_fingerprint(source_object) != source_fingerprint_before:
         raise RuntimeError("Phase C Adapter changed source while failing closed")
     probe_collection = bpy.data.collections.new("HST_PhaseC_ResidualGraph_Temporary")
@@ -358,12 +529,15 @@ def main(arguments):
             "setbacks": reverse_subtraction["setback_proofs"],
         }
     )
+    fresh_target_edge_ids = (
+        adapter_residual_edge_ids if target_identity_changed else target_edge_ids
+    )
     target_entries = [
         entry
         for entry in staging["forward_ledger"]
-        if entry["edge_id"] in target_edge_ids
+        if entry["edge_id"] in fresh_target_edge_ids
     ]
-    if {entry["edge_id"] for entry in target_entries} != set(target_edge_ids):
+    if {entry["edge_id"] for entry in target_entries} != set(fresh_target_edge_ids):
         raise RuntimeError("Fresh staging 未复现全部目标 residual Edge")
     normalization = graph_module.constrained_normalize_boundary_chain(
         target_entries,
@@ -372,11 +546,23 @@ def main(arguments):
     reverse_target_entries = [
         entry
         for entry in staging["reverse_ledger"]
-        if entry["edge_id"] in target_edge_ids
+        if entry["edge_id"] in fresh_target_edge_ids
     ]
     reverse_normalization = graph_module.constrained_normalize_boundary_chain(
         reverse_target_entries,
         staging["reverse_ledger"],
+    )
+    direct_opposite_incidence_census = build_direct_opposite_incidence_census(
+        normalization,
+        staging["forward_ledger"],
+        subtraction["regular_claims"],
+    )
+    reverse_direct_opposite_incidence_census = (
+        build_direct_opposite_incidence_census(
+            reverse_normalization,
+            staging["reverse_ledger"],
+            reverse_subtraction["regular_claims"],
+        )
     )
     graph = graph_module.build_residual_ownership_graph(
         normalization["records"],
@@ -385,7 +571,10 @@ def main(arguments):
         regular_claims=subtraction["regular_claims"],
         setback_proofs=subtraction["setback_proofs"],
         allowed_source_patch_pairs=tuple(
-            correspondence.owner_surface_pair
+            {
+                "strand_id": correspondence.owner_strand_id,
+                "patch_pair": list(correspondence.owner_surface_pair),
+            }
             for correspondence in preview_plan.strip_correspondences
         ),
     )
@@ -396,7 +585,10 @@ def main(arguments):
         regular_claims=reverse_subtraction["regular_claims"],
         setback_proofs=reverse_subtraction["setback_proofs"],
         allowed_source_patch_pairs=tuple(
-            correspondence.owner_surface_pair
+            {
+                "strand_id": correspondence.owner_strand_id,
+                "patch_pair": list(correspondence.owner_surface_pair),
+            }
             for correspondence in preview_plan.strip_correspondences
         ),
     )
@@ -410,11 +602,13 @@ def main(arguments):
         preview_utils.source_fingerprint(source_object) == source_fingerprint_before
     )
     report = {
-        "contract": "HST_PHASE_C_RESIDUAL_OWNERSHIP_GRAPH_PROBE_V1",
+        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V1",
         "status": "PROTOTYPE",
         "phase_c_gate": "STOP",
         "decision": (
-            "GRAPH_DIRECT_WITNESS_CANDIDATE"
+            "STOP_TARGET_RESIDUAL_IDENTITY_CHANGED"
+            if target_identity_changed
+            else "GRAPH_DIRECT_WITNESS_CANDIDATE"
             if graph["all_subchains_resolved"]
             else "STOP_UNRESOLVED_DIRECT_WITNESS"
         ),
@@ -447,6 +641,8 @@ def main(arguments):
             "phase_c_adapter_result": adapter_result,
             "phase_c_failure_code": adapter_diagnostics.get("failure_code"),
             "phase_c_residual_edge_ids": list(adapter_residual_edge_ids),
+            "expected_phase_c_residual_edge_ids": list(target_edge_ids),
+            "target_residual_identity_changed": target_identity_changed,
             "source_fingerprint_before": source_fingerprint_before,
             "source_fingerprint_after": preview_utils.source_fingerprint(
                 source_object
@@ -471,6 +667,9 @@ def main(arguments):
             ),
         },
         "normalization": normalization,
+        "direct_opposite_incidence_census": (
+            direct_opposite_incidence_census
+        ),
         "residual_ownership_graph": graph,
         "stop_go": {
             "synthetic_graph_contract_required_first": True,
@@ -480,18 +679,47 @@ def main(arguments):
             "all_normalized_subchains_have_unique_direct_witness": graph[
                 "all_subchains_resolved"
             ],
+            "expected_two_normalized_edges": (
+                len(normalization["records"]) == 2
+            ),
+            "target_residual_identity_unchanged": not target_identity_changed,
             "source_unchanged": source_unchanged,
             "forward_reverse_graph_equal": (
                 normalization_order_invariant
                 and graph_order_invariant
                 and subtraction_order_invariant
+                and direct_opposite_incidence_census
+                == reverse_direct_opposite_incidence_census
+            ),
+            "probe_go": (
+                graph["all_subchains_resolved"]
+                and len(normalization["records"]) == 2
+                and not target_identity_changed
+                and source_unchanged
+                and normalization_order_invariant
+                and graph_order_invariant
+                and subtraction_order_invariant
+                and direct_opposite_incidence_census
+                == reverse_direct_opposite_incidence_census
             ),
             "phase_c_go": False,
             "phase_d_or_e_authorized": False,
             "formal_finalize_modified": False,
+            "phase_c_adapter_runtime_modified": False,
         },
     }
     report_path = artifact_directory / "report.json"
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    blend_path = artifact_directory / "phase_c_pre_boolean_profile_lineage.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend_path), check_existing=False)
+    report["artifacts"] = {
+        "report_path": str(report_path),
+        "blend_path": str(blend_path),
+        "blend_sha256": file_sha256(blend_path),
+    }
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",

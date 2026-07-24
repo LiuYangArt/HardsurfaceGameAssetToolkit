@@ -1,13 +1,15 @@
 # Feature Chamfer Phase C — 5 小时 Checkpoint
 
 日期：2026-07-24
-状态：`CLEAN A/B USEFUL / PRE-BOOLEAN PROFILE LINEAGE AUTHORIZED / GLOBAL PROTOTYPE / PHASE C STOP`
+状态：`HISTORICAL CHECKPOINT / SUPERSEDED BY PRE-BOOLEAN MAXIMAL-CHAIN PLAN / PHASE C STOP`
+
+> 2026-07-24 更新：本文件保留五小时节点的历史证据。后续权威状态与执行门禁以 `2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md` 为准；下文“对侧 Edge 不可见”的旧判断已被用户截图和 fresh Face→Edge incidence census 推翻。
 
 ## 1. 非技术结论
 
 方向的大原则是正确的：先确认每段边真正属于哪条倒角，再调用 Blender 原生 Bridge，遇到身份不明的边就停下，不能靠“看起来最近”去猜。这个选择避免了模型表面看似成功、实际串错槽或以后随机坏掉。
 
-当前不是 Blender 不会 Bridge。真实 5 对 3 边已经成功生成 8 个面，宽度和输入边消费也通过。目标 residual 已知属于唯一 Pipe/Patch/Rail；真正卡点是 Boolean 后预期的对侧 profile Face 没有可见 Boundary Edge，因而无法证明应和哪条 Edge 配对补面。局部只有一条 Pipe 也不能替代 profile-side/opposite-side 身份。
+当前不是 Blender 不会 Bridge。真实 5 对 3 边已经成功生成 8 个面，宽度和输入边消费也通过。用户截图与后续 fresh census 已确认对侧 Boolean Edge 存在；旧卡点来自把 C4 几何相对面误当 Boundary rail pairing。修正后已找到真实对侧 Edge，当前卡点是逐 fragment 配对导致共享 Edge 重复占用，需要改为整段对整段的 maximal-chain pairing。
 
 因此 immediate implementation 改为把判断前移：Boolean 前冻结 cutter 的 Pipe/profile-side/opposite-side/longitudinal-segment 身份，Boolean 后用 Face→Edge incidence 恢复对侧 consumer；constrained normalization 保留为中间步骤。继续在 post-Boolean 局部形状上猜 matching 会重新引入假绿。
 
@@ -35,7 +37,7 @@
 ## 4. 方向与成功率评估
 
 - 方向正确性：`高（约 85%）`。原生 Bridge + direct ownership + fail-closed 与产品语义一致，且已排除“Blender 不支持 unequal rails”这个错误假设。
-- 推荐 pivot 能解释三个失败 cluster：`中高（约 70%）`。它能提供当前缺失的全局身份信息，但仍可能证明某些相对边已被 Boolean 永久抹除。
+- 推荐 pivot 能解释三个失败 cluster：`中高（约 70%）`。目标 cell 的相对边已确认存在；剩余风险是其他 cell 是否也能得到唯一、连通且全局 exactly-once 的 maximal consumer chain。
 - 完成 Phase C 并通过新鲜 14×3：`中等（约 55%）`。主要不确定性是残余边是否都能从现有 staging/Plan 得到唯一直接 witness。
 - 完成 Phase C→D→E 整个正式产品：`中低（约 40%）`。Phase D 的多洞 assembly/junction closure 尚未实现，风险不能用 Phase C 进展抵消。
 
@@ -53,12 +55,12 @@ clean/dissolve A/B 已完成并证明 normalization 有用，但不能单独恢�
 
 `tricky__solid_004__r0p030` 的新鲜 PREVIEW → independent staging probe 已完成。A 组为 4 Vertex / 3 Edge；按 probe-only 的严格门禁，两个 degree-2 内点中只有一个满足共线条件（`0.227749°`，到 chord `3.2674e-6`），B 组通过真实 `bmesh.ops.dissolve_verts()` 得到 3 Vertex / 2 Edge。几何容差、terminal/port token、Pipe/Patch/Rail provenance、raw Edge → normalized Edge exactly-once lineage 和 source unchanged 均通过。
 
-但 B 组两个 normalized Edge 的 direct opposite Boundary witness 都是 `0`。因此碎点会造成一次可约束的分段合并，却不是 regular consumer 缺失的充分根因。用户检查 `.blend` 后确认被清理点正对应原蓝色问题区域；结论修正为：保留 constrained normalization，让后续 pre-Boolean profile lineage resolver 消费 normalized chain，并持续保存 raw → normalized lineage。clean 单独不能触发 Phase C GO，也暂不接入正式 runtime。
+当时 B 组按错误的 C4 `+2` pairing 计算，两个 normalized Edge 的 witness 都是 `0`；后续已确认这是语义错误，不代表 Boolean 缺边。仍保留 constrained normalization 与 raw → normalized lineage；新 resolver 使用权威 partner Patch 和相邻 Cutter Face incidence，并继续在 maximal-chain 层解决重复占用。
 
 证据与审计：`docs/diagnostics/feature-chamfer-generalization/phase-c-clean-dissolve-ab-probe.md`。
 
 ## 8. 下一步（已授权）
 
-从目标 PREVIEW → Phase C Adapter 做只读 pre-Boolean profile lineage probe：为 cutter Face 冻结 Pipe/profile side/opposite side/longitudinal segment，并用 post-Boolean Face→Edge incidence 找对侧 chain。几何接触只作验证，不生成 owner；旧 tracked Boolean 只复用“Boolean 前写 provenance”的原则，不恢复单 Pipe fallback 或距离评分。
+继续从目标 PREVIEW → Phase C Adapter 做只读 pre-Boolean profile lineage probe：冻结 Cutter Face 身份，用 post-Boolean Face→Edge incidence 找真实 partner Patch Boundary；再把连续 normalized fragments 合成 maximal source chain，与唯一连续 candidate chain 整体配对。几何接触只作验证，不生成 owner；不恢复单 Pipe fallback 或距离评分。
 
-目标 cell 获得唯一 direct opposite consumer 前，Phase C 继续 STOP，不修改正式 runtime/`FINALIZE`，不进入 Phase D/E。
+目标 maximal source chain 获得唯一、全局 exactly-once 的 direct consumer chain 前，Phase C 继续 STOP，不修改正式 runtime/`FINALIZE`，不进入 Phase D/E。

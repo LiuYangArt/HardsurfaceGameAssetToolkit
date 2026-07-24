@@ -1,9 +1,11 @@
-# Feature Chamfer — 分组 Cut / Regular Fill / Junction 收口 Handoff
+# Feature Chamfer — 分组 Cut / Regular Fill / Junction 收口 Handoff（历史）
 
 > 日期：2026-07-23  
-> 状态：`EXECUTED / PROTOTYPE / PHASE B GO / PHASE C STOP (STEP 6 PIVOT)`
+> 状态：`HISTORICAL / SUPERSEDED BY PRE-BOOLEAN MAXIMAL-CHAIN PLAN / PHASE C STOP`
 > 最终目标入口：UI `Feature Chamfer GN Preview` → `hst.feature_chamfer_gn` → `PREVIEW / FINALIZE`  
 > 目的：替代当前“Combined Boolean 后反推全部 Rail 归属”的高复杂度 Finalize 路线；保持已经验证通过的 Preview Pipe Cut 不变。
+
+> **续作禁令（2026-07-24）：**本文全文只保留历史演进证据。下文所有“下一步”“恢复时”“当前用户无需操作”和旧命令均不得作为当前执行入口。当前唯一权威顺序是项目 `AGENTS.md` → `docs/plan/2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md` → `docs/diagnostics/feature-chamfer-generalization/phase-c-pre-boolean-profile-lineage-probe.md`；续作从 pre-Boolean lineage 的 maximal-chain Step 5 开始。
 
 ## 0. 续作进度（2026-07-23）
 
@@ -22,13 +24,14 @@
 - 顺序累计 Cut probe 已明确废弃：真实测试证明其 12/14 cells 受执行顺序影响，违反产品语义；Phase C 必须消费 independent staging 并用 setback/ledger 延迟提交，禁止回退到共享 working Mesh 顺序 Boolean。
 - Phase C 已开始但未 GO；正式 `FINALIZE` 仍走旧 backend。Phase B 已 GO，现只允许推进 Phase C；D/E 仍受后续门禁约束。
 
-### 当前用户无需操作
+### 当时用户无需操作（历史）
 
-Phase A/B 已通过，用户无需操作。下一步按硬门禁进入 Phase C：从 independent staging 提取有明确 Pipe/Patch owner 的 regular rails，建立 exactly-once consumption ledger，并在 overlap 邻域 setback。
+这是 2026-07-23 的历史判断，不是当前任务说明。Phase A/B 已通过；当前工作已经转入 pre-Boolean lineage 的 maximal source/candidate chain 配对，仍不需要用户补充人工信息。
 
 ### Phase C 当前进度（2026-07-23）
 
 - 2026-07-24 续作已按新 recovery plan 到达 Step 6 硬 Stop：ownership-driven `RegularBridgeJob`、全局 claim preflight、job-local `bmesh.ops.bridge_loops()`、Face provenance 与 runner fake-green 合同已实现；真实 `Solid.004 r0.03` L5/R3 生成 8 Faces且 width guard PASS，但仍有 3 条真实 Plan Boundary Edge 无相对 cutter Face witness。`Solid.004 r0.01`/mixed r0.03 另有 18/71 条未分类 Edge，因此未运行 Phase C 14×3、未声明 candidate GO。后续只可按 `2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md` 重新设计 residual ownership；Phase D/E 与正式 FINALIZE 仍禁止。
+- 2026-07-24 后续更正：用户截图与 fresh lineage census 已证明目标对侧 Boolean Edge 存在；上条“无相对 cutter Face witness”是把 C4 几何相对面误作 Boundary pairing 的历史结论。当前权威 pivot 已改为 partner Patch + 相邻 Cutter Face，并进入 maximal-chain 整体配对；本 handoff 不再作为当前门禁依据。
 
 - 已开始实现 Preview Plan owner span 还原、隐藏 Adapter `PHASE_C_REGULAR_CORE`、Phase C runner 门槛与 per-Pipe direct provenance rail probe。
 - 单个无 overlap cell 已能稳定产出 regular-core contract；但当前 probe 仍通过二次 per-Pipe Boolean 取得坐标 Rail，尚未直接消费 Phase B 的 per-batch staging Boundary Edge，且没有生成可见 strip Faces/有序 setback ports。
@@ -306,7 +309,7 @@ Agent 不得因单个 `.blend` 可打开、Operator 返回 `FINISHED`、测试�
 - `verification-before-completion`：完成声明和通知用户验收前核验新鲜证据。
 - `code-review`：Phase E 独立 Spec Audit，确认正式 runtime path 与测试入口。
 
-## 11. 新 Session 启动 Prompt
+## 11. 新 Session 启动 Prompt（已废弃）
 
 ```text
 读取项目 AGENTS.md、docs/plan/2026-07-23-feature-chamfer-batched-cut-fill-handoff.md、tests/TESTING_POLICY.md，以及旧 Phase 3 诊断。先审计当前未提交修改，保留用户工作，不开分支，不修改 auto_load.py。
