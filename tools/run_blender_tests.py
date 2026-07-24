@@ -62,7 +62,10 @@ def run() -> int:
         return 2
 
     artifact_dir = Path(args.artifact_dir) if args.artifact_dir else repo_root / "tests" / "artifacts"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    if args.artifact_dir and artifact_dir.exists():
+        print(f"ERROR: Artifact directory must not already exist: {artifact_dir}")
+        return 2
+    artifact_dir.mkdir(parents=True, exist_ok=not bool(args.artifact_dir))
 
     test_driver = repo_root / "tests" / "blender_test_driver.py"
     results_path = artifact_dir / "results.json"
@@ -85,7 +88,27 @@ def run() -> int:
     print(f"Using Blender: {blender_exe}")
     print("Running headless regression tests...")
     completed = subprocess.run(command, cwd=repo_root, env=env)
-    return completed.returncode
+    if completed.returncode != 0:
+        return completed.returncode
+    if not results_path.is_file():
+        print(f"ERROR: Blender test results were not created: {results_path}")
+        return 1
+    try:
+        summary = json.loads(results_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"ERROR: Blender test results are invalid: {error}")
+        return 1
+    executed_cases = [item.get("name") for item in summary.get("results", [])]
+    if not executed_cases:
+        print("ERROR: Blender test run executed zero cases")
+        return 1
+    if args.cases and set(executed_cases) != set(args.cases):
+        print(
+            "ERROR: Requested/executed Blender test cases differ: "
+            f"requested={sorted(set(args.cases))}, executed={sorted(executed_cases)}"
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

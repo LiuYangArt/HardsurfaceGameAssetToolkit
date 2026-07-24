@@ -7643,6 +7643,54 @@ def _zero_length_regular_connector_handoff_proof(
         ): record
         for record in adjacent_records
     }
+    if len(unique_records) != 1:
+        return {
+            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_ADJACENCY",
+            "edge_id": edge_id,
+            "edge_length": edge_length,
+            "maximum_edge_length": maximum_edge_length,
+            "connector_tokens": sorted(connector_tokens),
+            "adjacent_records": adjacent_records,
+        }
+    adjacent_record = next(iter(unique_records.values()))
+    rail_entries = [
+        entry
+        for entry in ledger_by_edge_id.values()
+        if entry["rail_id"] == edge_entry["rail_id"]
+    ]
+    outer_tokens = connector_tokens - {
+        adjacent_record["shared_endpoint_token"]
+    }
+    outer_degrees = sorted(
+        sum(token in entry["endpoint_tokens"] for entry in rail_entries)
+        for token in outer_tokens
+    )
+    if len(outer_tokens) != 1 or outer_degrees not in ([1], [2]):
+        return {
+            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_OUTER_TERMINAL",
+            "edge_id": edge_id,
+            "edge_length": edge_length,
+            "maximum_edge_length": maximum_edge_length,
+            "connector_tokens": sorted(connector_tokens),
+            "adjacent_record": adjacent_record,
+            "outer_tokens": sorted(outer_tokens),
+            "outer_degrees": outer_degrees,
+        }
+    return {
+        "proof_version": "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1",
+        "edge_ids": [edge_id],
+        "correspondence_id": claim["correspondence_id"],
+        "atom_id": claim["atom_id"],
+        "span_id": int(claim["span_id"]),
+        "patch_pair": list(claim["patch_pair"]),
+        "side": claim["side"],
+        "source_patch_id": int(source_patch_id),
+        "edge_length": edge_length,
+        "maximum_edge_length": maximum_edge_length,
+        "adjacent_regular": adjacent_record,
+        "outer_endpoint_token": next(iter(outer_tokens)),
+        "outer_endpoint_degree": outer_degrees[0],
+    }
 
 
 # 证明短 Boundary tail 以真实共享端点延续唯一 Regular Strip，且另一端是 Rail terminal。
@@ -8123,54 +8171,6 @@ def _regular_overlap_bridge_handoff_proof(
         "adjacent_regular": next(iter(unique_regular.values())),
         "adjacent_overlap": next(iter(unique_overlap.values())),
         "bridge_endpoint_tokens": sorted(bridge_tokens),
-    }
-    if len(unique_records) != 1:
-        return {
-            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_ADJACENCY",
-            "edge_id": edge_id,
-            "edge_length": edge_length,
-            "maximum_edge_length": maximum_edge_length,
-            "connector_tokens": sorted(connector_tokens),
-            "adjacent_records": adjacent_records,
-        }
-    adjacent_record = next(iter(unique_records.values()))
-    rail_entries = [
-        entry
-        for entry in ledger_by_edge_id.values()
-        if entry["rail_id"] == edge_entry["rail_id"]
-    ]
-    outer_tokens = connector_tokens - {
-        adjacent_record["shared_endpoint_token"]
-    }
-    outer_degrees = sorted(
-        sum(token in entry["endpoint_tokens"] for entry in rail_entries)
-        for token in outer_tokens
-    )
-    if len(outer_tokens) != 1 or outer_degrees not in ([1], [2]):
-        return {
-            "rejected_stage": "ZERO_LENGTH_REGULAR_CONNECTOR_OUTER_TERMINAL",
-            "edge_id": edge_id,
-            "edge_length": edge_length,
-            "maximum_edge_length": maximum_edge_length,
-            "connector_tokens": sorted(connector_tokens),
-            "adjacent_record": adjacent_record,
-            "outer_tokens": sorted(outer_tokens),
-            "outer_degrees": outer_degrees,
-        }
-    return {
-        "proof_version": "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1",
-        "edge_ids": [edge_id],
-        "correspondence_id": claim["correspondence_id"],
-        "atom_id": claim["atom_id"],
-        "span_id": int(claim["span_id"]),
-        "patch_pair": list(claim["patch_pair"]),
-        "side": claim["side"],
-        "source_patch_id": int(source_patch_id),
-        "edge_length": edge_length,
-        "maximum_edge_length": maximum_edge_length,
-        "adjacent_regular": adjacent_record,
-        "outer_endpoint_token": next(iter(outer_tokens)),
-        "outer_endpoint_degree": outer_degrees[0],
     }
 
 

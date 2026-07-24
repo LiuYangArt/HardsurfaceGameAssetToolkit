@@ -79,6 +79,15 @@ Feature Chamfer batched Phase A/B 产品矩阵：
 python tools/run_feature_chamfer_batched_matrix.py --repetitions 3
 ```
 
+Phase C evidence runner 会为每次 full gate 创建唯一 artifact 目录，严格校验
+14 cells × 3 repetitions、Phase A/B/C、Preview/source/Adapter、debug 清理，
+并写入 Git/argv/code/Blender SHA-256 与 artifact manifest。host-side fake-green
+合同可独立运行：
+
+```bash
+python3 -m unittest tests.test_feature_chamfer_evidence_runner
+```
+
 结果：`tests/artifacts/feature_chamfer_batched_matrix/results.json`。开发诊断可用重复 `--case <case_id>` 缩小运行范围；Phase Stop/Go 仍必须以完整 14 cells × 3 repetitions 为准。
 > `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。旧 Finalize 不再作为当前阶段验收；复杂 region 保持 fail-closed。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。

@@ -24,6 +24,14 @@ DEBUG_STAGE = os.environ.get(
     "PHASE_B_BATCH_PROBE",
 )
 RESULTS_PATH = ARTIFACT_DIRECTORY / "results.json"
+RUN_ID = os.environ.get("HST_FEATURE_CHAMFER_BATCHED_MATRIX_RUN_ID")
+GIT_HEAD = os.environ.get("HST_FEATURE_CHAMFER_BATCHED_MATRIX_GIT_HEAD")
+DIRTY_FINGERPRINT = os.environ.get(
+    "HST_FEATURE_CHAMFER_BATCHED_MATRIX_DIRTY_FINGERPRINT"
+)
+RUN_ARGV = json.loads(
+    os.environ.get("HST_FEATURE_CHAMFER_BATCHED_MATRIX_ARGV", "[]")
+)
 PACKAGE_NAME = "hst_feature_chamfer_batched_matrix_addon"
 FIXTURE_DIRECTORY = REPO_ROOT / "tests" / "fixtures"
 FIXTURE_HASHES = {
@@ -209,6 +217,7 @@ def render_phase_c_artifact(
     light.location = camera.location
     light.rotation_euler = camera.rotation_euler
     scene.render.engine = "BLENDER_EEVEE"
+    source_hide_render = source_object.hide_render
     source_object.hide_render = True
     scene.render.resolution_x = 640
     scene.render.resolution_y = 640
@@ -216,7 +225,10 @@ def render_phase_c_artifact(
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = str(output_path)
     scene.world.color = (0.035, 0.035, 0.035)
-    bpy.ops.render.render(write_still=True)
+    try:
+        bpy.ops.render.render(write_still=True)
+    finally:
+        source_object.hide_render = source_hide_render
     return camera, light
 
 
@@ -287,6 +299,20 @@ def run_repetition(
     )
     if open_result != {"FINISHED"}:
         raise RuntimeError(f"Failed to open fixture: {fixture_path}")
+    debug_datablocks_before = {
+        (collection_name, datablock.name)
+        for collection_name, collection in (
+            ("objects", bpy.data.objects),
+            ("collections", bpy.data.collections),
+            ("meshes", bpy.data.meshes),
+            ("materials", bpy.data.materials),
+            ("cameras", bpy.data.cameras),
+            ("lights", bpy.data.lights),
+        )
+        for datablock in collection
+        if datablock.name.startswith("HST_PhaseC_")
+        or "FeatureChamferBatchedProbe" in datablock.name
+    }
     source_object = bpy.data.objects.get(object_name)
     if source_object is None or source_object.type != "MESH":
         raise RuntimeError(f"Fixture Object missing or not Mesh: {object_name}")
@@ -429,6 +455,21 @@ def run_repetition(
         source_object
     )
     source_unchanged = fingerprint_before == fingerprint_after
+    debug_datablocks_after = {
+        (collection_name, datablock.name)
+        for collection_name, collection in (
+            ("objects", bpy.data.objects),
+            ("collections", bpy.data.collections),
+            ("meshes", bpy.data.meshes),
+            ("materials", bpy.data.materials),
+            ("cameras", bpy.data.cameras),
+            ("lights", bpy.data.lights),
+        )
+        for datablock in collection
+        if datablock.name.startswith("HST_PhaseC_")
+        or "FeatureChamferBatchedProbe" in datablock.name
+    }
+    debug_datablock_names = sorted(debug_datablocks_after - debug_datablocks_before)
     pipe_ids = [spec["pipe_id"] for spec in diagnostics.get("pipe_specs", [])]
     colored_pipe_ids = [
         pipe_id
@@ -521,6 +562,7 @@ def run_repetition(
         and contract_matches_curve
         and real_cut_invariant
         and source_unchanged
+        and not debug_datablock_names
         and not diagnostics.get("failure_code")
         and (
             DEBUG_STAGE != "PHASE_C_REGULAR_CORE"
@@ -578,6 +620,7 @@ def run_repetition(
             if "FeatureChamferBatchedProbe" in obj.name
             or obj.name.startswith(f"{source_object.name}_Pipe_")
         ],
+        "debug_datablock_names": debug_datablock_names,
     }
 
 
@@ -586,7 +629,7 @@ def run_repetition(
 def main():
     if REPETITIONS < 1:
         raise RuntimeError("Batched matrix requires at least one repetition")
-    full_gate_eligible = not CASE_FILTER and REPETITIONS >= 3
+    full_gate_eligible = not CASE_FILTER and REPETITIONS == 3
     actual_hashes = {
         fixture_name: file_sha256(FIXTURE_DIRECTORY / fixture_name)
         for fixture_name in FIXTURE_HASHES
@@ -615,6 +658,10 @@ def main():
             raise RuntimeError(f"Unknown batched matrix cases: {sorted(unknown_cases)}")
     summary = {
         "status": "running",
+        "run_id": RUN_ID,
+        "git_head": GIT_HEAD,
+        "dirty_fingerprint": DIRTY_FINGERPRINT,
+        "argv": RUN_ARGV,
         "phase": "C" if DEBUG_STAGE == "PHASE_C_REGULAR_CORE" else "A_B",
         "run_scope": "PHASE_GATE_FULL" if full_gate_eligible else "DIAGNOSTIC_PARTIAL",
         "gate_eligible": full_gate_eligible,
@@ -700,6 +747,7 @@ def main():
             if case["stable"]
             and all(item.get("status") == "PASS" for item in case["repetitions"])
             and all(not item.get("debug_object_names") for item in case["repetitions"])
+            and all(not item.get("debug_datablock_names") for item in case["repetitions"])
             and case["phase_c_artifacts_present"]
             else "FAIL"
         )
@@ -710,6 +758,10 @@ def main():
         write_summary(summary)
     summary.update(
         status="finished",
+        executed_case_count=len(cases),
+        executed_repetition_count=sum(
+            len(case["repetitions"]) for case in cases
+        ),
         passed_case_count=sum(case["status"] == "PASS" for case in cases),
         failed_case_count=sum(case["status"] != "PASS" for case in cases),
         phase_a_go=full_gate_eligible and all(
@@ -726,8 +778,11 @@ def main():
             DEBUG_STAGE == "PHASE_C_REGULAR_CORE"
             and full_gate_eligible
             and len(cases) == 14
+            and summary["phase_a_go"]
+            and summary["phase_b_go"]
             and all(
                 case["stable"]
+                and case["status"] == "PASS"
                 and case["phase_c_artifacts_present"]
                 and all(item.get("phase_c_pass") is True for item in case["repetitions"])
                 for case in cases
@@ -752,14 +807,13 @@ def main():
         addon_module.unregister()
     except Exception:
         traceback.print_exc()
-    diagnostic_pass = all(case["status"] == "PASS" for case in cases)
     if (
         DEBUG_STAGE == "PHASE_C_REGULAR_CORE"
         and full_gate_eligible
         and not summary["phase_c_go"]
     ):
         raise SystemExit(1)
-    if not full_gate_eligible and not diagnostic_pass:
+    if not full_gate_eligible:
         raise SystemExit(1)
     if DEBUG_STAGE != "PHASE_C_REGULAR_CORE" and not summary["phase_b_go"]:
         raise SystemExit(1)

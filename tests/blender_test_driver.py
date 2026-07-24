@@ -9140,6 +9140,104 @@ def test_feature_chamfer_batched_regular_component_bridge_handoff_contract(
     result.add_detail("bridge Edge requires two distinct Regular consumers and exact endpoint topology")
 
 
+# 验证近零长度 connector 只在唯一 Regular Strip 邻接且另一端为同 Rail terminal 时成立。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_batched_zero_length_regular_connector_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    chain = {
+        "edge_ids": ["connector:0"],
+        "coordinates": [(0.0, 0.0, 0.0), (1.0e-6, 0.0, 0.0)],
+        "is_cyclic": False,
+    }
+    claim = {
+        "correspondence_id": "corr:test",
+        "atom_id": "atom:test",
+        "span_id": 1,
+        "patch_pair": [3, 5],
+        "convexity": 1,
+        "side": "LEFT",
+    }
+    records = (
+        {
+            "consumer_id": "regular:test",
+            "correspondence_id": "corr:test",
+            "left_edge_ids": ["regular:0"],
+            "right_edge_ids": [],
+            "u_interval": [0.1, 0.2],
+        },
+    )
+    ledger = {
+        "connector:0": {
+            "rail_id": "rail:test",
+            "endpoints": [(0.0, 0.0, 0.0), (1.0e-6, 0.0, 0.0)],
+            "endpoint_tokens": ["regular:end", "terminal:test"],
+        },
+        "regular:0": {
+            "rail_id": "rail:test",
+            "endpoints": [(-1.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+            "endpoint_tokens": ["regular:start", "regular:end"],
+        },
+    }
+    proof = module._zero_length_regular_connector_handoff_proof(
+        chain,
+        claim,
+        records,
+        ledger,
+        5,
+        0.01,
+    )
+    ensure(
+        proof is not None
+        and proof.get("proof_version")
+        == "ZERO_LENGTH_REGULAR_CONNECTOR_HANDOFF_V1"
+        and proof["adjacent_regular"]["consumer_id"] == "regular:test"
+        and proof["outer_endpoint_token"] == "terminal:test",
+        f"Valid zero-length connector was not proven: {proof}",
+    )
+    unsafe_variants = (
+        ({**chain, "is_cyclic": True}, claim, records, ledger, 5, 0.01),
+        (
+            chain,
+            claim,
+            records,
+            {
+                **ledger,
+                "connector:0": {
+                    **ledger["connector:0"],
+                    "endpoints": [(0.0, 0.0, 0.0), (1.0e-3, 0.0, 0.0)],
+                },
+            },
+            5,
+            0.01,
+        ),
+        (chain, claim, records, ledger, 7, 0.01),
+        (
+            chain,
+            claim,
+            ({**records[0], "correspondence_id": "corr:other"},),
+            ledger,
+            5,
+            0.01,
+        ),
+    )
+    rejected = [
+        module._zero_length_regular_connector_handoff_proof(*arguments)
+        for arguments in unsafe_variants
+    ]
+    ensure(
+        rejected[0] is None
+        and rejected[1] is None
+        and rejected[2] is None
+        and rejected[3].get("rejected_stage")
+        == "ZERO_LENGTH_REGULAR_CONNECTOR_ADJACENCY",
+        f"Unsafe zero-length connector received a proof: {rejected}",
+    )
+    result.add_detail("unique short connector proven; cyclic/long/wrong-owner/unpaired variants rejected")
+
+
 # 验证 full-cycle Plan span 在 seam 的 START/END 共点必须归并成唯一权威 Boundary witness。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_batched_cyclic_seam_boundary_handoff_contract(
@@ -10024,6 +10122,11 @@ def test_feature_chamfer_batched_adapter_smoke(
 
 
 def main():
+    requested_case_names = {
+        case_name.strip()
+        for case_name in os.environ.get("HST_TEST_CASES", "").split(",")
+        if case_name.strip()
+    }
     addon_module = load_addon_module()
     addon_module.register()
 
@@ -10075,6 +10178,10 @@ def main():
     context.run_case(
         "feature_chamfer_batched_regular_component_bridge_handoff_contract",
         test_feature_chamfer_batched_regular_component_bridge_handoff_contract,
+    )
+    context.run_case(
+        "feature_chamfer_batched_zero_length_regular_connector_contract",
+        test_feature_chamfer_batched_zero_length_regular_connector_contract,
     )
     context.run_case(
         "feature_chamfer_batched_cyclic_seam_boundary_handoff_contract",
@@ -10402,6 +10509,8 @@ def main():
         "blender_version": bpy.app.version_string,
         "repo_root": str(REPO_ROOT),
         "artifact_dir": str(ARTIFACT_DIR),
+        "requested_case_names": sorted(requested_case_names),
+        "executed_case_names": sorted(result.name for result in context.results),
         "results": [result.to_dict() for result in context.results],
     }
     RESULTS_PATH.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -10420,7 +10529,11 @@ def main():
     except Exception:
         traceback.print_exc()
 
-    if failed:
+    executed_case_names = {result.name for result in context.results}
+    requested_mismatch = bool(requested_case_names) and (
+        executed_case_names != requested_case_names
+    )
+    if failed or not executed_case_names or requested_mismatch:
         raise SystemExit(1)
 
 
