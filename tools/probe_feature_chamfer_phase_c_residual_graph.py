@@ -217,6 +217,7 @@ def build_graph_staging_contract(
         "FORWARD",
         include_complete_cutter_face_records=True,
         freeze_complete_profile_lineage=True,
+        include_output_cutter_face_incidence=True,
     )
     reverse = batched_module._run_independent_batch_cut_probe(
         source_object,
@@ -227,6 +228,7 @@ def build_graph_staging_contract(
         "REVERSE",
         include_complete_cutter_face_records=True,
         freeze_complete_profile_lineage=True,
+        include_output_cutter_face_incidence=True,
     )
     forward_ledger = batched_module._build_staging_boundary_ledger(
         preview_plan,
@@ -258,6 +260,20 @@ def build_graph_staging_contract(
             key=batched_module._stable_fingerprint,
         )
     )
+    output_cutter_face_incidence = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "census": record.get("output_cutter_face_incidence", {}),
+        }
+        for record in forward["records"]
+    )
+    reverse_output_cutter_face_incidence = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "census": record.get("output_cutter_face_incidence", {}),
+        }
+        for record in reverse["records"]
+    )
     if batched_module._stable_fingerprint(forward_ledger) != batched_module._stable_fingerprint(
         reverse_ledger
     ):
@@ -266,6 +282,12 @@ def build_graph_staging_contract(
         complete_cutter_face_records
     ) != batched_module._stable_fingerprint(reverse_complete_cutter_face_records):
         raise RuntimeError("Forward/reverse complete cutter Face graph 不一致")
+    if batched_module._stable_fingerprint(
+        output_cutter_face_incidence
+    ) != batched_module._stable_fingerprint(
+        reverse_output_cutter_face_incidence
+    ):
+        raise RuntimeError("Forward/reverse Boolean output Face incidence 不一致")
     return {
         "groups": groups,
         "pipes": pipes,
@@ -276,6 +298,10 @@ def build_graph_staging_contract(
         "reverse_ledger": reverse_ledger,
         "complete_cutter_face_records": complete_cutter_face_records,
         "reverse_complete_cutter_face_records": reverse_complete_cutter_face_records,
+        "output_cutter_face_incidence": output_cutter_face_incidence,
+        "reverse_output_cutter_face_incidence": (
+            reverse_output_cutter_face_incidence
+        ),
     }
 
 
@@ -489,6 +515,166 @@ def build_direct_opposite_incidence_census(
             }
         )
     return census
+
+
+# 对每个 normalized residual 的 pre-Boolean neighbor Face 做 complete cutter graph → post-Boolean Boundary ledger 只读追踪。
+# normalization/complete_face_records/boundary_ledger: normalization 合同、完整 Cutter Face 图和 Boundary universe；返回仅用于诊断的确定性三表。
+def build_face_lineage_transfer_census(
+    normalization,
+    complete_face_records,
+    boundary_ledger,
+    allowed_patch_pairs_by_normalized_edge,
+):
+    complete_faces_by_signature = {}
+    for face_record in complete_face_records:
+        face_signature = face_record.get("face_signature")
+        if face_signature:
+            complete_faces_by_signature.setdefault(face_signature, []).append(
+                face_record
+            )
+    boundary_incidences_by_signature = {}
+    for boundary_entry in boundary_ledger:
+        for topology in boundary_entry.get("cutter_face_topology", ()):
+            face_signature = topology.get("face_signature")
+            if not face_signature:
+                continue
+            boundary_incidences_by_signature.setdefault(
+                face_signature,
+                [],
+            ).append(
+                {
+                    "boundary_edge_id": boundary_entry["edge_id"],
+                    "source_patch_id": int(boundary_entry["source_patch_id"]),
+                    "pipe_id": int(boundary_entry["pipe_id"]),
+                    "strand_id": boundary_entry.get("strand_id"),
+                    "profile_side_id": topology.get("profile_side_id"),
+                    "opposite_profile_side_id": topology.get(
+                        "opposite_profile_side_id"
+                    ),
+                    "longitudinal_segment_id": topology.get(
+                        "longitudinal_segment_id"
+                    ),
+                    "topology_status": topology.get("topology_status"),
+                }
+            )
+    census = []
+    for normalized_record in normalization["records"]:
+        expected_neighbors = sorted({
+            signature
+            for topology in normalized_record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            for signature in topology.get(
+                "profile_neighbor_face_signatures",
+                (),
+            )
+        })
+        expected_segments = {
+            topology["longitudinal_segment_id"]
+            for topology in normalized_record.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("longitudinal_segment_id")
+        }
+        rows = []
+        for face_signature in expected_neighbors:
+            complete_records = complete_faces_by_signature.get(
+                face_signature,
+                (),
+            )
+            scoped_complete_records = [
+                record
+                for record in complete_records
+                if int(record.get("pipe_id", -1))
+                == int(normalized_record["pipe_id"])
+                and record.get("longitudinal_segment_id")
+                in expected_segments
+            ]
+            boundary_incidences = boundary_incidences_by_signature.get(
+                face_signature,
+                (),
+            )
+            scoped_boundary_incidences = [
+                incidence
+                for incidence in boundary_incidences
+                if incidence["pipe_id"] == int(normalized_record["pipe_id"])
+                and incidence["strand_id"] == normalized_record.get("strand_id")
+                and incidence["longitudinal_segment_id"] in expected_segments
+            ]
+            allowed_patch_pair = set(
+                allowed_patch_pairs_by_normalized_edge.get(
+                    normalized_record["normalized_edge_id"],
+                    (),
+                )
+            )
+            allowed_patch_incidences = [
+                incidence
+                for incidence in scoped_boundary_incidences
+                if incidence["source_patch_id"] in allowed_patch_pair
+            ]
+            if not complete_records:
+                transfer_status = "MISSING_FROM_COMPLETE_CUTTER_FACE_GRAPH"
+            elif not scoped_complete_records:
+                transfer_status = "COMPLETE_CUTTER_LINEAGE_SCOPE_MISMATCH"
+            elif not boundary_incidences:
+                transfer_status = "MISSING_FROM_BOUNDARY_LEDGER"
+            elif not scoped_boundary_incidences:
+                transfer_status = "BOUNDARY_LINEAGE_SCOPE_MISMATCH"
+            elif not allowed_patch_incidences:
+                transfer_status = "BOUNDARY_PATCH_OUTSIDE_AUTHORITATIVE_PAIR"
+            else:
+                transfer_status = "AVAILABLE_IN_AUTHORITATIVE_BOUNDARY_SCOPE"
+            rows.append(
+                {
+                    "face_signature": face_signature,
+                    "complete_cutter_face_records": sorted(
+                        complete_records,
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    ),
+                    "scoped_complete_cutter_face_records": sorted(
+                        scoped_complete_records,
+                        key=lambda item: json.dumps(item, sort_keys=True),
+                    ),
+                    "boundary_incidences": sorted(
+                        boundary_incidences,
+                        key=lambda item: (
+                            item["boundary_edge_id"],
+                            item["source_patch_id"],
+                        ),
+                    ),
+                    "scoped_boundary_incidences": sorted(
+                        scoped_boundary_incidences,
+                        key=lambda item: (
+                            item["boundary_edge_id"],
+                            item["source_patch_id"],
+                        ),
+                    ),
+                    "allowed_patch_boundary_incidences": sorted(
+                        allowed_patch_incidences,
+                        key=lambda item: (
+                            item["boundary_edge_id"],
+                            item["source_patch_id"],
+                        ),
+                    ),
+                    "transfer_status": transfer_status,
+                }
+            )
+        census.append(
+            {
+                "normalized_edge_id": normalized_record[
+                    "normalized_edge_id"
+                ],
+                "source_patch_id": int(
+                    normalized_record["source_patch_id"]
+                ),
+                "allowed_source_patch_pair": list(
+                    allowed_patch_pairs_by_normalized_edge.get(
+                        normalized_record["normalized_edge_id"],
+                        (),
+                    )
+                ),
+                "face_rows": rows,
+            }
+        )
+    return sorted(census, key=lambda item: item["normalized_edge_id"])
 
 
 # 执行目标入口与只读 graph probe，并写 machine-readable artifact。
@@ -741,6 +927,30 @@ def main(arguments):
             for correspondence in preview_plan.strip_correspondences
         ),
     )
+    face_lineage_transfer_census = build_face_lineage_transfer_census(
+        normalization,
+        staging["complete_cutter_face_records"],
+        staging["forward_ledger"],
+        {
+            result["normalized_edge_id"]: result.get(
+                "allowed_source_patch_pair",
+                (),
+            )
+            for result in graph["normalized_edges"]
+        },
+    )
+    reverse_face_lineage_transfer_census = build_face_lineage_transfer_census(
+        reverse_normalization,
+        staging["reverse_complete_cutter_face_records"],
+        staging["reverse_ledger"],
+        {
+            result["normalized_edge_id"]: result.get(
+                "allowed_source_patch_pair",
+                (),
+            )
+            for result in reverse_graph["normalized_edges"]
+        },
+    )
     normalization_order_invariant = normalization["lineage_fingerprint"] == (
         reverse_normalization["lineage_fingerprint"]
     )
@@ -751,7 +961,7 @@ def main(arguments):
         preview_utils.source_fingerprint(source_object) == source_fingerprint_before
     )
     report = {
-        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V3",
+        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V4",
         "status": "PROTOTYPE",
         "phase_c_gate": "STOP",
         "decision": (
@@ -816,10 +1026,57 @@ def main(arguments):
                 for proof in subtraction["setback_proofs"]
             ),
         },
+        "plan_lineage_evidence": {
+            "feature_strands": [
+                {
+                    "strand_id": strand.strand_id,
+                    "cyclic": strand.cyclic,
+                    "owner_surface_pairs": [
+                        list(pair) for pair in strand.owner_surface_pairs
+                    ],
+                    "start_port_id": strand.start_port_id,
+                    "end_port_id": strand.end_port_id,
+                }
+                for strand in preview_plan.feature_strands
+            ],
+            "rail_chains": [
+                {
+                    "rail_id": rail.rail_id,
+                    "owner_strand_id": rail.owner_strand_id,
+                    "side": rail.side,
+                    "endpoint_port_ids": list(rail.endpoint_port_ids),
+                }
+                for rail in preview_plan.rail_chains
+            ],
+            "strip_correspondences": [
+                {
+                    "correspondence_id": correspondence.correspondence_id,
+                    "owner_strand_id": correspondence.owner_strand_id,
+                    "owner_surface_pair": list(
+                        correspondence.owner_surface_pair
+                    ),
+                }
+                for correspondence in preview_plan.strip_correspondences
+            ],
+            "junction_port_patch_incidences": [
+                {
+                    "incidence_id": incidence.incidence_id,
+                    "owner_strand_id": incidence.owner_strand_id,
+                    "junction_port_id": incidence.junction_port_id,
+                    "endpoint_role": incidence.endpoint_role,
+                    "source_patch_ids": list(incidence.source_patch_ids),
+                }
+                for incidence in preview_plan.junction_port_patch_incidences
+            ],
+        },
         "normalization": normalization,
         "direct_opposite_incidence_census": (
             direct_opposite_incidence_census
         ),
+        "face_lineage_transfer_census": face_lineage_transfer_census,
+        "output_cutter_face_incidence": staging[
+            "output_cutter_face_incidence"
+        ],
         "residual_ownership_graph": graph,
         "stop_go": {
             "synthetic_graph_contract_required_first": True,
@@ -840,6 +1097,8 @@ def main(arguments):
                 and subtraction_order_invariant
                 and direct_opposite_incidence_census
                 == reverse_direct_opposite_incidence_census
+                and face_lineage_transfer_census
+                == reverse_face_lineage_transfer_census
             ),
             "probe_go": (
                 graph["all_subchains_resolved"]
@@ -851,6 +1110,8 @@ def main(arguments):
                 and subtraction_order_invariant
                 and direct_opposite_incidence_census
                 == reverse_direct_opposite_incidence_census
+                and face_lineage_transfer_census
+                == reverse_face_lineage_transfer_census
             ),
             "phase_c_go": False,
             "phase_d_or_e_authorized": False,

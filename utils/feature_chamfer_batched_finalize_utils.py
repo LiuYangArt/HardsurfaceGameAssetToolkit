@@ -1707,6 +1707,140 @@ def _run_exact_boolean_cut_order(
 
 # 从同一份 source 为每个 batch 生成独立 Cut staging Mesh，供后续 Rail/regular-core ledger 消费。
 # source_object/pipes/color_batches/probe_collection: Preview source、正式 Pipes、coloring 与临时 Collection；返回与 batch 顺序无关的 staging 诊断。
+# 对 Exact Boolean 输出上的 Cutter Face ID 做只读 Face→Edge incidence census。
+# working_object/marked_edge_indices/provenance_by_id: Boolean 输出、已标记 Boundary Edge 与 pre-Boolean Face 记录；返回确定性诊断表。
+def _build_output_cutter_face_incidence_census(
+    working_object,
+    marked_edge_indices,
+    provenance_by_id,
+):
+    mesh = working_object.data
+    original_attribute = mesh.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    cutter_face_id_attribute = mesh.attributes.get(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+    )
+    if (
+        original_attribute is None
+        or original_attribute.domain != "FACE"
+        or cutter_face_id_attribute is None
+        or cutter_face_id_attribute.domain != "FACE"
+    ):
+        raise BatchedChamferError(
+            "BATCH_OUTPUT_CUTTER_FACE_CENSUS_MISSING",
+            "Exact Boolean 输出缺少 Cutter Face incidence 属性",
+            {},
+        )
+    polygons_by_edge_index = {}
+    edge_indices_by_polygon_index = {}
+    for polygon in mesh.polygons:
+        edge_indices = {
+            mesh.loops[loop_index].edge_index
+            for loop_index in polygon.loop_indices
+        }
+        edge_indices_by_polygon_index[polygon.index] = edge_indices
+        for edge_index in edge_indices:
+            polygons_by_edge_index.setdefault(edge_index, set()).add(
+                polygon.index
+            )
+    source_adjacent_edge_indices = {
+        edge_index
+        for edge_index, polygon_indices in polygons_by_edge_index.items()
+        if any(
+            bool(original_attribute.data[index].value)
+            for index in polygon_indices
+        )
+        and any(
+            not bool(original_attribute.data[index].value)
+            for index in polygon_indices
+        )
+    }
+    marked_edge_index_set = set(marked_edge_indices)
+    output_face_indices_by_id = {}
+    zero_face_id_count = 0
+    orphan_face_ids = set()
+    for polygon in mesh.polygons:
+        face_id = int(cutter_face_id_attribute.data[polygon.index].value)
+        if face_id <= 0:
+            zero_face_id_count += 1
+            continue
+        output_face_indices_by_id.setdefault(face_id, set()).add(
+            polygon.index
+        )
+        if face_id not in provenance_by_id:
+            orphan_face_ids.add(face_id)
+    records = []
+    for face_id, provenance in sorted(provenance_by_id.items()):
+        output_face_indices = output_face_indices_by_id.get(face_id, set())
+        original_face_indices = {
+            index
+            for index in output_face_indices
+            if bool(original_attribute.data[index].value)
+        }
+        groove_face_indices = output_face_indices - original_face_indices
+        output_edge_indices = {
+            edge_index
+            for index in output_face_indices
+            for edge_index in edge_indices_by_polygon_index[index]
+        }
+        groove_edge_indices = {
+            edge_index
+            for index in groove_face_indices
+            for edge_index in edge_indices_by_polygon_index[index]
+        }
+        source_adjacent_edges = (
+            groove_edge_indices & source_adjacent_edge_indices
+        )
+        marked_boundary_edges = (
+            groove_edge_indices & marked_edge_index_set
+        )
+        if not output_face_indices:
+            classification = "FACE_ID_NOT_PRESENT_IN_BOOLEAN_OUTPUT"
+        elif not groove_face_indices:
+            classification = "FACE_ID_ONLY_ON_ORIGINAL_OUTPUT_FACE"
+        elif not source_adjacent_edges:
+            classification = "FACE_ID_ON_NON_BOUNDARY_GROOVE_FACE"
+        elif not marked_boundary_edges:
+            classification = "FACE_ID_SOURCE_ADJACENT_EDGE_UNMARKED"
+        else:
+            classification = "FACE_ID_VISIBLE_ON_MARKED_BOUNDARY"
+        records.append(
+            {
+                "face_id": int(face_id),
+                "face_signature": provenance["face_signature"],
+                "topology_status": provenance.get("topology_status"),
+                "pipe_id": provenance.get("pipe_id"),
+                "profile_side_id": provenance.get("profile_side_id"),
+                "opposite_profile_side_id": provenance.get(
+                    "opposite_profile_side_id"
+                ),
+                "longitudinal_segment_id": provenance.get(
+                    "longitudinal_segment_id"
+                ),
+                "output_face_count": len(output_face_indices),
+                "output_original_face_count": len(original_face_indices),
+                "output_groove_face_count": len(groove_face_indices),
+                "output_edge_count": len(output_edge_indices),
+                "source_adjacent_edge_count": len(source_adjacent_edges),
+                "marked_boundary_edge_count": len(marked_boundary_edges),
+                "unmarked_source_adjacent_edge_count": len(
+                    source_adjacent_edges - marked_boundary_edges
+                ),
+                "classification": classification,
+            }
+        )
+    return {
+        "attribute_domain": cutter_face_id_attribute.domain,
+        "attribute_data_type": cutter_face_id_attribute.data_type,
+        "output_face_count": len(mesh.polygons),
+        "zero_face_id_count": zero_face_id_count,
+        "positive_face_id_count": sum(
+            len(indices) for indices in output_face_indices_by_id.values()
+        ),
+        "orphan_face_ids": sorted(orphan_face_ids),
+        "records": records,
+    }
+
+
 def _run_independent_batch_cut_probe(
     source_object,
     pipes,
@@ -1716,6 +1850,7 @@ def _run_independent_batch_cut_probe(
     execution_order,
     include_complete_cutter_face_records=False,
     freeze_complete_profile_lineage=False,
+    include_output_cutter_face_incidence=False,
 ):
     pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
     _synchronize_cutter_membership_schema(pipes)
@@ -1780,6 +1915,15 @@ def _run_independent_batch_cut_probe(
             ):
                 bpy.ops.object.modifier_apply(modifier=modifier.name)
             boundary_witnesses = _mark_boolean_boundary_witnesses(working_object)
+            output_cutter_face_incidence = (
+                _build_output_cutter_face_incidence_census(
+                    working_object,
+                    boundary_witnesses["marked_edge_indices"],
+                    cutter_face_signature_by_id,
+                )
+                if include_output_cutter_face_incidence
+                else ()
+            )
             if boundary_witnesses["conflicting_edge_indices"]:
                 raise BatchedChamferError(
                     "BATCH_BOUNDARY_OWNER_CONFLICT",
@@ -1840,6 +1984,15 @@ def _run_independent_batch_cut_probe(
                             )
                         }
                         if include_complete_cutter_face_records
+                        else {}
+                    ),
+                    **(
+                        {
+                            "output_cutter_face_incidence": (
+                                output_cutter_face_incidence
+                            )
+                        }
+                        if include_output_cutter_face_incidence
                         else {}
                     ),
                 }
