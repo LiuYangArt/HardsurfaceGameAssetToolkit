@@ -1,41 +1,124 @@
-# Feature Chamfer Phase C — Residual Ownership Pivot
+# Feature Chamfer Phase C — Pre-Boolean Profile Lineage Plan
 
 日期：2026-07-24
-状态：`RECOMMENDED / USER DECISION PENDING / PHASE C STOP / GLOBAL PROTOTYPE`
+状态：`AUTHORIZED / PRE-BOOLEAN PROFILE LINEAGE FIRST / CLEAN NORMALIZATION RETAINED / PHASE C STOP / PROTOTYPE`
 
-## 1. Stop 事实
+## 0. 目标入口与阶段范围
 
-- 目标入口仍是 hidden `PHASE_C_REGULAR_CORE` Adapter；正式 `hst.feature_chamfer_gn(FINALIZE)` 未修改，Phase D/E 未开始。
-- synthetic open 5-vs-3、cyclic permutation/reversal、claim collision、token conflict、rollback 与严格 zero-length connector 合同通过；derived Edge 当前只有 endpoint tokens，没有权威 Plan port witness，因此不能发布为已验证 port。
-- `tricky__solid_004__r0p030` 的真实 L5/R3 job 使用一次 `bmesh.ops.bridge_loops()` 生成 8 Faces；8/8 input Edge 有 Face witness，width inlier `1.0`，最大误差 `0.00498009`。
-- 同 cell 随后 fail-closed：patch 1 rail 仍有 3 条 Edge（长度 `0.0287845 / 0.000828165 / 0.158323`，总长 `0.187935`）没有 regular consumer 或结构化 handoff。
-- cutter `PROVEN_C4_PIPE` witness 对其中两条 Edge给出 opposite Face signature，但当前 staging Boundary universe 没有对应相对 Face；第三条也没有完整 topology record。它们不能由 distance、nearest、宽度 trim 或扩大 setback 合法配对。
-- `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030` 同样以 `UNPROVEN_PLAN_BOUNDARY_EDGE` fail-closed，分别留下 18/71 条 Edge。
+```text
+UI Feature Chamfer GN
+→ hst.feature_chamfer_gn(action=PREVIEW)
+→ hst.experimental_feature_chamfer_batched_finalize(PHASE_C_REGULAR_CORE)
+→ independent Exact Boolean staging
+→ constrained normalization
+→ pre-Boolean Cutter profile lineage
+→ regular consumer candidate artifact
+```
 
-证据：`/tmp/hst-phase-c-stop-critical-cluster-20260724-01/results.json` 及各 cell 的 `phase_c_regular_core.blend`、PNG、ledger/diagnostics。
+- 用户操作：对 `tricky__solid_004__r0p030` 运行 PREVIEW，再从 hidden Phase C Adapter 进入只读 probe。
+- 预期可见变化：只生成 diagnostics / `.blend` artifact；正式 `FINALIZE` 和 source Mesh 不变。
+- 自动证据：目标 Operator 入口、raw → normalized exactly-once lineage、pre/post Boolean Face/Edge incidence、Pipe/profile-side/opposite-side/longitudinal-segment 身份、source unchanged。
+- 本阶段 Go：目标 normalized residual 获得唯一、非几何猜测的 opposite consumer；正逆 batch 结果一致。
+- 本阶段 Stop：仍需 nearest/坐标匹配、合成 owner/port、fixture 特判，或 pre-Boolean identity 在 Boolean 后丢失/冲突。
 
-## 2. 根因边界
+本计划不授权正式 producer/`FINALIZE` 接入，不授权 Phase D/E。
 
-当前 producer 只能在同一 Plan atom 内，以 direct topology 证明完整左右 rail pair。Boolean 会把某些 profile Face 的相对 Boundary 全部遮挡或替换；因此 subtraction 后出现单侧 macro residual。它不是 Blender Bridge 能力问题，也不是允许交给 terminal/junction 的 port：没有相对 Face/Plan port witness，且长度远超 zero-length connector 阈值。
+## 1. 已确认事实
 
-## 3. 推荐 Pivot
+1. 目标 3 条 raw Edge 已有唯一 `Pipe 1 / Patch 1 / Rail` owner；问题不是“属于哪条 Pipe”。
+2. clean A/B 只安全 dissolve 一个近共线 degree-2 内点：3 raw Edge → 2 normalized Edge。被移除点正对应用户观察的蓝色问题区域。
+3. 几何容差、terminal/port token、Pipe/Patch/Rail provenance、source unchanged、raw Edge exactly-once lineage 均通过；constrained normalization 应保留。
+4. clean 后两个 normalized Edge 的直接 opposite Boundary witness 仍为 `0`。因此缺的是“和哪条对侧 Edge 补面”，不是单侧 chain 连续性。
+5. 每条 residual 已能追到 `PROVEN_C4_PIPE` cutter Face、profile ring 和预期 opposite Face signature；但预期 opposite Face 在 post-Boolean Boundary universe 中不可见。
+6. 局部只有一条 Pipe 只消除了 Pipe owner 歧义；同一 Pipe 仍有四个 profile sides 和沿程多个 Face ring，不能仅凭单 Pipe 推导唯一对侧 consumer。
 
-在继续 Phase C 前新增只读 `ResidualOwnershipGraph` 设计门禁：
+证据：
 
-1. 从所有 independent staging（不是当前 correspondence 的局部视图）建立 `cutter pipe/profile ring/face/longitudinal adjacency → Boundary Edge` 图。
-2. 先全局减去已通过 preflight 的 RegularBridgeJob claims 与 frozen setback proofs。
-3. 对余下 maximal token-connected subchains，只允许三种结果：唯一相对 Face path、唯一 Plan port incidence、或 `UNRESOLVED`；缺失相对 Face不得合成 rail。
-4. 用 synthetic occluded-opposite-face fixture 先证明图合同；然后只读重跑三个失败 cells。只有三者 residual 全部获得 direct witness，才可修改正式 producer。
-5. producer 修改后重新从 Step 1 开始，按 cluster 逐级过门；完整 14×3 与独立 Spec Audit 仍是 Phase C GO 的必要条件。
+- `docs/diagnostics/feature-chamfer-generalization/phase-c-clean-dissolve-ab-probe.md`
+- `/private/tmp/hst-phase-c-clean-ab-probe-20260724-05/report.json`
 
-## 4. 明确禁止
+## 2. Boolean Pro、旧 Finalize 与当前 Phase C 的边界
 
-- 不恢复 `_rail_pair_score`、nearest、cyclic DP/trim/zipper、坐标误差焊接或 fixture 特判。
-- 不把 macro residual 标成 port/setback，不允许 runner allowlist 掩盖 regular Edge。
-- 不进入 Phase D Fill/product assembly，不接入正式 FINALIZE。
+- `Boolean Pro` 继续负责 viewport Preview；当前 Phase C Adapter 重新执行 independent Exact Boolean，不直接消费 Boolean Pro evaluated result。
+- 历史 probe 已证明 Boolean Pro 的 `New Faces / Slice Faces` 在当前资产配置为空，`Boundary Edges` 含 loose Edge，不能作为 authoritative provenance 真源。
+- 旧 tracked Boolean 更容易判断 source/groove，是因为它在 Boolean 前写入 source Face/Patch marker。这个“先写 provenance、后做 Boolean”的原则应复用。
+- 旧 owner classifier 中“只有一个 Pipe 就归给它”及距离评分只能提供候选，不能证明 profile opposite-side pairing；不得恢复为权威路径。
+- Commit `1b8f120` 的“已能判断边归属”指 Pipe/Patch/Rail owner 基础设施；当前门禁新增的是 opposite-side pairing 和实际 Face consumer。两者验收层级不同，不冲突。
 
-## 5. 当前交付状态
+## 3. 新主路线：Pre-Boolean Cutter Profile Lineage
 
-`Algorithm/Backend: PROTOTYPE`；`Operator: NOT INTEGRATED`；`Visual/Product: NOT VERIFIED`。本轮 hard Stop 已执行，等待用户决定是否授权上述 pivot 的新一轮实现。
+### Step 1 — 冻结 cutter 身份
 
-独立 Spec Audit 还发现三条假绿风险：无 direct topology witness 时只凭同一 Plan component 配对、过宽 handoff allowlist、由 endpoint token 合成虚假 port witness。checkpoint 已删除前两类 runtime 假证据并收紧 macro handoff 门禁；完整回归证据因代码随后有改动而只记为历史 baseline，pivot 实现后必须重新跑新鲜全量测试。
+在每个 Pipe cutter 进入 Boolean 前，为每个 profile Face 建立稳定、非坐标身份：
+
+- `pipe_id`、`strand_id`；
+- `profile_side_id` 与 `opposite_profile_side_id`；
+- `profile_ring_id`；
+- `longitudinal_segment_id` 与前后邻接；
+- terminal/junction/port incidence（若存在）。
+
+Go：相同 cutter 在正逆 batch 中身份图完全一致；C4 ring 每个 side 恰有一个 opposite side。
+
+### Step 2 — 传递到 Boolean 交线
+
+沿用已有 Face one-hot / cutter Face ID / source Patch marker，把 pre-Boolean Face 身份传递到 post-Boolean groove/source intersection Edge。优先使用：
+
+- 同一 Boolean 结果内的 Face → Edge incidence；
+- native `Intersecting Edges` field 能力；
+- 完整 cutter Face ID 与 longitudinal adjacency。
+
+几何“是否接触”可以作为结果一致性验证，但不得用 nearest distance 或坐标阈值产生 owner。
+
+Go：每条目标 Boundary Edge 恰有一个 `(Pipe, profile side, source Patch, longitudinal segment)` direct witness；missing/conflict 必须 fail-closed。
+
+### Step 3 — Constrained normalization
+
+对同一完整 lineage 的近共线 degree-2 fragmented Edge 运行已验证 normalization：
+
+- 禁止跨 Pipe/Patch/Rail/profile-side/segment 合并；
+- 禁止删除 endpoint/port/junction/setback token；
+- 保留 raw Edge → normalized Edge exactly-once、dissolved token 与 Face lineage。
+
+Go：A/B 合同保持，normalized Edge 的 lineage 是其所有 raw Edge lineage 的无冲突并集。
+
+### Step 4 — Opposite consumer 解析
+
+对 normalized subchain，直接从同一 Pipe 的 `opposite_profile_side_id + longitudinal segment` 查找对侧 Boundary chain。只允许：
+
+1. 唯一 direct opposite Edge/chain；
+2. 唯一权威 Plan port incidence；
+3. `UNRESOLVED`。
+
+禁止把“沿 graph 最近的已消费 Edge”自动当作当前 residual 的 consumer；longitudinal graph 只能证明身份连续性，不能跨 segment 借用 unrelated sink。
+
+### Step 5 — 目标 cell 只读验收
+
+先用 synthetic single-Pipe occluded-opposite-face fixture 证明 missing/duplicate/conflict 均 fail-closed，再从目标 Operator 重跑 `tricky__solid_004__r0p030`。
+
+Go：两个 normalized Edge 都获得唯一 direct opposite consumer，且 raw exactly-once、source unchanged、正逆 batch 一致。否则保持 Phase C STOP，并输出缺失发生在 Face identity、Boolean transfer 还是 opposite Edge visibility。
+
+## 4. 后续 Stop / Go
+
+- 目标 cell 通过后，才允许把同一只读 probe 扩展到 `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030`。
+- 三个失败 cell 都有唯一 direct witness 后，才可以另立接入计划修改正式 producer。
+- 正式接入后重新从目标 Operator 跑 cluster、完整 14×3、source/rollback、Face witness、exactly-once 和独立 Spec Audit。
+- 完整 Phase C GO 前不得进入 Phase D Fill/product assembly 或 Phase E。
+
+## 5. 明确禁止
+
+- `_rail_pair_score`、nearest/BVH/centroid、坐标焊接、宽度 trim 猜 owner；
+- “当前只有一条 Pipe”作为 opposite pairing 的充分证据；
+- 合成 owner/port、扩大 setback、runner allowlist、fixture 特判；
+- 直接把 Boolean Pro loose `Boundary Edges` 当正式 ledger；
+- 低层 artifact 可运行就宣称 `INTEGRATED/VERIFIED/ACCEPTED`。
+
+## 6. 当前状态与下一交付
+
+- `Algorithm/Backend: PROTOTYPE`
+- `Operator: NOT INTEGRATED`
+- `Visual/Product: NOT VERIFIED`
+- `Phase C: STOP`
+
+下一交付是从目标 PREVIEW → Phase C Adapter 产生的只读 `pre_boolean_profile_lineage` report 和可检查 `.blend`。报告必须明确区分：Pipe owner、profile side、opposite side、longitudinal segment、post-Boolean Edge incidence、normalized lineage、resolved consumer。
+
+完成声明前独立 Spec Audit 必须检查：runtime 未越级修改；测试从目标 Operator 开始；consumer 不是最近 sink；计划、代码、artifact 的阶段状态一致。

@@ -50,6 +50,8 @@
 - 当用户提到“回归测试 / Blender 升级检查 / 哪些功能坏了 / smoke test / headless 测试”时，优先使用该 skill。
 - 统一入口命令：`python .\tools\run_blender_tests.py`
 - 若需要读取最近一次结果，查看：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/artifacts/results.json`
+- 项目内置 Edge 可视化 skill：`agent-skills/hst-edge-visualizer/SKILL.md`。
+- 当用户要求把 residual、unconsumed 或难以观察的 Edge 做成红/绿/蓝粗线、近景 PNG 和可检查 `.blend` 时，优先使用该 skill，不要重写 Blender 可视化脚本。
 
 ## 测试规范
 - 测试规范文档：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/TESTING_POLICY.md`

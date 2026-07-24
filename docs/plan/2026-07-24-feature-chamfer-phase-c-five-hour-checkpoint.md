@@ -1,15 +1,15 @@
 # Feature Chamfer Phase C — 5 小时 Checkpoint
 
 日期：2026-07-24
-状态：`WIP CHECKPOINT / GLOBAL PROTOTYPE / PHASE C STOP`
+状态：`CLEAN A/B USEFUL / PRE-BOOLEAN PROFILE LINEAGE AUTHORIZED / GLOBAL PROTOTYPE / PHASE C STOP`
 
 ## 1. 非技术结论
 
 方向的大原则是正确的：先确认每段边真正属于哪条倒角，再调用 Blender 原生 Bridge，遇到身份不明的边就停下，不能靠“看起来最近”去猜。这个选择避免了模型表面看似成功、实际串错槽或以后随机坏掉。
 
-当前不是 Blender 不会 Bridge。真实 5 对 3 边已经成功生成 8 个面，宽度和输入边消费也通过。真正卡点是多条 Pipe 相交并做完 Boolean 后，少数边只剩“一边”，原本配对的另一边被切掉或替换了；现有数据无法可靠判断它们应该继续 Bridge、留给交叉口，还是属于 Boolean 碎片。
+当前不是 Blender 不会 Bridge。真实 5 对 3 边已经成功生成 8 个面，宽度和输入边消费也通过。目标 residual 已知属于唯一 Pipe/Patch/Rail；真正卡点是 Boolean 后预期的对侧 profile Face 没有可见 Boundary Edge，因而无法证明应和哪条 Edge 配对补面。局部只有一条 Pipe 也不能替代 profile-side/opposite-side 身份。
 
-因此当前路线应保留，但 immediate implementation 必须转向 `ResidualOwnershipGraph`：先从所有 independent staging 全局恢复这些剩余边的身份，再允许 Bridge。继续在旧局部 matching 上打补丁，成功率会下降并重新引入假绿。
+因此 immediate implementation 改为把判断前移：Boolean 前冻结 cutter 的 Pipe/profile-side/opposite-side/longitudinal-segment 身份，Boolean 后用 Face→Edge incidence 恢复对侧 consumer；constrained normalization 保留为中间步骤。继续在 post-Boolean 局部形状上猜 matching 会重新引入假绿。
 
 ## 2. 已完成
 
@@ -41,17 +41,24 @@
 
 这些置信度不是工时比例。当前大约完成了 Phase C 基础设施和能力验证的 60%，但 Phase C gate 仍是 0/1：只要关键残余没有唯一归属，就不能进入下一阶段。
 
-## 5. 用户可手动帮助
+## 5. 用户观察结论
 
-最有价值的不是重复测试普通 Bridge，而是做一次产品语义判定：打开
-`/tmp/hst-phase-c-stop-critical-cluster-20260724-01/tricky__solid_004__r0p030/phase_c_regular_core.blend`，观察剩余三段边在真实模型上更像：
+用户已检查 A/B `.blend`：被清理的近共线点正对应此前蓝色问题区域，且该区域视觉上只有一条 Pipe cutter 经过、切口简单。该观察支持保留 normalization，也支持把所有权判断前移到 cutter 与 Boolean 交线；它不能单独替代 opposite-side direct witness。
 
-1. 应继续形成倒角面的普通槽边；
-2. 应留给 Pipe 交叉口/terminal 的开口边；
-3. Boolean 产生、允许丢弃的碎片。
+## 6. 已完成的路线选择
 
-这个判断不能替代自动 provenance，但能决定 pivot 要证明哪种产品语义。若不方便手测，也不阻塞只读 graph probe；当前需要的实质决定是：是否授权按 residual ownership pivot 开启下一轮实现。
+clean/dissolve A/B 已完成并证明 normalization 有用，但不能单独恢复 opposite consumer。后续权威执行计划已收敛到 `docs/plan/2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md` 的 pre-Boolean profile lineage 路线。
 
-## 6. 下一步（需授权）
+## 7. Clean/Dissolve A/B 结果
 
-先只实现只读 `ResidualOwnershipGraph` probe 和 synthetic occluded-opposite-face 合同，不改正式 producer。三个失败 cell 都能获得唯一直接 witness 才 GO；否则继续 STOP 并返回更具体的产品选择，不进入 Phase D/E。
+`tricky__solid_004__r0p030` 的新鲜 PREVIEW → independent staging probe 已完成。A 组为 4 Vertex / 3 Edge；按 probe-only 的严格门禁，两个 degree-2 内点中只有一个满足共线条件（`0.227749°`，到 chord `3.2674e-6`），B 组通过真实 `bmesh.ops.dissolve_verts()` 得到 3 Vertex / 2 Edge。几何容差、terminal/port token、Pipe/Patch/Rail provenance、raw Edge → normalized Edge exactly-once lineage 和 source unchanged 均通过。
+
+但 B 组两个 normalized Edge 的 direct opposite Boundary witness 都是 `0`。因此碎点会造成一次可约束的分段合并，却不是 regular consumer 缺失的充分根因。用户检查 `.blend` 后确认被清理点正对应原蓝色问题区域；结论修正为：保留 constrained normalization，让后续 pre-Boolean profile lineage resolver 消费 normalized chain，并持续保存 raw → normalized lineage。clean 单独不能触发 Phase C GO，也暂不接入正式 runtime。
+
+证据与审计：`docs/diagnostics/feature-chamfer-generalization/phase-c-clean-dissolve-ab-probe.md`。
+
+## 8. 下一步（已授权）
+
+从目标 PREVIEW → Phase C Adapter 做只读 pre-Boolean profile lineage probe：为 cutter Face 冻结 Pipe/profile side/opposite side/longitudinal segment，并用 post-Boolean Face→Edge incidence 找对侧 chain。几何接触只作验证，不生成 owner；旧 tracked Boolean 只复用“Boolean 前写 provenance”的原则，不恢复单 Pipe fallback 或距离评分。
+
+目标 cell 获得唯一 direct opposite consumer 前，Phase C 继续 STOP，不修改正式 runtime/`FINALIZE`，不进入 Phase D/E。

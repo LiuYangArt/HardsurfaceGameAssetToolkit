@@ -9446,6 +9446,237 @@ def test_feature_chamfer_regular_bridge_fail_closed_contract(
     result.add_detail("duplicate claims, token conflicts and failed jobs abort before publication")
 
 
+# 验证 occluded opposite Face 可沿完整 Cutter longitudinal graph 唯一恢复，而缺失/歧义保持 UNRESOLVED。
+# test_context/result: 已加载的 add-on 测试上下文与结果记录器。
+def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    graph_module = (
+        test_context.addon.utils.feature_chamfer_residual_ownership_graph_utils
+    )
+
+    # 构造一条含近共线碎点的 raw residual chain；opposite Face 在当前 ring 被遮挡，
+    # 但沿同 Pipe longitudinal adjacency 可到达已由 RegularBridgeJob claim 的 Boundary。
+    def topology(
+        face_signature,
+        opposite_face_signature,
+        longitudinal_neighbors=(),
+        ring_id="ring:test",
+    ):
+        return {
+            "topology_status": "PROVEN_C4_PIPE",
+            "pipe_id": 7,
+            "face_signature": face_signature,
+            "profile_ring_id": ring_id,
+            "profile_opposite_face_signature": opposite_face_signature,
+            "profile_neighbor_face_signatures": [],
+            "longitudinal_neighbor_face_signatures": list(
+                longitudinal_neighbors
+            ),
+        }
+
+    raw_entries = (
+        {
+            "edge_id": "raw:0",
+            "semantic_batch_key": [7],
+            "pipe_id": 7,
+            "strand_id": "strand:test",
+            "source_patch_id": 1,
+            "rail_id": "rail:left",
+            "endpoints": [(0.0, 0.0, 0.0), (0.5, 0.0, 0.0)],
+            "endpoint_tokens": ["raw:v0", "raw:v1"],
+            "endpoint_port_tokens": [],
+            "adjacent_face_signatures": ["adjacent:0"],
+            "groove_face_signatures": ["groove:0"],
+            "cutter_face_topology": [
+                topology("left:0", "right:occluded:0", ("left:1",))
+            ],
+        },
+        {
+            "edge_id": "raw:1",
+            "semantic_batch_key": [7],
+            "pipe_id": 7,
+            "strand_id": "strand:test",
+            "source_patch_id": 1,
+            "rail_id": "rail:left",
+            "endpoints": [(0.5, 0.0, 0.0), (0.500001, 0.000000001, 0.0)],
+            "endpoint_tokens": ["raw:v1", "raw:v2"],
+            "endpoint_port_tokens": [],
+            "adjacent_face_signatures": ["adjacent:1"],
+            "groove_face_signatures": ["groove:1"],
+            "cutter_face_topology": [
+                topology("left:0", "right:occluded:0", ("left:1",))
+            ],
+        },
+        {
+            "edge_id": "raw:2",
+            "semantic_batch_key": [7],
+            "pipe_id": 7,
+            "strand_id": "strand:test",
+            "source_patch_id": 1,
+            "rail_id": "rail:left",
+            "endpoints": [(0.500001, 0.000000001, 0.0), (1.0, 0.0, 0.0)],
+            "endpoint_tokens": ["raw:v2", "raw:v3"],
+            "endpoint_port_tokens": [],
+            "adjacent_face_signatures": ["adjacent:2"],
+            "groove_face_signatures": ["groove:2"],
+            "cutter_face_topology": [
+                topology("left:1", "right:occluded:1", ("left:0",))
+            ],
+        },
+    )
+    opposite_entry = {
+        "edge_id": "right:claimed",
+        "semantic_batch_key": [7],
+        "pipe_id": 7,
+        "strand_id": "strand:test",
+        "source_patch_id": 2,
+        "rail_id": "rail:right",
+        "endpoints": [(0.0, 0.2, 0.0), (1.0, 0.2, 0.0)],
+        "endpoint_tokens": ["right:v0", "right:v1"],
+        "endpoint_port_tokens": [],
+        "adjacent_face_signatures": ["adjacent:right"],
+        "groove_face_signatures": ["groove:right"],
+        "cutter_face_topology": [
+            topology("right:visible", "left:visible", ("right:occluded:1",))
+        ],
+    }
+    universe = (*raw_entries, opposite_entry)
+    complete_faces = (
+        topology("left:0", "right:occluded:0", ("left:1",)),
+        topology("left:1", "right:occluded:1", ("left:0",)),
+        topology("right:occluded:0", "left:0", ("right:occluded:1",)),
+        topology(
+            "right:occluded:1",
+            "left:1",
+            ("right:occluded:0", "right:visible"),
+        ),
+        topology("right:visible", "left:visible", ("right:occluded:1",)),
+    )
+    normalization = graph_module.constrained_normalize_boundary_chain(
+        raw_entries,
+        universe,
+    )
+    ensure(
+        normalization["raw_edge_exactly_once"]
+        and len(normalization["records"]) < len(raw_entries)
+        and len(normalization["raw_edge_to_normalized_edge"]) == 3,
+        f"Constrained normalization lost raw lineage: {normalization}",
+    )
+    regular_claim = {
+        "edge_id": "right:claimed",
+        "claim_state": "REGULAR_BRIDGE",
+        "job_id": "bridge:opposite",
+        "side": "RIGHT",
+        "face_consumer_id": "face-consumer:bridge:opposite",
+    }
+    unique_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        universe,
+        complete_faces,
+        regular_claims=(regular_claim,),
+        allowed_source_patch_pairs=((1, 2),),
+    )
+    ensure(
+        unique_graph["all_subchains_resolved"]
+        and len(unique_graph["subchains"]) == 1
+        and unique_graph["subchains"][0]["status"]
+        == "UNIQUE_OPPOSITE_FACE_PATH"
+        and unique_graph["subchains"][0]["resolved_consumer_id"]
+        == "REGULAR_CONSUMER:face-consumer:bridge:opposite",
+        f"Occluded opposite Face graph did not find unique consumer: {unique_graph}",
+    )
+    reversed_graph = graph_module.build_residual_ownership_graph(
+        tuple(reversed(normalization["records"])),
+        tuple(reversed(universe)),
+        tuple(reversed(complete_faces)),
+        regular_claims=(regular_claim,),
+        allowed_source_patch_pairs=((1, 2),),
+    )
+    ensure(
+        unique_graph["graph_fingerprint"] == reversed_graph["graph_fingerprint"],
+        "ResidualOwnershipGraph changed under input reversal",
+    )
+    missing_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        raw_entries,
+        complete_faces[:-1],
+        allowed_source_patch_pairs=((1, 2),),
+    )
+    ensure(
+        not missing_graph["all_subchains_resolved"]
+        and missing_graph["subchains"][0]["status"] == "UNRESOLVED"
+        and missing_graph["subchains"][0]["rejection_reason"]
+        == "MISSING_DIRECT_WITNESS",
+        f"Missing opposite Face did not remain unresolved: {missing_graph}",
+    )
+    ambiguous_entry = {
+        **opposite_entry,
+        "edge_id": "right:ambiguous",
+        "source_patch_id": 3,
+        "endpoint_tokens": ["right:a0", "right:a1"],
+    }
+    ambiguous_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        (*universe, ambiguous_entry),
+        complete_faces,
+        regular_claims=(regular_claim,),
+    )
+    ensure(
+        not ambiguous_graph["all_subchains_resolved"]
+        and ambiguous_graph["subchains"][0]["rejection_reason"]
+        == "AMBIGUOUS_OPPOSITE_FACE_PATH",
+        f"Ambiguous opposite Face path was accepted: {ambiguous_graph}",
+    )
+    port_only_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        raw_entries,
+        complete_faces[:-1],
+        authoritative_plan_port_incidences=(
+            {
+                "authoritative": True,
+                "endpoint_token": normalization["records"][0][
+                    "endpoint_tokens"
+                ][0],
+                "port_id": "plan-port:test",
+                "pipe_id": 7,
+            },
+        ),
+        allowed_source_patch_pairs=((1, 2),),
+    )
+    ensure(
+        port_only_graph["subchains"][0]["status"]
+        == "UNIQUE_PLAN_PORT_INCIDENCE"
+        and not port_only_graph["synthetic_owner_or_port_used"],
+        f"Authoritative Plan port incidence was not handled directly: {port_only_graph}",
+    )
+    artifact = {
+        "contract": graph_module.GRAPH_CONTRACT,
+        "fixture_id": "synthetic:occluded-opposite-face",
+        "normalization": normalization,
+        "unique": unique_graph,
+        "missing": missing_graph,
+        "ambiguous": ambiguous_graph,
+        "authoritative_plan_port": port_only_graph,
+        "stop_go": {
+            "algorithm_contract_pass": True,
+            "backend_contract_pass": True,
+            "operator_go": False,
+            "visual_go": False,
+            "phase_c_go": False,
+        },
+    }
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_residual_ownership_graph.json"
+    artifact_path.write_text(
+        json.dumps(artifact, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"occluded opposite Face unique/missing/ambiguous/authoritative-port contracts passed; artifact={artifact_path}"
+    )
+
+
 # 验证 ownership producer 只接受 Plan component 唯一的一对 rails，ambiguous component 必须 fail-closed。
 # test_context/result: 已加载的 add-on 测试上下文与结果记录器。
 def test_feature_chamfer_regular_bridge_ownership_producer_contract(
@@ -10459,6 +10690,10 @@ def main():
     context.run_case(
         "feature_chamfer_regular_bridge_fail_closed_contract",
         test_feature_chamfer_regular_bridge_fail_closed_contract,
+    )
+    context.run_case(
+        "feature_chamfer_residual_ownership_graph_occluded_opposite_contract",
+        test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract,
     )
     context.run_case(
         "feature_chamfer_regular_bridge_ownership_producer_contract",

@@ -1502,6 +1502,7 @@ def _run_independent_batch_cut_probe(
     probe_collection,
     plan_id,
     execution_order,
+    include_complete_cutter_face_records=False,
 ):
     pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
     _synchronize_cutter_membership_schema(pipes)
@@ -1615,6 +1616,18 @@ def _run_independent_batch_cut_probe(
                     "face_count": len(working_object.data.polygons),
                     "boundary_witnesses": boundary_witnesses,
                     "boundary_records": _canonical_boundary_records(boundary_records),
+                    **(
+                        {
+                            "complete_cutter_face_records": tuple(
+                                sorted(
+                                    cutter_face_signature_by_id.values(),
+                                    key=_stable_fingerprint,
+                                )
+                            )
+                        }
+                        if include_complete_cutter_face_records
+                        else {}
+                    ),
                 }
             )
         finally:
@@ -13204,6 +13217,18 @@ def _build_cyclic_regular_strip_partition(
                                 oriented_chain.get("endpoint_tokens", ())
                             ),
                             "edge_ids": list(oriented_chain["edge_ids"]),
+                            "edge_endpoints": [
+                                {
+                                    "edge_id": entry["edge_id"],
+                                    "endpoints": [
+                                        list(entry["endpoints"][0]),
+                                        list(entry["endpoints"][1]),
+                                    ],
+                                }
+                                for entry in evidence_entries
+                                if entry["edge_id"]
+                                in set(oriented_chain["edge_ids"])
+                            ],
                             "edge_lengths": [
                                 round(
                                     (
