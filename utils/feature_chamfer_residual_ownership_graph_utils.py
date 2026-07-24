@@ -902,7 +902,23 @@ def build_residual_ownership_graph(
                 if result["rejection_reason"] is not None
             }
         )
-        blocking_member_rejection_reasons = list(member_rejection_reasons)
+        blocking_member_rejection_reasons = sorted(
+            reason
+            for reason in member_rejection_reasons
+            if reason
+            in {
+                "MISSING_PRE_BOOLEAN_OPPOSITE_FACE_IDENTITY",
+                "DUPLICATE_AUTHORITATIVE_PLAN_PATCH_PAIR",
+                "MISSING_AUTHORITATIVE_PLAN_PATCH_PAIR",
+                "AMBIGUOUS_PLAN_PORT_INCIDENCE",
+            }
+        )
+        candidate_face_coverage_complete = bool(
+            expected_source_face_signatures
+        ) and all(
+            edge_ids
+            for edge_ids in candidate_edge_ids_by_source_face.values()
+        )
         candidate_face_exactly_once = bool(
             expected_source_face_signatures
         ) and all(
@@ -921,15 +937,10 @@ def build_residual_ownership_graph(
         elif blocking_member_rejection_reasons:
             chain_status = "UNRESOLVED"
             chain_rejection_reason = blocking_member_rejection_reasons[0]
-        elif not candidate_face_exactly_once:
+        elif not candidate_face_coverage_complete:
             chain_status = "UNRESOLVED"
             chain_rejection_reason = (
-                "AMBIGUOUS_MAXIMAL_CANDIDATE_FACE_INCIDENCE"
-                if any(
-                    len(edge_ids) > 1
-                    for edge_ids in candidate_edge_ids_by_source_face.values()
-                )
-                else "INCOMPLETE_MAXIMAL_CANDIDATE_FACE_INCIDENCE"
+                "INCOMPLETE_MAXIMAL_CANDIDATE_FACE_INCIDENCE"
             )
         elif not candidate_connectivity["valid"]:
             chain_status = "UNRESOLVED"
@@ -998,6 +1009,9 @@ def build_residual_ownership_graph(
                     candidate_edge_ids_by_source_face
                 ),
                 "candidate_face_exactly_once": candidate_face_exactly_once,
+                "candidate_face_coverage_complete": (
+                    candidate_face_coverage_complete
+                ),
                 "direct_face_edge_incidence": [
                     direct_incidences_by_edge_id[edge_id]
                     for edge_id in sorted(direct_incidences_by_edge_id)

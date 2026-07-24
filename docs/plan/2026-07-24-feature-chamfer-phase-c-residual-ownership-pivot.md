@@ -126,6 +126,6 @@ Go：目标 maximal source chain 获得唯一 direct Boundary consumer chain，�
 - `Visual/Product: NOT VERIFIED`
 - `Phase C: STOP`
 
-只读 maximal-chain pairing report 和可检查 `.blend` 已从目标 PREVIEW → Phase C Adapter 产生，Algorithm/Backend probe 条件通过；终局独立 spec audit 为 `P0=0 / P1=0`。下一步按第 4 节把同一只读 probe 扩展到 `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030`，不能因单个目标 cell 通过就接入 Adapter runtime；正式 `FINALIZE`、Phase D/E 仍不在本阶段。
+只读 maximal-chain pairing 已在 `tricky__solid_004__r0p030` 与 `r0p010` 得到 probe Go；截至扩展 cell 的独立 spec audit 为 `P0=0 / P1=0`。`mixed__extruded_002__r0p030` 仍有 23 个 source Face identity 缺 direct consumer，candidate token graph 也不连成唯一 open chain，因此保持 hard Stop。只读分层诊断已把缺口定位到局部 Patch 15-only 分支：同 Pipe/strand/side/segment 的对侧 Edge 存在，但它不属于 authoritative `[3, 4]` Patch pair，故不能直接认领；尚需区分 pre-Boolean lineage、Boolean identity transfer、Boundary ledger 错绑/过滤或 Plan Patch pair 局部不完整。下一步只允许比较 complete cutter Face records、boundary ledger 与 Patch lineage，不能接入 Adapter runtime，正式 `FINALIZE`、Phase D/E 仍不在本阶段。
 
 完成声明前独立 Spec Audit 必须检查：runtime 未越级修改；测试从目标 Operator 开始；consumer 不是最近 sink；计划、代码、artifact 的阶段状态一致。

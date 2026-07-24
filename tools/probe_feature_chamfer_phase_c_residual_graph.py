@@ -88,9 +88,102 @@ def target_edge_ids_from_diagnostics(path):
     edge_ids = tuple(
         repetitions[0].get("topology_diagnostics", {}).get("edge_ids", ())
     )
-    if len(edge_ids) != 3 or len(set(edge_ids)) != 3:
-        raise RuntimeError("Baseline diagnostics 未暴露目标三条 residual Edge")
+    if not edge_ids or len(edge_ids) != len(set(edge_ids)):
+        raise RuntimeError("Baseline diagnostics 未暴露唯一 residual Edge IDs")
     return edge_ids
+
+
+# 按完整 owner lineage 与 endpoint token 把 residual Boundary Edge 划分为独立 open components。
+# entries: fresh staging 中的全部目标 residual ledger 条目；返回确定性 component 列表，protected port/branch/cycle 均 fail-closed。
+def partition_target_residual_components(entries):
+    entries_by_id = {entry["edge_id"]: entry for entry in entries}
+    if len(entries_by_id) != len(entries):
+        raise RuntimeError("目标 residual Boundary identity 重复")
+    entries_by_owner = {}
+    for entry in entries:
+        lineage_identity = {
+            (
+                int(topology["pipe_id"]),
+                entry.get("strand_id"),
+                int(topology["profile_side_id"]),
+                int(topology["opposite_profile_side_id"]),
+                topology["longitudinal_segment_id"],
+            )
+            for topology in entry.get("cutter_face_topology", ())
+            if topology.get("topology_status") == "PROVEN_C4_PIPE"
+            and topology.get("profile_side_id") is not None
+            and topology.get("opposite_profile_side_id") is not None
+            and topology.get("longitudinal_segment_id")
+        }
+        owner_key = (
+            tuple(entry.get("semantic_batch_key", ())),
+            int(entry["pipe_id"]),
+            entry.get("strand_id"),
+            int(entry["source_patch_id"]),
+            entry.get("rail_id"),
+            tuple(sorted(lineage_identity)),
+        )
+        entries_by_owner.setdefault(owner_key, []).append(entry)
+    components = []
+    for owner_key, owner_entries in sorted(
+        entries_by_owner.items(),
+        key=lambda item: json.dumps(item[0], sort_keys=True),
+    ):
+        edge_ids_by_token = {}
+        protected_tokens = {
+            token
+            for entry in owner_entries
+            for token in entry.get("endpoint_port_tokens", ())
+        }
+        for entry in owner_entries:
+            if len(entry.get("endpoint_tokens", ())) != 2:
+                raise RuntimeError("目标 residual Edge 缺少两个 endpoint token")
+            for token in entry["endpoint_tokens"]:
+                edge_ids_by_token.setdefault(token, set()).add(entry["edge_id"])
+        remaining_edge_ids = {entry["edge_id"] for entry in owner_entries}
+        while remaining_edge_ids:
+            seed_edge_id = min(remaining_edge_ids)
+            component_edge_ids = set()
+            pending_edge_ids = [seed_edge_id]
+            while pending_edge_ids:
+                edge_id = pending_edge_ids.pop()
+                if edge_id in component_edge_ids:
+                    continue
+                component_edge_ids.add(edge_id)
+                for token in entries_by_id[edge_id]["endpoint_tokens"]:
+                    if token in protected_tokens:
+                        continue
+                    pending_edge_ids.extend(
+                        sorted(edge_ids_by_token.get(token, ()))
+                    )
+            remaining_edge_ids -= component_edge_ids
+            component_entries = [
+                entries_by_id[edge_id]
+                for edge_id in sorted(component_edge_ids)
+            ]
+            token_degrees = {}
+            for entry in component_entries:
+                for token in entry["endpoint_tokens"]:
+                    token_degrees[token] = token_degrees.get(token, 0) + 1
+            if (
+                any(degree > 2 for degree in token_degrees.values())
+                or sum(degree == 1 for degree in token_degrees.values()) != 2
+            ):
+                raise RuntimeError("目标 residual component 不是唯一 open chain")
+            components.append(
+                {
+                    "component_id": "residual-component:"
+                    + hashlib.sha256(
+                        json.dumps(
+                            sorted(component_edge_ids),
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "owner_key": owner_key,
+                    "entries": component_entries,
+                }
+            )
+    return sorted(components, key=lambda item: item["component_id"])
 
 
 # 建立含完整 cutter Face 图的 fresh independent staging universe。
@@ -539,19 +632,75 @@ def main(arguments):
     ]
     if {entry["edge_id"] for entry in target_entries} != set(fresh_target_edge_ids):
         raise RuntimeError("Fresh staging 未复现全部目标 residual Edge")
-    normalization = graph_module.constrained_normalize_boundary_chain(
-        target_entries,
-        staging["forward_ledger"],
-    )
+    target_components = partition_target_residual_components(target_entries)
+    normalization_components = [
+        {
+            "component_id": component["component_id"],
+            "normalization": graph_module.constrained_normalize_boundary_chain(
+                component["entries"],
+                staging["forward_ledger"],
+            ),
+        }
+        for component in target_components
+    ]
+    normalization = {
+        "records": [
+            record
+            for component in normalization_components
+            for record in component["normalization"]["records"]
+        ],
+        "raw_edge_exactly_once": all(
+            component["normalization"]["raw_edge_exactly_once"]
+            for component in normalization_components
+        ),
+        "lineage_fingerprint": batched_module._stable_fingerprint(
+            {
+                component["component_id"]: component["normalization"][
+                    "lineage_fingerprint"
+                ]
+                for component in normalization_components
+            }
+        ),
+        "components": normalization_components,
+    }
     reverse_target_entries = [
         entry
         for entry in staging["reverse_ledger"]
         if entry["edge_id"] in fresh_target_edge_ids
     ]
-    reverse_normalization = graph_module.constrained_normalize_boundary_chain(
-        reverse_target_entries,
-        staging["reverse_ledger"],
+    reverse_target_components = partition_target_residual_components(
+        reverse_target_entries
     )
+    reverse_normalization_components = [
+        {
+            "component_id": component["component_id"],
+            "normalization": graph_module.constrained_normalize_boundary_chain(
+                component["entries"],
+                staging["reverse_ledger"],
+            ),
+        }
+        for component in reverse_target_components
+    ]
+    reverse_normalization = {
+        "records": [
+            record
+            for component in reverse_normalization_components
+            for record in component["normalization"]["records"]
+        ],
+        "raw_edge_exactly_once": all(
+            component["normalization"]["raw_edge_exactly_once"]
+            for component in reverse_normalization_components
+        ),
+        "lineage_fingerprint": batched_module._stable_fingerprint(
+            {
+                component["component_id"]: component["normalization"][
+                    "lineage_fingerprint"
+                ]
+                for component in reverse_normalization_components
+            }
+        ),
+        "components": reverse_normalization_components,
+    }
     direct_opposite_incidence_census = build_direct_opposite_incidence_census(
         normalization,
         staging["forward_ledger"],
@@ -602,7 +751,7 @@ def main(arguments):
         preview_utils.source_fingerprint(source_object) == source_fingerprint_before
     )
     report = {
-        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V2",
+        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V3",
         "status": "PROTOTYPE",
         "phase_c_gate": "STOP",
         "decision": (
@@ -660,6 +809,7 @@ def main(arguments):
             "graph_order_invariant": graph_order_invariant,
             "subtraction_order_invariant": subtraction_order_invariant,
             "producer_job_count": len(subtraction["producer_jobs"]),
+            "target_residual_component_count": len(target_components),
             "regular_claim_edge_count": len(subtraction["regular_claims"]),
             "setback_proof_edge_count": sum(
                 len(proof["edge_ids"])
@@ -679,8 +829,8 @@ def main(arguments):
             "all_maximal_source_chains_have_unique_direct_witness": graph[
                 "all_subchains_resolved"
             ],
-            "expected_two_normalized_edges": (
-                len(normalization["records"]) == 2
+            "expected_normalized_edge_count": len(
+                normalization["records"]
             ),
             "target_residual_identity_unchanged": not target_identity_changed,
             "source_unchanged": source_unchanged,
@@ -693,7 +843,7 @@ def main(arguments):
             ),
             "probe_go": (
                 graph["all_subchains_resolved"]
-                and len(normalization["records"]) == 2
+                and bool(normalization["records"])
                 and not target_identity_changed
                 and source_unchanged
                 and normalization_order_invariant

@@ -9793,6 +9793,48 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         == ["normalized:a", "normalized:b"],
         "Continuous normalized fragments did not merge into one maximal chain",
     )
+    boolean_split_second_entry = {
+        **second_opposite_entry,
+        "endpoint_tokens": ["right:v1", "right:split:v1"],
+    }
+    boolean_split_candidate_entry = {
+        **second_opposite_entry,
+        "edge_id": "right:claimed:split",
+        "endpoint_tokens": ["right:split:v1", "right:v2"],
+    }
+    boolean_split_face_graph = graph_module.build_residual_ownership_graph(
+        normalization["records"],
+        (
+            *raw_entries,
+            opposite_entry,
+            boolean_split_second_entry,
+            boolean_split_candidate_entry,
+        ),
+        complete_faces,
+        allowed_source_patch_pairs=(authoritative_patch_pair,),
+    )
+    ensure(
+        boolean_split_face_graph["all_subchains_resolved"]
+        and len(boolean_split_face_graph["maximal_source_chains"]) == 1
+        and boolean_split_face_graph["maximal_source_chains"][0]["status"]
+        == "UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN"
+        and boolean_split_face_graph["maximal_source_chains"][0][
+            "candidate_face_coverage_complete"
+        ]
+        and not boolean_split_face_graph["maximal_source_chains"][0][
+            "candidate_face_exactly_once"
+        ]
+        and boolean_split_face_graph["maximal_source_chains"][0][
+            "ordered_candidate_edge_ids"
+        ]
+        == [
+            "right:claimed:0",
+            "right:claimed:1",
+            "right:claimed:split",
+        ],
+        "Boolean-split candidate Face did not resolve as one open chain: "
+        f"{boolean_split_face_graph}",
+    )
     cross_segment_graph = graph_module.build_residual_ownership_graph(
         (
             {
@@ -10046,6 +10088,7 @@ def test_feature_chamfer_residual_ownership_graph_occluded_opposite_contract(
         "signature_conflict": signature_conflict_graph,
         "geometric_opposite_rejected": geometric_opposite_graph,
         "maximal_fragment_chain_accepted": maximal_chain_graph,
+        "boolean_split_face_chain_accepted": boolean_split_face_graph,
         "cross_segment_merge_rejected": cross_segment_graph,
         "protected_port_crossing_rejected": protected_port_graph,
         "malformed_candidate_lineage_rejected": malformed_candidate_graph,
