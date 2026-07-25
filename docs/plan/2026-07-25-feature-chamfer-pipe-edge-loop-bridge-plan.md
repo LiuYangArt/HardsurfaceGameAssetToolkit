@@ -56,13 +56,15 @@ Stop：无法确定哪两组边属于该 Pipe，或者选择范围混入其他�
 Go：Blender 返回 Bridge Faces，选中的两侧均被连接。
 Stop：Bridge 没有生成 Faces、连接到其他 Pipe，或产生明显翻面、跨槽连接。
 
-### Step 3 — 真实目标验证
+### Step 3 — 第一阶段优先验证
 
-按以下顺序从目标 Operator 运行：
+第一阶段优先让 `tricky` 以外的三个测试文件可用：
 
-1. `tricky / Solid.004 / r0.03`；
-2. `tricky / Solid.004 / r0.01`；
-3. `mixed / Extruded.002 / r0.03`。
+1. `simple`：2 个对象 × 2 个 radius，共 4 个 cell；
+2. `tricky_b`：2 个对象 × 2 个 radius，共 4 个 cell；
+3. `mixed`：1 个对象 × 2 个 radius，共 2 个 cell。
+
+`tricky` 的 2 个对象 × 2 个 radius 共 4 个 cell 延后到第二阶段；它们允许安全失败，不阻塞第一阶段交付。
 
 每个目标保存可打开的 `.blend` 和固定近景，检查：
 
@@ -72,24 +74,27 @@ Stop：Bridge 没有生成 Faces、连接到其他 Pipe，或产生明显翻面�
 - 正逆 batch 顺序结果一致；
 - 失败会完整回滚，不留下半成品。
 
-三个目标都通过后，才进入正式接入。
+第一阶段 Go：上述三个优先文件的 10 个 cell 全部从目标 Operator 得到 `PRODUCT_SUCCESS`；`tricky` 即使失败，也必须保持 source 不变、完整回滚且不留下半成品。不得用 fixture 特判换取这 10 个 cell 通过。
 
-### Step 4 — 正式接入与完整矩阵
+### Step 4 — 第一阶段正式接入与分层矩阵
 
 - 将相同流程接入正式 `FINALIZE`；
-- 从 UI 入口运行完整 14 cells × 3 repetitions；
+- 从 UI 入口先运行优先 10 cells × 3 repetitions；
+- 另外运行或记录 `tricky` 4 cells 的安全失败结果，但不计入第一阶段产品成功率；
 - 保存每个 cell 的结果、日志和近景；
 - 独立 Spec Audit 核对正式 runtime 确实走 Pipe 两侧完整边界 → Blender Bridge，而不是历史 pairing/canonicalization 旁路。
 
-Go：完整矩阵和回滚门禁通过，目标 Operator 与视觉结果通过。
-Stop：任何目标只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge 失败或修改槽外模型才能通过。
+Go：优先 10 cells 全部通过，目标 Operator、视觉结果、source 不变和回滚门禁通过；此时可作为第一阶段可用成果交付。
+Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge 失败或修改槽外模型才能通过。
+
+第二阶段再处理 `tricky` 4 cells。它们全部通过后，才把范围提升为完整 14-cell 产品矩阵通过。
 
 ## 4. 四层验收
 
 1. `Algorithm`：不等数量的两组 open Edge Loop 可直接 Bridge；已有 5-vs-3 证据继续保留。
 2. `Backend`：真实 Pipe 能提取两侧完整边界并生成 Bridge Faces。
 3. `Operator`：正式 UI/Operator 已接入该路径，失败可回滚。
-4. `Visual/Product`：三个重点目标及完整矩阵的真实文件和固定近景通过。
+4. `Visual/Product`：第一阶段先要求 `simple / tricky_b / mixed` 三个文件的 10 个 cell 真实文件和固定近景通过；`tricky` 留到第二阶段。
 
 低层通过不能替代高层。当前仍为 `PROTOTYPE / PHASE C STOP`，尚未接入正式 runtime。
 
@@ -108,4 +113,4 @@ Stop：任何目标只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge 失
 
 ## 6. 当前下一步
 
-先在 `tricky / Solid.004 / r0.03` 上，从目标 Operator 的 Manifold Boolean 结果按 Pipe 提取两侧完整边界，直接执行 Blender Bridge，并输出可检查 `.blend` 与近景。通过后再依次验证另外两个目标。
+先从 `simple` 开始，随后验证 `tricky_b` 和 `mixed`。每个 cell 都从目标 Operator 的 Manifold Boolean 结果按 Pipe 提取两侧完整边界，直接执行 Blender Bridge，并输出可检查 `.blend` 与近景。优先 10 cells 通过并正式接入后，再单独处理 `tricky`。

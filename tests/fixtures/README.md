@@ -20,4 +20,4 @@
 - Windows 与 macOS 共用同一 fixture 文件和 hash。
 - 若 fixture 必须更新，新增文件或显式更新 hash、矩阵基线和变更原因，不能静默覆盖。
 
-当前推进计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。完整产品矩阵仍包含 14 个 cell；定向诊断或少量回归通过，不代表“除 tricky 外全部通过”。
+当前推进计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。第一阶段优先验证 `simple`、`tricky_b`、`mixed` 三个 fixture，共 10 个 cell；10/10 产品成功即可作为第一阶段可用成果。`tricky` 的 4 个 cell 允许安全失败并延后到第二阶段，但必须单独报告且不能修改 source 或留下半成品。完整产品范围最终仍是 14 个 cell。

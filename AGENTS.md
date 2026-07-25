@@ -72,6 +72,7 @@
 - 对同一根 Pipe，只需选中槽口左右两侧完整 Edge Loop，一次性交给 Blender 原生 Bridge；两侧 Vertex / Edge 数量无需一致，也不要求逐点、逐边或逐 fragment 对应。
 - duplicate/degenerate、零面积、degree、branch、cycle、normalization、canonicalization 和 raw→canonical 诊断不是 Bridge 前置门槛；只有实际选不到两组完整 Pipe 边界、混入其他 Pipe、Bridge 失败或最终产品验收失败时才 Stop。
 - 旧 pre-Boolean pairing、maximal-chain、Merge/canonicalization 与 operand 调整文档仅为历史证据，不得恢复为当前开发方向。
+- 第一阶段优先 `simple`、`tricky_b`、`mixed` 三个 fixture 的 10 个 matrix cells；它们全部通过即可作为第一阶段可用成果。`tricky` 的 4 个 cells 允许安全失败并延后处理，不得阻塞第一阶段交付，但失败必须保持 source 不变和完整回滚。
 
 ### 目标入口契约
 

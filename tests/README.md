@@ -84,6 +84,8 @@ Phase C evidence runner 会为每次 full gate 创建唯一 artifact 目录，�
 并写入 Git/argv/code/Blender SHA-256 与 artifact manifest。host-side fake-green
 合同可独立运行：
 
+> 2026-07-25 第一阶段产品门槛：优先 `simple`、`tricky_b`、`mixed` 的 10 cells × 3 repetitions 全部 `PRODUCT_SUCCESS`；`tricky` 4 cells 可安全失败并延后，不阻塞第一阶段交付。完整 14-cell gate 继续作为第二阶段最终目标。
+
 ```bash
 python3 -m unittest tests.test_feature_chamfer_evidence_runner
 ```
