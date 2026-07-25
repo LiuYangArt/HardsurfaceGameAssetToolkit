@@ -66,6 +66,13 @@
 
 ## Agent 规格对齐与阶段门禁
 
+### Feature Chamfer Phase C 当前产品语义
+
+- 当前唯一计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。
+- 对同一根 Pipe，只需选中槽口左右两侧完整 Edge Loop，一次性交给 Blender 原生 Bridge；两侧 Vertex / Edge 数量无需一致，也不要求逐点、逐边或逐 fragment 对应。
+- duplicate/degenerate、零面积、degree、branch、cycle、normalization、canonicalization 和 raw→canonical 诊断不是 Bridge 前置门槛；只有实际选不到两组完整 Pipe 边界、混入其他 Pipe、Bridge 失败或最终产品验收失败时才 Stop。
+- 旧 pre-Boolean pairing、maximal-chain、Merge/canonicalization 与 operand 调整文档仅为历史证据，不得恢复为当前开发方向。
+
 ### 目标入口契约
 
 涉及 UI、Blender Operator、Geometry Nodes 或用户工作流的任务，修改前必须在计划或 tasklist 中明确并核对：
