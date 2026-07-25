@@ -66,10 +66,9 @@
 - Feature Chamfer GN complex region fail-closed（旧 Finalize 验收已隔离，等待后续阶段重新接入）
 - Feature Chamfer batched Phase A：正式 Preview 持久化的 `GN_PREVIEW_PIPE_V1` 必须与实际 owned Curve 的 spline/cyclic 几何一致；测试禁用二次 `_build_preview_feature_graph`，证明 backend 只消费冻结合同
 - Feature Chamfer batched Phase B：产品矩阵必须执行真实正序/逆序 Cut probe，要求几何 signature 相等、batch 数一致，且 signature 不得复用 graph/pipe metadata fingerprint 冒充几何证据
-- Feature Chamfer batched Phase C：`SHORT_COMPONENT_SETBACK_V1` 只允许贴近唯一 Plan/overlap 边界的单侧单 Edge；双侧、atom 内部、跨 span/convexity 或超长 component 必须 fail-closed
-- Feature Chamfer regular strip：DP 在 Phase C 可拒绝会生成零面积 Face 的 correspondence step；若无替代单调路径则返回结构化 `NO_MONOTONIC_CORRESPONDENCE_PATH`
-- Feature Chamfer regular strip：Phase C DP 可优先选择满足既有 signed-width/relative-advance hard guard 的路径，不放宽任何验收阈值
-- Feature Chamfer Phase C pre-Boolean boundary pairing：synthetic single-Pipe 的 constrained normalization、raw→normalized exactly-once、strand-scoped Plan Patch pair、相邻 Cutter Face→Edge/chain incidence，以及 missing/duplicate/conflict fail-closed 合同；C4 几何 opposite Face 不得冒充 Boundary consumer
+- Feature Chamfer 历史 Phase C 回归：旧 setback、DP correspondence、pre-Boolean pairing、normalization 与 exactly-once 合同仅防止旧代码静默回归，不代表当前产品路线或 Bridge 前置门槛
+- Feature Chamfer 当前 Phase C 合同：按同一 Pipe 取得槽口两侧完整 Edge Loop，一次性交给 Blender Bridge；允许两侧 Vertex/Edge 数量不同和 tri/quad 混合结果，不要求逐边/逐点对应
+- 当前 Phase C 只在无法找到两组完整 Pipe 边界、混入其他 Pipe、Bridge 实际失败或最终结果破坏槽外模型时停止；中间诊断中的重合、零面积、degree、branch、cycle 与 canonicalization 不单独阻止 Bridge
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前实验实现只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
@@ -93,7 +92,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。旧 Finalize 不再作为当前阶段验收；复杂 region 保持 fail-closed。
 > 多 Pipe 不再先生成 Union Mesh；每根 Pipe 保持独立，并通过 Cutter Collection 执行 Exact Difference。默认 `Boolean Preview` 保留未 Apply 的 Boolean Modifier，便于手动调整 solver 参数；只有检测到近似垂直 terminal face 的 Pipe 端点才延长一个 radius，surface continuation 与 ambiguous 端点不延长。`CUTTER_UNION` 枚举为兼容旧 redo 数据保留，UI 显示名已改为 Cutter Set。
 > 进入 `OPEN_BOUNDARY` 及后续阶段时才 Apply Boolean；Apply 前给原 Faces 写入 `hst_pipe_original_face`，Apply 后只删除未继承该标记的槽面，避免 BVH 距离误删原模型大面。
-> `PATCHED` 按 Pipe ID 与 source Surface Patch ID 配对两侧 boundary rail，先执行 Bridge Edge Loops，再对剩余闭合洞口执行 Fill；无法形成闭合洞时 fail-closed，不会用旧 Bevel 结果伪装成功。
+> 当前 Phase C 方向按 Pipe ID 取得槽口两侧完整 Edge Loop，一次性交给 Blender Bridge；source Surface Patch 可辅助限定选择范围，但不建立逐边 correspondence。两侧数量可以不同，Blender 负责内部连接。Bridge 后再检查最终封闭性和槽外 source 未误改。
 > PATCHED 后会 dissolve chamfer 内部共面 Edge，写入 FACE Boolean attribute `hst_pipe_chamfer`，并用 `POLYINTERP_LNORPROJ` Data Transfer 从隐藏的原 Mesh 传递 custom normals。
 
 ## Experimental Pipe Chamfer API Probe
@@ -110,7 +109,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 - 该 artifact 仅记录 2026-07-19 的历史 probe，不代表当前发布/runtime 路线。
 - `Points to SDF Grid → Grid to Mesh` 已确认废弃：体素重建会丢失 Feature/Patch ownership、成对 rails 与 junction ports，不得用于正式 Preview/Finalize。
 - 失败复盘：`docs/postmortem/2026-07-19-feature-chamfer-sdf-patch-failure.md`。
-- 当前正式方向为结构化 Curve Pipe + Exact Boolean provenance + batched regular strip/junction handoff。
+- 该历史路线随后继续演进；当前 Phase C 方向以 Pipe 两侧完整 Edge Loop → Blender Bridge 计划为准。
 
 ## Feature Chamfer Structured Curve Phase 1 Prototype
 

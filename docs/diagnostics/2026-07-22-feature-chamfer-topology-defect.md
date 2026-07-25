@@ -1,6 +1,6 @@
 # Feature Chamfer topology defect diagnosis
 
-> Scope note: 此处 `VERIFIED` 仅指历史 mixed / radius=0.01 的局部 topology defect 验证，不代表 14-cell Feature Chamfer 通用化矩阵通过。当前产品基线见 `docs/diagnostics/feature-chamfer-generalization/phase-0-baseline.md`。
+> Scope note: 此处 `VERIFIED` 仅指历史 mixed / radius=0.01 的局部 topology defect 验证，不代表 14-cell Feature Chamfer 通用化矩阵通过，也不决定当前 Bridge。当前执行计划见 `docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。
 
 Status: `VERIFIED`. Algorithm、Backend、目标 Operator 与固定近景门禁已通过；
 仍需用户在真实 Blender UI 中确认后才能标记为 `ACCEPTED`。

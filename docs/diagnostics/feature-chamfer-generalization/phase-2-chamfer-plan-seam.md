@@ -1,5 +1,7 @@
 # Phase 2 — Shared ChamferPlan Shadow Seam
 
+> 2026-07-25：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`。本文的 Phase GO 和下一阶段顺序只作历史记录，不决定当前 Bridge。当前计划见 [`../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+
 > 日期：2026-07-22；状态：`PROTOTYPE / GO`；目标 Operator：`hst.feature_chamfer_gn`。
 
 ## 入口与阶段边界

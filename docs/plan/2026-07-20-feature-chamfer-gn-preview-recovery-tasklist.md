@@ -1,5 +1,7 @@
 # Feature Chamfer GN Preview 恢复 Tasklist
 
+> 2026-07-25：`HISTORICAL / SUPERSEDED / DO NOT RESUME`。本文的 Phase 状态、Rail A/B、correspondence、Boundary consumption 和清理门禁只保留为历史。当前唯一计划是 [`2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](./2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+
 > 日期：2026-07-20  
 > 目标入口：`hst.feature_chamfer_gn`，首次点击 action=`PREVIEW`，再次点击 action=`FINALIZE`
 > 当前状态：Phase 0 VERIFIED；Phase 1A PROTOTYPE；Phase 1B / Task 2 ACCEPTED（含 2.2A–C）；Phase 2 VERIFIED；Phase 3–6 INTEGRATED / 自动验证通过，等待真实 UI 视觉验收。

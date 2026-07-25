@@ -1,8 +1,10 @@
-# Feature Chamfer 通用化 Phase 1 失败剖面
+# Feature Chamfer 通用化 Phase 1 失败剖面（历史诊断）
 
-> 日期：2026-07-22；状态：`PROTOTYPE`；Phase 1：`GO`；产品整体：`NOT VERIFIED`。
+> 日期：2026-07-22；状态：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`；当时 Phase 1：`GO`；产品整体：`NOT VERIFIED`。
 > 目标 Operator：`hst.feature_chamfer_gn`；动作：`INVOKE_DEFAULT` 下 `PREVIEW` → `FINALIZE`。
 > 自动证据：`tests/artifacts/feature_chamfer_matrix/results.json`；每 cell `diagnostics.json` 与 `preview.blend` / `final.blend`。
+
+> 2026-07-25：本文只保留历史失败分类。旧 zipper、correspondence、degree 和 ownership 诊断不再决定当前 Bridge 设计；当前计划按同一 Pipe 选择槽口两侧完整 Edge Loop，直接调用 Blender Bridge。
 
 ## 入口契约与结论
 
@@ -107,7 +109,7 @@ mixed / `Extruded.002` / 0.03 的 `error_code` 是 `regular_patch_shared_rail_in
 2. **根因假设 B**：geometry guard 在验收 rail pair 时只看 inlier ratio 与投影连续性，未对 `max_edge_length / radius` 设限，导致 Numerically unreliable 的 pair 进入 strip builder。
 3. **根因假设 C**：`_zipper_bridge_open` 的 `expected_width` 使用固定 `radius * sqrt(2)`，但某些 rail pair 实际宽度因来源不同（open pipe 与 boolean boundary 混合）与该值差异较大，应允许按 pair 自适应宽度或 fallback 到三角化。
 
-## Phase 2 尚需回答的问题
+## 历史 Phase 2 待办（已废弃）
 
 - 该 group 17 span 1 的 rail pair 在 Preview 阶段是否可见？其长边对应 source mesh 的哪个 Sharp Edge / face boundary？
 - 若对 group 17 span 1 的边界边做均匀重采样（subdivide 长边），strip builder 是否通过？是否生成合法 mesh？
@@ -128,6 +130,6 @@ python tools/run_feature_chamfer_matrix.py --blender /Applications/Blender.app/C
 
 Phase 1 重跑结果：`phase_0_go=true`、`phase_1_go=true`。完整回归 80/81；唯一失败仍为已冻结的 `gn_finalize_mixed_fixture_terminal_topology_regression`，对应 mixed / 0.01 的已知产品回归。
 
-## 下一阶段（Phase 2）入口
+## 历史下一阶段入口（已废弃）
 
-按 roadmap 进入共享 `ChamferPlan` shadow prototype；新 plan 不驱动最终 Mesh。group 17 span 1 的长边证据作为 `StripCorrespondence` 采样合同输入，不提前修改正式 runtime 或 guard。
+当时计划进入共享 `ChamferPlan` shadow prototype，并把长边证据作为 `StripCorrespondence` 输入；该待办不再作为当前执行入口。

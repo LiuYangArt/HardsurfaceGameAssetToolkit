@@ -1,5 +1,7 @@
 # Feature Chamfer — Geometry Nodes Junction Cutter Handoff
 
+> 2026-07-25：`HISTORICAL / SUPERSEDED / DO NOT RESUME`。本文的 degree/junction 和 Boundary degree=2 条件不再是 Bridge 前置门槛。当前唯一计划是 [`2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](./2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+
 > 日期：2026-07-19  
 > Blender：5.1.2（项目目标 5.0+）  
 > 输入试件：`C:/Users/LiuYang/Desktop/pipe-chamfer/pipe-chamfer-mixed.blend`  

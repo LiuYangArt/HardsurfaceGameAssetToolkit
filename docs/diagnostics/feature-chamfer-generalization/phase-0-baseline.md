@@ -1,5 +1,7 @@
 # Feature Chamfer 通用化 Phase 0 基线
 
+> 2026-07-25：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`。本文只保留旧矩阵基线，不决定 Direct Edge-Loop Bridge 的执行或门禁。当前计划见 [`../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+
 > 日期：2026-07-22；状态：`PROTOTYPE`；Phase 0：`GO`；产品整体：`NOT VERIFIED`。
 
 ## 入口与验收合同

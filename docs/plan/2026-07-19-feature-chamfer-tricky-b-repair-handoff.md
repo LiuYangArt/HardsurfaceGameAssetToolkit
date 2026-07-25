@@ -1,5 +1,7 @@
 # Feature Chamfer `tricky_b` 修复 Handoff
 
+> 2026-07-25：`HISTORICAL / SUPERSEDED / DO NOT RESUME`。本文的逐边 ownership、方向、zero-area 和 junction 实施顺序不再是当前 Bridge 前置步骤。当前唯一计划是 [`2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](./2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+
 日期：2026-07-19
 状态：根因已定位，真实失败尚未修复；本提交只冻结修复方案，不提交当前实验代码。
 目标文件：`C:/Users/LiuYang/Desktop/pipe-chamfer/pipe-chamfer-test-tricky_b.blend`

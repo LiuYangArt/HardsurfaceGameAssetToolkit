@@ -1,5 +1,7 @@
 # Feature Chamfer 结构化 Curve Pipe / Rail Solver Handoff
 
+> 2026-07-25：`HISTORICAL / SUPERSEDED / DO NOT RESUME`。本文的 Rail Solver、coverage 和恢复顺序均不是当前门禁。当前唯一计划是 [`2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](./2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)：按同一 Pipe 选择槽口两侧完整 Edge Loop，直接 Blender Bridge。
+
 > 日期：2026-07-19  
 > 状态：候选路线已收敛；先做受控 spike，不宣称 Finalize 可用  
 > Blender：固定使用 `C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe`（本机 5.1.2）  

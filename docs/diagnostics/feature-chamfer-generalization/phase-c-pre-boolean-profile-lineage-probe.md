@@ -1,104 +1,79 @@
-# Phase C Pre-Boolean Profile Lineage Probe（历史诊断，主路线已转向 Pre-Delete Groove FaceGraph）
+# Feature Chamfer Phase C — 历史配对与 Boolean 诊断摘要
 
-日期：2026-07-24
-状态：`HISTORICAL DIAGNOSTIC / SUPERSEDED AS PAIRING ROUTE / PHASE C STOP`
+状态：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`
 
-> 当前权威实施计划为 `docs/plan/2026-07-24-feature-chamfer-phase-c-residual-ownership-pivot.md`。本文件保留旧 probe 的证据和失败边界；其中 profile-neighbor direct incidence 不再是当前两侧开放边配对路线。
+> 当前执行计划：[`../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
+>
+> 用户已确认：只需按同一根 Pipe 选中槽口左右两侧完整 Edge Loop，直接执行 Blender Bridge。两侧 Vertex / Edge 数量不必相同，也不需要逐点或逐边对应。本文记录的重合、零面积、degree、branch、cycle、身份冲突和 canonicalization 结果，不再是 Bridge 前置门槛。
 
-## 目标入口
+## 1. 为什么这条路线被停止
 
-```text
-Feature Chamfer GN
-→ hst.feature_chamfer_gn(action=PREVIEW)
-→ hst.experimental_feature_chamfer_batched_finalize(PHASE_C_REGULAR_CORE)
-→ independent Exact staging
-→ probe-only pre-Boolean profile lineage
-```
+早期实现试图在 Bridge 前证明：槽口一侧的每条 Edge 都有唯一对侧 Edge，每段输入只被消费一次，并且 Boolean 前后的 Face/Edge 身份可以完整传递。
 
-正式 `FINALIZE`、Phase D/E 和 source Mesh 未修改。完整 lineage 由显式
-`freeze_complete_profile_lineage` probe 开关启用；既有 Adapter 默认路径不启用。
+这把两个不同问题混在了一起：
 
-## 历史实现合同（已由 Pre-Delete Groove FaceGraph pairing 取代）
+1. 项目需要确定“哪两组完整 Edge Loop 属于同一根 Pipe”；
+2. Blender 负责“如何在两组 Edge Loop 之间生成 Faces”。
 
-- 当时在 Boolean 前冻结 `Pipe / strand / profile side / opposite side / longitudinal segment / port incidence`。
-- 当时的 probe 在 Boolean 后通过 transferred cutter Face identity 与实际 Boundary Edge incidence 建立候选。
-- 当时的 consumer 合同要求相邻 Cutter Face direct incidence；mixed 已证明该条件不完备，现不再作为通用 Go witness。
-- 禁止项仍然有效：不沿 longitudinal graph 查找最近 sink，不使用 nearest/BVH/坐标、单 Pipe fallback、synthetic owner/port。
-- constrained normalization 合同仍保留：只合并完整 lineage 一致的近共线 degree-2 fragment，并保留 raw→normalized exactly-once。
+用户在 Blender 5.1.2 的真实模型上已经证明普通 Bridge 支持两侧 Edge 数量不同，并可生成 tri/quad 混合结果。因此项目不应继续自行建立逐边对应，也不应先整理两侧为相同分段。
 
-## Synthetic 门禁
+## 2. 仍然有效的事实
 
-single-Pipe fixture 已通过：
+- Preview 中的 Pipe 槽视觉结果正确；
+- Blender Manifold Boolean 能生成该槽；
+- 切口的两侧边界实际存在；
+- 真实 5-vs-3 open Edge Loop 已成功 Bridge，并生成 8 个 Faces；
+- 三个重点目标的 Manifold 只读验证均保持 source 不变，正逆 batch 结果一致；
+- 把多 Pipe 批次拆成单 Pipe 后，中间诊断记录仍可能存在，说明这些记录不是“多 Pipe 一起切”独有现象。
 
-- unique direct opposite consumer；
-- missing direct consumer → `UNRESOLVED`；
-- duplicate direct consumer → `UNRESOLVED`；
-- transferred Face identity conflict → normalization fail-closed。
-- candidate Edge 在同一 maximal source component 内可去重；跨不同 maximal components 重复占用 → `UNRESOLVED`；
-- 同一 strand/Patch pair 出现重复权威 correspondence → `UNRESOLVED`；
-- C4 `+2` 几何相对面不得冒充 Boundary consumer。
+这些事实支持直接验证 Pipe 两侧完整边界 → Blender Bridge，不支持继续扩展逐边配对或清理路线。
 
-回归 artifact：`/private/tmp/hst-phase-c-maximal-chain-regression-20260724-04/`。
+## 3. 历史诊断结果的正确解释
 
-## 真实目标结果
+历史探针曾记录：
 
-`tricky__solid_004__r0p030` 从目标 Operator 重跑并复现：
+- 某些公共边图存在 degree-4 或 cycle；
+- 某批次出现少量重合 Vertex / Edge、零长度 Edge 或零面积 Face 记录；
+- 旧 witness 数量和实际公共 Edge 数量有差异；
+- 逐边/逐段 pairing 无法得到唯一解释；
+- Merge、局部重建与 canonicalization 无法同时满足旧门禁。
 
-- 3 raw Edge → 2 normalized Edge；
-- raw→normalized exactly-once；
-- 两条 normalized Edge 均为 `profile side 1 → opposite side 3`；
-- residual 自身 pre-Boolean profile identity 完整；
-- 旧 C4 `+2` pairing 的 direct incidence 为 `0`；修正为权威 Patch pair + 相邻 Cutter Face 后已找到真实 candidate Edges；
-- 正逆 staging fingerprint 一致；
-- source fingerprint unchanged。
+这些数据只描述中间计算结果。用户在可见槽中没有观察到对应的产品缺陷；现有证据也没有证明它们会阻止 Blender Bridge。此前把这些诊断描述为“槽切完后的内部结构不干净”并据此转向 operand、Merge 或 canonicalization，是过度推断。
 
-用户提供的 Blender Edit Mode 截图确认该位置的对侧 Boolean Edge 实际存在。新增全量 Pipe incidence census 后，Pipe 1 的 561 条 Boundary incidence 只出现 profile side `0/1`，side `2/3` 为零。根因不是 Face ID transfer 丢失，而是 resolver 把 C4 几何相对面 `side 1 → side 3` 错当成了两条 Boundary rails 的配对关系。
+以后只有当两侧完整 Edge Loop 已正确选中，而 Blender Bridge 实际失败、连接错误或破坏槽外模型时，才重新使用这些 artifact 排查。
 
-当时在该局部 cell 找到的候选配对为同一 strand 的 `StripCorrespondence Patch [1,2]`：Patch 1 / side 1 的两个 normalized records 通过 pre-Boolean `profile_neighbor_face_signatures`，分别直接命中 Patch 2 / side 0 的 Edge `d08fa882…`，以及由 `d08fa882… + 78c620a9…` 组成的 chain。该证据只使用 transferred Face ID → Edge incidence；后来 mixed 遮挡段证明它不能作为通用权威 pairing。
+## 4. 已废弃的开发方向
 
-resolver 与 synthetic contract 已改为“strand-scoped Plan Patch pair + 相邻 Cutter Face direct Edge/chain”。fresh target artifact 已找到所有 direct incidence，raw exactly-once、source unchanged、正逆 staging 均通过；但独立 Spec Audit 发现 Edge `d08fa882…` 同时落入两个 normalized consumer chain。全局 candidate Edge exactly-once 门禁已补上，该目标现在正确 fail-closed 为 `OVERLAPPING_DIRECT_OPPOSITE_CONSUMER_CHAIN`。
+- Pre-Boolean profile-neighbor direct incidence；
+- Groove FaceGraph → unique opposite chain；
+- maximal source/candidate chain pairing；
+- raw/normalized/candidate exactly-once 作为 Bridge 门禁；
+- Bridge 前的 Merge by Distance、局部 rebuild 或 canonicalization；
+- 为消除 degree/branch/cycle 而修改 cutter batching、端部或穿透范围；
+- 要求两侧相同分段或建立逐 Vertex 对应。
 
-但正式 Phase C Adapter 尚未接入该 resolver，仍以 `UNPROVEN_PLAN_BOUNDARY_EDGE` fail-closed；因此整体 Phase C 继续保持 `STOP / PROTOTYPE`。正式 runtime、Phase D/E 仍未进入。
+相关代码和测试目前只作为历史诊断/回归保留；它们不得阻止当前 Direct Edge-Loop Bridge probe。
 
-曾沿 Pre-Boolean Cutter Profile Lineage 路线实现 maximal-chain pairing：两个共享 endpoint token 的 normalized fragments 被合并为一个 source chain；对侧两条真实 candidate Edges 形成唯一连续 open chain。该结果保留为历史局部证据，不再代表当前主路线；mixed 遮挡段证明 profile-neighbor direct incidence 不完备。
+## 5. 历史证据索引
 
-最新 artifact：
+以下 artifact 保留用于复盘，不代表当前 Stop / Go：
 
-- `/private/tmp/hst-phase-c-maximal-chain-real-20260724-05/report.json`
-- `/private/tmp/hst-phase-c-maximal-chain-real-20260724-05/phase_c_pre_boolean_profile_lineage.blend`
+- Manifold 三目标首轮：
+  - `/private/tmp/hst-phase-c-manifold-tricky-r0030-20260725-02/report.json`
+  - `/private/tmp/hst-phase-c-manifold-tricky-r0010-20260725-01/report.json`
+  - `/private/tmp/hst-phase-c-manifold-mixed-r0030-20260725-01/report.json`
+- `tricky r0.03` 边界诊断：
+  - `/private/tmp/hst-phase-c-manifold-tricky-r0030-20260725-07/report.json`
+- Merge 对照：
+  - `/private/tmp/hst-phase-c-local-merge-campaign-20260725-01/report.json`
+- Boolean 原始记录 census：
+  - `/private/tmp/hst-phase-c-boolean-defect-census-r0030-20260725-04/report.json`
+  - `/private/tmp/hst-phase-c-boolean-defect-census-r0030-20260725-04/phase_c_boolean_defect_census.blend`
+- 单 Pipe 对照：
+  - `/private/tmp/hst-phase-c-singleton-operand-census-r0030-20260725-01/report.json`
 
-## Spec Audit
+## 6. 当前状态
 
-- 首个 maximal-chain 实现独立复审：`P0=0 / P1=0`；只授权 Algorithm/Backend 的只读 `PROTOTYPE` probe Go。
-- 目标 3→2 identity 已复现；probe 对 residual identity 漂移有显式 hard Stop 字段。
-- pre-Boolean complete Face records 参与 direct consumer 决策。
-- `all_maximal_source_chains_resolved` 只接受 `UNIQUE_DIRECT_OPPOSITE_CONSUMER_CHAIN`；Plan port 不能触发本轮 Go。
-- `strand_id` 已进入 pairing key。
-- `longitudinal_segment_ids` 已进入 maximal source component key；跨 segment 共享 token 不得合并。
-- candidate Edge 必须拥有唯一完整 pre-Boolean lineage；无 strand 的 legacy Patch pair 输入直接拒绝。
-- maximal source grouping 不得跨 protected Plan port/junction token。
-- probe-only 开关隔离完整 lineage；既有 `feature_chamfer_batched_adapter_smoke` 通过。
-- synthetic 已覆盖 missing、duplicate、Face identity conflict、C4 `+2` rejection、跨 maximal component overlap、source branch、candidate disconnected/cycle，均 fail-closed。
+当前仍是 `PROTOTYPE / PHASE C STOP`，原因不是上述中间诊断未清理，而是新的 Direct Edge-Loop Bridge 路线尚未从真实目标 Operator 完成自动选择、Bridge 和产品验收。
 
-旧路线当时只达到 Algorithm/Backend 的局部只读 `PROTOTYPE` probe Go。隐藏 Adapter 仍按既有 residual gate `CANCELLED`，正式 runtime/`FINALIZE` 未接入；不得提升为 `INTEGRATED/VERIFIED/ACCEPTED`，Phase C 仍为 `STOP`。
-
-真实目标结果：1 条 maximal source chain（2 个 normalized fragments）唯一对应 1 条 candidate chain（2 条 Edge：`d08fa882…` → `78c620a9…`）；raw/normalized/candidate exactly-once、source unchanged、正逆输入一致。`report.json` SHA-256 为 `01cbc19a9ee837ee4d0ba819a4b7bf73652f863e772eb2174a2918b4426cdb44`，`.blend` SHA-256 为 `b93efbcc9c4f8e4dc56b2d8fb3ced0597d000bc9a65891e28048b557fc55fca0`。
-
-旧路线随后把相同合同只读扩展到 `tricky__solid_004__r0p010` 与 `mixed__extruded_002__r0p030`；当时的“三个 cell 均有 direct witness”门禁现已由 Pre-Delete Groove FaceGraph 门禁取代。隐藏 Adapter runtime 仍未接入。
-
-## 扩展 cell 结果
-
-- `tricky__solid_004__r0p010`：18 raw/normalized Edge 形成 1 条 source open chain；18 条 candidate Edge 形成唯一 open chain，Face coverage 完整、source unchanged、正逆一致，因此该 cell 当时得到旧路线的局部 probe Go。artifact：`/private/tmp/hst-phase-c-maximal-chain-solid004-r0010-20260724-02/report.json`，SHA-256 `4b38afb3972aae3cf842eeff5a35b6506bbbe4f19d844742155842075acdb534`。
-- `mixed__extruded_002__r0p030`：71 raw/normalized Edge 形成 1 条 source open chain；仅找到 65 条 candidate Edge，其中 23 个 source Face identity 没有 direct consumer，candidate token graph 也不是唯一 open chain。因此正确保持 `STOP_UNRESOLVED_DIRECT_WITNESS`；source unchanged、正逆一致。artifact：`/private/tmp/hst-phase-c-maximal-chain-mixed-r0030-20260724-03/report.json`，SHA-256 `c784e5c1a73db1a2881fca4ceb830f1e6c507cfb319cd8578dc77cee6999b5b0`。
-
-三表前，实质阻塞已先缩小为 mixed cell 的 23 个 missing direct Face consumers；随后的 unique open-chain 证据已排除按 protected Plan component 再拆分，且禁止用 nearest、坐标或单 Pipe fallback 补齐。
-
-扩展 cell 独立复审为 `P0=0 / P1=0`：确认 `r0p010` 的同一 pre-Boolean Face 被 Boolean 细分为多条连续 Edge 时，只在完整 candidate union 形成唯一 open chain、Face coverage 完整、跨 chain 无重用时才允许 probe Go；正式 runtime、`FINALIZE` 与 `auto_load.py` 均未修改。
-
-mixed 缺口的 complete cutter Face records → Boundary ledger 三表已完成。24 次 unresolved（23 个唯一 source Face identity）在 source open chain 中是连续的第 `28..51` 段；其 48 次 expected pre-Boolean neighbor Face 引用对应 46 个唯一 signatures，全部各有且仅有一条同 Pipe/segment 的完整 Cutter Face record，但这 46 个 signatures 均未出现在 post-Boolean Boundary ledger。作为对照，另 47 段至少有 direct incidence：每段恰有一个 expected neighbor 在 authoritative Patch 3 Boundary scope 可见，另一个不是 Boundary Face；其中 12 段是 UNIQUE，35 段仍有重复候选，不能称为单段 resolved。截图所示的对侧 Edge 仍由同 Pipe/strand/side/segment census 证明确实存在；当前 hard Stop 的精确原因不是“没有生成边”或 normalization，而是这段连续区域缺少可从 pre-Boolean neighbor Face identity 直接传递到那些 Edge 的 incidence。证据：`/private/tmp/hst-phase-c-mixed-face-lineage-transfer-20260724-03/report.json`，SHA-256 `1a762761c4dab09606c2560c7ce1a91919aa0ce74785c8b00954f1ad4f226dbb`。
-
-当时这进一步排除了“complete cutter lineage 根本没生成”，并要求在 `modifier_apply` 后做 output Face→Edge incidence census。该 census 已在下段完成，因此这里不再是待办；Patch 15 仍只能作几何存在性验证，不能升级成 owner。
-
-raw Boolean output Face ID census 已完成：46 个 expected signatures 全部各自保留为 1 个 groove Face，`PHASE_C_CUTTER_FACE_ID_ATTRIBUTE` 传播完整；但 `46/46` 都是 `FACE_ID_ON_NON_BOUNDARY_GROOVE_FACE`，与 source Face 共享的 Edge 数为 0，marked Boundary Edge 数也为 0。因此 Boundary witness/extraction 没有漏掉本应标记的交线，真正不成立的是“这段 source chain 的 profile-neighbor Face 必须直接接触对侧 Boundary Edge”这一假设。对侧 Edge 和 frozen Face ID 都存在，只是该组 neighbor Faces 位于凹槽内部，不能直接证明对侧 consumer。artifact：`/private/tmp/hst-phase-c-mixed-output-face-incidence-20260724-02/report.json`，SHA-256 `c60442b3bb94c8a9cdefaa7a78ffd5d68bb4b4b79331d9aee7e24e805d1015da`。
-
-Plan lineage 表显示目标 strand 只有 `[3,4]` 与 `[3,5]` 两个 StripCorrespondence，Rail 也只有 Patch `3/4/5`，没有 Patch 15 rail、correspondence 或 junction-port incidence。因此 Patch 15 / side 1 Edge 即使在 token graph 中恰好填补缺口，也没有现有 Plan 身份授权，不能成为 Go witness。结合用户确认的实际删除流程，权威下一步已改为 Boolean 后、删除 Groove Faces 前冻结 Groove FaceGraph→两侧 Boundary Edge pairing；不得把 Patch 15、最近 sink、token-only 或单 Pipe当 fallback。
+下一步只执行新计划：从 `tricky / Solid.004 / r0.03` 的目标 Operator 结果中，按 Pipe 选出槽口两侧完整 Edge Loop，直接 Bridge，并检查最终可见结果、封闭性、槽外 source 不变和回滚。

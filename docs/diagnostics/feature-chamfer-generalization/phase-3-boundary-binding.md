@@ -1,6 +1,8 @@
-# Phase 3 — BoundaryGraph / JunctionPort Binding
+# Phase 3 — BoundaryGraph / JunctionPort Binding（历史诊断）
 
-> 日期：2026-07-22；状态：`PROTOTYPE / STOP`；目标 Operator：`hst.feature_chamfer_gn`。
+> 日期：2026-07-22；状态：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`；目标 Operator：`hst.feature_chamfer_gn`。
+
+> 2026-07-25：本文是历史诊断，不再作为当前门禁。degree、branch、cycle 和逐 Edge 单次消费不能阻止已经按同一 Pipe 正确选中的两侧完整 Edge Loop 进入 Blender Bridge。当前计划见 [`../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`](../../plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md)。
 
 ## 入口与阶段门禁
 
@@ -52,7 +54,7 @@ probe 证明 maximal degree-2 decomposition 与 Edge 单次拓扑消费可行，
 
 因此本轮没有 authoritative binding artifact；`/tmp/hst_phase3_stop_final` 只保留 WIP probe 诊断，不能作为 Go 证据。
 
-## 下一轮入口
+## 历史后续入口（已废弃）
 
 1. 在同一 BMesh 内用 `BMEdge` identity 保留删除槽面前后的 cutter/source provenance，禁止坐标 key。
 2. 建立 cutter component → plan `FeatureStrand/JunctionPort` 显式映射；无 owner 或多 owner ambiguity 必须 fail-closed。
@@ -71,7 +73,7 @@ production Even-Thickness Pipe producer 已用 GN `Curve Endpoint Selection → 
 
 相交 degree-3 production probe 已证明 Collection Exact Boolean 可传播 plan-local component、endpoint token 与 source Patch one-hot Face provenance；但共享 junction 仍产生未归属的 seam Boundary Edges，两个 Rail 也被切成 topology-incompatible fragments。binder 因此稳定返回 `boundary_binding_incomplete`，没有落回 BVH owner。当前证据只达到“authoritative provenance 可达且 fail-closed”，尚未满足 Y/T/X `Boundary Edge consumption=100%`，Phase 3 继续 Stop。
 
-当前状态仅为 `PROTOTYPE / STOP`，未达到 `INTEGRATED`、`VERIFIED` 或 `ACCEPTED`。
+该历史阶段当时为 `PROTOTYPE / STOP`；此状态不描述当前 Direct Edge-Loop Bridge 计划。
 
 ## 2026-07-22 Boundary witness probe
 
@@ -134,7 +136,7 @@ Boundary Edge，source unchanged。artifact：
 这只解决“哪些 Edge 是正式 Boolean 交线”，尚未解决每条 Edge 的 plan-local
 `Pipe/Rail/Patch/JunctionPort` assignment；另外把 cutter 输入 EDGE one-hot attribute
 交给 Collection Modifier 仅传播到 `2/12`，不能作为 owner ledger。故当前仍保持
-`PROTOTYPE / STOP`，下一步必须在 multi-input node 内产生 per-cutter/per-Pipe field，
+历史结论为 `PROTOTYPE / STOP`，当时计划在 multi-input node 内产生 per-cutter/per-Pipe field，
 并从目标 Operator 对两个真实对象验证，才能接 runtime。
 
 multi-input node 内的 field transfer probe 随后补齐了这一步：每个 Pipe 先在其 Cutter
@@ -208,7 +210,7 @@ artifact：
 
 `/tmp/hst_source_port_map_retry/feature_chamfer_multi_input_tricky_solid_004_r0.030.json`
 
-该结论修正了 producer 方向：下一步必须把 Boundary universe 定义为 Boolean 生成的
+该历史结论曾把 producer 方向改为将 Boundary universe 定义为 Boolean 生成的
 intersection/witness ledger；仅带 source-retained identity 的非 Sharp Edge 属于 source
 topology fragment，不能强制绑定 Rail。重新运行 14-cell×3 的目标 Operator matrix
 确认原 source 仍为 closed manifold、source unchanged、Phase 0/1/2 Go；这里没有输入

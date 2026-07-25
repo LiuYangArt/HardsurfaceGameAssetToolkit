@@ -20,4 +20,4 @@
 - Windows 与 macOS 共用同一 fixture 文件和 hash。
 - 若 fixture 必须更新，新增文件或显式更新 hash、矩阵基线和变更原因，不能静默覆盖。
 
-对应推进计划：`docs/plan/2026-07-22-feature-chamfer-generalization-roadmap.md`。
+当前推进计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。完整产品矩阵仍包含 14 个 cell；定向诊断或少量回归通过，不代表“除 tricky 外全部通过”。

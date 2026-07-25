@@ -1,9 +1,9 @@
 # Phase C Clean/Dissolve A/B Probe
 
 日期：2026-07-24  
-状态：`PROTOTYPE / CLEAN PREPROCESS VALID / GRAPH WITNESS REQUIRED / PHASE C STOP`
+状态：`HISTORICAL DIAGNOSTIC / SUPERSEDED / NOT A CURRENT GATE`
 
-> 后续更正：本报告证明的 normalization 结论仍有效；“C4 opposite Face witness 为 0”仅是当时旧 pairing 定义的结果。用户截图和后续 lineage census 已证明真实 Boundary 对侧 Edge 存在，权威后续见 `phase-c-pre-boolean-profile-lineage-probe.md`。
+> 2026-07-25 更正：本报告只证明一次 dissolve 的几何效果，不证明 Direct Edge-Loop Bridge 必须先做 normalization。当前路线直接按 Pipe 选中槽口两侧完整 Edge Loop 并 Bridge；本文记录的碎点、witness 与 maximal-chain 结果不再是 Bridge 前置门槛。
 
 ## 目标入口
 
@@ -35,9 +35,9 @@ Feature Chamfer GN
 
 在当时使用的 C4 `+2` 几何相对面定义下，两者的 witness 数量均为 `0`。后续已确认 C4 几何相对面不等于 Boundary rail partner，因此该数值不能解释为 Boolean 没有产生对侧 Edge。probe 没有使用 nearest、坐标匹配、synthetic owner 或 synthetic port。
 
-结论：近共线碎点确实能解释 3 Edge 中的一次多余分段，但 dissolve 后仍无法独立恢复 regular consumer。原报告的 `clean_route_go=false` 只表示“clean 单独不足以让 Phase C GO”，不应解释为 clean 本身无用。用户检查 `.blend` 后确认被移除点正对应原蓝色问题区域；因此 constrained normalization 保留为 pre-Boolean profile lineage resolver 的预处理，resolver 消费 normalized chain，同时保留 raw → normalized lineage。
+结论：近共线碎点确实能解释一次多余分段，但这不构成 Bridge 前置问题。当时曾计划把 constrained normalization 作为逐边 resolver 的预处理；该决定现已废弃。除非 Direct Edge-Loop Bridge 在正确选中两侧后实际失败，否则不再先 dissolve 或整理局部拓扑。
 
-下一阶段合同：
+历史阶段合同（已废弃）：
 
 ```text
 raw fragmented Boundary Edge
