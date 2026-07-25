@@ -1,5 +1,6 @@
 __pycache__
 __pycache__/**
+*.py[cod]
 **.blend1
 makerelease.bat
 _backup/**
@@ -20,3 +21,7 @@ task_plan.md
 notes.md
 # 测试产物
 tests/artifacts/**
+
+# macOS 元数据
+.DS_Store
+**/.DS_Store
