@@ -32,7 +32,7 @@ Then run:
 ```bash
 /Applications/Blender.app/Contents/MacOS/Blender \
   --background --factory-startup \
-  --python agent-skills/hst-edge-visualizer/scripts/create_edge_visualization.py \
+  --python .agents/skills/hst-edge-visualizer/scripts/create_edge_visualization.py \
   -- SOURCE.blend DIAGNOSTICS.json OUTPUT.blend OUTPUT.png
 ```
 
@@ -43,6 +43,15 @@ The current palette contains three colors. For more than three edges, filter the
 ## Validate
 
 Require Blender exit code `0`, both output files to exist and be non-empty, and the log to contain `Saved` plus a completed render. Open or inspect the PNG only when visual verification is requested.
+
+Before model-side visual inspection, create a lightweight JPEG preview and inspect that preview only. Never pass the rendered PNG to `view_image` with `detail: "original"`.
+
+```bash
+/usr/bin/sips -s format jpeg -s formatOptions 72 -Z 1400 \
+  OUTPUT.png --out OUTPUT-preview.jpg
+```
+
+Require each preview to be at most 350 KB. If it is larger, retry with a 1000 px longest edge and JPEG quality 58. View no more than three previews in one Codex task; crop the region of interest or reuse an existing observation before viewing more images. This prevents diagnostic renders from being embedded into task history at full PNG size and triggering a provider payload limit.
 
 Keep outputs in a run-specific artifact directory, preferably under `/private/tmp`. Never overwrite the source `.blend` or diagnostics.
 

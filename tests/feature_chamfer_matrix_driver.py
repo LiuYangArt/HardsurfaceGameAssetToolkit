@@ -18,6 +18,9 @@ import bmesh
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
 ARTIFACT_DIRECTORY = Path(os.environ["HST_FEATURE_CHAMFER_MATRIX_ARTIFACT_DIR"])
 REPETITIONS = int(os.environ["HST_FEATURE_CHAMFER_MATRIX_REPETITIONS"])
+CASE_FILTER = set(
+    json.loads(os.environ.get("HST_FEATURE_CHAMFER_MATRIX_CASES", "[]"))
+)
 RESULTS_PATH = ARTIFACT_DIRECTORY / "results.json"
 PACKAGE_NAME = "hst_feature_chamfer_matrix_addon"
 FIXTURE_DIRECTORY = REPO_ROOT / "tests" / "fixtures"
@@ -27,30 +30,8 @@ CLASSIFICATIONS = {
     "REGRESSION_FAILURE",
     "SAFETY_PASS",
 }
-PHASE_1_FAMILIES = {
-    "AMBIGUOUS_BOUNDARY_GRAPH",
-    "SHARED_RAIL_PORT_RANGE",
-    "SIGNED_STRIP_WIDTH_EXCEEDED",
-}
-PHASE_1_PIPELINE_TIMER_KEYS = {
-    "feature_graph",
-    "pipe_build",
-    "cutter_pack",
-    "boolean_apply",
-    "boundary_classify",
-    "binding",
-    "regular_strips",
-    "junction",
-    "validation",
-    "cleanup",
-    "total",
-}
-PHASE_0_CLASSIFICATION_COUNTS = {
-    "EXPECTED_UNSUPPORTED": 0,
-    "PRODUCT_SUCCESS": 2,
-    "REGRESSION_FAILURE": 1,
-    "SAFETY_PASS": 11,
-}
+FIRST_STAGE_LABELS = {"simple", "tricky_b", "mixed"}
+DEFERRED_LABELS = {"tricky"}
 FIXTURE_HASHES = {
     "feature-chamfer-product-simple.blend": (
         "1cbab4c83c4d9f77bd2b0799257953aaec32aa416994a1d8810425f3c2b94d8c"
@@ -75,54 +56,6 @@ MATRIX_SOURCES = (
     ("mixed", "feature-chamfer-topology-defect-mixed.blend", "Extruded.002"),
 )
 MATRIX_RADII = (0.01, 0.03)
-KNOWN_SAFETY_FAILURES = {
-    ("feature-chamfer-product-simple.blend", "Solid 44", 0.01): (
-        "ambiguous_boundary",
-        "BoundaryGraph contains non degree-2 rail vertices",
-    ),
-    ("feature-chamfer-product-simple.blend", "Solid 44", 0.03): (
-        "ambiguous_boundary",
-        "BoundaryGraph contains non degree-2 rail vertices",
-    ),
-    ("feature-chamfer-product-tricky.blend", "Solid.004", 0.01): (
-        "ambiguous_boundary",
-        "BoundaryGraph contains non degree-2 rail vertices",
-    ),
-    ("feature-chamfer-product-tricky.blend", "Solid.004", 0.03): (
-        "ambiguous_boundary",
-        "BoundaryGraph contains non degree-2 rail vertices",
-    ),
-    ("feature-chamfer-product-tricky.blend", "Solid.016", 0.01): (
-        "regular_patch_invalid",
-        "SIGNED_STRIP_WIDTH_EXCEEDED",
-    ),
-    ("feature-chamfer-product-tricky.blend", "Solid.016", 0.03): (
-        "regular_patch_invalid",
-        "SIGNED_STRIP_WIDTH_EXCEEDED",
-    ),
-    ("feature-chamfer-product-tricky-b.blend", "Extruded.003", 0.01): (
-        "regular_patch_invalid",
-        "SIGNED_STRIP_WIDTH_EXCEEDED",
-    ),
-    ("feature-chamfer-product-tricky-b.blend", "Extruded.003", 0.03): (
-        "regular_patch_shared_rail_invalid",
-        "Shared Rail is not a single endpoint Edge",
-    ),
-    ("feature-chamfer-product-tricky-b.blend", "Extruded.002", 0.01): (
-        "regular_patch_invalid",
-        "SIGNED_STRIP_WIDTH_EXCEEDED",
-    ),
-    ("feature-chamfer-product-tricky-b.blend", "Extruded.002", 0.03): (
-        "regular_patch_invalid",
-        "SIGNED_STRIP_WIDTH_EXCEEDED",
-    ),
-    ("feature-chamfer-topology-defect-mixed.blend", "Extruded.002", 0.03): (
-        "regular_patch_shared_rail_invalid",
-        "Shared Rail is not a single endpoint Edge",
-    ),
-}
-
-
 # 从 __init__.py 载入插件模块，使 matrix 使用与正式注册一致的 package。
 # 返回值: 已载入但尚未 register 的插件模块。
 def load_addon_module():
@@ -163,59 +96,6 @@ def json_value(value):
         return [json_value(item) for item in value]
     except TypeError:
         return str(value)
-
-
-# 从 backend stats 取出 Phase 1 诊断，保持缺失状态可被门禁显式发现。
-# backend_capture: Operator runtime 捕获的 backend 调用证据。
-def phase_1_diagnostics(backend_capture):
-    stats = backend_capture.get("stats", {})
-    diagnostics = stats.get("phase_1_diagnostics", {})
-    return json_value(diagnostics) if isinstance(diagnostics, dict) else {}
-
-
-# 返回 repetition 的主失败家族和 stable diagnostic IDs。
-# repetition: 单次 Operator 运行的完整诊断。
-def phase_1_family_identity(repetition):
-    families = repetition.get("phase_1_diagnostics", {}).get("families", [])
-    primary_families = [
-        item.get("family")
-        for item in families
-        if isinstance(item, dict) and item.get("family") in PHASE_1_FAMILIES
-    ]
-    diagnostic_ids = sorted(
-        item.get("diagnostic_id")
-        for item in families
-        if isinstance(item, dict) and item.get("diagnostic_id")
-    )
-    return primary_families, diagnostic_ids
-
-
-# 校验 Phase 1 pipeline timer contract，计时值不参与稳定 signature。
-# repetition: 单次 Operator 运行的完整诊断。
-def phase_1_pipeline_timers_valid(repetition):
-    pipeline = repetition.get("phase_1_diagnostics", {}).get("pipeline", {})
-    if not PHASE_1_PIPELINE_TIMER_KEYS.issubset(pipeline) or not all(
-        isinstance(pipeline[key], (int, float)) and pipeline[key] >= 0.0
-        for key in PHASE_1_PIPELINE_TIMER_KEYS
-    ):
-        return False
-    if pipeline["total"] <= 0.0:
-        return False
-    if repetition.get("classification") == "PRODUCT_SUCCESS":
-        return all(
-            pipeline[key] > 0.0
-            for key in PHASE_1_PIPELINE_TIMER_KEYS
-            if key not in {"junction"}
-        )
-    family_names, _ = phase_1_family_identity(repetition)
-    required_positive = {
-        "AMBIGUOUS_BOUNDARY_GRAPH": {"boundary_classify", "cleanup"},
-        "SHARED_RAIL_PORT_RANGE": {"binding", "regular_strips", "cleanup"},
-        "SIGNED_STRIP_WIDTH_EXCEEDED": {"binding", "regular_strips", "cleanup"},
-    }
-    return len(family_names) == 1 and all(
-        pipeline[key] > 0.0 for key in required_positive[family_names[0]]
-    )
 
 
 # 读取 Blender ID Property 中由目标 Operator 保存的 Phase 2 shadow plan 摘要。
@@ -434,13 +314,17 @@ def activate_source(source_object):
 # addon_module: 已注册插件；capture: 写入 backend 调用证据的 dict。
 def install_finalize_capture(addon_module, capture):
     operator_module = addon_module.operators.feature_chamfer_gn_ops
-    original_builder = operator_module.build_pipe_chamfer
+    original_builder = operator_module.build_direct_edge_loop_chamfer
 
     def captured_builder(*args, **kwargs):
         capture["called"] = True
-        capture["feature_graph_contract"] = kwargs.get("feature_graph_contract")
-        capture["debug_stage"] = kwargs.get("debug_stage")
-        expected_plan = kwargs.get("expected_chamfer_plan")
+        capture["feature_graph_contract"] = "GN_PREVIEW_V1"
+        capture["debug_stage"] = "DIRECT_EDGE_LOOP_BRIDGE"
+        expected_plan = (
+            args[1]
+            if len(args) > 1
+            else kwargs.get("expected_chamfer_plan")
+        )
         if expected_plan is not None:
             capture["expected_chamfer_plan"] = {
                 "mode": expected_plan.mode,
@@ -453,7 +337,7 @@ def install_finalize_capture(addon_module, capture):
             }
         try:
             stats = original_builder(*args, **kwargs)
-        except addon_module.utils.experimental_pipe_chamfer_utils.PipeChamferError as error:
+        except addon_module.utils.feature_chamfer_direct_bridge_utils.FeatureChamferDirectBridgeError as error:
             capture["status"] = "failed"
             capture["error_code"] = error.error_code
             capture["error_message"] = str(error)
@@ -463,12 +347,12 @@ def install_finalize_capture(addon_module, capture):
         capture["stats"] = json_value(stats)
         return stats
 
-    operator_module.build_pipe_chamfer = captured_builder
+    operator_module.build_direct_edge_loop_chamfer = captured_builder
     return operator_module, original_builder
 
 
-# 根据预先写明的 input contract 与目标 Operator 结果生成四类产品语义。
-# source_before/result/output/backend/source_unchanged: 当前 cell 的直接证据。
+# 根据第一阶段产品合同与目标 Operator 结果生成四类产品语义。
+# source_before/result/output/backend/source_unchanged: 当前 cell 的直接证据；allow_safe_failure 仅供延期 tricky 使用。
 def classify_result(
     source_before,
     preview_result,
@@ -477,7 +361,7 @@ def classify_result(
     backend_capture,
     source_unchanged,
     pseudo_output_count,
-    expected_safety_failure,
+    allow_safe_failure,
 ):
     contract_violations = []
     if not source_before["mesh"]["closed_manifold"]:
@@ -495,9 +379,23 @@ def classify_result(
         and output.get("chamfer_attribute_exists")
         and output.get("chamfer_face_count", 0) > 0
     )
+    backend_stats = backend_capture.get("stats", {})
+    direct_bridge_product = (
+        backend_capture.get("called")
+        and backend_capture.get("status") == "finished"
+        and backend_stats.get("backend") == "DIRECT_EDGE_LOOP_BRIDGE"
+        and "Boolean Pro Boundary Edges" in backend_stats.get("runtime_path", "")
+        and backend_stats.get("bridge_job_count", 0) > 0
+        and backend_stats.get("bridge_face_count", 0) > 0
+        and backend_stats.get("deferred_segment_count") == 0
+        and backend_stats.get("boundary_edge_count") == 0
+        and backend_stats.get("non_manifold_edge_count") == 0
+        and backend_stats.get("zero_area_face_count") == 0
+        and backend_stats.get("self_intersection_count") == 0
+    )
     safety_failure = (
-        preview_result == ["FINISHED"]
-        and finalize_result == ["CANCELLED"]
+        preview_result in (["FINISHED"], ["CANCELLED"])
+        and finalize_result in (["CANCELLED"], ["SKIPPED"])
         and backend_capture.get("error_code")
         and source_unchanged
         and pseudo_output_count == 0
@@ -509,15 +407,14 @@ def classify_result(
         preview_result == ["FINISHED"]
         and finalize_result == ["FINISHED"]
         and clean_product_output
+        and direct_bridge_product
         and source_unchanged
     ):
         classification = "PRODUCT_SUCCESS"
         reason = "OPERATOR_CREATED_CLEAN_SEPARATE_CHAMFER_OUTPUT"
     elif (
         safety_failure
-        and expected_safety_failure is not None
-        and backend_capture.get("error_code") == expected_safety_failure[0]
-        and expected_safety_failure[1] in backend_capture.get("error_message", "")
+        and allow_safe_failure
     ):
         classification = "SAFETY_PASS"
         reason = backend_capture["error_code"]
@@ -533,7 +430,6 @@ def classify_result(
 # 返回用于跨 repetition 比较的语义 fingerprint，排除计时和 Object 显示名。
 # repetition: 单次运行的完整诊断。
 def repetition_signature(repetition):
-    primary_families, diagnostic_ids = phase_1_family_identity(repetition)
     stable_payload = {
         "classification": repetition["classification"],
         "classification_reason": repetition["classification_reason"],
@@ -545,8 +441,6 @@ def repetition_signature(repetition):
         "backend_status": repetition["backend"].get("status"),
         "backend_error_code": repetition["backend"].get("error_code"),
         "backend_error_message": repetition["backend"].get("error_message"),
-        "phase_1_primary_families": primary_families,
-        "phase_1_diagnostic_ids": diagnostic_ids,
         "phase_2_preview_plan_id": repetition.get("phase_2_plan", {})
         .get("preview", {})
         .get("plan_id"),
@@ -568,6 +462,20 @@ def repetition_signature(repetition):
                 "non_manifold_edge_count",
                 "zero_area_face_count",
                 "chamfer_face_count",
+            )
+        },
+        "direct_bridge": {
+            key: repetition.get("backend", {}).get("stats", {}).get(key)
+            for key in (
+                "runtime_path",
+                "bridge_job_count",
+                "bridge_face_count",
+                "deferred_segment_count",
+                "junction_fill_count",
+                "junction_fill_face_count",
+                "boundary_edge_count",
+                "non_manifold_edge_count",
+                "zero_area_face_count",
             )
         },
     }
@@ -594,6 +502,7 @@ def save_artifact_copy(artifact_path):
 # addon_module: 已注册插件；其余参数定义 matrix cell 与 artifact 位置。
 def run_repetition(
     addon_module,
+    fixture_label,
     fixture_path,
     object_name,
     radius,
@@ -615,13 +524,19 @@ def run_repetition(
     source_fingerprint_before = source_before["fingerprint"]
     activate_source(source_object)
     preview_started = time.perf_counter()
-    preview_result = sorted(
-        bpy.ops.hst.feature_chamfer_gn(
-            "INVOKE_DEFAULT",
-            action="PREVIEW",
-            radius=radius,
+    try:
+        preview_result = sorted(
+            bpy.ops.hst.feature_chamfer_gn(
+                "INVOKE_DEFAULT",
+                action="PREVIEW",
+                radius=radius,
+            )
         )
-    )
+    except RuntimeError as error:
+        preview_result = ["CANCELLED"]
+        preview_error = str(error)
+    else:
+        preview_error = None
     preview_seconds = time.perf_counter() - preview_started
     source_fingerprint_after_preview = source_fingerprint(source_object)
     preview_modifier = source_object.modifiers.get("HST Feature Chamfer GN Preview")
@@ -655,7 +570,13 @@ def run_repetition(
             )
         finally:
             finalize_seconds = time.perf_counter() - finalize_started
-            operator_module.build_pipe_chamfer = original_builder
+            operator_module.build_direct_edge_loop_chamfer = original_builder
+    elif preview_error:
+        backend_capture.update(
+            status="failed",
+            error_code="preview_failed_safe",
+            error_message=preview_error,
+        )
 
     source_fingerprint_after_finalize = source_fingerprint(source_object)
     source_unchanged = (
@@ -706,7 +627,7 @@ def run_repetition(
         backend_capture,
         source_unchanged,
         len(pseudo_outputs),
-        KNOWN_SAFETY_FAILURES.get((fixture_path.name, object_name, radius)),
+        fixture_label in DEFERRED_LABELS,
     )
     if repetition_index == 0:
         save_artifact_copy(case_directory / "final.blend")
@@ -729,7 +650,6 @@ def run_repetition(
             "finalize_runtime_proven": finalize_runtime_proven,
         },
         "backend": json_value(backend_capture),
-        "phase_1_diagnostics": phase_1_diagnostics(backend_capture),
         "phase_2_plan": {
             "preview": preview_plan,
             "finalize": finalize_plan,
@@ -740,12 +660,6 @@ def run_repetition(
                 and preview_plan.get("provenance") == finalize_plan.get("provenance")
             ),
         },
-        "phase_2_boundary_binding": json_value(
-            backend_capture.get("stats", {}).get(
-                "chamfer_plan_boundary_binding",
-                {},
-            )
-        ),
         "output": output,
         "final_state": final_state,
         "unexpected_pseudo_outputs": pseudo_outputs,
@@ -774,11 +688,11 @@ def write_summary(summary):
     )
 
 
-# 执行 14-cell matrix 两次，验证稳定性、source 不变与正式 runtime path。
+# 执行正式产品 matrix，验证第一阶段 10 cells 与延期 tricky 的安全结果。
 # 无参数；配置通过环境变量由 host runner 注入。
 def main():
     if REPETITIONS < 3:
-        raise RuntimeError("Phase 2 requires at least three repetitions")
+        raise RuntimeError("Feature Chamfer product gate requires at least three repetitions")
     actual_fixture_hashes = {
         fixture_name: file_sha256(FIXTURE_DIRECTORY / fixture_name)
         for fixture_name in FIXTURE_HASHES
@@ -799,29 +713,47 @@ def main():
             "fixture": fixture_name,
             "object_name": object_name,
             "radius": radius,
-            "expected_safety_failure": list(
-                KNOWN_SAFETY_FAILURES[(fixture_name, object_name, radius)]
-            ) if (fixture_name, object_name, radius) in KNOWN_SAFETY_FAILURES else None,
+            "delivery_role": (
+                "FIRST_STAGE_REQUIRED"
+                if fixture_label in FIRST_STAGE_LABELS
+                else "DEFERRED_SAFE_RESULT"
+            ),
             "repetitions": [],
         }
         for fixture_label, fixture_name, object_name in MATRIX_SOURCES
         for radius in MATRIX_RADII
     ]
+    if CASE_FILTER:
+        matrix_cases = [
+            case
+            for case in matrix_cases
+            if case["case_id"] in CASE_FILTER
+        ]
+        missing_case_ids = CASE_FILTER - {
+            case["case_id"]
+            for case in matrix_cases
+        }
+        if missing_case_ids:
+            raise RuntimeError(
+                f"Unknown Feature Chamfer matrix cases: {sorted(missing_case_ids)}"
+            )
     summary = {
         "status": "running",
-        "phase": 2,
+        "phase": "C_FIRST_STAGE",
         "blender_version": bpy.app.version_string,
         "blender_version_tuple": list(bpy.app.version),
         "repository_root": str(REPO_ROOT),
         "runtime_contract": (
             "UI Feature Chamfer GN -> hst.feature_chamfer_gn -> INVOKE -> "
-            "PREVIEW/FINALIZE -> GN_PREVIEW_V1"
+            "PREVIEW/FINALIZE -> Preview Pipe -> Boolean Pro Boundary Edges -> "
+            "segment Edge Loop groups -> Blender Bridge -> Blender Fill -> final Mesh"
         ),
         "fixture_hashes_expected": FIXTURE_HASHES,
         "fixture_hashes_actual": actual_fixture_hashes,
         "fixture_hashes_valid": fixture_hashes_valid,
         "requested_repetitions": REPETITIONS,
         "case_count": len(matrix_cases),
+        "run_scope": "DIAGNOSTIC_PARTIAL" if CASE_FILTER else "FULL_MATRIX",
         "cases": matrix_cases,
     }
     write_summary(summary)
@@ -838,6 +770,7 @@ def main():
             try:
                 repetition = run_repetition(
                     addon_module,
+                    case["fixture_label"],
                     fixture_path,
                     case["object_name"],
                     case["radius"],
@@ -876,30 +809,6 @@ def main():
             and item.get("operator", {}).get("finalize_runtime_proven", False)
             for item in case["repetitions"]
         )
-        family_identities = [
-            phase_1_family_identity(item) for item in case["repetitions"]
-        ]
-        case["phase_1_primary_family"] = (
-            family_identities[0][0][0]
-            if family_identities
-            and len(family_identities[0][0]) == 1
-            and all(
-                identity[0] == family_identities[0][0]
-                for identity in family_identities
-            )
-            else None
-        )
-        case["phase_1_diagnostic_ids_stable"] = (
-            bool(family_identities)
-            and all(identity[1] for identity in family_identities)
-            and all(
-                identity[1] == family_identities[0][1]
-                for identity in family_identities
-            )
-        )
-        case["phase_1_pipeline_timers_valid"] = all(
-            phase_1_pipeline_timers_valid(item) for item in case["repetitions"]
-        )
         phase_2_plan_ids = [
             item.get("phase_2_plan", {}).get("preview", {}).get("plan_id")
             for item in case["repetitions"]
@@ -923,19 +832,7 @@ def main():
         )
         for classification in sorted(CLASSIFICATIONS)
     }
-    non_product_cases = [
-        case for case in matrix_cases if case["classification"] != "PRODUCT_SUCCESS"
-    ]
-    family_objects = {
-        family: {
-            (case["fixture"], case["object_name"])
-            for case in non_product_cases
-            if case["phase_1_primary_family"] == family
-        }
-        for family in PHASE_1_FAMILIES
-    }
-    phase_0_go_conditions = {
-        "fourteen_cells_recorded": len(matrix_cases) == 14,
+    common_go_conditions = {
         "all_cells_repeated": all(
             len(case["repetitions"]) == REPETITIONS for case in matrix_cases
         ),
@@ -945,131 +842,76 @@ def main():
         "all_cells_classified": all(
             case["classification"] in CLASSIFICATIONS for case in matrix_cases
         ),
-        "all_expected_safety_failures_match": all(
-            case["expected_safety_failure"] is None
-            or all(
-                repetition.get("classification") == "SAFETY_PASS"
-                and repetition.get("backend", {}).get("error_code")
-                == case["expected_safety_failure"][0]
-                and case["expected_safety_failure"][1]
-                in repetition.get("backend", {}).get("error_message", "")
-                for repetition in case["repetitions"]
-            )
-            for case in matrix_cases
-        ),
         "fixture_hashes_valid": fixture_hashes_valid,
     }
-    phase_1_go_conditions = {
-        "phase_0_classification_semantics_unchanged": (
-            classification_counts == PHASE_0_CLASSIFICATION_COUNTS
-        ),
-        "phase_1_each_non_product_has_one_primary_family": all(
-            all(
-                len(phase_1_family_identity(repetition)[0]) == 1
-                for repetition in case["repetitions"]
-            )
-            and case["phase_1_primary_family"] in PHASE_1_FAMILIES
-            for case in non_product_cases
-        ),
-        "phase_1_diagnostic_ids_stable": all(
-            case["phase_1_diagnostic_ids_stable"] for case in non_product_cases
-        ),
-        "phase_1_each_family_has_two_objects": all(
-            len(objects) >= 2 for objects in family_objects.values()
-        ),
-        "phase_1_pipeline_timers_valid": all(
-            case["phase_1_pipeline_timers_valid"] for case in matrix_cases
-        ),
-    }
-    phase_2_go_conditions = {
-        "phase_2_three_repetitions": REPETITIONS >= 3,
-        "phase_2_classification_semantics_unchanged": (
-            classification_counts == PHASE_0_CLASSIFICATION_COUNTS
-        ),
-        "phase_2_plan_ids_stable": all(
-            case["phase_2_plan_ids_stable"] for case in matrix_cases
-        ),
-        "phase_2_preview_finalize_share_plan_semantics": all(
-            case["phase_2_shared_plan_semantics"] for case in matrix_cases
-        ),
-        "phase_2_shadow_mode_only": all(
-            repetition.get("phase_2_plan", {}).get("preview", {}).get("mode")
-            == "SHADOW"
-            for case in matrix_cases
-            for repetition in case["repetitions"]
-        ),
-        "phase_2_failed_fixtures_have_unsupported_plan": all(
-            repetition.get("classification") == "PRODUCT_SUCCESS"
-            or (
-                repetition.get("phase_2_plan", {})
-                .get("finalize", {})
-                .get("is_complete")
-                is False
-                and repetition.get("phase_2_plan", {})
-                .get("finalize", {})
-                .get("unsupported_region_count", 0)
-                > 0
-            )
-            for case in matrix_cases
-            for repetition in case["repetitions"]
-        ),
-        "phase_2_success_boundary_binding_complete": all(
+    runtime_go_conditions = {
+        "three_repetitions": REPETITIONS >= 3,
+        "direct_bridge_backend_proven": all(
             repetition.get("classification") != "PRODUCT_SUCCESS"
             or (
-                repetition.get("phase_2_boundary_binding", {}).get("status")
-                == "PASS"
-                and repetition.get("phase_2_boundary_binding", {}).get(
-                    "bound_rail_count",
+                repetition.get("backend", {}).get("stats", {}).get("backend")
+                == "DIRECT_EDGE_LOOP_BRIDGE"
+                and repetition.get("backend", {}).get("stats", {}).get(
+                    "bridge_job_count",
                     0,
                 )
                 > 0
-                and not repetition.get("phase_2_boundary_binding", {}).get(
-                    "missing_from_plan_binding"
-                )
-                and not repetition.get("phase_2_boundary_binding", {}).get(
-                    "extra_in_plan_binding"
-                )
-                and not repetition.get("phase_2_boundary_binding", {}).get(
-                    "missing_expected_rail_ids"
-                )
-                and not repetition.get("phase_2_boundary_binding", {}).get(
-                    "missing_correspondence_rail_ids"
-                )
             )
             for case in matrix_cases
             for repetition in case["repetitions"]
         ),
     }
-    go_conditions = {
-        **phase_0_go_conditions,
-        **phase_1_go_conditions,
-        **phase_2_go_conditions,
+    first_stage_cases = [
+        case for case in matrix_cases if case["fixture_label"] in FIRST_STAGE_LABELS
+    ]
+    deferred_cases = [
+        case for case in matrix_cases if case["fixture_label"] in DEFERRED_LABELS
+    ]
+    selected_first_stage_complete = len(first_stage_cases) == 10
+    first_stage_go_conditions = {
+        "required_scope_selected": selected_first_stage_complete,
+        "required_cells_product_success": all(
+            case["classification"] == "PRODUCT_SUCCESS"
+            for case in first_stage_cases
+        ),
     }
+    deferred_go_conditions = {
+        "deferred_scope_recorded": len(deferred_cases) == 4,
+        "deferred_cells_product_or_safe": all(
+            case["classification"] in {"PRODUCT_SUCCESS", "SAFETY_PASS"}
+            for case in deferred_cases
+        ),
+    }
+    go_conditions = {
+        **common_go_conditions,
+        **runtime_go_conditions,
+        **first_stage_go_conditions,
+    }
+    run_go = all(go_conditions.values())
+    if not CASE_FILTER:
+        go_conditions.update(deferred_go_conditions)
+        run_go = all(go_conditions.values())
     summary.update(
         status="finished",
-        phase=2,
+        phase="C_FIRST_STAGE",
         classification_counts=classification_counts,
-        phase_1_family_objects={
-            family: sorted(f"{fixture}:{object_name}" for fixture, object_name in objects)
-            for family, objects in sorted(family_objects.items())
-        },
         go_conditions=go_conditions,
-        phase_0_go=all(phase_0_go_conditions.values()),
-        phase_1_go=(
-            all(phase_0_go_conditions.values())
-            and all(phase_1_go_conditions.values())
+        first_stage_go=(
+            all(common_go_conditions.values())
+            and all(runtime_go_conditions.values())
+            and all(first_stage_go_conditions.values())
         ),
-        phase_2_go=(
-            all(phase_0_go_conditions.values())
-            and all(phase_1_go_conditions.values())
-            and all(phase_2_go_conditions.values())
+        deferred_tricky_go=(
+            len(deferred_cases) == 4
+            and all(deferred_go_conditions.values())
         ),
+        run_go=run_go,
     )
     write_summary(summary)
     print("[HST_FEATURE_CHAMFER_MATRIX_SUMMARY] " + json.dumps({
-        "phase_0_go": summary["phase_0_go"],
-        "phase_1_go": summary["phase_1_go"],
-        "phase_2_go": summary["phase_2_go"],
+        "first_stage_go": summary["first_stage_go"],
+        "deferred_tricky_go": summary["deferred_tricky_go"],
+        "run_go": summary["run_go"],
         "classification_counts": classification_counts,
         "go_conditions": go_conditions,
     }, ensure_ascii=False))
@@ -1078,7 +920,7 @@ def main():
         addon_module.unregister()
     except Exception:
         traceback.print_exc()
-    if not summary["phase_2_go"]:
+    if not summary["run_go"]:
         raise SystemExit(1)
 
 

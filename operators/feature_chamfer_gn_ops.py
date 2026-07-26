@@ -11,18 +11,18 @@ from ..const import FEATURE_CHAMFER_GN_STATE_TAG
 from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
-from ..utils.experimental_pipe_chamfer_utils import PipeChamferError
-from ..utils.experimental_pipe_chamfer_utils import build_pipe_chamfer
+from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
+from ..utils.feature_chamfer_direct_bridge_utils import build_direct_edge_loop_chamfer
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
 from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
-from ..utils.feature_chamfer_gn_utils import live_preview_parameters
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
 from ..utils.feature_chamfer_gn_utils import preview_state
 from ..utils.feature_chamfer_plan_utils import read_chamfer_plan
-from ..utils.feature_chamfer_plan_utils import chamfer_plan_with_unsupported_regions
 from ..utils.feature_chamfer_plan_utils import chamfer_plan_without_unsupported_regions
+from ..utils.feature_chamfer_plan_utils import PLAN_ID_PROPERTY
+from ..utils.feature_chamfer_plan_utils import PLAN_PROPERTY
 from ..utils.feature_chamfer_plan_utils import write_chamfer_plan
 
 
@@ -59,6 +59,16 @@ def _restore_finalize_context(
             selected_object.select_set(True)
     if active_object is not None and bpy.data.objects.get(active_object.name) == active_object:
         context.view_layer.objects.active = active_object
+
+
+# 恢复 Finalize 前的 ID Property，确保安全失败不改变 source 或 Preview 状态。
+# id_block/property_snapshot: Object/Modifier 与属性名到 (是否存在, 原值) 的快照；无返回值。
+def _restore_id_properties(id_block, property_snapshot):
+    for property_name, (existed, value) in property_snapshot.items():
+        if existed:
+            id_block[property_name] = value
+        elif property_name in id_block:
+            del id_block[property_name]
 
 
 # 验证 Feature Chamfer 上下文并返回 source Object。
@@ -145,6 +155,10 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
         actual_action = self.resolved_action or self.action
         if actual_action == "AUTO":
             actual_action = "FINALIZE" if preview_state(source_object) == PREVIEW_VALID else "PREVIEW"
+        last_action_before = (
+            FEATURE_CHAMFER_GN_LAST_ACTION_TAG in source_object,
+            source_object.get(FEATURE_CHAMFER_GN_LAST_ACTION_TAG),
+        )
         source_object[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = actual_action
 
         if actual_action == "CANCEL_PREVIEW":
@@ -155,9 +169,31 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             if preview_state(source_object) != PREVIEW_VALID:
                 self.report({"WARNING"}, "Feature Chamfer Preview is stale; rebuild Preview first")
                 return {"CANCELLED"}
-            preview_parameters = live_preview_parameters(owned_preview_modifier(source_object))
             preview_modifier = owned_preview_modifier(source_object)
             preview_chamfer_plan = read_chamfer_plan(preview_modifier)
+            rollback_property_names = (
+                FEATURE_CHAMFER_GN_LAST_ACTION_TAG,
+                FEATURE_CHAMFER_GN_STATE_TAG,
+                PLAN_PROPERTY,
+                PLAN_ID_PROPERTY,
+            )
+            source_property_snapshot = {
+                property_name: (
+                    property_name in source_object,
+                    source_object.get(property_name),
+                )
+                for property_name in rollback_property_names
+            }
+            source_property_snapshot[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = (
+                last_action_before
+            )
+            preview_property_snapshot = {
+                property_name: (
+                    property_name in preview_modifier,
+                    preview_modifier.get(property_name),
+                )
+                for property_name in rollback_property_names
+            }
             preview_show_viewport = preview_modifier.show_viewport
             preview_show_render = preview_modifier.show_render
             preview_modifier.show_viewport = False
@@ -166,27 +202,20 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             active_object_before = context.view_layer.objects.active
             selected_objects_before = tuple(context.selected_objects)
             try:
-                patch_stats = build_pipe_chamfer(
-                    source_object=source_object,
-                    radius=preview_parameters["radius"],
-                    pipe_resolution=4,
-                    chain_turn_threshold_degrees=35.0,
-                    chain_turn_spike_ratio=3.0,
-                    junction_margin=1.5,
-                    debug_stage="PATCHED",
-                    keep_debug_objects=False,
-                    feature_graph_contract="GN_PREVIEW_V1",
-                    preserve_source_visibility=True,
-                    expected_chamfer_plan=preview_chamfer_plan,
-                )
-            except PipeChamferError as error:
-                failed_chamfer_plan = chamfer_plan_with_unsupported_regions(
+                preview_modifier.show_viewport = True
+                preview_modifier.show_render = True
+                patch_stats = build_direct_edge_loop_chamfer(
+                    source_object,
                     preview_chamfer_plan,
-                    error.stats.get("phase_1_diagnostics", {}).get("families", []),
-                    fallback_reason_code=error.error_code,
                 )
-                write_chamfer_plan(source_object, failed_chamfer_plan)
-                write_chamfer_plan(preview_modifier, failed_chamfer_plan)
+            except FeatureChamferDirectBridgeError as error:
+                context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+                    error.stats,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                _restore_id_properties(source_object, source_property_snapshot)
+                _restore_id_properties(preview_modifier, preview_property_snapshot)
                 _restore_finalize_context(
                     context, source_object, preview_modifier, source_was_hidden,
                     preview_show_viewport, preview_show_render,
@@ -195,6 +224,8 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
                 return {"CANCELLED"}
             except Exception:
+                _restore_id_properties(source_object, source_property_snapshot)
+                _restore_id_properties(preview_modifier, preview_property_snapshot)
                 _restore_finalize_context(
                     context, source_object, preview_modifier, source_was_hidden,
                     preview_show_viewport, preview_show_render,
@@ -208,6 +239,8 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 default=str,
             )
             if output is None:
+                _restore_id_properties(source_object, source_property_snapshot)
+                _restore_id_properties(preview_modifier, preview_property_snapshot)
                 _restore_finalize_context(
                     context, source_object, preview_modifier, source_was_hidden,
                     preview_show_viewport, preview_show_render,
@@ -252,7 +285,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 context.view_layer.objects.active = output
                 self.report(
                     {"INFO"},
-                    f"Feature Chamfer finalized: {patch_stats['regular_patch_face_count']} regular Faces, {patch_stats['junction_patch_face_count']} junction Faces",
+                    f"Feature Chamfer finalized: {patch_stats['regular_patch_face_count']} Bridge Faces, {patch_stats['junction_patch_face_count']} Fill Faces",
                 )
                 return {"FINISHED"}
             except Exception:
@@ -266,7 +299,8 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     preview_show_viewport, preview_show_render,
                     active_object_before, selected_objects_before,
                 )
-                source_object[FEATURE_CHAMFER_GN_STATE_TAG] = PREVIEW_VALID
+                _restore_id_properties(source_object, source_property_snapshot)
+                _restore_id_properties(preview_modifier, preview_property_snapshot)
                 raise
         if actual_action != "PREVIEW":
             self.report({"ERROR"}, f"Unsupported Feature Chamfer action: {actual_action}")

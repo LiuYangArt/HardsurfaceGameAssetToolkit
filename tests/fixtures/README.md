@@ -21,3 +21,8 @@
 - 若 fixture 必须更新，新增文件或显式更新 hash、矩阵基线和变更原因，不能静默覆盖。
 
 当前推进计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。第一阶段优先验证 `simple`、`tricky_b`、`mixed` 三个 fixture，共 10 个 cell；10/10 产品成功即可作为第一阶段可用成果。`tricky` 的 4 个 cell 允许安全失败并延后到第二阶段，但必须单独报告且不能修改 source 或留下半成品。完整产品范围最终仍是 14 个 cell。
+
+当前产品操作语义：无交叉的 Pipe 直接 Bridge 槽口两侧完整 Loop；即使原本连续的
+Pipe，与另一根 Pipe 交叉时也要在 junction 处切成连续槽段，逐段 Bridge 两侧完整
+边链，最后 Fill 剩余交叉孔洞。
+fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 artifact 为准。

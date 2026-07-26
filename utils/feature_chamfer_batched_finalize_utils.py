@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from dataclasses import asdict
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from .experimental_pipe_chamfer_utils import PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIB
 from .experimental_pipe_chamfer_utils import BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX
+from .experimental_pipe_chamfer_utils import CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX
 from .experimental_pipe_chamfer_utils import CUTTER_END_PORT_TOKEN_ATTRIBUTE
 from .experimental_pipe_chamfer_utils import CUTTER_START_PORT_TOKEN_ATTRIBUTE
 from .experimental_pipe_chamfer_utils import ORIGINAL_FACE_ATTRIBUTE
@@ -46,6 +48,11 @@ from .experimental_pipe_chamfer_utils import _build_strand_endpoint_port_tokens
 from .experimental_pipe_chamfer_utils import build_chamfer_strip
 from .feature_chamfer_gn_utils import owned_preview_curve
 from .feature_chamfer_gn_utils import source_fingerprint
+from .feature_chamfer_groove_pairing_utils import build_topology_only_pairing_identities
+from .feature_chamfer_groove_pairing_utils import canonical_pairing
+from .feature_chamfer_groove_pairing_utils import freeze_groove_boundary_pairing
+from .feature_chamfer_groove_pairing_utils import GroovePairingError
+from .feature_chamfer_groove_pairing_utils import verify_open_boundary_transfer
 from .feature_chamfer_plan_utils import source_fingerprint as plan_source_fingerprint
 
 
@@ -66,6 +73,9 @@ class BatchedChamferError(RuntimeError):
 
 
 PHASE_C_CUTTER_FACE_ID_ATTRIBUTE = "hst_phase_c_cutter_face_id"
+PHASE_C_BOOLEAN_LOCAL_DEFECT_CENSUS_CONTRACT = (
+    "HST_PHASE_C_BOOLEAN_LOCAL_DEFECT_CENSUS_V1"
+)
 
 
 @dataclass(frozen=True)
@@ -904,6 +914,7 @@ def _initialize_phase_c_cutter_face_provenance(
         }
 
     topology_by_face_index = {}
+    longitudinal_component_id_by_face_index = {}
     owner_pipe_ids = sorted({
         owner_pipe_id
         for polygon in cutter.data.polygons
@@ -923,6 +934,33 @@ def _initialize_phase_c_cutter_face_provenance(
                 polygon.index,
             ) == {owner_pipe_id}
         }
+        component_sets = []
+        remaining_face_indices = set(face_indices)
+        while remaining_face_indices:
+            component = set()
+            stack = [min(remaining_face_indices)]
+            while stack:
+                face_index = stack.pop()
+                if face_index in component:
+                    continue
+                component.add(face_index)
+                stack.extend(
+                    adjacency_by_face_index[face_index]
+                    & face_indices
+                    - component
+                )
+            remaining_face_indices -= component
+            component_sets.append(component)
+        if len(component_sets) == 1:
+            component_id = _stable_fingerprint(
+                {
+                    "contract": "PRE_BOOLEAN_PIPE_COMPONENT_V1",
+                    "pipe_id": int(owner_pipe_id),
+                }
+            )
+            longitudinal_component_id_by_face_index.update(
+                {face_index: component_id for face_index in face_indices}
+            )
         ring_by_face_index = profile_ring_by_face_index(
             face_indices,
             adjacency_by_face_index,
@@ -1175,6 +1213,15 @@ def _initialize_phase_c_cutter_face_provenance(
                     "profile_opposite_face_signature",
                     "longitudinal_neighbor_face_signatures",
                 }
+            }
+        else:
+            topology = {
+                **topology,
+                "longitudinal_component_id": (
+                    longitudinal_component_id_by_face_index.get(
+                        polygon.index
+                    )
+                ),
             }
         provenance[face_id] = {
             "face_signature": face_signature_by_index[polygon.index],
@@ -1809,6 +1856,9 @@ def _build_output_cutter_face_incidence_census(
                 "face_signature": provenance["face_signature"],
                 "topology_status": provenance.get("topology_status"),
                 "pipe_id": provenance.get("pipe_id"),
+                "longitudinal_component_id": provenance.get(
+                    "longitudinal_component_id"
+                ),
                 "profile_side_id": provenance.get("profile_side_id"),
                 "opposite_profile_side_id": provenance.get(
                     "opposite_profile_side_id"
@@ -1841,6 +1891,1251 @@ def _build_output_cutter_face_incidence_census(
     }
 
 
+# 按 Element domain 读取每一条非零 raw identity attribute，不折叠重复 incidence。
+# mesh/domain/element_index/prefixes: Boolean 输出 Mesh、属性 domain、raw Element index 与属性前缀；返回属性记录列表。
+def _raw_nonzero_attribute_records(mesh, domain, element_index, prefixes):
+    return [
+        {
+            "attribute": attribute.name,
+            "value": int(attribute.data[element_index].value),
+        }
+        for attribute in sorted(mesh.attributes, key=lambda item: item.name)
+        if attribute.domain == domain
+        and attribute.name.startswith(prefixes)
+        and bool(attribute.data[element_index].value)
+    ]
+
+
+# 将 polygon loop 规范化为方向无关的 raw Vertex/Edge index 环，仅用于同一次 probe 内发现重复几何表示。
+# vertex_indices/edge_indices: 同一 Face 的有序 raw Vertex 与 Edge index；返回最小循环表示。
+def _canonical_raw_face_loop(vertex_indices, edge_indices):
+    pairs = list(zip(vertex_indices, edge_indices))
+    variants = []
+    for ordered in (pairs, list(reversed(pairs))):
+        variants.extend(
+            tuple(ordered[offset:] + ordered[:offset])
+            for offset in range(len(ordered))
+        )
+    return min(variants) if variants else ()
+
+
+# 把 ordered 环规范为不依赖起点与方向的表示。
+# values: Face loop 的任意可排序 raw 值；返回最小循环表示。
+def _canonical_ordered_cycle(values):
+    values = list(values)
+    return min(
+        tuple(ordered[offset:] + ordered[:offset])
+        for ordered in (values, list(reversed(values)))
+        for offset in range(len(ordered))
+    ) if values else ()
+
+
+# 遍历公共切口 Edge 的 raw incidence，输出 degree>2 Vertex、cycle component 与未标记 Edge 的完整成员。
+# mesh/public_edge_indices/marked_edge_indices: Boolean Mesh、真实 groove/source 公共 Edge 与 witness 标记；返回公共图诊断。
+def _build_raw_public_boundary_graph_census(
+    mesh,
+    public_edge_indices,
+    marked_edge_indices,
+):
+    edge_indices_by_vertex = defaultdict(list)
+    for edge_index in public_edge_indices:
+        for vertex_index in mesh.edges[edge_index].vertices:
+            edge_indices_by_vertex[int(vertex_index)].append(int(edge_index))
+    branch_vertices = [
+        {
+            "raw_vertex_index": vertex_index,
+            "coordinate": [
+                float(value) for value in mesh.vertices[vertex_index].co
+            ],
+            "degree": len(edge_indices),
+            "incident_raw_edge_indices": sorted(edge_indices),
+        }
+        for vertex_index, edge_indices in sorted(edge_indices_by_vertex.items())
+        if len(edge_indices) > 2
+    ]
+    remaining = set(public_edge_indices)
+    components = []
+    while remaining:
+        component_edges = set()
+        pending = [min(remaining)]
+        while pending:
+            edge_index = pending.pop()
+            if edge_index in component_edges:
+                continue
+            component_edges.add(edge_index)
+            pending.extend(
+                linked_edge_index
+                for vertex_index in mesh.edges[edge_index].vertices
+                for linked_edge_index in edge_indices_by_vertex[vertex_index]
+                if linked_edge_index not in component_edges
+            )
+        component_vertices = sorted({
+            int(vertex_index)
+            for edge_index in component_edges
+            for vertex_index in mesh.edges[edge_index].vertices
+        })
+        vertex_degrees = {
+            vertex_index: sum(
+                edge_index in component_edges
+                for edge_index in edge_indices_by_vertex[vertex_index]
+            )
+            for vertex_index in component_vertices
+        }
+        is_cycle = bool(component_edges) and all(
+            degree == 2 for degree in vertex_degrees.values()
+        )
+        components.append(
+            {
+                "raw_edge_indices": sorted(component_edges),
+                "raw_vertex_indices": component_vertices,
+                "vertex_degree_multiset": sorted(vertex_degrees.values()),
+                "is_cycle": is_cycle,
+            }
+        )
+        remaining -= component_edges
+    return {
+        "public_edge_count": len(public_edge_indices),
+        "marked_public_edge_count": len(
+            set(public_edge_indices).intersection(marked_edge_indices)
+        ),
+        "unmarked_public_edge_indices": sorted(
+            set(public_edge_indices) - set(marked_edge_indices)
+        ),
+        "branch_vertices": branch_vertices,
+        "cycle_components": [
+            component for component in components if component["is_cycle"]
+        ],
+        "components": components,
+    }
+
+
+# 把相互共享 raw Element 的 duplicate/degenerate/公共图缺陷合并为局部 Boolean cell，并只按现有 lineage 判断是否可唯一解释。
+# raw_*_by_index/各 defect records/public_graph: 完整 raw incidence 与缺陷列表；返回局部 cell 及 Step 2 fail-closed 判定。
+def _build_phase_c_boolean_defect_local_cells(
+    raw_vertex_by_index,
+    raw_edge_by_index,
+    raw_face_by_index,
+    duplicate_vertex_clusters,
+    duplicate_edge_clusters,
+    duplicate_face_clusters,
+    zero_length_edges,
+    degenerate_faces,
+    public_graph,
+):
+    seeds = []
+
+    # kind/record/vertex_indices/edge_indices/face_indices: 新增一个 raw defect seed；无返回值。
+    def add_seed(kind, record, vertex_indices=(), edge_indices=(), face_indices=()):
+        seeds.append(
+            {
+                "kind": kind,
+                "record": record,
+                "raw_vertex_indices": set(vertex_indices),
+                "raw_edge_indices": set(edge_indices),
+                "raw_face_indices": set(face_indices),
+            }
+        )
+
+    for record in duplicate_vertex_clusters:
+        add_seed(
+            "EXACT_DUPLICATE_VERTEX_CLUSTER",
+            record,
+            vertex_indices=(
+                item["raw_vertex_index"]
+                for item in record["raw_vertex_records"]
+            ),
+        )
+    for record in duplicate_edge_clusters:
+        edge_indices = [
+            item["raw_edge_index"] for item in record["raw_edge_records"]
+        ]
+        add_seed(
+            "EXACT_DUPLICATE_EDGE_CLUSTER",
+            record,
+            vertex_indices=(
+                vertex_index
+                for edge_index in edge_indices
+                for vertex_index in raw_edge_by_index[edge_index][
+                    "raw_vertex_indices"
+                ]
+            ),
+            edge_indices=edge_indices,
+            face_indices=(
+                face_index
+                for edge_index in edge_indices
+                for face_index in raw_edge_by_index[edge_index][
+                    "linked_face_indices"
+                ]
+            ),
+        )
+    for record in duplicate_face_clusters:
+        face_indices = [
+            item["raw_face_index"] for item in record["raw_face_records"]
+        ]
+        add_seed(
+            "EXACT_DUPLICATE_FACE_CLUSTER",
+            record,
+            vertex_indices=(
+                vertex_index
+                for face_index in face_indices
+                for vertex_index in raw_face_by_index[face_index][
+                    "raw_vertex_loop"
+                ]
+            ),
+            edge_indices=(
+                edge_index
+                for face_index in face_indices
+                for edge_index in raw_face_by_index[face_index][
+                    "raw_edge_loop"
+                ]
+            ),
+            face_indices=face_indices,
+        )
+    for record in zero_length_edges:
+        add_seed(
+            "EXACT_ZERO_LENGTH_EDGE",
+            record,
+            vertex_indices=record["raw_vertex_indices"],
+            edge_indices=[record["raw_edge_index"]],
+            face_indices=record["linked_face_indices"],
+        )
+    for record in degenerate_faces:
+        add_seed(
+            "DEGENERATE_FACE",
+            record,
+            vertex_indices=record["raw_vertex_loop"],
+            edge_indices=record["raw_edge_loop"],
+            face_indices=[record["raw_face_index"]],
+        )
+    for record in public_graph["branch_vertices"]:
+        add_seed(
+            "PUBLIC_BOUNDARY_BRANCH",
+            record,
+            vertex_indices=[record["raw_vertex_index"]],
+            edge_indices=record["incident_raw_edge_indices"],
+            face_indices=(
+                face_index
+                for edge in record["raw_edge_records"]
+                for face_index in edge["linked_face_indices"]
+            ),
+        )
+    for record in public_graph["cycle_components"]:
+        add_seed(
+            "PUBLIC_BOUNDARY_CYCLE",
+            record,
+            vertex_indices=record["raw_vertex_indices"],
+            edge_indices=record["raw_edge_indices"],
+            face_indices=(
+                face["raw_face_index"]
+                for face in record["raw_face_records"]
+            ),
+        )
+    for record in public_graph["unmarked_public_edges"]:
+        add_seed(
+            "UNMARKED_PUBLIC_EDGE",
+            record,
+            vertex_indices=record["raw_vertex_indices"],
+            edge_indices=[record["raw_edge_index"]],
+            face_indices=record["linked_face_indices"],
+        )
+
+    # 两个 seed 只在真实 raw Element incidence 重叠时属于同一局部 cell。
+    def overlaps(first, second):
+        return bool(
+            first["raw_vertex_indices"] & second["raw_vertex_indices"]
+            or first["raw_edge_indices"] & second["raw_edge_indices"]
+            or first["raw_face_indices"] & second["raw_face_indices"]
+        )
+
+    remaining = set(range(len(seeds)))
+    cells = []
+    while remaining:
+        component_indices = set()
+        pending = [min(remaining)]
+        while pending:
+            seed_index = pending.pop()
+            if seed_index in component_indices:
+                continue
+            component_indices.add(seed_index)
+            pending.extend(
+                candidate_index
+                for candidate_index in remaining - component_indices
+                if any(
+                    overlaps(seeds[candidate_index], seeds[member_index])
+                    for member_index in component_indices
+                )
+            )
+        remaining -= component_indices
+        component_seeds = [seeds[index] for index in sorted(component_indices)]
+        vertex_indices = sorted(set().union(*(
+            seed["raw_vertex_indices"] for seed in component_seeds
+        )))
+        edge_indices = sorted(set().union(*(
+            seed["raw_edge_indices"] for seed in component_seeds
+        )))
+        face_indices = sorted(set().union(*(
+            seed["raw_face_indices"] for seed in component_seeds
+        )))
+        blockers = []
+        for seed in component_seeds:
+            record = seed["record"]
+            if (
+                seed["kind"] == "EXACT_DUPLICATE_VERTEX_CLUSTER"
+                and not record["full_incidence_identity_equal"]
+            ):
+                blockers.append("DUPLICATE_VERTEX_INCIDENCE_CONFLICT")
+            elif (
+                seed["kind"] == "EXACT_DUPLICATE_EDGE_CLUSTER"
+                and not record["full_incidence_identity_equal"]
+            ):
+                blockers.append("DUPLICATE_EDGE_INCIDENCE_CONFLICT")
+            elif (
+                seed["kind"] == "EXACT_DUPLICATE_FACE_CLUSTER"
+                and not record["full_semantic_identity_equal"]
+            ):
+                blockers.append("DUPLICATE_FACE_IDENTITY_CONFLICT")
+            elif (
+                seed["kind"] == "DEGENERATE_FACE"
+                and record["role"] == "SOURCE"
+            ):
+                blockers.append("SOURCE_FACE_LINEAGE_UNAVAILABLE")
+            elif seed["kind"] == "PUBLIC_BOUNDARY_BRANCH":
+                blockers.append("PUBLIC_BOUNDARY_BRANCH_UNRESOLVED")
+            elif seed["kind"] == "PUBLIC_BOUNDARY_CYCLE":
+                blockers.append("PUBLIC_BOUNDARY_CYCLE_UNRESOLVED")
+            elif seed["kind"] == "UNMARKED_PUBLIC_EDGE":
+                blockers.append("PUBLIC_BOUNDARY_IDENTITY_MISSING")
+        if not blockers:
+            blockers.append("CLUSTER_LOCAL_REBUILD_NOT_PROVEN")
+        linked_branch_vertices = [
+            record
+            for record in public_graph["branch_vertices"]
+            if record["raw_vertex_index"] in vertex_indices
+            or set(record["incident_raw_edge_indices"]) & set(edge_indices)
+        ]
+        cell_payload = {
+            "defect_kinds": sorted(seed["kind"] for seed in component_seeds),
+            "raw_vertex_indices": vertex_indices,
+            "raw_edge_indices": edge_indices,
+            "raw_face_indices": face_indices,
+        }
+        cells.append(
+            {
+                "cell_id": _stable_fingerprint(cell_payload),
+                **cell_payload,
+                "canonicalization_status": "UNRESOLVED",
+                "blockers": sorted(set(blockers)),
+                "raw_vertex_records": [
+                    raw_vertex_by_index[index] for index in vertex_indices
+                ],
+                "raw_edge_records": [
+                    raw_edge_by_index[index] for index in edge_indices
+                ],
+                "raw_face_records": [
+                    raw_face_by_index[index] for index in face_indices
+                ],
+                "defect_records": [
+                    {
+                        "kind": seed["kind"],
+                        "raw_vertex_indices": sorted(
+                            seed["raw_vertex_indices"]
+                        ),
+                        "raw_edge_indices": sorted(
+                            seed["raw_edge_indices"]
+                        ),
+                        "raw_face_indices": sorted(
+                            seed["raw_face_indices"]
+                        ),
+                    }
+                    for seed in component_seeds
+                ],
+                "linked_public_branch_vertices": linked_branch_vertices,
+            }
+        )
+    return sorted(cells, key=lambda record: record["cell_id"])
+
+
+# 对 Groove Faces 删除前的 Manifold Boolean 输出建立 raw duplicate/degenerate/identity census；坐标只判定几何事实。
+# working_object/provenance_by_id/strand_id_by_pipe_id/marked_edge_indices: staging、pre-Boolean lineage、Pipe→Strand 与 witness Edge；返回只读缺陷合同。
+def _build_phase_c_boolean_local_defect_census(
+    working_object,
+    provenance_by_id,
+    strand_id_by_pipe_id,
+    marked_edge_indices,
+):
+    mesh = working_object.data
+    original_attribute = mesh.attributes.get(ORIGINAL_FACE_ATTRIBUTE)
+    cutter_face_id_attribute = mesh.attributes.get(
+        PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+    )
+    if (
+        original_attribute is None
+        or original_attribute.domain != "FACE"
+        or cutter_face_id_attribute is None
+        or cutter_face_id_attribute.domain != "FACE"
+    ):
+        raise BatchedChamferError(
+            "PHASE_C_BOOLEAN_DEFECT_CENSUS_PROVENANCE_MISSING",
+            "Boolean 局部缺陷 census 缺少 Face provenance",
+            {},
+        )
+    face_indices_by_edge = defaultdict(list)
+    edge_indices_by_face = {}
+    vertex_indices_by_face = {}
+    for polygon in mesh.polygons:
+        edge_indices = [
+            int(mesh.loops[loop_index].edge_index)
+            for loop_index in polygon.loop_indices
+        ]
+        vertex_indices = [
+            int(mesh.loops[loop_index].vertex_index)
+            for loop_index in polygon.loop_indices
+        ]
+        edge_indices_by_face[polygon.index] = edge_indices
+        vertex_indices_by_face[polygon.index] = vertex_indices
+        for edge_index in edge_indices:
+            face_indices_by_edge[edge_index].append(int(polygon.index))
+
+    # Face index 仅是 run-local debug handle；semantic identity 全部来自传播属性与 pre-Boolean lineage。
+    raw_faces = []
+    for polygon in mesh.polygons:
+        is_source = bool(original_attribute.data[polygon.index].value)
+        cutter_face_id = int(
+            cutter_face_id_attribute.data[polygon.index].value
+        )
+        provenance = (
+            provenance_by_id.get(cutter_face_id)
+            if not is_source and cutter_face_id > 0
+            else None
+        )
+        source_patch_records = _raw_nonzero_attribute_records(
+            mesh,
+            "FACE",
+            polygon.index,
+            (SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX,),
+        )
+        cutter_membership_records = _raw_nonzero_attribute_records(
+            mesh,
+            "FACE",
+            polygon.index,
+            (
+                CUTTER_COMPONENT_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                CUTTER_ENDPOINT_TOKEN_MEMBERSHIP_ATTRIBUTE_PREFIX,
+                CUTTER_START_PORT_TOKEN_ATTRIBUTE,
+                CUTTER_END_PORT_TOKEN_ATTRIBUTE,
+            ),
+        )
+        raw_faces.append(
+            {
+                "raw_face_index": int(polygon.index),
+                "role": "SOURCE" if is_source else "GROOVE",
+                "raw_vertex_loop": vertex_indices_by_face[polygon.index],
+                "raw_edge_loop": edge_indices_by_face[polygon.index],
+                "canonical_raw_loop": _canonical_raw_face_loop(
+                    vertex_indices_by_face[polygon.index],
+                    edge_indices_by_face[polygon.index],
+                ),
+                "area": float(polygon.area),
+                "is_exact_zero_area": float(polygon.area) == 0.0,
+                "is_tolerance_zero_area": float(polygon.area) <= 1.0e-12,
+                "unique_vertex_count": len(
+                    set(vertex_indices_by_face[polygon.index])
+                ),
+                "has_repeated_vertex_loop": len(
+                    set(vertex_indices_by_face[polygon.index])
+                ) != len(vertex_indices_by_face[polygon.index]),
+                "source_patch_records": source_patch_records,
+                "cutter_membership_records": cutter_membership_records,
+                "cutter_face_id": cutter_face_id,
+                "pre_boolean_lineage": provenance,
+                "strand_id": (
+                    strand_id_by_pipe_id.get(provenance.get("pipe_id"))
+                    if provenance is not None
+                    else None
+                ),
+            }
+        )
+    raw_face_by_index = {
+        record["raw_face_index"]: record for record in raw_faces
+    }
+
+    # record: raw Face census record；返回只含当前可证明语义的 identity，source 不伪造 polygon lineage。
+    def face_available_semantic_identity(record):
+        return {
+            "role": record["role"],
+            "source_patch_records": record["source_patch_records"],
+            "cutter_membership_records": record[
+                "cutter_membership_records"
+            ],
+            "cutter_face_id": record["cutter_face_id"],
+            "pre_boolean_lineage": record["pre_boolean_lineage"],
+            "strand_id": record["strand_id"],
+        }
+
+    raw_edges = []
+    for edge in mesh.edges:
+        linked_face_indices = list(face_indices_by_edge.get(edge.index, ()))
+        linked_faces = [raw_face_by_index[index] for index in linked_face_indices]
+        endpoint_coordinates = [
+            [float(value) for value in mesh.vertices[index].co]
+            for index in edge.vertices
+        ]
+        raw_edges.append(
+            {
+                "raw_edge_index": int(edge.index),
+                "raw_vertex_indices": [int(index) for index in edge.vertices],
+                "endpoint_coordinates": endpoint_coordinates,
+                "is_exact_zero_length": endpoint_coordinates[0]
+                == endpoint_coordinates[1],
+                "length": float(
+                    (
+                        mesh.vertices[edge.vertices[1]].co
+                        - mesh.vertices[edge.vertices[0]].co
+                    ).length
+                ),
+                "linked_face_indices": linked_face_indices,
+                "linked_face_records": [
+                    {
+                        "raw_face_index": record["raw_face_index"],
+                        "role": record["role"],
+                        "source_patch_records": record[
+                            "source_patch_records"
+                        ],
+                        "cutter_membership_records": record[
+                            "cutter_membership_records"
+                        ],
+                        "cutter_face_id": record["cutter_face_id"],
+                        "pre_boolean_lineage": record[
+                            "pre_boolean_lineage"
+                        ],
+                        "strand_id": record["strand_id"],
+                    }
+                    for record in linked_faces
+                ],
+                "witness_records": _raw_nonzero_attribute_records(
+                    mesh,
+                    "EDGE",
+                    edge.index,
+                    (
+                        BOUNDARY_OWNER_WITNESS_ATTRIBUTE_PREFIX,
+                        BOUNDARY_PATCH_WITNESS_ATTRIBUTE_PREFIX,
+                        PROBE_EDGE_COMPOUND_ENDPOINT_ATTRIBUTE_PREFIX,
+                    ),
+                ),
+            }
+        )
+    raw_edge_by_index = {
+        record["raw_edge_index"]: record for record in raw_edges
+    }
+
+    # record: raw Edge census record；返回保留 linked raw Face incidence 与 witness 多重性的 identity。
+    def edge_raw_incidence_identity(record):
+        return {
+            "linked_face_semantics": sorted(
+                (
+                    face_available_semantic_identity(
+                        raw_face_by_index[face_index]
+                    )
+                    for face_index in record["linked_face_indices"]
+                ),
+                key=_stable_fingerprint,
+            ),
+            "witness_records": record["witness_records"],
+        }
+
+    raw_vertices = []
+    edge_indices_by_vertex = defaultdict(list)
+    face_corner_incidence_by_vertex = defaultdict(list)
+    for record in raw_edges:
+        for vertex_index in record["raw_vertex_indices"]:
+            edge_indices_by_vertex[vertex_index].append(
+                record["raw_edge_index"]
+            )
+    for record in raw_faces:
+        for loop_offset, vertex_index in enumerate(record["raw_vertex_loop"]):
+            face_corner_incidence_by_vertex[vertex_index].append(
+                {
+                    "raw_face_index": record["raw_face_index"],
+                    "loop_offset": loop_offset,
+                    "raw_edge_index": record["raw_edge_loop"][loop_offset],
+                    "role": record["role"],
+                }
+            )
+    for vertex in mesh.vertices:
+        raw_vertices.append(
+            {
+                "raw_vertex_index": int(vertex.index),
+                "coordinate": [float(value) for value in vertex.co],
+                "incident_raw_edge_indices": list(
+                    edge_indices_by_vertex.get(vertex.index, ())
+                ),
+                "face_corner_incidences": list(
+                    face_corner_incidence_by_vertex.get(vertex.index, ())
+                ),
+            }
+        )
+
+    vertices_by_coordinate = defaultdict(list)
+    for record in raw_vertices:
+        vertices_by_coordinate[tuple(record["coordinate"])].append(record)
+    exact_duplicate_vertex_clusters = [
+        {
+            "coordinate": list(coordinate),
+            "raw_vertex_records": records,
+            "full_incidence_identity_equal": len({
+                _stable_fingerprint(
+                    {
+                        "incident_edges": sorted(
+                            (
+                                edge_raw_incidence_identity(
+                                    raw_edge_by_index[edge_index]
+                                )
+                                for edge_index in record[
+                                    "incident_raw_edge_indices"
+                                ]
+                            ),
+                            key=_stable_fingerprint,
+                        ),
+                        "face_corners": sorted(
+                            (
+                                {
+                                    "role": incidence["role"],
+                                    "semantic": (
+                                        face_available_semantic_identity(
+                                            raw_face_by_index[
+                                                incidence["raw_face_index"]
+                                            ]
+                                        )
+                                    ),
+                                }
+                                for incidence in record[
+                                    "face_corner_incidences"
+                                ]
+                            ),
+                            key=_stable_fingerprint,
+                        ),
+                    }
+                )
+                for record in records
+            }) == 1,
+        }
+        for coordinate, records in sorted(vertices_by_coordinate.items())
+        if len(records) > 1
+    ]
+    edges_by_geometry = defaultdict(list)
+    for record in raw_edges:
+        geometry_key = tuple(
+            sorted(tuple(coordinate) for coordinate in record["endpoint_coordinates"])
+        )
+        edges_by_geometry[geometry_key].append(record)
+    exact_duplicate_edge_clusters = [
+        {
+            "endpoint_coordinates": [list(point) for point in geometry_key],
+            "raw_edge_records": records,
+            "full_incidence_identity_equal": len({
+                _stable_fingerprint(edge_raw_incidence_identity(record))
+                for record in records
+            }) == 1,
+            "available_semantic_identity_equal": len({
+                _stable_fingerprint(edge_raw_incidence_identity(record))
+                for record in records
+            }) == 1,
+        }
+        for geometry_key, records in sorted(edges_by_geometry.items())
+        if len(records) > 1
+    ]
+    faces_by_geometry = defaultdict(list)
+    for record in raw_faces:
+        coordinates = [
+            tuple(raw_vertices[index]["coordinate"])
+            for index in record["raw_vertex_loop"]
+        ]
+        face_geometry_key = _canonical_ordered_cycle(coordinates)
+        faces_by_geometry[face_geometry_key].append(record)
+    exact_duplicate_face_clusters = [
+        {
+            "coordinate_loop": [list(point) for point in geometry_key],
+            "raw_face_records": records,
+            "full_semantic_identity_equal": len({
+                _stable_fingerprint(face_available_semantic_identity(record))
+                for record in records
+            }) == 1,
+        }
+        for geometry_key, records in sorted(faces_by_geometry.items())
+        if len(records) > 1
+    ]
+    public_edge_indices = [
+        record["raw_edge_index"]
+        for record in raw_edges
+        if len(record["linked_face_records"]) == 2
+        and {face["role"] for face in record["linked_face_records"]}
+        == {"SOURCE", "GROOVE"}
+    ]
+    public_graph = _build_raw_public_boundary_graph_census(
+        mesh,
+        public_edge_indices,
+        marked_edge_indices,
+    )
+    raw_vertex_by_index = {
+        record["raw_vertex_index"]: record for record in raw_vertices
+    }
+
+    # cluster/edge_indices/vertex_indices: 公共图缺陷及其 raw members；原地补齐 Edge/Vertex/Face incidence。
+    def enrich_public_cluster(cluster, edge_indices, vertex_indices):
+        cluster["raw_edge_records"] = [
+            raw_edge_by_index[index] for index in edge_indices
+        ]
+        cluster["raw_vertex_records"] = [
+            raw_vertex_by_index[index] for index in vertex_indices
+        ]
+        cluster["raw_face_records"] = [
+            raw_face_by_index[index]
+            for index in sorted({
+                face_index
+                for edge_index in edge_indices
+                for face_index in raw_edge_by_index[edge_index][
+                    "linked_face_indices"
+                ]
+            })
+        ]
+
+    for record in public_graph["branch_vertices"]:
+        enrich_public_cluster(
+            record,
+            record["incident_raw_edge_indices"],
+            [record["raw_vertex_index"]],
+        )
+    for record in public_graph["cycle_components"]:
+        enrich_public_cluster(
+            record,
+            record["raw_edge_indices"],
+            record["raw_vertex_indices"],
+        )
+    for record in public_graph["components"]:
+        if not record["is_cycle"]:
+            continue
+        matching_cycle = next(
+            candidate
+            for candidate in public_graph["cycle_components"]
+            if candidate["raw_edge_indices"] == record["raw_edge_indices"]
+        )
+        record.update(
+            {
+                "raw_edge_records": matching_cycle["raw_edge_records"],
+                "raw_vertex_records": matching_cycle["raw_vertex_records"],
+                "raw_face_records": matching_cycle["raw_face_records"],
+            }
+        )
+    public_graph["unmarked_public_edges"] = [
+        {
+            **raw_edge_by_index[index],
+            "raw_vertex_records": [
+                raw_vertex_by_index[vertex_index]
+                for vertex_index in raw_edge_by_index[index][
+                    "raw_vertex_indices"
+                ]
+            ],
+            "raw_face_records": [
+                raw_face_by_index[face_index]
+                for face_index in raw_edge_by_index[index][
+                    "linked_face_indices"
+                ]
+            ],
+        }
+        for index in public_graph["unmarked_public_edge_indices"]
+    ]
+    degenerate_faces = [
+        record
+        for record in raw_faces
+        if record["is_tolerance_zero_area"]
+        or record["unique_vertex_count"] < 3
+        or record["has_repeated_vertex_loop"]
+    ]
+    zero_length_edges = [
+        record for record in raw_edges if record["is_exact_zero_length"]
+    ]
+    local_defect_cells = _build_phase_c_boolean_defect_local_cells(
+        raw_vertex_by_index,
+        raw_edge_by_index,
+        raw_face_by_index,
+        exact_duplicate_vertex_clusters,
+        exact_duplicate_edge_clusters,
+        exact_duplicate_face_clusters,
+        zero_length_edges,
+        degenerate_faces,
+        public_graph,
+    )
+    defect_cluster_count = (
+        len(exact_duplicate_vertex_clusters)
+        + len(exact_duplicate_edge_clusters)
+        + len(exact_duplicate_face_clusters)
+        + len(degenerate_faces)
+        + len(zero_length_edges)
+        + len(public_graph["branch_vertices"])
+        + len(public_graph["cycle_components"])
+        + len(public_graph["unmarked_public_edge_indices"])
+    )
+    return {
+        "contract": PHASE_C_BOOLEAN_LOCAL_DEFECT_CENSUS_CONTRACT,
+        "status": "CENSUS_COMPLETE",
+        "canonicalization_status": "NOT_EVALUATED",
+        "identity_limits": {
+            "raw_indices_are_run_local_debug_handles": True,
+            "coordinates_only_classify_geometric_facts": True,
+            "source_face_lineage_available": False,
+            "source_patch_identity_available": True,
+        },
+        "summary": {
+            "raw_vertex_count": len(raw_vertices),
+            "raw_edge_count": len(raw_edges),
+            "raw_face_count": len(raw_faces),
+            "exact_duplicate_vertex_cluster_count": len(
+                exact_duplicate_vertex_clusters
+            ),
+            "exact_duplicate_edge_cluster_count": len(
+                exact_duplicate_edge_clusters
+            ),
+            "exact_duplicate_face_cluster_count": len(
+                exact_duplicate_face_clusters
+            ),
+            "exact_zero_length_edge_count": len(zero_length_edges),
+            "degenerate_face_count": len(degenerate_faces),
+            "exact_zero_area_face_count": sum(
+                record["is_exact_zero_area"] for record in degenerate_faces
+            ),
+            "tolerance_zero_area_face_count": sum(
+                record["is_tolerance_zero_area"]
+                for record in degenerate_faces
+            ),
+            "public_branch_vertex_count": len(
+                public_graph["branch_vertices"]
+            ),
+            "public_cycle_component_count": len(
+                public_graph["cycle_components"]
+            ),
+            "unmarked_public_edge_count": len(
+                public_graph["unmarked_public_edge_indices"]
+            ),
+            "defect_cluster_count": defect_cluster_count,
+            "local_defect_cell_count": len(local_defect_cells),
+            "canonicalization_proven_cell_count": sum(
+                record["canonicalization_status"] == "PROVEN"
+                for record in local_defect_cells
+            ),
+            "canonicalization_unresolved_cell_count": sum(
+                record["canonicalization_status"] == "UNRESOLVED"
+                for record in local_defect_cells
+            ),
+        },
+        "raw_vertices": raw_vertices,
+        "raw_edges": raw_edges,
+        "raw_faces": raw_faces,
+        "exact_duplicate_vertex_clusters": exact_duplicate_vertex_clusters,
+        "exact_duplicate_edge_clusters": exact_duplicate_edge_clusters,
+        "exact_duplicate_face_clusters": exact_duplicate_face_clusters,
+        "same_geometry_vertex_identity_conflicts": [
+            record
+            for record in exact_duplicate_vertex_clusters
+            if not record["full_incidence_identity_equal"]
+        ],
+        "same_geometry_edge_identity_conflicts": [
+            record
+            for record in exact_duplicate_edge_clusters
+            if not record["full_incidence_identity_equal"]
+        ],
+        "same_geometry_face_identity_conflicts": [
+            record
+            for record in exact_duplicate_face_clusters
+            if not record["full_semantic_identity_equal"]
+        ],
+        "zero_length_edges": zero_length_edges,
+        "degenerate_faces": degenerate_faces,
+        "public_boundary_graph": public_graph,
+        "local_defect_cells": local_defect_cells,
+        "canonicalization_assessment": {
+            "status": (
+                "UNRESOLVED"
+                if local_defect_cells
+                else "NO_DUPLICATE_OR_DEGENERATE_LOCAL_CELLS"
+            ),
+            "raw_to_canonical_mapping": [],
+            "retained_source_unchanged_proven": False,
+            "open_boundary_transfer_proven": False,
+            "pairing_rerun_authorized": False,
+        },
+    }
+
+
+# 从 Boolean 的 closed-manifold 输出冻结 Groove FaceGraph pairing，并在 disposable BMesh 上验证删除转移。
+# working_object/provenance_by_id/strand_id_by_pipe_id: Boolean 输出、pre-Boolean Face identity 与 Pipe→Strand 显式映射；返回只读 pairing 诊断。
+def _build_predelete_groove_pairing_probe(
+    working_object,
+    provenance_by_id,
+    strand_id_by_pipe_id,
+    boundary_records,
+):
+    bm = bmesh.new()
+    split_face_ids = []
+    closed_edge_link_face_histogram = {}
+    grouping_diagnostics = {}
+    try:
+        bm.from_mesh(working_object.data)
+        bm.verts.index_update()
+        bm.edges.index_update()
+        bm.faces.index_update()
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+        for edge in bm.edges:
+            linked_face_count = len(edge.link_faces)
+            closed_edge_link_face_histogram[linked_face_count] = (
+                closed_edge_link_face_histogram.get(linked_face_count, 0) + 1
+            )
+        original_layer = (
+            bm.faces.layers.int.get(ORIGINAL_FACE_ATTRIBUTE)
+            or bm.faces.layers.bool.get(ORIGINAL_FACE_ATTRIBUTE)
+        )
+        cutter_face_id_layer = bm.faces.layers.int.get(
+            PHASE_C_CUTTER_FACE_ID_ATTRIBUTE
+        )
+        if original_layer is None or cutter_face_id_layer is None:
+            raise BatchedChamferError(
+                "PHASE_C_PREDELETE_PROVENANCE_MISSING",
+                "Pre-delete Groove FaceGraph 缺少 original/cutter Face identity",
+                {},
+            )
+        groove_faces = tuple(
+            face for face in bm.faces if not bool(face[original_layer])
+        )
+        positive_face_id_counts = {}
+        for face in groove_faces:
+            face_id = int(face[cutter_face_id_layer])
+            if face_id > 0:
+                positive_face_id_counts[face_id] = (
+                    positive_face_id_counts.get(face_id, 0) + 1
+                )
+        split_face_ids = sorted(
+            face_id
+            for face_id, count in positive_face_id_counts.items()
+            if count != 1
+        )
+        orphan_face_ids = sorted(
+            face_id
+            for face_id in positive_face_id_counts
+            if face_id not in provenance_by_id
+        )
+        if orphan_face_ids:
+            raise BatchedChamferError(
+                "PHASE_C_PREDELETE_FACE_ID_CONFLICT",
+                "Boolean 输出出现没有 pre-Boolean lineage 的 Cutter Face identity",
+                {"orphan_face_ids": orphan_face_ids},
+            )
+        stable_edge_id_by_index = {
+            int(record["debug_edge_index"]): record["edge_id"]
+            for record in boundary_records
+        }
+        public_edge_indices = {
+            edge.index
+            for face in groove_faces
+            for edge in face.edges
+            if len(edge.link_faces) == 2
+            and len(set(groove_faces).intersection(edge.link_faces)) == 1
+        }
+        missing_public_edge_indices = sorted(
+            public_edge_indices - set(stable_edge_id_by_index)
+        )
+        missing_public_edge_records = tuple(
+            {
+                "edge_id": f"UNMARKED_PUBLIC_EDGE:{edge_index}",
+                "debug_edge_index": int(edge_index),
+                "endpoints": tuple(
+                    tuple(
+                        float(value)
+                        for value in working_object.data.vertices[
+                            endpoint_index
+                        ].co
+                    )
+                    for endpoint_index in working_object.data.edges[
+                        edge_index
+                    ].vertices
+                ),
+                "length": float(
+                    (
+                        working_object.data.vertices[
+                            working_object.data.edges[
+                                edge_index
+                            ].vertices[1]
+                        ].co
+                        - working_object.data.vertices[
+                            working_object.data.edges[
+                                edge_index
+                            ].vertices[0]
+                        ].co
+                    ).length
+                ),
+            }
+            for edge_index in missing_public_edge_indices
+        )
+        public_vertex_degrees = {}
+        for edge_index in public_edge_indices:
+            for vertex_index in working_object.data.edges[edge_index].vertices:
+                public_vertex_degrees[vertex_index] = (
+                    public_vertex_degrees.get(vertex_index, 0) + 1
+                )
+        branch_vertex_indices = sorted(
+            vertex_index
+            for vertex_index, degree in public_vertex_degrees.items()
+            if degree > 2
+        )
+        branch_vertex_records = []
+        for vertex_index in branch_vertex_indices:
+            incident_edge_indices = sorted(
+                edge_index
+                for edge_index in public_edge_indices
+                if vertex_index
+                in working_object.data.edges[edge_index].vertices
+            )
+            branch_vertex_records.append(
+                {
+                    "vertex_index": int(vertex_index),
+                    "coordinate": tuple(
+                        float(value)
+                        for value in working_object.data.vertices[
+                            vertex_index
+                        ].co
+                    ),
+                    "degree": len(incident_edge_indices),
+                    "incident_edges": tuple(
+                        {
+                            "edge_id": (
+                                stable_edge_id_by_index.get(edge_index)
+                                or f"UNMARKED_PUBLIC_EDGE:{edge_index}"
+                            ),
+                            "debug_edge_index": int(edge_index),
+                            "endpoints": tuple(
+                                tuple(
+                                    float(value)
+                                    for value in working_object.data.vertices[
+                                        endpoint_index
+                                    ].co
+                                )
+                                for endpoint_index in working_object.data.edges[
+                                    edge_index
+                                ].vertices
+                            ),
+                            "length": float(
+                                (
+                                    working_object.data.vertices[
+                                        working_object.data.edges[
+                                            edge_index
+                                        ].vertices[1]
+                                    ].co
+                                    - working_object.data.vertices[
+                                        working_object.data.edges[
+                                            edge_index
+                                        ].vertices[0]
+                                    ].co
+                                ).length
+                            ),
+                        }
+                        for edge_index in incident_edge_indices
+                    ),
+                }
+            )
+        face_id_by_face = {
+            face: int(face[cutter_face_id_layer]) for face in groove_faces
+        }
+        missing_group_reason_counts = {}
+        missing_group_public_face_count = 0
+        groove_set = set(groove_faces)
+        for face in groove_faces:
+            face_id = face_id_by_face[face]
+            provenance = provenance_by_id.get(face_id)
+            pipe_id = (
+                int(provenance["pipe_id"])
+                if provenance is not None
+                and provenance.get("pipe_id") is not None
+                else None
+            )
+            reasons = []
+            if face_id <= 0:
+                reasons.append("NON_POSITIVE_FACE_ID")
+            if provenance is None:
+                reasons.append("MISSING_PREBOOLEAN_PROVENANCE")
+            elif provenance.get("longitudinal_component_id") is None:
+                reasons.append("MISSING_LONGITUDINAL_COMPONENT")
+            if pipe_id is not None and strand_id_by_pipe_id.get(pipe_id) is None:
+                reasons.append("MISSING_STRAND_ID")
+            if reasons:
+                is_public = any(
+                    len(edge.link_faces) == 2
+                    and len(groove_set.intersection(edge.link_faces)) == 1
+                    for edge in face.edges
+                )
+                if is_public:
+                    missing_group_public_face_count += 1
+                    for reason in reasons:
+                        missing_group_reason_counts[reason] = (
+                            missing_group_reason_counts.get(reason, 0) + 1
+                        )
+        grouping_diagnostics = {
+            "missing_group_public_face_count": (
+                missing_group_public_face_count
+            ),
+            "missing_group_reason_counts": missing_group_reason_counts,
+            "public_edge_count": len(public_edge_indices),
+            "marked_public_edge_count": len(stable_edge_id_by_index),
+            "missing_public_edge_identity_count": len(
+                missing_public_edge_indices
+            ),
+            "missing_public_edges": missing_public_edge_records,
+            "public_boundary_vertex_degree_histogram": {
+                degree: sum(
+                    current_degree == degree
+                    for current_degree in public_vertex_degrees.values()
+                )
+                for degree in sorted(set(public_vertex_degrees.values()))
+            },
+            "branch_vertices": branch_vertex_records,
+        }
+        # Face identity 已由 Boolean 传播；group 只接受 pre-Boolean 直接证明的 Pipe component。
+        # face: 当前 Groove BMFace；返回显式 Pipe/Strand/segment identity 或 None。
+        def face_group(face):
+            face_id = face_id_by_face[face]
+            provenance = provenance_by_id.get(face_id)
+            if (
+                face_id <= 0
+                or provenance is None
+                or provenance.get("longitudinal_component_id") is None
+            ):
+                return None
+            pipe_id = int(provenance["pipe_id"])
+            strand_id = strand_id_by_pipe_id.get(pipe_id)
+            if strand_id is None:
+                return None
+            return (
+                pipe_id,
+                strand_id,
+                provenance["longitudinal_component_id"],
+            )
+
+        source_patch_layers = {}
+        for layer_collection in (
+            bm.faces.layers.bool,
+            bm.faces.layers.int,
+        ):
+            for layer_name in layer_collection.keys():
+                if layer_name.startswith(
+                    SOURCE_PATCH_MEMBERSHIP_ATTRIBUTE_PREFIX
+                ):
+                    source_patch_layers[
+                        int(layer_name.rsplit("_", 1)[1])
+                    ] = layer_collection.get(layer_name)
+
+        # face: Boolean 输出 BMFace；返回不含坐标、nearest 或临时 index 的 semantic identity。
+        def face_semantic_identity(face):
+            if face in groove_set:
+                face_id = face_id_by_face[face]
+                provenance = provenance_by_id.get(face_id)
+                if provenance is None:
+                    return ("GROOVE", "UNRESOLVED")
+                pipe_id = provenance.get("pipe_id")
+                return (
+                    "GROOVE",
+                    pipe_id,
+                    strand_id_by_pipe_id.get(pipe_id),
+                    provenance.get("longitudinal_component_id"),
+                    tuple(
+                        sorted(
+                            (
+                                incidence.get("port_role"),
+                                incidence.get("port_token"),
+                            )
+                            for incidence in provenance.get(
+                                "port_incidences",
+                                (),
+                            )
+                        )
+                    ),
+                )
+            return (
+                "SOURCE",
+                tuple(
+                    patch_id
+                    for patch_id, layer in sorted(
+                        source_patch_layers.items()
+                    )
+                    if bool(face[layer])
+                ),
+            )
+
+        topology_identities = build_topology_only_pairing_identities(
+            bm,
+            groove_faces,
+            face_semantic_identity,
+        )
+        grouping_diagnostics["topology_only_boundary_edge_count"] = (
+            topology_identities["boundary_edge_count"]
+        )
+
+        frozen = freeze_groove_boundary_pairing(
+            groove_faces,
+            topology_identities["edge_identity"],
+            topology_identities["face_identity"],
+            face_group,
+        )
+        bmesh.ops.delete(
+            bm,
+            geom=list(groove_faces),
+            context="FACES_KEEP_BOUNDARY",
+        )
+        open_edges = tuple(edge for edge in bm.edges if len(edge.link_faces) == 1)
+        verify_open_boundary_transfer(
+            frozen,
+            open_edges,
+            topology_identities["edge_identity"],
+        )
+        return {
+            "status": "UNIQUE",
+            "pair_count": len(frozen["records"]),
+            "boundary_edge_count": len(frozen["boundary_edge_ids"]),
+            "canonical_pairing": canonical_pairing(frozen),
+            "open_boundary_transfer": True,
+            "boolean_split_face_ids": split_face_ids,
+            "boolean_split_face_count": len(split_face_ids),
+            "closed_edge_link_face_histogram": (
+                closed_edge_link_face_histogram
+            ),
+            "grouping_diagnostics": grouping_diagnostics,
+        }
+    except (GroovePairingError, BatchedChamferError) as error:
+        return {
+            "status": "UNRESOLVED",
+            "failure_code": getattr(
+                error,
+                "code",
+                getattr(error, "error_code", "UNKNOWN"),
+            ),
+            "failure_details": getattr(
+                error,
+                "details",
+                getattr(error, "diagnostics", {}),
+            ),
+            "pair_count": 0,
+            "boundary_edge_count": 0,
+            "canonical_pairing": (),
+            "open_boundary_transfer": False,
+            "boolean_split_face_ids": split_face_ids,
+            "boolean_split_face_count": len(split_face_ids),
+            "closed_edge_link_face_histogram": (
+                closed_edge_link_face_histogram
+            ),
+            "grouping_diagnostics": grouping_diagnostics,
+        }
+    finally:
+        bm.free()
+
+
 def _run_independent_batch_cut_probe(
     source_object,
     pipes,
@@ -1851,7 +3146,14 @@ def _run_independent_batch_cut_probe(
     include_complete_cutter_face_records=False,
     freeze_complete_profile_lineage=False,
     include_output_cutter_face_incidence=False,
+    include_predelete_groove_pairing=False,
+    include_boolean_local_defect_census=False,
+    strand_id_by_pipe_id=None,
+    boolean_solver="EXACT",
+    keep_probe_outputs=False,
 ):
+    if boolean_solver not in {"EXACT", "MANIFOLD"}:
+        raise ValueError(f"Unsupported probe Boolean solver: {boolean_solver}")
     pipes_by_id = {int(pipe[PIPE_ID_TAG]): pipe for pipe in pipes}
     _synchronize_cutter_membership_schema(pipes)
     records = []
@@ -1902,9 +3204,10 @@ def _run_independent_batch_cut_probe(
                 type="BOOLEAN",
             )
             modifier.operation = "DIFFERENCE"
-            modifier.solver = "EXACT"
-            modifier.use_self = True
-            modifier.use_hole_tolerant = True
+            modifier.solver = boolean_solver
+            if boolean_solver == "EXACT":
+                modifier.use_self = True
+                modifier.use_hole_tolerant = True
             modifier.operand_type = "OBJECT"
             modifier.object = cutter
             with bpy.context.temp_override(
@@ -1915,6 +3218,16 @@ def _run_independent_batch_cut_probe(
             ):
                 bpy.ops.object.modifier_apply(modifier=modifier.name)
             boundary_witnesses = _mark_boolean_boundary_witnesses(working_object)
+            boolean_local_defect_census = (
+                _build_phase_c_boolean_local_defect_census(
+                    working_object,
+                    cutter_face_signature_by_id,
+                    strand_id_by_pipe_id or {},
+                    boundary_witnesses["marked_edge_indices"],
+                )
+                if include_boolean_local_defect_census
+                else ()
+            )
             output_cutter_face_incidence = (
                 _build_output_cutter_face_incidence_census(
                     working_object,
@@ -1939,6 +3252,16 @@ def _run_independent_batch_cut_probe(
                 semantic_batch,
                 boundary_witnesses["marked_edge_indices"],
                 cutter_face_signature_by_id,
+            )
+            predelete_groove_pairing = (
+                _build_predelete_groove_pairing_probe(
+                    working_object,
+                    cutter_face_signature_by_id,
+                    strand_id_by_pipe_id or {},
+                    boundary_records,
+                )
+                if include_predelete_groove_pairing
+                else ()
             )
             if not working_object.data.vertices or not working_object.data.polygons:
                 pipe_diagnostics = []
@@ -1967,6 +3290,7 @@ def _run_independent_batch_cut_probe(
                 )
             records.append(
                 {
+                    "boolean_solver": boolean_solver,
                     "pipe_ids": list(semantic_batch),
                     "cut_signature": _mesh_fingerprint(working_object.data),
                     "vertex_count": len(working_object.data.vertices),
@@ -1995,12 +3319,42 @@ def _run_independent_batch_cut_probe(
                         if include_output_cutter_face_incidence
                         else {}
                     ),
+                    **(
+                        {
+                            "boolean_local_defect_census": (
+                                boolean_local_defect_census
+                            )
+                        }
+                        if include_boolean_local_defect_census
+                        else {}
+                    ),
+                    **(
+                        {
+                            "predelete_groove_pairing": (
+                                predelete_groove_pairing
+                            )
+                        }
+                        if include_predelete_groove_pairing
+                        else {}
+                    ),
                 }
             )
+            if keep_probe_outputs:
+                working_object.name = (
+                    f"{source_object.name}_BatchedIndependentCut_"
+                    + "_".join(str(pipe_id) for pipe_id in semantic_batch)
+                    + f"_{execution_order}"
+                )
+                working_object["hst_phase_c_probe_output"] = True
         finally:
-            if bpy.data.objects.get(working_object.name) == working_object:
+            if (
+                not keep_probe_outputs
+                and bpy.data.objects.get(working_object.name) == working_object
+            ):
                 bpy.data.objects.remove(working_object, do_unlink=True)
             if (
+                not keep_probe_outputs
+                and
                 working_mesh.users == 0
                 and bpy.data.meshes.get(working_mesh.name) == working_mesh
             ):
@@ -2008,6 +3362,7 @@ def _run_independent_batch_cut_probe(
     canonical_records = tuple(sorted(records, key=lambda record: record["pipe_ids"]))
     return {
         "execution_order": execution_order,
+        "boolean_solver": boolean_solver,
         "cut_signature": _stable_fingerprint(canonical_records),
         "records": canonical_records,
     }

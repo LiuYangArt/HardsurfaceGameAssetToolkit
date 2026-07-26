@@ -50,7 +50,7 @@
 - 当用户提到“回归测试 / Blender 升级检查 / 哪些功能坏了 / smoke test / headless 测试”时，优先使用该 skill。
 - 统一入口命令：`python .\tools\run_blender_tests.py`
 - 若需要读取最近一次结果，查看：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/artifacts/results.json`
-- 项目内置 Edge 可视化 skill：`agent-skills/hst-edge-visualizer/SKILL.md`。
+- 项目内置 Edge 可视化 skill：`.agents/skills/hst-edge-visualizer/SKILL.md`。
 - 当用户要求把 residual、unconsumed 或难以观察的 Edge 做成红/绿/蓝粗线、近景 PNG 和可检查 `.blend` 时，优先使用该 skill，不要重写 Blender 可视化脚本。
 
 ## 测试规范
@@ -69,8 +69,8 @@
 ### Feature Chamfer Phase C 当前产品语义
 
 - 当前唯一计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。
-- 对同一根 Pipe，只需选中槽口左右两侧完整 Edge Loop，一次性交给 Blender 原生 Bridge；两侧 Vertex / Edge 数量无需一致，也不要求逐点、逐边或逐 fragment 对应。
-- duplicate/degenerate、零面积、degree、branch、cycle、normalization、canonicalization 和 raw→canonical 诊断不是 Bridge 前置门槛；只有实际选不到两组完整 Pipe 边界、混入其他 Pipe、Bridge 失败或最终产品验收失败时才 Stop。
+- 无交叉的 Pipe 直接选中槽口左右两侧完整 Edge Loop，一次性交给 Blender 原生 Bridge；Pipe 交叉时，在 junction 两端切成连续槽段，逐段 Bridge 左右完整边链，最后 Fill 剩余交叉孔洞。
+- 两侧 Vertex / Edge 数量无需一致，也不要求逐点、逐边或逐 fragment 对应；duplicate/degenerate、零面积、degree、branch、cycle、normalization、canonicalization 和 raw→canonical 诊断不是 Bridge 前置门槛。只有实际选不到同一槽段的两侧完整边链、跨 junction 混入其他槽、Bridge/Fill 失败或最终产品验收失败时才 Stop。
 - 旧 pre-Boolean pairing、maximal-chain、Merge/canonicalization 与 operand 调整文档仅为历史证据，不得恢复为当前开发方向。
 - 第一阶段优先 `simple`、`tricky_b`、`mixed` 三个 fixture 的 10 个 matrix cells；它们全部通过即可作为第一阶段可用成果。`tricky` 的 4 个 cells 允许安全失败并延后处理，不得阻塞第一阶段交付，但失败必须保持 source 不变和完整回滚。
 

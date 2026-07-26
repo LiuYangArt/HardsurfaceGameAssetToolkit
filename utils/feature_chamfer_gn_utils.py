@@ -30,6 +30,7 @@ from ..const import PRESET_FILE_PATH
 from .experimental_pipe_chamfer_utils import _base_stats
 from .experimental_pipe_chamfer_utils import _build_preview_feature_graph
 from .experimental_pipe_chamfer_utils import _classify_pipe_endpoints
+from .experimental_pipe_chamfer_utils import _source_face_patch_ids
 from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
 from .feature_chamfer_plan_utils import build_chamfer_plan
 from .feature_chamfer_plan_utils import feature_strand_points
@@ -44,6 +45,22 @@ PREVIEW_VALID = FEATURE_CHAMFER_PREVIEW_VALID
 PREVIEW_STALE = FEATURE_CHAMFER_PREVIEW_STALE
 OWNER_VALUE = "HST_FEATURE_CHAMFER_GN_V1"
 CURVE_PREVIEW_BACKEND = "PYTHON_CURVE_PIPE"
+BOUNDARY_EDGE_ATTRIBUTE = "hst_feature_chamfer_boundary_edge"
+PIPE_INPUT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_pipe_member_"
+PIPE_BOUNDARY_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_pipe_"
+SEGMENT_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_segment_point_"
+SEGMENT_STATION_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_segment_station_point_"
+SEGMENT_FACE_ATTRIBUTE_PREFIX = "hst_feature_chamfer_segment_face_"
+SEGMENT_STATION_FACE_ATTRIBUTE_PREFIX = "hst_feature_chamfer_segment_station_face_"
+SEGMENT_STATION_SQUARED_FACE_ATTRIBUTE_PREFIX = "hst_feature_chamfer_segment_station_squared_face_"
+SEGMENT_BOUNDARY_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_segment_"
+SEGMENT_BOUNDARY_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_segment_point_"
+SEGMENT_STATION_BOUNDARY_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_station_"
+SEGMENT_STATION_SQUARED_BOUNDARY_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_station_squared_"
+SEGMENT_STATION_SQUARED_BOUNDARY_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_station_squared_point_"
+SEGMENT_STATION_BOUNDARY_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_station_point_"
+SOURCE_PATCH_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_patch_"
+OWNED_BOOLEAN_PRO_TAG = "hst_feature_chamfer_owned_boolean_pro"
 
 
 class FeatureChamferPreviewError(RuntimeError):
@@ -176,6 +193,159 @@ def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius
         )
     if len(pipe_specs) != len(chamfer_plan.feature_strands):
         raise FeatureChamferPreviewError("Preview Pipe 合同与 ChamferPlan 不是一一对应")
+    pipe_specs_by_strand_id = {
+        pipe_spec["strand_id"]: pipe_spec
+        for pipe_spec in pipe_specs
+    }
+    point_offsets_by_pipe_id = {}
+    point_offset = 0
+    for feature_strand in chamfer_plan.feature_strands:
+        ordered_pipe_spec = pipe_specs_by_strand_id[feature_strand.strand_id]
+        point_offsets_by_pipe_id[ordered_pipe_spec["pipe_id"]] = point_offset
+        point_offset += len(ordered_pipe_spec["points"])
+    preview_segments = []
+    for spline_index, feature_strand in enumerate(chamfer_plan.feature_strands):
+        pipe_spec = pipe_specs_by_strand_id[feature_strand.strand_id]
+        pipe_spec["spline_index"] = spline_index
+        pipe_cumulative_lengths = [0.0]
+        for start, end in zip(pipe_spec["points"], pipe_spec["points"][1:]):
+            pipe_cumulative_lengths.append(
+                pipe_cumulative_lengths[-1]
+                + sum(
+                    (float(end[axis]) - float(start[axis])) ** 2
+                    for axis in range(3)
+                )
+                ** 0.5
+            )
+        pipe_total_length = pipe_cumulative_lengths[-1]
+        if pipe_spec["is_cyclic"] and len(pipe_spec["points"]) > 1:
+            pipe_total_length += sum(
+                (
+                    float(pipe_spec["points"][0][axis])
+                    - float(pipe_spec["points"][-1][axis])
+                )
+                ** 2
+                for axis in range(3)
+            ) ** 0.5
+        if pipe_total_length <= 1.0e-12:
+            raise FeatureChamferPreviewError(
+                f"Preview Pipe {pipe_spec['pipe_id']} 缺少有效纵向长度"
+            )
+        port_records = []
+        for port_index, port in enumerate(chamfer_plan.junction_ports):
+            if feature_strand.strand_id not in port.incident_strand_ids:
+                continue
+            port_coordinate = tuple(
+                float(component)
+                for component in port.vertex_key.split("#", 1)[0].split(",")
+            )
+            matching_point_indices = [
+                point_index
+                for point_index, point in enumerate(pipe_spec["points"])
+                if all(
+                    abs(float(component) - port_component) <= 1.0e-7
+                    for component, port_component in zip(point, port_coordinate)
+                )
+            ]
+            if len(matching_point_indices) != 1:
+                raise FeatureChamferPreviewError(
+                    f"Preview Pipe {pipe_spec['pipe_id']} 无法唯一绑定 junction port"
+                )
+            port_records.append(
+                {
+                    "port_index": port_index,
+                    "point_index": matching_point_indices[0],
+                }
+            )
+        port_records.sort(key=lambda record: record["point_index"])
+        pipe_spec["ports"] = port_records
+        if not port_records:
+            if not pipe_spec["is_cyclic"]:
+                raise FeatureChamferPreviewError(
+                    f"Open Preview Pipe {pipe_spec['pipe_id']} 缺少 junction ports"
+                )
+            segment_spans = [((), tuple(range(len(pipe_spec["points"]))))]
+        else:
+            pair_count = len(port_records) if pipe_spec["is_cyclic"] else len(port_records) - 1
+            segment_spans = []
+            for pair_index in range(pair_count):
+                start_record = port_records[pair_index]
+                end_record = port_records[(pair_index + 1) % len(port_records)]
+                start_index = start_record["point_index"]
+                end_index = end_record["point_index"]
+                if start_index <= end_index:
+                    point_indices = tuple(range(start_index, end_index + 1))
+                else:
+                    point_indices = (
+                        tuple(range(start_index, len(pipe_spec["points"])))
+                        + tuple(range(0, end_index + 1))
+                    )
+                segment_spans.append(
+                    (
+                        tuple(sorted((start_record["port_index"], end_record["port_index"]))),
+                        point_indices,
+                    )
+                )
+        pipe_spec["segment_ids"] = []
+        for port_pair, point_indices in segment_spans:
+            segment_id = len(preview_segments)
+            pipe_spec["segment_ids"].append(segment_id)
+            point_coordinates = [
+                pipe_spec["points"][point_index]
+                for point_index in point_indices
+            ]
+            cumulative_lengths = [0.0]
+            for start, end in zip(point_coordinates, point_coordinates[1:]):
+                cumulative_lengths.append(
+                    cumulative_lengths[-1]
+                    + sum(
+                        (float(end[axis]) - float(start[axis])) ** 2
+                        for axis in range(3)
+                    )
+                    ** 0.5
+                )
+            cyclic_segment = bool(pipe_spec["is_cyclic"] and not port_pair)
+            total_length = cumulative_lengths[-1]
+            if cyclic_segment and len(point_coordinates) > 1:
+                total_length += sum(
+                    (
+                        float(point_coordinates[0][axis])
+                        - float(point_coordinates[-1][axis])
+                    )
+                    ** 2
+                    for axis in range(3)
+                ) ** 0.5
+            if total_length <= 1.0e-12:
+                raise FeatureChamferPreviewError(
+                    f"Preview segment {segment_id} 缺少有效纵向长度"
+                )
+            preview_segments.append(
+                {
+                    "segment_id": segment_id,
+                    "pipe_id": pipe_spec["pipe_id"],
+                    "strand_id": feature_strand.strand_id,
+                    "port_indices": list(port_pair),
+                    "point_indices": list(point_indices),
+                    "global_point_indices": [
+                        point_offsets_by_pipe_id[pipe_spec["pipe_id"]] + point_index
+                        for point_index in point_indices
+                    ],
+                    "point_coordinates": point_coordinates,
+                    "point_stations": [
+                        round(length / total_length, 10)
+                        for length in cumulative_lengths
+                    ],
+                    "spline_start_station": round(
+                        pipe_cumulative_lengths[point_indices[0]] / pipe_total_length,
+                        10,
+                    ),
+                    "spline_end_station": round(
+                        pipe_cumulative_lengths[point_indices[-1]] / pipe_total_length,
+                        10,
+                    ),
+                    "is_cyclic": cyclic_segment,
+                }
+            )
     return json.dumps(
         {
             "contract": "GN_PREVIEW_PIPE_V1",
@@ -183,6 +353,7 @@ def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius
             "source_fingerprint": source_fingerprint(source_object),
             "radius": round(float(radius), 10),
             "pipes": pipe_specs,
+            "segments": preview_segments,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -294,6 +465,370 @@ def _rebuild_owned_preview_curve(source_object, radius):
     return curve_object, stats, chamfer_plan
 
 
+# 把多个 Boolean selection 连成一个 field，避免为 source Patch 引入新的 Mesh 分析路线。
+# node_group/fields: 当前 wrapper 与 Boolean fields；返回合并后的 Boolean socket。
+def _or_boolean_fields(node_group, fields):
+    if not fields:
+        return None
+    combined = fields[0]
+    for field in fields[1:]:
+        boolean_or = node_group.nodes.new("FunctionNodeBooleanMath")
+        boolean_or.operation = "OR"
+        node_group.links.new(combined, boolean_or.inputs[0])
+        node_group.links.new(field, boolean_or.inputs[1])
+        combined = boolean_or.outputs["Boolean"]
+    return combined
+
+
+# 在 Geometry 上按 index selection 写一个 Boolean Named Attribute。
+# node_group/geometry_socket/index_socket/indices/name/domain: Node Tree、输入 Geometry、Index field、目标索引、属性名与 domain；返回 Geometry socket。
+def _store_index_membership(
+    node_group,
+    geometry_socket,
+    index_socket,
+    indices,
+    attribute_name,
+    domain,
+):
+    fields = []
+    for target_index in indices:
+        compare = node_group.nodes.new("FunctionNodeCompare")
+        compare.data_type = "INT"
+        compare.operation = "EQUAL"
+        compare.inputs[3].default_value = int(target_index)
+        node_group.links.new(index_socket, compare.inputs[2])
+        fields.append(compare.outputs["Result"])
+    membership = _or_boolean_fields(node_group, fields)
+    if membership is None:
+        raise FeatureChamferPreviewError(
+            f"Named Attribute {attribute_name} 缺少 selection indices"
+        )
+    store = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+    store.data_type = "BOOLEAN"
+    store.domain = domain
+    store.inputs["Name"].default_value = attribute_name
+    node_group.links.new(geometry_socket, store.inputs["Geometry"])
+    node_group.links.new(membership, store.inputs["Value"])
+    return store.outputs["Geometry"]
+
+
+# 根据 Spline Parameter 生成槽段内归一化纵向位置，避免逐点构造庞大字段树。
+# node_group/spline_factor/segment: Node Tree、Spline Parameter Factor 与冻结槽段；返回 Float field socket。
+def _segment_station_field(node_group, spline_factor, segment):
+    if segment["is_cyclic"]:
+        return spline_factor
+    start_station = float(segment["spline_start_station"])
+    end_station = float(segment["spline_end_station"])
+    adjusted_factor = spline_factor
+    if end_station < start_station:
+        compare = node_group.nodes.new("FunctionNodeCompare")
+        compare.data_type = "FLOAT"
+        compare.operation = "LESS_THAN"
+        compare.inputs[1].default_value = start_station
+        node_group.links.new(spline_factor, compare.inputs[0])
+        add_one = node_group.nodes.new("ShaderNodeMath")
+        add_one.operation = "ADD"
+        add_one.inputs[1].default_value = 1.0
+        node_group.links.new(spline_factor, add_one.inputs[0])
+        switch = node_group.nodes.new("GeometryNodeSwitch")
+        switch.input_type = "FLOAT"
+        node_group.links.new(compare.outputs["Result"], switch.inputs["Switch"])
+        node_group.links.new(spline_factor, switch.inputs["False"])
+        node_group.links.new(add_one.outputs["Value"], switch.inputs["True"])
+        adjusted_factor = switch.outputs["Output"]
+        end_station += 1.0
+    span = end_station - start_station
+    if span <= 1.0e-12:
+        raise FeatureChamferPreviewError(
+            f"Preview segment {segment['segment_id']} 缺少有效 Spline span"
+        )
+    subtract = node_group.nodes.new("ShaderNodeMath")
+    subtract.operation = "SUBTRACT"
+    subtract.inputs[1].default_value = start_station
+    node_group.links.new(adjusted_factor, subtract.inputs[0])
+    divide = node_group.nodes.new("ShaderNodeMath")
+    divide.operation = "DIVIDE"
+    divide.inputs[1].default_value = span
+    node_group.links.new(subtract.outputs["Value"], divide.inputs[0])
+    return divide.outputs["Value"]
+
+
+# 在 owned Curve 的 POINT 域写槽段 one-hot 与纵向位置，交叉点可同时属于相邻两段。
+# node_group/curve_socket/pipe_contract: wrapper、Curve Geometry 与冻结合同；返回带槽段属性的 Curve socket。
+def _store_preview_segment_points(node_group, curve_socket, pipe_contract):
+    index = node_group.nodes.new("GeometryNodeInputIndex")
+    spline_parameter = node_group.nodes.new("GeometryNodeSplineParameter")
+    current_geometry = curve_socket
+    for segment in pipe_contract["segments"]:
+        current_geometry = _store_index_membership(
+            node_group,
+            current_geometry,
+            index.outputs["Index"],
+            segment["global_point_indices"],
+            SEGMENT_POINT_ATTRIBUTE_PREFIX + str(segment["segment_id"]),
+            "POINT",
+        )
+        store_station = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store_station.data_type = "FLOAT"
+        store_station.domain = "POINT"
+        store_station.inputs["Name"].default_value = (
+            SEGMENT_STATION_POINT_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        node_group.links.new(current_geometry, store_station.inputs["Geometry"])
+        node_group.links.new(
+            _segment_station_field(
+                node_group,
+                spline_parameter.outputs["Factor"],
+                segment,
+            ),
+            store_station.inputs["Value"],
+        )
+        current_geometry = store_station.outputs["Geometry"]
+    return current_geometry
+
+
+# 在 Curve Pipe FACE 域写 Pipe/槽段 one-hot，供 Boolean Pro solver 直接物化到 Boundary Edges。
+# node_group/cutter_socket/pipe_contract: wrapper、Curve Pipe Mesh 与冻结合同；返回带全部 FACE provenance 的 Mesh socket。
+def _store_cutter_grouping_attributes(node_group, cutter_socket, pipe_contract):
+    named_pipe_id = node_group.nodes.new("GeometryNodeInputNamedAttribute")
+    named_pipe_id.data_type = "INT"
+    named_pipe_id.inputs["Name"].default_value = "hst_feature_chamfer_pipe_id"
+    current_geometry = cutter_socket
+    for pipe_record in pipe_contract["pipes"]:
+        compare = node_group.nodes.new("FunctionNodeCompare")
+        compare.data_type = "INT"
+        compare.operation = "EQUAL"
+        compare.inputs[3].default_value = int(pipe_record["spline_index"]) + 1
+        node_group.links.new(named_pipe_id.outputs["Attribute"], compare.inputs[2])
+        store = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "BOOLEAN"
+        store.domain = "FACE"
+        store.inputs["Name"].default_value = (
+            PIPE_INPUT_ATTRIBUTE_PREFIX + str(pipe_record["pipe_id"])
+        )
+        node_group.links.new(current_geometry, store.inputs["Geometry"])
+        node_group.links.new(compare.outputs["Result"], store.inputs["Value"])
+        current_geometry = store.outputs["Geometry"]
+    for segment in pipe_contract["segments"]:
+        named_segment = node_group.nodes.new("GeometryNodeInputNamedAttribute")
+        named_segment.data_type = "FLOAT"
+        named_segment.inputs["Name"].default_value = (
+            SEGMENT_POINT_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        named_pipe = node_group.nodes.new("GeometryNodeInputNamedAttribute")
+        named_pipe.data_type = "BOOLEAN"
+        named_pipe.inputs["Name"].default_value = (
+            PIPE_INPUT_ATTRIBUTE_PREFIX + str(segment["pipe_id"])
+        )
+        multiply = node_group.nodes.new("ShaderNodeMath")
+        multiply.operation = "MULTIPLY"
+        node_group.links.new(named_segment.outputs["Attribute"], multiply.inputs[0])
+        node_group.links.new(named_pipe.outputs["Attribute"], multiply.inputs[1])
+        store = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "FLOAT"
+        store.domain = "FACE"
+        store.inputs["Name"].default_value = (
+            SEGMENT_FACE_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        node_group.links.new(current_geometry, store.inputs["Geometry"])
+        node_group.links.new(multiply.outputs["Value"], store.inputs["Value"])
+        current_geometry = store.outputs["Geometry"]
+        named_station = node_group.nodes.new("GeometryNodeInputNamedAttribute")
+        named_station.data_type = "FLOAT"
+        named_station.inputs["Name"].default_value = (
+            SEGMENT_STATION_POINT_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        station_multiply = node_group.nodes.new("ShaderNodeMath")
+        station_multiply.operation = "MULTIPLY"
+        node_group.links.new(named_station.outputs["Attribute"], station_multiply.inputs[0])
+        node_group.links.new(multiply.outputs["Value"], station_multiply.inputs[1])
+        store_station = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store_station.data_type = "FLOAT"
+        store_station.domain = "FACE"
+        store_station.inputs["Name"].default_value = (
+            SEGMENT_STATION_FACE_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        node_group.links.new(current_geometry, store_station.inputs["Geometry"])
+        node_group.links.new(station_multiply.outputs["Value"], store_station.inputs["Value"])
+        current_geometry = store_station.outputs["Geometry"]
+        station_squared = node_group.nodes.new("ShaderNodeMath")
+        station_squared.operation = "MULTIPLY"
+        node_group.links.new(named_station.outputs["Attribute"], station_squared.inputs[0])
+        node_group.links.new(named_station.outputs["Attribute"], station_squared.inputs[1])
+        station_squared_multiply = node_group.nodes.new("ShaderNodeMath")
+        station_squared_multiply.operation = "MULTIPLY"
+        node_group.links.new(
+            station_squared.outputs["Value"],
+            station_squared_multiply.inputs[0],
+        )
+        node_group.links.new(multiply.outputs["Value"], station_squared_multiply.inputs[1])
+        store_station_squared = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store_station_squared.data_type = "FLOAT"
+        store_station_squared.domain = "FACE"
+        store_station_squared.inputs["Name"].default_value = (
+            SEGMENT_STATION_SQUARED_FACE_ATTRIBUTE_PREFIX
+            + str(segment["segment_id"])
+        )
+        node_group.links.new(current_geometry, store_station_squared.inputs["Geometry"])
+        node_group.links.new(
+            station_squared_multiply.outputs["Value"],
+            store_station_squared.inputs["Value"],
+        )
+        current_geometry = store_station_squared.outputs["Geometry"]
+    return current_geometry
+
+
+# 在 source Geometry FACE 域保存 Surface Patch one-hot，使 Boundary 两侧可读但不参与 Boundary acquisition。
+# node_group/source_socket/source_object: wrapper、source Geometry 与原 Object；返回带 Patch 属性的 Geometry socket。
+def _store_source_patch_attributes(node_group, source_socket, source_object):
+    patch_ids = _source_face_patch_ids(source_object)
+    patch_face_indices = {}
+    for face_index, patch_id in enumerate(patch_ids):
+        patch_face_indices.setdefault(int(patch_id), []).append(face_index)
+    index = node_group.nodes.new("GeometryNodeInputIndex")
+    current_geometry = source_socket
+    for patch_id, face_indices in sorted(patch_face_indices.items()):
+        current_geometry = _store_index_membership(
+            node_group,
+            current_geometry,
+            index.outputs["Index"],
+            face_indices,
+            SOURCE_PATCH_ATTRIBUTE_PREFIX + str(patch_id),
+            "FACE",
+        )
+    return current_geometry, tuple(sorted(patch_face_indices))
+
+
+# 在 Boolean Pro active Manifold Difference 输出上把输入 provenance 写成 EDGE 属性。
+# boolean_node/pipe_contract/patch_ids: wrapper 中的 Boolean Pro、冻结 Pipe 合同与 source Patch IDs；返回 owned nested Node Group。
+def _materialize_boolean_boundary_grouping(boolean_node, pipe_contract, patch_ids):
+    boolean_tree = boolean_node.node_tree.copy()
+    boolean_tree.name = f"{boolean_node.node_tree.name} :: Direct Segment Bridge"
+    boolean_tree[OWNED_BOOLEAN_PRO_TAG] = True
+    boolean_node.node_tree = boolean_tree
+    solver_select = boolean_tree.nodes.get("Group.007")
+    geometry_target = boolean_tree.nodes.get("Reroute.037")
+    if (
+        solver_select is None
+        or geometry_target is None
+        or solver_select.bl_idname != "GeometryNodeGroup"
+        or "Geometry" not in solver_select.outputs
+        or "Intersection Edges" not in solver_select.outputs
+    ):
+        raise FeatureChamferPreviewError(
+            "受控 Boolean Pro 缺少 Manifold Difference grouping seam"
+        )
+    geometry_links = [
+        link
+        for link in list(boolean_tree.links)
+        if link.from_node == solver_select
+        and link.from_socket.name == "Geometry"
+        and link.to_node == geometry_target
+    ]
+    if len(geometry_links) != 1:
+        raise FeatureChamferPreviewError(
+            "受控 Boolean Pro 的 Manifold Difference Geometry seam 不唯一"
+        )
+    boolean_tree.links.remove(geometry_links[0])
+    current_geometry = solver_select.outputs["Geometry"]
+    attribute_specs = [
+        (
+            PIPE_INPUT_ATTRIBUTE_PREFIX + str(pipe_record["pipe_id"]),
+            PIPE_BOUNDARY_ATTRIBUTE_PREFIX + str(pipe_record["pipe_id"]),
+            "BOOLEAN",
+        )
+        for pipe_record in pipe_contract["pipes"]
+    ]
+    attribute_specs.extend(
+        (
+            SEGMENT_FACE_ATTRIBUTE_PREFIX + str(segment["segment_id"]),
+            SEGMENT_BOUNDARY_ATTRIBUTE_PREFIX + str(segment["segment_id"]),
+            "FLOAT",
+        )
+        for segment in pipe_contract["segments"]
+    )
+    attribute_specs.extend(
+        (
+            SOURCE_PATCH_ATTRIBUTE_PREFIX + str(patch_id),
+            SOURCE_PATCH_ATTRIBUTE_PREFIX + str(patch_id),
+            "BOOLEAN",
+        )
+        for patch_id in patch_ids
+    )
+    for input_name, output_name, data_type in attribute_specs:
+        named = boolean_tree.nodes.new("GeometryNodeInputNamedAttribute")
+        named.data_type = data_type
+        named.inputs["Name"].default_value = input_name
+        store = boolean_tree.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = data_type
+        store.domain = "EDGE"
+        store.inputs["Name"].default_value = output_name
+        boolean_tree.links.new(current_geometry, store.inputs["Geometry"])
+        boolean_tree.links.new(
+            solver_select.outputs["Intersection Edges"],
+            store.inputs["Selection"],
+        )
+        boolean_tree.links.new(named.outputs["Attribute"], store.inputs["Value"])
+        current_geometry = store.outputs["Geometry"]
+    for segment in pipe_contract["segments"]:
+        named_segment = boolean_tree.nodes.new("GeometryNodeInputNamedAttribute")
+        named_segment.data_type = "FLOAT"
+        named_segment.inputs["Name"].default_value = (
+            SEGMENT_FACE_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        store_segment_point = boolean_tree.nodes.new("GeometryNodeStoreNamedAttribute")
+        store_segment_point.data_type = "FLOAT"
+        store_segment_point.domain = "POINT"
+        store_segment_point.inputs["Name"].default_value = (
+            SEGMENT_BOUNDARY_POINT_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        boolean_tree.links.new(current_geometry, store_segment_point.inputs["Geometry"])
+        boolean_tree.links.new(named_segment.outputs["Attribute"], store_segment_point.inputs["Value"])
+        current_geometry = store_segment_point.outputs["Geometry"]
+        named_station = boolean_tree.nodes.new("GeometryNodeInputNamedAttribute")
+        named_station.data_type = "FLOAT"
+        named_station.inputs["Name"].default_value = (
+            SEGMENT_STATION_FACE_ATTRIBUTE_PREFIX + str(segment["segment_id"])
+        )
+        for domain, attribute_prefix in (
+            ("POINT", SEGMENT_STATION_BOUNDARY_POINT_ATTRIBUTE_PREFIX),
+            ("EDGE", SEGMENT_STATION_BOUNDARY_ATTRIBUTE_PREFIX),
+        ):
+            store_station = boolean_tree.nodes.new("GeometryNodeStoreNamedAttribute")
+            store_station.data_type = "FLOAT"
+            store_station.domain = domain
+            store_station.inputs["Name"].default_value = (
+                attribute_prefix + str(segment["segment_id"])
+            )
+            boolean_tree.links.new(current_geometry, store_station.inputs["Geometry"])
+            boolean_tree.links.new(named_station.outputs["Attribute"], store_station.inputs["Value"])
+            current_geometry = store_station.outputs["Geometry"]
+        named_station_squared = boolean_tree.nodes.new("GeometryNodeInputNamedAttribute")
+        named_station_squared.data_type = "FLOAT"
+        named_station_squared.inputs["Name"].default_value = (
+            SEGMENT_STATION_SQUARED_FACE_ATTRIBUTE_PREFIX
+            + str(segment["segment_id"])
+        )
+        for domain, attribute_prefix in (
+            ("POINT", SEGMENT_STATION_SQUARED_BOUNDARY_POINT_ATTRIBUTE_PREFIX),
+            ("EDGE", SEGMENT_STATION_SQUARED_BOUNDARY_ATTRIBUTE_PREFIX),
+        ):
+            store_station_squared = boolean_tree.nodes.new("GeometryNodeStoreNamedAttribute")
+            store_station_squared.data_type = "FLOAT"
+            store_station_squared.domain = domain
+            store_station_squared.inputs["Name"].default_value = (
+                attribute_prefix + str(segment["segment_id"])
+            )
+            boolean_tree.links.new(current_geometry, store_station_squared.inputs["Geometry"])
+            boolean_tree.links.new(
+                named_station_squared.outputs["Attribute"],
+                store_station_squared.inputs["Value"],
+            )
+            current_geometry = store_station_squared.outputs["Geometry"]
+    boolean_tree.links.new(current_geometry, geometry_target.inputs["Input"])
+    return boolean_tree
+
+
 # 构建正式 Preview wrapper：复制受控资产，仅把 cutter seam 改为 Python Curve Pipe。
 # curve_object/radius/show_cutter: owned Curve、倒角半径与 cutter 显示开关。
 def _build_curve_preview_node_group(curve_object, radius, show_cutter):
@@ -303,6 +838,14 @@ def _build_curve_preview_node_group(curve_object, radius, show_cutter):
     node_group.name = f"HST Feature Chamfer Curve Preview :: {curve_object.name}"
     node_group[FEATURE_CHAMFER_GN_ASSET_VERSION_TAG] = FEATURE_CHAMFER_GN_ASSET_VERSION
     node_group["hst_feature_chamfer_preview_backend"] = CURVE_PREVIEW_BACKEND
+    pipe_contract = json.loads(
+        curve_object[FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG]
+    )
+    source_object = bpy.data.objects.get(
+        curve_object[FEATURE_CHAMFER_CURVE_OWNER_TAG]
+    )
+    if source_object is None or source_object.type != "MESH":
+        raise FeatureChamferPreviewError("Preview Curve 对应的 source Object 不存在")
     group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
     boolean_node = node_group.nodes.get("Boolean Pro")
     switch_node = node_group.nodes.get("HST Boolean Result or Cutter")
@@ -330,10 +873,50 @@ def _build_curve_preview_node_group(curve_object, radius, show_cutter):
         ):
             node_group.links.remove(link)
     node_group.links.new(group_input.outputs["Radius"], curve_circle.inputs["Radius"])
-    node_group.links.new(object_info.outputs["Geometry"], curve_pipe.inputs["Curve"])
+    curve_geometry = _store_preview_segment_points(
+        node_group,
+        object_info.outputs["Geometry"],
+        pipe_contract,
+    )
+    pipe_index = node_group.nodes.new("GeometryNodeInputIndex")
+    add_one = node_group.nodes.new("ShaderNodeMath")
+    add_one.operation = "ADD"
+    add_one.inputs[1].default_value = 1.0
+    node_group.links.new(pipe_index.outputs["Index"], add_one.inputs[0])
+    store_pipe_id = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
+    store_pipe_id.data_type = "INT"
+    store_pipe_id.domain = "CURVE"
+    store_pipe_id.inputs["Name"].default_value = "hst_feature_chamfer_pipe_id"
+    node_group.links.new(curve_geometry, store_pipe_id.inputs["Geometry"])
+    node_group.links.new(add_one.outputs["Value"], store_pipe_id.inputs["Value"])
+    node_group.links.new(store_pipe_id.outputs["Geometry"], curve_pipe.inputs["Curve"])
     node_group.links.new(curve_circle.outputs["Curve"], curve_pipe.inputs["Profile Curve"])
-    node_group.links.new(curve_pipe.outputs["Geometry"], boolean_node.inputs["Geometry B"])
-    node_group.links.new(curve_pipe.outputs["Geometry"], switch_node.inputs["True"])
+    cutter_geometry = _store_cutter_grouping_attributes(
+        node_group,
+        curve_pipe.outputs["Geometry"],
+        pipe_contract,
+    )
+    source_geometry, patch_ids = _store_source_patch_attributes(
+        node_group,
+        group_input.outputs["Geometry"],
+        source_object,
+    )
+    for link in list(node_group.links):
+        if (
+            link.from_node == group_input
+            and link.from_socket.name == "Geometry"
+            and link.to_node == boolean_node
+            and link.to_socket.name == "Geometry"
+        ):
+            node_group.links.remove(link)
+    node_group.links.new(source_geometry, boolean_node.inputs["Geometry"])
+    node_group.links.new(cutter_geometry, boolean_node.inputs["Geometry B"])
+    node_group.links.new(cutter_geometry, switch_node.inputs["True"])
+    _materialize_boolean_boundary_grouping(
+        boolean_node,
+        pipe_contract,
+        patch_ids,
+    )
     return node_group
 
 
@@ -341,13 +924,24 @@ def _build_curve_preview_node_group(curve_object, radius, show_cutter):
 # modifier: owned Preview modifier；无返回值。
 def _remove_owned_preview_node_group(modifier):
     node_group = modifier.node_group if modifier is not None else None
+    owned_boolean_groups = []
     if (
         node_group is not None
         and node_group.get("hst_feature_chamfer_preview_backend") == CURVE_PREVIEW_BACKEND
     ):
+        owned_boolean_groups = [
+            node.node_tree
+            for node in node_group.nodes
+            if node.bl_idname == "GeometryNodeGroup"
+            and node.node_tree is not None
+            and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
+        ]
         modifier.node_group = None
         if node_group.users == 0:
             bpy.data.node_groups.remove(node_group)
+        for boolean_group in owned_boolean_groups:
+            if boolean_group.users == 0:
+                bpy.data.node_groups.remove(boolean_group)
 
 
 # 返回 Node Group 输入 socket 的 identifier 映射，避免硬编码 Socket_N。
@@ -428,6 +1022,13 @@ def ensure_gn_feature_chamfer_preview(
     created_modifier = False
     old_curve_object = owned_preview_curve(source_object)
     old_node_group = modifier.node_group if modifier is not None else None
+    old_owned_boolean_groups = [
+        node.node_tree
+        for node in old_node_group.nodes
+        if node.bl_idname == "GeometryNodeGroup"
+        and node.node_tree is not None
+        and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
+    ] if old_node_group is not None else []
     old_modifier_reference = modifier
     old_source_plan_properties = {
         property_name: source_object.get(property_name)
@@ -471,7 +1072,17 @@ def ensure_gn_feature_chamfer_preview(
         elif modifier is not None:
             modifier.node_group = old_node_group
         if node_group is not None and node_group.users == 0:
+            owned_boolean_groups = [
+                node.node_tree
+                for node in node_group.nodes
+                if node.bl_idname == "GeometryNodeGroup"
+                and node.node_tree is not None
+                and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
+            ]
             bpy.data.node_groups.remove(node_group)
+            for boolean_group in owned_boolean_groups:
+                if boolean_group.users == 0:
+                    bpy.data.node_groups.remove(boolean_group)
         _remove_preview_curve_object(curve_object)
         if old_curve_object is not None:
             source_object[FEATURE_CHAMFER_CURVE_OBJECT_TAG] = old_curve_object.name
@@ -495,6 +1106,9 @@ def ensure_gn_feature_chamfer_preview(
         and old_node_group.users == 0
     ):
         bpy.data.node_groups.remove(old_node_group)
+        for boolean_group in old_owned_boolean_groups:
+            if boolean_group.users == 0:
+                bpy.data.node_groups.remove(boolean_group)
     if old_curve_object is not None and old_curve_object != curve_object:
         _remove_preview_curve_object(old_curve_object)
     parameters = live_preview_parameters(modifier)

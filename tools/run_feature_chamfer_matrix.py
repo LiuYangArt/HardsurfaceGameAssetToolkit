@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -42,10 +43,16 @@ def run(argv=None):
     parser.add_argument("--blender", help="Path to the Blender executable")
     parser.add_argument("--artifact-dir", help="Product matrix artifact directory")
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="Run only the named matrix case; repeat for multiple cases",
+    )
     args = parser.parse_args(argv)
 
     if args.repetitions < 3:
-        parser.error("Phase 2 requires at least three repetitions per matrix cell")
+        parser.error("Feature Chamfer product gate requires at least three repetitions per cell")
 
     repo_root = Path(__file__).resolve().parent.parent
     blender_executable = find_blender(args.blender)
@@ -64,6 +71,8 @@ def run(argv=None):
     environment["HST_ADDON_ROOT"] = str(repo_root)
     environment["HST_FEATURE_CHAMFER_MATRIX_ARTIFACT_DIR"] = str(artifact_directory)
     environment["HST_FEATURE_CHAMFER_MATRIX_REPETITIONS"] = str(args.repetitions)
+    if args.cases:
+        environment["HST_FEATURE_CHAMFER_MATRIX_CASES"] = json.dumps(args.cases)
     driver_path = repo_root / "tests" / "feature_chamfer_matrix_driver.py"
     command = [
         str(blender_executable),
@@ -79,7 +88,7 @@ def run(argv=None):
     print(f"Using Blender: {blender_executable}")
     print(
         "Running Feature Chamfer product matrix: "
-        f"14 cells x {args.repetitions} repetitions"
+        f"{len(args.cases) if args.cases else 14} cells x {args.repetitions} repetitions"
     )
     completed = subprocess.run(command, cwd=repo_root, env=environment)
     return completed.returncode

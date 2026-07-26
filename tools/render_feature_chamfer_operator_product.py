@@ -7,12 +7,26 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
-output = bpy.data.objects.get("Extruded.002_FeatureChamfer")
+output_name = os.environ.get("HST_PRODUCT_OBJECT_NAME")
+output = bpy.data.objects.get(output_name) if output_name else None
+if output is None and output_name is None:
+    candidates = [
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH" and obj.name.endswith("_FeatureChamfer")
+    ]
+    output = candidates[0] if len(candidates) == 1 else None
 if output is None:
-    raise RuntimeError("Feature Chamfer output missing")
+    raise RuntimeError(
+        f"Feature Chamfer output missing or ambiguous: requested={output_name!r}"
+    )
 for obj in bpy.context.scene.objects:
     obj.hide_render = obj is not output
 output.hide_render = False
+for modifier in output.modifiers:
+    if modifier.type == "DATA_TRANSFER":
+        modifier.show_viewport = False
+        modifier.show_render = False
 camera_data = bpy.data.cameras.new("HST_Product_Camera")
 camera = bpy.data.objects.new("HST_Product_Camera", camera_data)
 bpy.context.scene.collection.objects.link(camera)

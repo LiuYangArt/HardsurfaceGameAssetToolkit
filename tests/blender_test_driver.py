@@ -3241,6 +3241,345 @@ def bind_literal_boundary_graph(module, vertices, edges, plan_id, *, update_indi
         bm.free()
 
 
+# 从 literal closed-manifold Mesh 构建 BMesh，并为 Face/Edge 写入测试专用稳定 identity。
+# vertices/faces/original_face_indices/face_group_by_index: literal 拓扑、保留 Face indices 与 Groove Face semantic group；返回 BMesh 及 identity 回调。
+def build_literal_closed_groove_pairing_fixture(
+    vertices,
+    faces,
+    original_face_indices,
+    face_group_by_index,
+):
+    bm = bmesh.new()
+    bm_vertices = [bm.verts.new(coordinate) for coordinate in vertices]
+    for face_indices in faces:
+        bm.faces.new(tuple(bm_vertices[index] for index in face_indices))
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    original_layer = bm.faces.layers.int.new("hst_test_original_face")
+    face_id_layer = bm.faces.layers.int.new("hst_test_groove_face_id")
+    face_group_layer = bm.faces.layers.int.new("hst_test_groove_group_id")
+    edge_id_layer = bm.edges.layers.int.new("hst_test_groove_edge_id")
+    for face in bm.faces:
+        face[original_layer] = int(face.index in original_face_indices)
+        face[face_id_layer] = face.index + 1
+        face[face_group_layer] = int(face_group_by_index.get(face.index, 0))
+    for edge in bm.edges:
+        edge[edge_id_layer] = edge.index + 1
+    groove_faces = tuple(
+        face for face in bm.faces if not bool(face[original_layer])
+    )
+    return {
+        "bm": bm,
+        "groove_faces": groove_faces,
+        "original_layer": original_layer,
+        "edge_id": lambda edge: int(edge[edge_id_layer]),
+        "face_id": lambda face: int(face[face_id_layer]),
+        "face_group": lambda face: (
+            int(face[face_group_layer])
+            if int(face[face_group_layer]) > 0
+            else None
+        ),
+    }
+
+
+# 验证 closed-manifold Groove FaceGraph 只接受唯一两侧 chain，并对缺失、分支、多出口和 cycle 歧义 fail-closed。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_predelete_groove_pairing_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_groove_pairing_utils
+    cube_vertices = (
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 1.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, 1.0),
+        (0.0, 1.0, 1.0),
+    )
+    cube_faces = (
+        (0, 3, 2, 1),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    )
+
+    def run_fixture(label, original_faces, group_by_face, expected_error=None):
+        fixture = build_literal_closed_groove_pairing_fixture(
+            cube_vertices,
+            cube_faces,
+            set(original_faces),
+            group_by_face,
+        )
+        bm = fixture["bm"]
+        try:
+            try:
+                frozen = module.freeze_groove_boundary_pairing(
+                    fixture["groove_faces"],
+                    fixture["edge_id"],
+                    fixture["face_id"],
+                    fixture["face_group"],
+                )
+            except module.GroovePairingError as error:
+                ensure(
+                    expected_error is not None and error.code == expected_error,
+                    f"{label} unexpected fail-closed result: {error.code}",
+                )
+                return {"fixture": label, "status": error.code}
+            ensure(
+                expected_error is None,
+                f"{label} unexpectedly accepted ambiguous Groove FaceGraph",
+            )
+            reverse = module.freeze_groove_boundary_pairing(
+                tuple(reversed(fixture["groove_faces"])),
+                fixture["edge_id"],
+                fixture["face_id"],
+                fixture["face_group"],
+            )
+            ensure(
+                module.canonical_pairing(frozen)
+                == module.canonical_pairing(reverse),
+                f"{label} pairing depends on Groove Face input order",
+            )
+            bmesh.ops.delete(
+                bm,
+                geom=list(fixture["groove_faces"]),
+                context="FACES_KEEP_BOUNDARY",
+            )
+            open_edges = tuple(edge for edge in bm.edges if len(edge.link_faces) == 1)
+            ensure(
+                module.verify_open_boundary_transfer(
+                    frozen,
+                    open_edges,
+                    fixture["edge_id"],
+                ),
+                f"{label} lost frozen Edge identity after Groove deletion",
+            )
+            return {
+                "fixture": label,
+                "status": "UNIQUE",
+                "pair_count": len(frozen["records"]),
+                "boundary_edge_count": len(frozen["boundary_edge_ids"]),
+                "canonical_pairing": module.canonical_pairing(frozen),
+            }
+        finally:
+            bm.free()
+
+    records = [
+        run_fixture(
+            "unique",
+            (3, 5),
+            {0: 1, 1: 1, 2: 1, 4: 2},
+        ),
+        run_fixture(
+            "missing",
+            (3,),
+            {0: 1, 1: 2, 2: 3, 4: 4, 5: 5},
+            "missing_opposite_chain",
+        ),
+        run_fixture(
+            "cycle",
+            (3, 5),
+            {0: 1, 1: 1, 2: 1, 4: 1},
+            "boundary_cycle",
+        ),
+        run_fixture(
+            "ungrouped-internal",
+            (),
+            {index: 1 for index in range(len(cube_faces) - 1)},
+            "missing_boundary",
+        ),
+    ]
+
+    prism_vertices = tuple(
+        (
+            math.cos(math.tau * index / 6.0),
+            math.sin(math.tau * index / 6.0),
+            height,
+        )
+        for height in (0.0, 1.0)
+        for index in range(6)
+    )
+    prism_faces = (
+        (5, 4, 3, 2, 1, 0),
+        (6, 7, 8, 9, 10, 11),
+        *((index, (index + 1) % 6, (index + 1) % 6 + 6, index + 6)
+          for index in range(6)),
+    )
+    multiple_exit_fixture = build_literal_closed_groove_pairing_fixture(
+        prism_vertices,
+        prism_faces,
+        {2, 4, 6},
+        {0: 2, 1: 1, 3: 3, 5: 4, 7: 5},
+    )
+    try:
+        try:
+            module.freeze_groove_boundary_pairing(
+                multiple_exit_fixture["groove_faces"],
+                multiple_exit_fixture["edge_id"],
+                multiple_exit_fixture["face_id"],
+                multiple_exit_fixture["face_group"],
+            )
+        except module.GroovePairingError as error:
+            ensure(
+                error.code == "multiple_exit",
+                f"multiple-exit unexpected fail-closed result: {error.code}",
+            )
+            records.append({"fixture": "multiple-exit", "status": error.code})
+        else:
+            raise TestFailure("multiple-exit Groove FaceGraph was accepted")
+    finally:
+        multiple_exit_fixture["bm"].free()
+
+    branch_fixture = build_literal_closed_groove_pairing_fixture(
+        cube_vertices,
+        cube_faces,
+        {4, 5},
+        {0: 1, 1: 1, 2: 1, 3: 1},
+    )
+    try:
+        try:
+            module.freeze_groove_boundary_pairing(
+                branch_fixture["groove_faces"],
+                branch_fixture["edge_id"],
+                branch_fixture["face_id"],
+                branch_fixture["face_group"],
+            )
+        except module.GroovePairingError as error:
+            ensure(
+                error.code in {"boundary_branch", "boundary_cycle"},
+                f"branch unexpected fail-closed result: {error.code}",
+            )
+            records.append({"fixture": "branch", "status": error.code})
+        else:
+            raise TestFailure("branch Groove FaceGraph was accepted")
+    finally:
+        branch_fixture["bm"].free()
+
+    ensure(
+        records[0]["status"] == "UNIQUE"
+        and all(record["status"] != "UNIQUE" for record in records[1:]),
+        f"Groove FaceGraph Stop/Go contract drifted: {records}",
+    )
+    artifact_path = (
+        ARTIFACT_DIR
+        / "feature_chamfer_phase_c_predelete_groove_pairing_contract.json"
+    )
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "contract": module.GROOVE_PAIRING_CONTRACT,
+                "status": "PROTOTYPE",
+                "records": records,
+                "runtime_integrated": False,
+                "phase_c_go": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"pre-delete Groove FaceGraph unique/fail-closed contract artifact={artifact_path}"
+    )
+
+
+# 验证 Boolean 局部缺陷 census 保留重合 Face 的 raw multiplicity，并在 source/groove identity 冲突时拒绝 canonicalization。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_boolean_local_defect_census_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_batched_finalize_utils
+    mesh = bpy.data.meshes.new("BooleanLocalDefectCensusMesh")
+    mesh.from_pydata(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ),
+        (),
+        (
+            (0, 1, 2, 3),
+            (0, 3, 2, 1),
+        ),
+    )
+    mesh.update()
+    source_attribute = mesh.attributes.new(
+        "hst_pipe_original_face",
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    source_attribute.data[0].value = True
+    cutter_face_attribute = mesh.attributes.new(
+        "hst_phase_c_cutter_face_id",
+        type="INT",
+        domain="FACE",
+    )
+    cutter_face_attribute.data[1].value = 1
+    source_patch_attribute = mesh.attributes.new(
+        "hst_pipe_source_patch_member_4",
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    source_patch_attribute.data[0].value = True
+    cutter_owner_attribute = mesh.attributes.new(
+        "hst_pipe_component_member_7",
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    cutter_owner_attribute.data[1].value = True
+    object_item = bpy.data.objects.new("BooleanLocalDefectCensus", mesh)
+    bpy.context.scene.collection.objects.link(object_item)
+    census = module._build_phase_c_boolean_local_defect_census(
+        object_item,
+        {
+            1: {
+                "face_signature": "synthetic-groove-face",
+                "topology_status": "PROVEN_C4_PIPE",
+                "pipe_id": 7,
+                "longitudinal_component_id": "synthetic-component",
+                "longitudinal_segment_id": "synthetic-segment",
+                "port_incidences": [],
+            }
+        },
+        {7: "synthetic-strand"},
+        (),
+    )
+    duplicate_face_clusters = census["exact_duplicate_face_clusters"]
+    ensure(
+        len(census["raw_faces"]) == 2
+        and len(duplicate_face_clusters) == 1
+        and len(duplicate_face_clusters[0]["raw_face_records"]) == 2,
+        f"Boolean defect census lost raw duplicate Faces: {census['summary']}",
+    )
+    ensure(
+        duplicate_face_clusters[0]["full_semantic_identity_equal"] is False
+        and census["canonicalization_assessment"]["status"] == "UNRESOLVED"
+        and census["canonicalization_assessment"][
+            "pairing_rerun_authorized"
+        ] is False
+        and any(
+            "DUPLICATE_FACE_IDENTITY_CONFLICT" in cell["blockers"]
+            for cell in census["local_defect_cells"]
+        ),
+        f"Boolean defect census accepted conflicting source/groove Faces: {census}",
+    )
+    result.add_detail(
+        "raw duplicate Face multiplicity preserved; conflicting identity stayed UNRESOLVED"
+    )
+
+
 # 验证 public BoundaryGraph decomposition 正确处理 open/cyclic/Y/T/X，且每条 Edge 恰好消费一次。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
 def test_feature_chamfer_boundary_graph_binding_contract_smoke(
@@ -11347,6 +11686,14 @@ def main():
     context.run_case(
         "feature_chamfer_boundary_graph_binding_contract_smoke",
         test_feature_chamfer_boundary_graph_binding_contract_smoke,
+    )
+    context.run_case(
+        "feature_chamfer_predelete_groove_pairing_contract",
+        test_feature_chamfer_predelete_groove_pairing_contract,
+    )
+    context.run_case(
+        "feature_chamfer_boolean_local_defect_census_contract",
+        test_feature_chamfer_boolean_local_defect_census_contract,
     )
     context.run_case(
         "feature_chamfer_boundary_witness_contract_smoke",

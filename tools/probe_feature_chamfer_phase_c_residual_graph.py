@@ -35,6 +35,23 @@ def parse_arguments():
     parser.add_argument("--object", default=DEFAULT_OBJECT)
     parser.add_argument("--radius", type=float, default=DEFAULT_RADIUS)
     parser.add_argument("--baseline-diagnostics")
+    parser.add_argument(
+        "--boolean-solver",
+        choices=("EXACT", "MANIFOLD"),
+        default="MANIFOLD",
+    )
+    parser.add_argument(
+        "--predelete-only",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--boolean-defect-census-only",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--singleton-batches",
+        action="store_true",
+    )
     arguments = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     return parser.parse_args(arguments)
 
@@ -91,6 +108,18 @@ def target_edge_ids_from_diagnostics(path):
     if not edge_ids or len(edge_ids) != len(set(edge_ids)):
         raise RuntimeError("Baseline diagnostics 未暴露唯一 residual Edge IDs")
     return edge_ids
+
+
+# fixture/object/radius: 当前真实 cell identity；在无旧 diagnostics 时返回已知历史 residual IDs，否则返回空并以 Adapter fresh IDs 为准。
+def default_target_edge_ids(fixture, object_name, radius):
+    fixture_name = Path(fixture).name
+    if (
+        fixture_name == Path(DEFAULT_FIXTURE).name
+        and object_name == DEFAULT_OBJECT
+        and abs(float(radius) - DEFAULT_RADIUS) <= 1.0e-10
+    ):
+        return DEFAULT_TARGET_EDGE_IDS
+    return ()
 
 
 # 按完整 owner lineage 与 endpoint token 把 residual Boundary Edge 划分为独立 open components。
@@ -194,6 +223,10 @@ def build_graph_staging_contract(
     preview_parameters,
     batched_module,
     probe_collection,
+    boolean_solver,
+    keep_probe_outputs=False,
+    include_boolean_local_defect_census=False,
+    singleton_batches=False,
 ):
     groups, pipes, pipe_specs = batched_module._build_preview_pipe_contract(
         source_object,
@@ -208,6 +241,11 @@ def build_graph_staging_contract(
         tuple(spec.pipe_id for spec in pipe_specs),
         overlap_pairs,
     )
+    if include_boolean_local_defect_census and singleton_batches:
+        color_batches = tuple(
+            (int(spec.pipe_id),)
+            for spec in sorted(pipe_specs, key=lambda item: item.pipe_id)
+        )
     forward = batched_module._run_independent_batch_cut_probe(
         source_object,
         pipes,
@@ -218,6 +256,15 @@ def build_graph_staging_contract(
         include_complete_cutter_face_records=True,
         freeze_complete_profile_lineage=True,
         include_output_cutter_face_incidence=True,
+        include_predelete_groove_pairing=True,
+        include_boolean_local_defect_census=(
+            include_boolean_local_defect_census
+        ),
+        strand_id_by_pipe_id={
+            int(spec.pipe_id): spec.strand_id for spec in pipe_specs
+        },
+        boolean_solver=boolean_solver,
+        keep_probe_outputs=keep_probe_outputs,
     )
     reverse = batched_module._run_independent_batch_cut_probe(
         source_object,
@@ -229,6 +276,15 @@ def build_graph_staging_contract(
         include_complete_cutter_face_records=True,
         freeze_complete_profile_lineage=True,
         include_output_cutter_face_incidence=True,
+        include_predelete_groove_pairing=True,
+        include_boolean_local_defect_census=(
+            include_boolean_local_defect_census
+        ),
+        strand_id_by_pipe_id={
+            int(spec.pipe_id): spec.strand_id for spec in pipe_specs
+        },
+        boolean_solver=boolean_solver,
+        keep_probe_outputs=keep_probe_outputs,
     )
     forward_ledger = batched_module._build_staging_boundary_ledger(
         preview_plan,
@@ -274,6 +330,34 @@ def build_graph_staging_contract(
         }
         for record in reverse["records"]
     )
+    predelete_groove_pairing = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "pairing": record.get("predelete_groove_pairing", {}),
+        }
+        for record in forward["records"]
+    )
+    reverse_predelete_groove_pairing = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "pairing": record.get("predelete_groove_pairing", {}),
+        }
+        for record in reverse["records"]
+    )
+    boolean_local_defect_census = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "census": record.get("boolean_local_defect_census", {}),
+        }
+        for record in forward["records"]
+    )
+    reverse_boolean_local_defect_census = tuple(
+        {
+            "pipe_ids": list(record["pipe_ids"]),
+            "census": record.get("boolean_local_defect_census", {}),
+        }
+        for record in reverse["records"]
+    )
     if batched_module._stable_fingerprint(forward_ledger) != batched_module._stable_fingerprint(
         reverse_ledger
     ):
@@ -288,8 +372,21 @@ def build_graph_staging_contract(
         reverse_output_cutter_face_incidence
     ):
         raise RuntimeError("Forward/reverse Boolean output Face incidence 不一致")
+    predelete_groove_pairing_order_invariant = (
+        batched_module._stable_fingerprint(predelete_groove_pairing)
+        == batched_module._stable_fingerprint(
+            reverse_predelete_groove_pairing
+        )
+    )
+    boolean_local_defect_census_order_invariant = (
+        batched_module._stable_fingerprint(boolean_local_defect_census)
+        == batched_module._stable_fingerprint(
+            reverse_boolean_local_defect_census
+        )
+    )
     return {
         "groups": groups,
+        "boolean_solver": boolean_solver,
         "pipes": pipes,
         "pipe_specs": pipe_specs,
         "overlap_pairs": overlap_pairs,
@@ -301,6 +398,20 @@ def build_graph_staging_contract(
         "output_cutter_face_incidence": output_cutter_face_incidence,
         "reverse_output_cutter_face_incidence": (
             reverse_output_cutter_face_incidence
+        ),
+        "predelete_groove_pairing": predelete_groove_pairing,
+        "reverse_predelete_groove_pairing": (
+            reverse_predelete_groove_pairing
+        ),
+        "predelete_groove_pairing_order_invariant": (
+            predelete_groove_pairing_order_invariant
+        ),
+        "boolean_local_defect_census": boolean_local_defect_census,
+        "reverse_boolean_local_defect_census": (
+            reverse_boolean_local_defect_census
+        ),
+        "boolean_local_defect_census_order_invariant": (
+            boolean_local_defect_census_order_invariant
         ),
     }
 
@@ -689,7 +800,15 @@ def main(arguments):
         if arguments.baseline_diagnostics
         else None
     )
-    target_edge_ids = target_edge_ids_from_diagnostics(baseline_path)
+    target_edge_ids = (
+        target_edge_ids_from_diagnostics(baseline_path)
+        if baseline_path is not None
+        else default_target_edge_ids(
+            arguments.fixture,
+            arguments.object,
+            arguments.radius,
+        )
+    )
     bpy.ops.wm.open_mainfile(
         filepath=str(fixture_path),
         load_ui=False,
@@ -734,7 +853,7 @@ def main(arguments):
         raise RuntimeError(
             f"Unexpected Phase C failure: {adapter_diagnostics.get('failure_code')}"
         )
-    if set(adapter_residual_edge_ids) != set(target_edge_ids):
+    if target_edge_ids and set(adapter_residual_edge_ids) != set(target_edge_ids):
         print(
             "[HST_PHASE_C_RESIDUAL_IDS_CHANGED]"
             + json.dumps(
@@ -748,6 +867,8 @@ def main(arguments):
         target_identity_changed = True
     else:
         target_identity_changed = False
+        if not target_edge_ids:
+            target_edge_ids = adapter_residual_edge_ids
     if preview_utils.source_fingerprint(source_object) != source_fingerprint_before:
         raise RuntimeError("Phase C Adapter changed source while failing closed")
     probe_collection = bpy.data.collections.new("HST_PhaseC_ResidualGraph_Temporary")
@@ -762,7 +883,254 @@ def main(arguments):
         preview_parameters,
         batched_module,
         probe_collection,
+        arguments.boolean_solver,
+        keep_probe_outputs=(
+            arguments.predelete_only
+            or arguments.boolean_defect_census_only
+        ),
+        include_boolean_local_defect_census=(
+            arguments.boolean_defect_census_only
+        ),
+        singleton_batches=arguments.singleton_batches,
     )
+    source_unchanged_after_staging = (
+        preview_utils.source_fingerprint(source_object)
+        == source_fingerprint_before
+    )
+    if arguments.boolean_defect_census_only:
+        census_records = staging["boolean_local_defect_census"]
+        reverse_census_records = staging[
+            "reverse_boolean_local_defect_census"
+        ]
+        report = {
+            "contract": "HST_PHASE_C_BOOLEAN_LOCAL_DEFECT_CENSUS_PROBE_V1",
+            "status": "PROTOTYPE",
+            "phase_c_gate": "STOP",
+            "decision": "STOP_BOOLEAN_LOCAL_DEFECT_CENSUS_ONLY",
+            "environment": {
+                "blender_version": bpy.app.version_string,
+                "fixture": str(fixture_path),
+                "fixture_sha256": file_sha256(fixture_path),
+                "object_name": source_object.name,
+                "radius": float(arguments.radius),
+                "boolean_solver": arguments.boolean_solver,
+                "git_head": subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+            },
+            "operator_evidence": {
+                "preview_result": preview_result,
+                "phase_c_adapter_result": adapter_result,
+                "phase_c_failure_code": adapter_diagnostics.get(
+                    "failure_code"
+                ),
+                "source_fingerprint_before": source_fingerprint_before,
+                "source_fingerprint_after": preview_utils.source_fingerprint(
+                    source_object
+                ),
+                "source_unchanged": source_unchanged_after_staging,
+            },
+            "staging_evidence": {
+                "batching_mode": (
+                    "SINGLETON_PIPE"
+                    if arguments.singleton_batches
+                    else "OVERLAP_COLOR"
+                ),
+                "color_batches": [
+                    list(batch) for batch in staging["color_batches"]
+                ],
+                "forward": census_records,
+                "reverse": reverse_census_records,
+                "forward_reverse_equal": staging[
+                    "boolean_local_defect_census_order_invariant"
+                ],
+            },
+            "canonicalization_evidence": {
+                "status": (
+                    "UNRESOLVED"
+                    if any(
+                        record["census"].get(
+                            "canonicalization_assessment", {}
+                        ).get("status") == "UNRESOLVED"
+                        for record in census_records
+                    )
+                    else "NOT_EVALUATED"
+                ),
+                "reason": (
+                    "Step 1 已建立 raw duplicate/degenerate/identity census；"
+                    "包含缺陷的局部 cell 尚无唯一 raw→canonical 映射，"
+                    "且 source Face 缺少可跨 Boolean 的单 Face lineage。"
+                ),
+                "batches": [
+                    {
+                        "pipe_ids": record["pipe_ids"],
+                        "assessment": record["census"].get(
+                            "canonicalization_assessment", {}
+                        ),
+                    }
+                    for record in census_records
+                ],
+            },
+            "stop_go": {
+                "census_complete": all(
+                    record["census"].get("status")
+                    == "CENSUS_COMPLETE"
+                    for record in census_records
+                )
+                and staging[
+                    "boolean_local_defect_census_order_invariant"
+                ],
+                "census_forward_reverse_equal": staging[
+                    "boolean_local_defect_census_order_invariant"
+                ],
+                "source_unchanged": source_unchanged_after_staging,
+                "canonicalization_proven": False,
+                "pairing_rerun_authorized": False,
+                "phase_c_go": False,
+                "formal_finalize_modified": False,
+                "phase_c_adapter_runtime_modified": False,
+            },
+        }
+        report_path = artifact_directory / "report.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        blend_path = artifact_directory / "phase_c_boolean_defect_census.blend"
+        bpy.ops.wm.save_as_mainfile(
+            filepath=str(blend_path),
+            check_existing=False,
+        )
+        report["artifacts"] = {
+            "report_path": str(report_path),
+            "blend_path": str(blend_path),
+            "blend_sha256": file_sha256(blend_path),
+        }
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(
+            "[HST_PHASE_C_BOOLEAN_LOCAL_DEFECT_CENSUS]"
+            + json.dumps(
+                {
+                    "decision": report["decision"],
+                    "report": str(report_path),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+    if arguments.predelete_only:
+        all_predelete_runs_unique = all(
+            record["pairing"].get("status") == "UNIQUE"
+            and record["pairing"].get("open_boundary_transfer") is True
+            for record in staging["predelete_groove_pairing"]
+        )
+        predelete_pairing_order_invariant = staging[
+            "predelete_groove_pairing_order_invariant"
+        ]
+        report = {
+            "contract": "HST_PHASE_C_MANIFOLD_PREDELETE_ONLY_PROBE_V1",
+            "status": "PROTOTYPE",
+            "phase_c_gate": "STOP",
+            "decision": (
+                "MANIFOLD_PREDELETE_PAIRING_PROBE_GO"
+                if all_predelete_runs_unique
+                and predelete_pairing_order_invariant
+                and source_unchanged_after_staging
+                else "STOP_MANIFOLD_PREDELETE_PAIRING_UNRESOLVED"
+            ),
+            "environment": {
+                "blender_version": bpy.app.version_string,
+                "fixture": str(fixture_path),
+                "fixture_sha256": file_sha256(fixture_path),
+                "object_name": source_object.name,
+                "radius": float(arguments.radius),
+                "boolean_solver": arguments.boolean_solver,
+                "git_head": subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+            },
+            "operator_evidence": {
+                "preview_result": preview_result,
+                "phase_c_adapter_result": adapter_result,
+                "phase_c_failure_code": adapter_diagnostics.get(
+                    "failure_code"
+                ),
+                "source_fingerprint_before": source_fingerprint_before,
+                "source_fingerprint_after": preview_utils.source_fingerprint(
+                    source_object
+                ),
+                "source_unchanged": source_unchanged_after_staging,
+            },
+            "staging_evidence": {
+                "color_batches": [
+                    list(batch) for batch in staging["color_batches"]
+                ],
+                "forward": staging["predelete_groove_pairing"],
+                "reverse": staging["reverse_predelete_groove_pairing"],
+                "forward_reverse_equal": (
+                    predelete_pairing_order_invariant
+                ),
+                "all_runs_unique": all_predelete_runs_unique,
+            },
+            "stop_go": {
+                "all_predelete_groove_corridors_unique": (
+                    all_predelete_runs_unique
+                ),
+                "predelete_pairing_forward_reverse_equal": (
+                    predelete_pairing_order_invariant
+                ),
+                "source_unchanged": source_unchanged_after_staging,
+                "probe_go": (
+                    all_predelete_runs_unique
+                    and predelete_pairing_order_invariant
+                    and source_unchanged_after_staging
+                ),
+                "phase_c_go": False,
+                "formal_finalize_modified": False,
+                "phase_c_adapter_runtime_modified": False,
+            },
+        }
+        report_path = artifact_directory / "report.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        blend_path = artifact_directory / "phase_c_manifold_predelete.blend"
+        bpy.ops.wm.save_as_mainfile(
+            filepath=str(blend_path),
+            check_existing=False,
+        )
+        report["artifacts"] = {
+            "report_path": str(report_path),
+            "blend_path": str(blend_path),
+            "blend_sha256": file_sha256(blend_path),
+        }
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(
+            "[HST_PHASE_C_MANIFOLD_PREDELETE_PROBE]"
+            + json.dumps(
+                {
+                    "decision": report["decision"],
+                    "report": str(report_path),
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
     forward_rail_chains = batched_module._build_staging_rail_chains(
         staging["forward_ledger"]
     )
@@ -960,16 +1328,25 @@ def main(arguments):
     source_unchanged = (
         preview_utils.source_fingerprint(source_object) == source_fingerprint_before
     )
+    all_predelete_runs_unique = all(
+        record["pairing"].get("status") == "UNIQUE"
+        and record["pairing"].get("open_boundary_transfer") is True
+        for record in staging["predelete_groove_pairing"]
+    )
+    predelete_pairing_order_invariant = staging[
+        "predelete_groove_pairing_order_invariant"
+    ]
     report = {
-        "contract": "HST_PHASE_C_PRE_BOOLEAN_PROFILE_LINEAGE_PROBE_V4",
+        "contract": "HST_PHASE_C_PREDELETE_GROOVE_PAIRING_PROBE_V1",
         "status": "PROTOTYPE",
         "phase_c_gate": "STOP",
         "decision": (
             "STOP_TARGET_RESIDUAL_IDENTITY_CHANGED"
             if target_identity_changed
-            else "MAXIMAL_CHAIN_DIRECT_WITNESS_PROBE_GO"
-            if graph["all_subchains_resolved"]
-            else "STOP_UNRESOLVED_DIRECT_WITNESS"
+            else "STOP_MANIFOLD_PREDELETE_PAIRING_UNRESOLVED"
+            if not all_predelete_runs_unique
+            or not predelete_pairing_order_invariant
+            else "MANIFOLD_PREDELETE_PAIRING_PROBE_GO"
         ),
         "target_contract": {
             "ui_entry": "Feature Chamfer GN",
@@ -977,7 +1354,7 @@ def main(arguments):
                 "hst.feature_chamfer_gn(action=PREVIEW)",
                 "hst.experimental_feature_chamfer_batched_finalize(debug_stage=PHASE_C_REGULAR_CORE)",
             ],
-            "runtime_path": "PREVIEW then hidden Phase C Adapter then fresh independent staging graph probe",
+            "runtime_path": "PREVIEW then hidden Phase C Adapter STOP then independent Manifold pre-delete staging probe",
             "user_visible_result": "read-only graph artifact; FINALIZE unchanged",
         },
         "environment": {
@@ -986,6 +1363,7 @@ def main(arguments):
             "fixture_sha256": file_sha256(fixture_path),
             "object_name": source_object.name,
             "radius": float(arguments.radius),
+            "boolean_solver": arguments.boolean_solver,
             "git_head": subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_root,
@@ -1018,6 +1396,14 @@ def main(arguments):
             "normalization_order_invariant": normalization_order_invariant,
             "graph_order_invariant": graph_order_invariant,
             "subtraction_order_invariant": subtraction_order_invariant,
+            "predelete_pairing_order_invariant": (
+                predelete_pairing_order_invariant
+            ),
+            "all_predelete_runs_unique": all_predelete_runs_unique,
+            "predelete_pair_count": sum(
+                record["pairing"].get("pair_count", 0)
+                for record in staging["predelete_groove_pairing"]
+            ),
             "producer_job_count": len(subtraction["producer_jobs"]),
             "target_residual_component_count": len(target_components),
             "regular_claim_edge_count": len(subtraction["regular_claims"]),
@@ -1077,9 +1463,18 @@ def main(arguments):
         "output_cutter_face_incidence": staging[
             "output_cutter_face_incidence"
         ],
+        "predelete_groove_pairing": staging[
+            "predelete_groove_pairing"
+        ],
         "residual_ownership_graph": graph,
         "stop_go": {
             "synthetic_graph_contract_required_first": True,
+            "all_predelete_groove_corridors_unique": (
+                all_predelete_runs_unique
+            ),
+            "predelete_pairing_forward_reverse_equal": (
+                predelete_pairing_order_invariant
+            ),
             "normalization_contract_pass": normalization[
                 "raw_edge_exactly_once"
             ],
@@ -1101,7 +1496,8 @@ def main(arguments):
                 == reverse_face_lineage_transfer_census
             ),
             "probe_go": (
-                graph["all_subchains_resolved"]
+                all_predelete_runs_unique
+                and predelete_pairing_order_invariant
                 and bool(normalization["records"])
                 and not target_identity_changed
                 and source_unchanged
