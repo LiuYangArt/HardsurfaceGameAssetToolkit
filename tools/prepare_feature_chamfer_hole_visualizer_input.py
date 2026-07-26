@@ -14,9 +14,8 @@ visualizer_diagnostics_path = Path(os.environ["HST_HOLE_VISUALIZER_DIAGNOSTICS"]
 diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
 stats = diagnostics["repetitions"][0]["backend"]["stats"]
 coordinates = stats["coordinates"]
-source_object = bpy.data.objects.get(
-    diagnostics["repetitions"][0]["output"].get("object_name")
-)
+output_object_name = diagnostics["repetitions"][0]["output"].get("object_name")
+source_object = bpy.data.objects.get(output_object_name) if output_object_name else None
 if source_object is None:
     candidates = [
         obj

@@ -8,7 +8,6 @@ import bmesh
 from mathutils.bvhtree import BVHTree
 
 from .experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
-from .experimental_pipe_chamfer_utils import _add_source_normal_transfer
 from .feature_chamfer_gn_utils import BOUNDARY_EDGE_ATTRIBUTE
 from .feature_chamfer_gn_utils import SEGMENT_BOUNDARY_POINT_ATTRIBUTE_PREFIX
 from .feature_chamfer_gn_utils import SEGMENT_BOUNDARY_ATTRIBUTE_PREFIX
@@ -116,6 +115,47 @@ def _ordered_cycle_vertices(edges):
     return ordered_vertices
 
 
+# 按拓扑顺序返回 simple open/cyclic Edge chain 的全部 Vertex。
+# edges: 单一连通 Edge selection；返回有序 Vertex 列表。
+def _ordered_chain_vertices(edges):
+    cyclic, endpoint_count = _component_shape(edges)
+    if cyclic:
+        return _ordered_cycle_vertices(edges)
+    if endpoint_count != 2:
+        return []
+    adjacency = {}
+    for edge in edges:
+        for vertex in edge.verts:
+            adjacency.setdefault(vertex, []).append(edge)
+    start_vertex = min(
+        (
+            vertex
+            for vertex, linked_edges in adjacency.items()
+            if len(linked_edges) == 1
+        ),
+        key=lambda vertex: vertex.index,
+    )
+    ordered_vertices = [start_vertex]
+    previous_edge = None
+    current_vertex = start_vertex
+    while True:
+        next_edges = [
+            edge
+            for edge in adjacency[current_vertex]
+            if edge is not previous_edge
+        ]
+        if not next_edges:
+            break
+        next_edge = next_edges[0]
+        next_vertex = next_edge.other_vert(current_vertex)
+        if next_vertex in ordered_vertices:
+            return []
+        ordered_vertices.append(next_vertex)
+        previous_edge = next_edge
+        current_vertex = next_vertex
+    return ordered_vertices
+
+
 # 清理 Boolean Pro 留下的单面孤岛，真正空孔按 Blender Fill 后显式三角化非平面 n-gon。
 # bm/residual_components: 全部槽段 Bridge 后的 BMesh 与自然 Boundary components；返回 Fill/清理记录和新面。
 def _fill_junction_holes(
@@ -125,6 +165,7 @@ def _fill_junction_holes(
     segment_layers,
     patch_layers,
     chamfer_faces,
+    chamfer_face_layer,
 ):
     fill_records = []
     cleanup_records = []
@@ -221,15 +262,21 @@ def _fill_junction_holes(
                 if isinstance(face, bmesh.types.BMFace) and face.is_valid
             }
         fill_faces.update(triangulated_faces)
-        cumulative_self_intersection_count = _self_intersection_count(bm)
-        if cumulative_self_intersection_count:
+        for face in triangulated_faces:
+            face[chamfer_face_layer] = 1
+        fill_intersections = _self_intersection_records(
+            bm,
+            triangulated_faces,
+        )
+        if fill_intersections:
             raise FeatureChamferDirectBridgeError(
                 "junction_fill_self_intersects",
                 "Blender Fill created self-intersecting junction Faces",
                 {
                     "edge_count": len(residual_component),
                     "face_count": len(triangulated_faces),
-                    "self_intersection_count": cumulative_self_intersection_count,
+                    "self_intersection_count": len(fill_intersections),
+                    "self_intersections": fill_intersections[:16],
                     "vertex_indices": [vertex.index for vertex in ordered_vertices],
                     "coordinates": [
                         [float(value) for value in vertex.co]
@@ -280,7 +327,7 @@ def _fill_junction_holes(
                 "face_count": len(triangulated_faces),
                 "native_operator": "Blender Fill",
                 "triangulated": True,
-                "cumulative_self_intersection_count": cumulative_self_intersection_count,
+                "created_self_intersection_count": len(fill_intersections),
             }
         )
     return fill_records, cleanup_records, fill_faces
@@ -594,6 +641,32 @@ def _segment_side_chains(components, patch_layers, owner_pairs):
         for edge in component
     )
     return selected_pair, selected_components, junction_fragments
+
+
+# 当一侧在 Surface Patch 接缝切换时，按组件顺序和共同 owner pair 选中整条槽边。
+# components/patch_layers/owner_pairs: 两条完整边链、Patch 属性与 Plan owner pairs；返回配对或 None。
+def _seam_spanning_side_chains(components, patch_layers, owner_pairs):
+    if len(components) != 2:
+        return None
+    component_patch_ids = [
+        {
+            patch_id
+            for patch_id, layer in patch_layers.items()
+            if any(bool(edge[layer]) for edge in component)
+        }
+        for component in components
+    ]
+    candidate_pairs = [
+        owner_pair
+        for owner_pair in owner_pairs
+        if all(
+            set(owner_pair) & patch_ids
+            for patch_ids in component_patch_ids
+        )
+    ]
+    if len(candidate_pairs) != 1:
+        return None
+    return candidate_pairs[0], list(components), set()
 
 
 # 从 Boolean 已插值的 station 一阶、二阶矩恢复当前 Boundary Vertex 对应的 Pipe edge 端点值。
@@ -965,6 +1038,84 @@ def _split_connected_segment_jobs(
         )
         for component in side_chains
     ]
+    paired_foreign_segments = [
+        {
+            foreign_segment_id
+            for witness in witnesses
+            for foreign_segment_id in witness["foreign_segment_ids"]
+        }
+        for witnesses in witness_groups
+    ]
+    shared_foreign_segments = (
+        set.intersection(*paired_foreign_segments)
+        if all(paired_foreign_segments)
+        else set()
+    )
+    witness_station_groups = [
+        {
+            round(sum(witness["station_endpoints"]) * 0.5, 6)
+            for witness in witnesses
+        }
+        for witnesses in witness_groups
+    ]
+    all_witness_stations = [
+        sum(witness["station_endpoints"]) * 0.5
+        for witnesses in witness_groups
+        for witness in witnesses
+    ]
+    clustered_cut_stations = []
+    for station in sorted(all_witness_stations):
+        if (
+            not clustered_cut_stations
+            or abs(station - clustered_cut_stations[-1]) > 1.0e-4
+        ):
+            clustered_cut_stations.append(station)
+    if (
+        all(len(witnesses) == 2 for witnesses in witness_groups)
+        and (
+            not shared_foreign_segments
+            or (
+                len(shared_foreign_segments) == 1
+                and witness_station_groups[0] == witness_station_groups[1]
+            )
+        )
+    ):
+        cut_stations = clustered_cut_stations
+        if len(cut_stations) != 2:
+            return None
+        interval_jobs = []
+        junction_fragments = set()
+        bridge_between_stations = bool(shared_foreign_segments)
+        intervals = (
+            (float("-inf"), cut_stations[0], bridge_between_stations),
+            (cut_stations[0], cut_stations[1], not bridge_between_stations),
+            (cut_stations[1], float("inf"), bridge_between_stations),
+        )
+        for low, high, is_junction in intervals:
+            interval_sides = [
+                {
+                    edge
+                    for edge in component
+                    if low
+                    <= _edge_station_midpoint(
+                        edge,
+                        segment_id,
+                        segment_layers,
+                        station_edge_layers,
+                    )
+                    < high
+                }
+                for component in side_chains
+            ]
+            if any(not interval_side for interval_side in interval_sides):
+                continue
+            if is_junction:
+                junction_fragments.update(set().union(*interval_sides))
+            else:
+                interval_jobs.append(tuple(interval_sides))
+        if interval_jobs:
+            return interval_jobs, junction_fragments
+        return None
     interrupted_sides = [index for index, witnesses in enumerate(witness_groups) if witnesses]
     if len(interrupted_sides) != 1:
         return None
@@ -1116,9 +1267,12 @@ def _split_interrupted_segment_jobs(
             if len(component) > 4
         ]
         if len(regular_components) == 1:
+            regular_endpoints = _component_endpoints(regular_components[0])
+            if regular_endpoints is None:
+                return None
             endpoint_margin = min(
                 min(endpoint_stations[vertex], 1.0 - endpoint_stations[vertex])
-                for vertex in (_component_endpoints(regular_components[0]) or ())
+                for vertex in regular_endpoints
             )
             if endpoint_margin < 0.05:
                 return owner_pair, [(regular_components[0], complete_side)], set().union(
@@ -1201,11 +1355,51 @@ def _weld_coincident_vertices(bm):
     return zero_area_count
 
 
-# 检查最终 Mesh 是否产生非邻接自交，防止仅靠 manifold 统计误报产品成功。
-# bm: 最终 BMesh；返回非邻接相交 pair 数。
-def _self_intersection_count(bm):
+# 在最终检查前清除焊接后仍残留的零面积 Faces，并保持边界重新可检测。
+# bm: Bridge/Fill 完成后的 BMesh；返回删除 Face 数量。
+def _remove_zero_area_faces(bm):
+    zero_area_faces = [
+        face
+        for face in bm.faces
+        if face.calc_area() <= 1.0e-12
+    ]
+    for face in zero_area_faces:
+        if not face.is_valid:
+            continue
+        vertices = list(face.verts)
+        if len(vertices) < 3:
+            continue
+        nearest_pair = min(
+            (
+                (first, second)
+                for index, first in enumerate(vertices)
+                for second in vertices[index + 1 :]
+            ),
+            key=lambda pair: (pair[0].co - pair[1].co).length,
+        )
+        bmesh.ops.pointmerge(
+            bm,
+            verts=list(nearest_pair),
+            merge_co=(nearest_pair[0].co + nearest_pair[1].co) * 0.5,
+        )
+    return len(zero_area_faces)
+
+
+# 返回 Mesh 非邻接自交记录；可只统计与本次新 Faces 有关的 pair。
+# bm/target_faces: 待检查 BMesh 与可选新面集合；返回稳定诊断列表。
+def _self_intersection_records(bm, target_faces=None):
+    target_layer_name = "hst_intersection_target"
+    target_layer = bm.faces.layers.int.get(target_layer_name)
+    if target_layer is None:
+        target_layer = bm.faces.layers.int.new(target_layer_name)
+    target_face_set = set(target_faces) if target_faces is not None else None
+    for face in bm.faces:
+        face[target_layer] = int(
+            target_face_set is None or face in target_face_set
+        )
     temporary_mesh = bpy.data.meshes.new("HST_FeatureChamfer_IntersectionCheck")
     bm.to_mesh(temporary_mesh)
+    bm.faces.layers.int.remove(target_layer)
     triangulated = bmesh.new()
     triangulated.from_mesh(temporary_mesh)
     try:
@@ -1217,8 +1411,11 @@ def _self_intersection_count(bm):
         )
         triangulated.faces.ensure_lookup_table()
         triangulated.faces.index_update()
+        triangulated_target_layer = triangulated.faces.layers.int.get(
+            target_layer_name
+        )
         tree = BVHTree.FromBMesh(triangulated, epsilon=1.0e-8)
-        intersection_count = 0
+        intersections = []
         for first_index, second_index in tree.overlap(tree):
             if first_index >= second_index:
                 continue
@@ -1226,11 +1423,34 @@ def _self_intersection_count(bm):
             second = triangulated.faces[second_index]
             if set(first.verts) & set(second.verts):
                 continue
-            intersection_count += 1
-        return intersection_count
+            first_target = bool(first[triangulated_target_layer])
+            second_target = bool(second[triangulated_target_layer])
+            if target_face_set is not None and not (first_target or second_target):
+                continue
+            intersections.append(
+                {
+                    "first_face": first_index,
+                    "second_face": second_index,
+                    "first_target": first_target,
+                    "second_target": second_target,
+                    "first_center": [
+                        float(value) for value in first.calc_center_median()
+                    ],
+                    "second_center": [
+                        float(value) for value in second.calc_center_median()
+                    ],
+                }
+            )
+        return intersections
     finally:
         triangulated.free()
         bpy.data.meshes.remove(temporary_mesh)
+
+
+# 检查最终 Mesh 的全部非邻接自交，防止仅靠 manifold 统计误报产品成功。
+# bm: 最终 BMesh；返回非邻接相交 pair 数。
+def _self_intersection_count(bm):
+    return len(_self_intersection_records(bm))
 
 
 # 从正式 evaluated Preview 直接 Bridge 普通槽段，再 Fill 自然剩余的 junction 孔洞。
@@ -1289,6 +1509,11 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
         bridge_owner_layer = bm.edges.layers.int.get(
             BRIDGE_EDGE_OWNER_LAYER
         ) or bm.edges.layers.int.new(BRIDGE_EDGE_OWNER_LAYER)
+        chamfer_face_layer = bm.faces.layers.int.get(
+            CHAMFER_FACE_ATTRIBUTE
+        ) or bm.faces.layers.int.new(CHAMFER_FACE_ATTRIBUTE)
+        for face in bm.faces:
+            face[chamfer_face_layer] = 0
         (
             boundary_layer,
             segment_layers,
@@ -1382,6 +1607,8 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                             "component_patches": [
                                 {
                                     "edge_count": len(component),
+                                    "cyclic": _component_shape(component)[0],
+                                    "endpoint_count": _component_shape(component)[1],
                                     "patch_ids": [
                                         patch_id
                                         for patch_id, layer in patch_layers.items()
@@ -1390,8 +1617,27 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                                 }
                                 for component in components
                             ],
+                            "junction_fragment_edge_count": len(junction_fragments),
                         },
                     )
+            has_patch_seam = (
+                len(components) == 2
+                and any(
+                    any(bool(edge[layer]) for edge in component)
+                    and not all(bool(edge[layer]) for edge in component)
+                    for component in components
+                    for layer in patch_layers.values()
+                )
+            )
+            if has_patch_seam:
+                seam_result = _seam_spanning_side_chains(
+                    components,
+                    patch_layers,
+                    owner_pairs,
+                )
+                if seam_result is not None:
+                    owner_pair, side_chains, seam_fragments = seam_result
+                    junction_fragments.update(seam_fragments)
             if side_chains is not None and bridge_jobs is None:
                 connected_split = _split_connected_segment_jobs(
                     side_chains,
@@ -1406,6 +1652,37 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 if connected_split is not None:
                     bridge_jobs, connected_fragments = connected_split
                     junction_fragments.update(connected_fragments)
+                elif has_patch_seam:
+                    seam_result = _seam_spanning_side_chains(
+                        components,
+                        patch_layers,
+                        owner_pairs,
+                    )
+                    if seam_result is not None:
+                        owner_pair, side_chains, seam_fragments = seam_result
+                        junction_fragments.update(seam_fragments)
+                        connected_split = _split_connected_segment_jobs(
+                            side_chains,
+                            segment,
+                            segment_layers,
+                            segment_point_layers,
+                            station_edge_layers,
+                            station_squared_edge_layers,
+                            station_point_layers,
+                            station_squared_point_layers,
+                        )
+                        if connected_split is not None:
+                            bridge_jobs, connected_fragments = connected_split
+                            junction_fragments.update(connected_fragments)
+            if side_chains is None:
+                seam_result = _seam_spanning_side_chains(
+                    components,
+                    patch_layers,
+                    owner_pairs,
+                )
+                if seam_result is not None:
+                    owner_pair, side_chains, seam_fragments = seam_result
+                    junction_fragments.update(seam_fragments)
             if side_chains is None:
                 if (
                     len(components) == 1
@@ -1457,6 +1734,28 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "pipe_id": int(segment["pipe_id"]),
                         "component_count": len(components),
                         "edge_count": len(selected_edges),
+                        "owner_pairs": [list(pair) for pair in owner_pairs],
+                        "component_patches": [
+                            {
+                                "edge_count": len(component),
+                                "cyclic": _component_shape(component)[0],
+                                "endpoint_count": _component_shape(component)[1],
+                                "patch_ids": [
+                                    patch_id
+                                    for patch_id, layer in patch_layers.items()
+                                    if all(bool(edge[layer]) for edge in component)
+                                ],
+                                "patch_edge_counts": {
+                                    str(patch_id): sum(
+                                        bool(edge[layer])
+                                        for edge in component
+                                    )
+                                    for patch_id, layer in patch_layers.items()
+                                    if any(bool(edge[layer]) for edge in component)
+                                },
+                            }
+                            for component in components
+                        ],
                     },
                 )
             bridge_jobs = bridge_jobs or [side_chains]
@@ -1502,8 +1801,21 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         f"Blender Bridge created no Faces for segment {segment_id}",
                     )
                 claimed_edges.update(selected_edges)
-                bridge_self_intersection_count = _self_intersection_count(bm)
-                if bridge_self_intersection_count:
+                chamfer_faces.update(bridge_faces)
+                for face in bridge_faces:
+                    face[chamfer_face_layer] = 1
+                bridge_intersections = _self_intersection_records(
+                    bm,
+                    bridge_faces,
+                )
+                bridge_self_intersection_count = len(bridge_intersections)
+                if bridge_intersections:
+                    diagnostic_vertices = _ordered_chain_vertices(components[0])
+                    diagnostic_coordinates = [
+                        [float(value) for value in vertex.co]
+                        for vertex in diagnostic_vertices
+                    ]
+                    diagnostic_cyclic = _component_shape(components[0])[0]
                     raise FeatureChamferDirectBridgeError(
                         "bridge_faces_self_intersect",
                         f"Blender Bridge self-intersects for segment {segment_id}",
@@ -1514,6 +1826,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                                 len(component) for component in components
                             ),
                             "self_intersection_count": bridge_self_intersection_count,
+                            "self_intersections": bridge_intersections[:16],
                             "side_junction_witnesses": [
                                 _component_junction_witnesses(
                                     component,
@@ -1529,9 +1842,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                                 _component_shape(component)[0]
                                 for component in components
                             ],
+                            "coordinates": diagnostic_coordinates,
+                            "diagnostic_cyclic": diagnostic_cyclic,
                         },
                     )
-                chamfer_faces.update(bridge_faces)
                 bridge_records.append(
                     {
                         "segment_id": segment_id,
@@ -1547,6 +1861,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "junction_fragment_edge_count": len(junction_fragments),
                         "face_count": len(bridge_faces),
                         "cumulative_self_intersection_count": bridge_self_intersection_count,
+                        "created_self_intersection_count": bridge_self_intersection_count,
                         "native_operator": "Blender Bridge Edge Loops",
                     }
                 )
@@ -1581,6 +1896,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             segment_layers,
             patch_layers,
             chamfer_faces,
+            chamfer_face_layer,
         )
         chamfer_faces.update(fill_faces)
 
@@ -1607,6 +1923,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 if face.calc_area() <= 1.0e-12
             ],
         }
+        zero_area_faces_removed = _remove_zero_area_faces(bm)
         bmesh.ops.recalc_face_normals(
             bm,
             faces=list(bm.faces),
@@ -1624,7 +1941,16 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             face.calc_area() <= 1.0e-12
             for face in bm.faces
         )
-        self_intersection_count = _self_intersection_count(bm)
+        final_chamfer_faces = {
+            face
+            for face in bm.faces
+            if bool(face[chamfer_face_layer])
+        }
+        final_intersections = _self_intersection_records(
+            bm,
+            final_chamfer_faces,
+        )
+        self_intersection_count = len(final_intersections)
         if remaining_boundary_count or non_manifold_count or zero_area_count:
             raise FeatureChamferDirectBridgeError(
                 "final_topology_invalid",
@@ -1637,6 +1963,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     "self_intersection_count_after_fill": self_intersection_count_after_fill,
                     "topology_before_zero_cleanup": topology_before_zero_cleanup,
                     "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
+                    "zero_area_faces_removed": zero_area_faces_removed,
                     "bridge_records": bridge_records,
                     "deferred_segments": deferred_segments,
                     "junction_fill_records": fill_records,
@@ -1646,10 +1973,11 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
         if self_intersection_count:
             raise FeatureChamferDirectBridgeError(
                 "final_geometry_self_intersects",
-                "Direct Bridge/Fill output contains self-intersecting Faces",
+                "Direct Bridge/Fill Faces intersect the final Mesh",
                 {
                     "self_intersection_count": self_intersection_count,
                     "self_intersection_count_after_fill": self_intersection_count_after_fill,
+                    "self_intersections": final_intersections[:16],
                     "bridge_records": bridge_records,
                     "junction_fill_records": fill_records,
                 },
@@ -1658,8 +1986,8 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
         bm.faces.index_update()
         chamfer_face_indices = {
             face.index
-            for face in chamfer_faces
-            if face.is_valid
+            for face in bm.faces
+            if bool(face[chamfer_face_layer])
         }
         output_mesh = bpy.data.meshes.new(
             f"{source_object.data.name}_FeatureChamfer"
@@ -1681,7 +2009,6 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             chamfer_attribute.data[polygon.index].value = (
                 polygon.index in chamfer_face_indices
             )
-        _add_source_normal_transfer(output_object, source_object)
         if source_fingerprint(source_object) != source_fingerprint_before:
             raise FeatureChamferDirectBridgeError(
                 "source_changed_during_finalize",
@@ -1709,6 +2036,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "boolean_cleanup_count": len(cleanup_records),
             "boolean_cleanup_records": cleanup_records,
             "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
+            "zero_area_faces_removed": zero_area_faces_removed,
             "topology_before_zero_cleanup": topology_before_zero_cleanup,
             "regular_patch_face_count": sum(record["face_count"] for record in bridge_records),
             "junction_patch_face_count": sum(record["face_count"] for record in fill_records),
@@ -1716,6 +2044,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "non_manifold_edge_count": non_manifold_count,
             "zero_area_face_count": zero_area_count,
             "self_intersection_count": self_intersection_count,
+            "chamfer_face_count": len(chamfer_face_indices),
             "output_object_name": output_object.name,
         }
     except Exception:

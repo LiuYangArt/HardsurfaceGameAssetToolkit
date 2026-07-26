@@ -24,10 +24,17 @@ if output is None:
 for obj in bpy.context.scene.objects:
     obj.hide_render = obj is not output
 output.hide_render = False
-for modifier in output.modifiers:
-    if modifier.type == "DATA_TRANSFER":
-        modifier.show_viewport = False
-        modifier.show_render = False
+normal_transfer_modifiers = [
+    modifier
+    for modifier in output.modifiers
+    if modifier.type == "DATA_TRANSFER"
+    and modifier.data_types_loops == {"CUSTOM_NORMAL"}
+]
+if not normal_transfer_modifiers:
+    raise RuntimeError("Feature Chamfer product output has no Custom Normal transfer")
+for modifier in normal_transfer_modifiers:
+    modifier.show_viewport = True
+    modifier.show_render = True
 
 camera_data = bpy.data.cameras.new("HST_Product_Evidence_Camera")
 camera = bpy.data.objects.new("HST_Product_Evidence_Camera", camera_data)

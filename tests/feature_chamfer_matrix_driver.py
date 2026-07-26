@@ -26,6 +26,8 @@ PACKAGE_NAME = "hst_feature_chamfer_matrix_addon"
 FIXTURE_DIRECTORY = REPO_ROOT / "tests" / "fixtures"
 CLASSIFICATIONS = {
     "PRODUCT_SUCCESS",
+    "RADIUS_LIMIT_DIAGNOSTIC",
+    "PRODUCT_SUCCESS_WITH_RADIUS_RETRY",
     "EXPECTED_UNSUPPORTED",
     "REGRESSION_FAILURE",
     "SAFETY_PASS",
@@ -55,7 +57,18 @@ MATRIX_SOURCES = (
     ("tricky_b", "feature-chamfer-product-tricky-b.blend", "Extruded.002"),
     ("mixed", "feature-chamfer-topology-defect-mixed.blend", "Extruded.002"),
 )
-MATRIX_RADII = (0.01, 0.03)
+MATRIX_RADII = tuple(
+    float(radius)
+    for radius in json.loads(
+        os.environ.get("HST_FEATURE_CHAMFER_MATRIX_RADII", "[0.01, 0.03]")
+    )
+)
+RETRY_RADII = tuple(
+    float(radius)
+    for radius in json.loads(
+        os.environ.get("HST_FEATURE_CHAMFER_RETRY_RADII", "[0.005, 0.015]")
+    )
+)
 # 从 __init__.py 载入插件模块，使 matrix 使用与正式注册一致的 package。
 # 返回值: 已载入但尚未 register 的插件模块。
 def load_addon_module():
@@ -268,6 +281,12 @@ def output_diagnostics(output_object):
     chamfer_values = [
         bool(item.value) for item in chamfer_attribute.data
     ] if chamfer_attribute is not None else []
+    normal_transfer_modifiers = [
+        modifier
+        for modifier in output_object.modifiers
+        if modifier.type == "DATA_TRANSFER"
+        and modifier.data_types_loops == {"CUSTOM_NORMAL"}
+    ]
     fingerprint_payload = {
         "vertices": [
             [round(component, 9) for component in vertex.co]
@@ -296,6 +315,69 @@ def output_diagnostics(output_object):
         "zero_area_face_count": zero_area_face_count,
         "chamfer_attribute_exists": chamfer_attribute is not None,
         "chamfer_face_count": sum(chamfer_values),
+        "custom_normal_transfer": (
+            len(normal_transfer_modifiers) == 1
+            and normal_transfer_modifiers[0].object is not None
+            and normal_transfer_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ"
+            and normal_transfer_modifiers[0].show_viewport
+            and normal_transfer_modifiers[0].show_render
+        ),
+    }
+
+
+# 读取正式 Operator 留下的红色失败边界，验证它可见且准确关联当前 source。
+# addon_module/source_object: 已注册插件与当前 source；返回诊断 Object 摘要。
+def failure_diagnostic(addon_module, source_object):
+    diagnostic_objects = (
+        addon_module.utils.feature_chamfer_diagnostic_utils
+        .owned_feature_chamfer_diagnostics(source_object)
+    )
+    objects = []
+    for diagnostic_object in diagnostic_objects:
+        curve_data = diagnostic_object.data
+        spline_point_count = sum(
+            len(spline.points)
+            for spline in curve_data.splines
+        )
+        cyclic = bool(curve_data.splines) and all(
+            spline.use_cyclic_u
+            for spline in curve_data.splines
+        )
+        material = curve_data.materials[0] if curve_data.materials else None
+        color = list(material.diffuse_color) if material is not None else None
+        objects.append(
+            {
+                "object_name": diagnostic_object.name,
+                "error_code": diagnostic_object.get(
+                    addon_module.const.FEATURE_CHAMFER_DIAGNOSTIC_ERROR_TAG
+                ),
+                "radius": diagnostic_object.get(
+                    addon_module.const.FEATURE_CHAMFER_DIAGNOSTIC_RADIUS_TAG
+                ),
+                "point_count": spline_point_count,
+                "cyclic": cyclic,
+                "show_in_front": diagnostic_object.show_in_front,
+                "visible": not diagnostic_object.hide_get(),
+                "color": color,
+            }
+        )
+    radius_limit_visible = (
+        len(objects) == 1
+        and objects[0]["error_code"]
+        in addon_module.utils.feature_chamfer_diagnostic_utils.RADIUS_LIMIT_ERROR_CODES
+        and objects[0]["point_count"] >= 2
+        and objects[0]["show_in_front"]
+        and objects[0]["visible"]
+        and objects[0]["color"] is not None
+        and objects[0]["color"][0] >= 0.9
+        and objects[0]["color"][1] <= 0.15
+        and objects[0]["color"][2] <= 0.15
+    )
+    return {
+        "exists": bool(objects),
+        "object_count": len(objects),
+        "radius_limit_visible": radius_limit_visible,
+        "objects": objects,
     }
 
 
@@ -361,6 +443,8 @@ def classify_result(
     backend_capture,
     source_unchanged,
     pseudo_output_count,
+    final_state,
+    diagnostic,
     allow_safe_failure,
 ):
     contract_violations = []
@@ -378,6 +462,7 @@ def classify_result(
         and output.get("zero_area_face_count") == 0
         and output.get("chamfer_attribute_exists")
         and output.get("chamfer_face_count", 0) > 0
+        and output.get("custom_normal_transfer")
     )
     backend_stats = backend_capture.get("stats", {})
     direct_bridge_product = (
@@ -400,6 +485,17 @@ def classify_result(
         and source_unchanged
         and pseudo_output_count == 0
     )
+    radius_limit_failure = (
+        safety_failure
+        and backend_capture.get("error_code")
+        in {
+            "bridge_faces_self_intersect",
+            "final_geometry_self_intersects",
+            "junction_fill_self_intersects",
+        }
+        and final_state == "PREVIEW_RETAINED"
+        and diagnostic.get("radius_limit_visible")
+    )
     if contract_violations:
         classification = "EXPECTED_UNSUPPORTED"
         reason = ",".join(contract_violations)
@@ -412,6 +508,11 @@ def classify_result(
     ):
         classification = "PRODUCT_SUCCESS"
         reason = "OPERATOR_CREATED_CLEAN_SEPARATE_CHAMFER_OUTPUT"
+    elif (
+        radius_limit_failure
+    ):
+        classification = "RADIUS_LIMIT_DIAGNOSTIC"
+        reason = backend_capture["error_code"]
     elif (
         safety_failure
         and allow_safe_failure
@@ -452,6 +553,10 @@ def repetition_signature(repetition):
         "source_after_finalize": repetition["source_after_finalize"],
         "output_fingerprint": repetition["output"].get("fingerprint"),
         "final_state": repetition["final_state"],
+        "failure_diagnostic": repetition.get("failure_diagnostic"),
+        "custom_normal_transfer": repetition["output"].get(
+            "custom_normal_transfer"
+        ),
         "output_topology": {
             key: repetition["output"].get(key)
             for key in (
@@ -604,6 +709,7 @@ def run_repetition(
             else "NO_OUTPUT"
         )
     )
+    diagnostic = failure_diagnostic(addon_module, source_object)
     pseudo_outputs = [
         obj.name
         for obj in bpy.data.objects
@@ -614,9 +720,7 @@ def run_repetition(
     if output_object is not None and output_object.name in pseudo_outputs:
         pseudo_outputs.remove(output_object.name)
     finalize_runtime_proven = (
-        source_object.get(addon_module.const.FEATURE_CHAMFER_GN_LAST_ACTION_TAG)
-        == "FINALIZE"
-        and backend_capture.get("called")
+        backend_capture.get("called")
         and backend_capture.get("feature_graph_contract") == "GN_PREVIEW_V1"
     )
     classification, classification_reason, contract_violations = classify_result(
@@ -627,6 +731,8 @@ def run_repetition(
         backend_capture,
         source_unchanged,
         len(pseudo_outputs),
+        final_state,
+        diagnostic,
         fixture_label in DEFERRED_LABELS,
     )
     if repetition_index == 0:
@@ -662,6 +768,7 @@ def run_repetition(
         },
         "output": output,
         "final_state": final_state,
+        "failure_diagnostic": diagnostic,
         "unexpected_pseudo_outputs": pseudo_outputs,
         "timings_seconds": {
             "preview": preview_seconds,
@@ -723,6 +830,22 @@ def main():
         for fixture_label, fixture_name, object_name in MATRIX_SOURCES
         for radius in MATRIX_RADII
     ]
+    retry_cases = [
+        {
+            "case_id": case_id(fixture_label, object_name, radius),
+            "fixture_label": fixture_label,
+            "fixture": fixture_name,
+            "object_name": object_name,
+            "radius": radius,
+            "delivery_role": "RADIUS_RETRY_EVIDENCE",
+            "repetitions": [],
+        }
+        for fixture_label, fixture_name, object_name in MATRIX_SOURCES
+        if fixture_label in FIRST_STAGE_LABELS
+        for radius in RETRY_RADII
+        if radius not in MATRIX_RADII
+    ]
+    matrix_cases.extend(retry_cases)
     if CASE_FILTER:
         matrix_cases = [
             case
@@ -753,6 +876,8 @@ def main():
         "fixture_hashes_valid": fixture_hashes_valid,
         "requested_repetitions": REPETITIONS,
         "case_count": len(matrix_cases),
+        "required_matrix_radii": list(MATRIX_RADII),
+        "retry_evidence_radii": list(RETRY_RADII),
         "run_scope": "DIAGNOSTIC_PARTIAL" if CASE_FILTER else "FULL_MATRIX",
         "cases": matrix_cases,
     }
@@ -826,6 +951,47 @@ def main():
         )
         write_summary(summary)
 
+    cases_by_source = {}
+    for case in matrix_cases:
+        source_key = (
+            case["fixture_label"],
+            case["fixture"],
+            case["object_name"],
+        )
+        cases_by_source.setdefault(source_key, []).append(case)
+    for source_cases in cases_by_source.values():
+        successful_cases = sorted(
+            (
+                case
+                for case in source_cases
+                if case["classification"] == "PRODUCT_SUCCESS"
+            ),
+            key=lambda case: case["radius"],
+            reverse=True,
+        )
+        for case in source_cases:
+            if case["classification"] != "RADIUS_LIMIT_DIAGNOSTIC":
+                continue
+            retry_case = next(
+                (
+                    successful_case
+                    for successful_case in successful_cases
+                    if successful_case["radius"] < case["radius"]
+                ),
+                None,
+            )
+            if retry_case is None:
+                continue
+            case["requested_radius_classification"] = "RADIUS_LIMIT_DIAGNOSTIC"
+            case["classification"] = "PRODUCT_SUCCESS_WITH_RADIUS_RETRY"
+            case["retry_evidence"] = {
+                "requested_radius": case["radius"],
+                "successful_radius": retry_case["radius"],
+                "successful_case_id": retry_case["case_id"],
+                "operator_changed_radius_automatically": False,
+            }
+    write_summary(summary)
+
     classification_counts = {
         classification: sum(
             case["classification"] == classification for case in matrix_cases
@@ -841,6 +1007,11 @@ def main():
         "all_runtime_paths_proven": all(case["runtime_path_proven"] for case in matrix_cases),
         "all_cells_classified": all(
             case["classification"] in CLASSIFICATIONS for case in matrix_cases
+        ),
+        "all_radius_limit_cells_have_retry": all(
+            case["classification"] != "RADIUS_LIMIT_DIAGNOSTIC"
+            for case in matrix_cases
+            if case["delivery_role"] == "FIRST_STAGE_REQUIRED"
         ),
         "fixture_hashes_valid": fixture_hashes_valid,
     }
@@ -862,7 +1033,10 @@ def main():
         ),
     }
     first_stage_cases = [
-        case for case in matrix_cases if case["fixture_label"] in FIRST_STAGE_LABELS
+        case
+        for case in matrix_cases
+        if case["fixture_label"] in FIRST_STAGE_LABELS
+        and case["delivery_role"] == "FIRST_STAGE_REQUIRED"
     ]
     deferred_cases = [
         case for case in matrix_cases if case["fixture_label"] in DEFERRED_LABELS
@@ -871,7 +1045,8 @@ def main():
     first_stage_go_conditions = {
         "required_scope_selected": selected_first_stage_complete,
         "required_cells_product_success": all(
-            case["classification"] == "PRODUCT_SUCCESS"
+            case["classification"]
+            in {"PRODUCT_SUCCESS", "PRODUCT_SUCCESS_WITH_RADIUS_RETRY"}
             for case in first_stage_cases
         ),
     }

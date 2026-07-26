@@ -2915,39 +2915,29 @@ def test_gn_shared_chamfer_plan_shadow_contract_smoke(
         finalize_plan.provenance == preview_plan.provenance,
         "Preview and Finalize ChamferPlan provenance diverged",
     )
-    boundary_binding = json.loads(
+    finalize_stats = json.loads(
         bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}")
-    ).get("chamfer_plan_boundary_binding", {})
-    ensure(
-        boundary_binding.get("plan_id") == preview_plan.plan_id
-        and boundary_binding.get("backend")
-        == "FINAL_BOOLEAN_BOUNDARY_SHADOW_BINDING",
-        f"Finalize did not emit shared-plan Boundary binding: {boundary_binding}",
     )
     ensure(
-        boundary_binding.get("status") == "PASS"
-        and boundary_binding.get("bound_rail_count", 0) > 0
-        and boundary_binding.get("consumed_edge_count")
-        == boundary_binding.get("boundary_edge_count")
-        and not boundary_binding.get("missing_edge_indices")
-        and not boundary_binding.get("extra_edge_indices")
-        and not boundary_binding.get("unclassified_edge_indices")
-        and not boundary_binding.get("missing_from_plan_binding")
-        and not boundary_binding.get("extra_in_plan_binding")
-        and not boundary_binding.get("missing_expected_rail_ids")
-        and not boundary_binding.get("missing_correspondence_rail_ids")
-        and boundary_binding.get("bound_expected_rail_count")
-        == boundary_binding.get("expected_rail_count")
-        and boundary_binding.get("bound_strip_correspondence_count")
-        == boundary_binding.get("strip_correspondence_count")
-        and boundary_binding.get("all_bound_ports_exist"),
-        f"Shared-plan Boundary coverage is incomplete: {boundary_binding}",
+        finalize_stats.get("plan_id") == preview_plan.plan_id
+        and finalize_stats.get("runtime_path")
+        == (
+            "Preview Pipe -> Boolean Pro Boundary Edges -> segment groups -> "
+            "Blender Bridge Edge Loops -> Blender Fill"
+        ),
+        f"Finalize did not consume the shared Direct Bridge plan: {finalize_stats}",
     )
     ensure(
-        not boundary_binding.get("coordinate_reconstruction")
-        and not boundary_binding.get("centerline_sorting")
-        and not boundary_binding.get("moves_boundary"),
-        f"Boundary binding changed geometry semantics: {boundary_binding}",
+        finalize_stats.get("status") == "finished"
+        and finalize_stats.get("initial_boundary_edge_count", 0) > 0
+        and finalize_stats.get("boundary_edge_count") == 0
+        and finalize_stats.get("non_manifold_edge_count") == 0
+        and finalize_stats.get("zero_area_face_count") == 0,
+        f"Shared Direct Bridge plan did not produce a clean Mesh: {finalize_stats}",
+    )
+    ensure(
+        finalize_stats.get("backend") == "DIRECT_EDGE_LOOP_BRIDGE",
+        f"Finalize used the wrong backend: {finalize_stats}",
     )
     result.add_detail(f"plan_id={preview_plan.plan_id}")
 
@@ -6927,27 +6917,29 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         "Boolean Pro nested dependencies were not appended",
     )
     boolean_node = boolean_pro_nodes[0]
-    group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
-    curve_pipe_node = curve_pipe_nodes[0]
+    source_geometry_links = [
+        link
+        for link in node_group.links
+        if link.to_node == boolean_node
+        and link.to_socket.name == "Geometry"
+    ]
     ensure(
-        any(
-            link.from_node == group_input
-            and link.from_socket.name == "Geometry"
-            and link.to_node == boolean_node
-            and link.to_socket.name == "Geometry"
-            for link in node_group.links
-        ),
-        "Source Geometry is not connected to Boolean Pro",
+        len(source_geometry_links) == 1
+        and source_geometry_links[0].from_node.bl_idname
+        == "GeometryNodeStoreNamedAttribute",
+        "Source Geometry does not reach Boolean Pro through the Patch attribute chain",
     )
+    cutter_geometry_links = [
+        link
+        for link in node_group.links
+        if link.to_node == boolean_node
+        and link.to_socket.name == "Geometry B"
+    ]
     ensure(
-        any(
-            link.from_node == curve_pipe_node
-            and link.from_socket.name == "Geometry"
-            and link.to_node == boolean_node
-            and link.to_socket.name == "Geometry B"
-            for link in node_group.links
-        ),
-        "Curve Pipe cutter is not connected to Boolean Pro Geometry B",
+        len(cutter_geometry_links) == 1
+        and cutter_geometry_links[0].from_node.bl_idname
+        == "GeometryNodeStoreNamedAttribute",
+        "Curve Pipe cutter does not reach Boolean Pro through the grouping attribute chain",
     )
     ensure(
         bpy.data.node_groups.get(test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY)
@@ -8188,20 +8180,14 @@ def test_legacy_feature_chamfer_uses_patch_adapter(test_context: TestContext, re
 # 验证同一 Operator 的 FINALIZE 创建独立 closed output，并保留 source 与禁用 procedural Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_finalize_creates_closed_output(test_context: TestContext, result: TestCaseResult):
-    collection = make_collection("GNFinalizeOutput")
-    source = make_test_mesh("GNFinalizeOutputSource", collection)
-    vertical_edge = next(
-        edge for edge in source.data.edges
-        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
-    )
-    mark_edge_indices_sharp(source, [vertical_edge.index])
+    load_fixture_blend("feature-chamfer-product-simple.blend")
+    source = bpy.data.objects["Extruded.002"]
+    for source_modifier in list(source.modifiers):
+        source.modifiers.remove(source_modifier)
     source_hash = _mesh_fingerprint(source)
     preview_result, modifier = run_feature_chamfer_gn(
         source,
-        radius=0.08,
-        sample_length=0.04,
-        voxel_size=0.025,
-        adaptivity=0.1,
+        radius=0.01,
     )
     ensure(preview_result == {"FINISHED"}, "Finalize output Preview failed")
     finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
@@ -8282,9 +8268,9 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
     result.add_detail("Mixed fixture Operator removed the extra long terminal connection")
 
 
-# 验证能力不足的复杂 fixture 会安全拒绝 FINALIZE，不把失败伪装成产品成功。
+# 验证正式 Direct Bridge runtime 已支持原复杂 fixture，并保持 source 与法线合同。
 # test_context/result: 测试上下文与结果记录器。
-def test_gn_finalize_unsupported_complex_fixture_fails_closed(test_context: TestContext, result: TestCaseResult):
+def test_gn_finalize_complex_fixture_direct_bridge_regression(test_context: TestContext, result: TestCaseResult):
     load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
     source = bpy.data.objects["Extruded.002"]
     for modifier in list(source.modifiers):
@@ -8299,32 +8285,37 @@ def test_gn_finalize_unsupported_complex_fixture_fails_closed(test_context: Test
     )
     ensure(preview_result == {"FINISHED"}, "Real fixture Preview failed")
     finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    ensure(
-        finalize_result == {"CANCELLED"},
-        f"Complex real fixture must fail-closed before structured junction support: {finalize_result}",
-    )
-    ensure(bpy.context.active_object is source, "Fail-closed Finalize changed active Object")
-    ensure(_mesh_fingerprint(source) == source_hash, "Fail-closed Finalize changed source")
-    ensure(modifier.show_viewport, "Fail-closed Finalize disabled Preview")
+    ensure(finalize_result == {"FINISHED"}, "Complex real fixture did not finalize")
+    output = bpy.context.active_object
+    ensure(output is not None and output is not source, "Complex fixture created no output")
+    ensure(_mesh_fingerprint(source) == source_hash, "Complex fixture Finalize changed source")
+    ensure(not modifier.show_viewport, "Complex fixture Finalize left Preview visible")
     ensure(
         test_context.addon.utils.feature_chamfer_gn_utils.preview_state(source)
-        == "PREVIEW_VALID",
-        "Fail-closed Finalize changed Preview state",
+        == "PATCHED",
+        "Complex fixture Finalize did not enter PATCHED state",
     )
+    bm = bmesh.new()
+    bm.from_mesh(output.data)
     ensure(
-        not any(
-            obj.get(test_context.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG) == source.name
-            for obj in bpy.data.objects
-            if obj is not source
-        ),
-        "Fail-closed Finalize left a pseudo output",
+        all(len(edge.link_faces) == 2 for edge in bm.edges)
+        and all(face.calc_area() > 1.0e-12 for face in bm.faces),
+        "Complex fixture output is not clean and closed",
     )
-    result.add_detail("Complex fixture stayed in PREVIEW_VALID with no pseudo Finalize output")
+    bm.free()
+    ensure(
+        any(
+            item.type == "DATA_TRANSFER" and item.object is source
+            for item in output.modifiers
+        ),
+        "Complex fixture output has no source Custom Normal transfer",
+    )
+    result.add_detail("Complex fixture finalized through Direct Bridge with a clean output")
 
 
-# 验证失败后的重复 FINALIZE 仍保留原家族，而非退化为 plan mismatch。
+# 验证成功 Finalize 后重复调用会要求重建 Preview，不会重用旧计划。
 # test_context/result: 测试上下文与结果记录器。
-def test_gn_finalize_retry_preserves_plan_diagnostic_regression(
+def test_gn_finalize_repeat_requires_new_preview_regression(
     test_context: TestContext,
     result: TestCaseResult,
 ):
@@ -8335,45 +8326,31 @@ def test_gn_finalize_retry_preserves_plan_diagnostic_regression(
     preview_result, modifier = run_feature_chamfer_gn(source, radius=0.03)
     ensure(preview_result == {"FINISHED"}, "Retry diagnostic Preview failed")
     first_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    first_plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
-        modifier
-    )
     second_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    second_plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
-        modifier
+    ensure(
+        first_result == {"FINISHED"} and second_result == {"CANCELLED"},
+        "Repeated Finalize reused an already consumed Preview",
     )
     ensure(
-        first_result == {"CANCELLED"} and second_result == {"CANCELLED"},
-        "Repeated unsupported Finalize did not fail closed",
+        test_context.addon.utils.feature_chamfer_gn_utils.preview_state(source)
+        == "PATCHED",
+        "Repeated Finalize changed the completed state",
     )
-    ensure(
-        first_plan.unsupported_regions == second_plan.unsupported_regions
-        and all(
-            region.reason_code != "chamfer_plan_mismatch"
-            for region in second_plan.unsupported_regions
-        ),
-        f"Repeated Finalize replaced the stable diagnostic family: {second_plan}",
-    )
-    result.add_detail("repeated Finalize preserved the original UnsupportedRegion family")
+    result.add_detail("Repeated Finalize requires a newly built Preview")
 
 
 # 验证 Preview 与 Finalize 各占一个 Undo step，撤销 Finalize 后回到可调整 Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestCaseResult):
-    collection = make_collection("GNUndo")
-    source = make_test_mesh("GNUndoSource", collection)
-    vertical_edge = next(
-        edge for edge in source.data.edges
-        if abs(source.data.vertices[edge.vertices[0]].co.z - source.data.vertices[edge.vertices[1]].co.z) > 1.5
-    )
-    mark_edge_indices_sharp(source, [vertical_edge.index])
+    load_fixture_blend("feature-chamfer-product-simple.blend")
+    source = bpy.data.objects["Extruded.002"]
+    source_name = source.name
+    for source_modifier in list(source.modifiers):
+        source.modifiers.remove(source_modifier)
     source_hash = _mesh_fingerprint(source)
     preview_result, modifier = run_feature_chamfer_gn(
         source,
-        radius=0.08,
-        sample_length=0.04,
-        voxel_size=0.025,
-        adaptivity=0.1,
+        radius=0.01,
     )
     ensure(preview_result == {"FINISHED"} and modifier is not None, "Undo Preview setup failed")
     finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
@@ -8390,7 +8367,7 @@ def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestC
         result.add_detail("Background mode cannot execute ed.undo; operator UNDO contract verified")
         return
     bpy.ops.ed.undo()
-    source_after_finalize_undo = bpy.data.objects.get("GNUndoSource")
+    source_after_finalize_undo = bpy.data.objects.get(source_name)
     ensure(source_after_finalize_undo is not None, "Finalize Undo removed source")
     preview_after_undo = source_after_finalize_undo.modifiers.get("HST Feature Chamfer GN Preview")
     ensure(preview_after_undo is not None, "Finalize Undo did not restore Preview")
@@ -8399,7 +8376,7 @@ def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestC
     ensure(_mesh_fingerprint(source_after_finalize_undo) == source_hash, "Finalize Undo changed source")
 
     bpy.ops.ed.undo()
-    source_after_preview_undo = bpy.data.objects.get("GNUndoSource")
+    source_after_preview_undo = bpy.data.objects.get(source_name)
     ensure(source_after_preview_undo is not None, "Preview Undo removed source")
     ensure(
         source_after_preview_undo.modifiers.get("HST Feature Chamfer GN Preview") is None,
@@ -11799,12 +11776,12 @@ def main():
     )
 
     context.run_case(
-        "gn_finalize_unsupported_complex_fixture_fails_closed",
-        test_gn_finalize_unsupported_complex_fixture_fails_closed,
+        "gn_finalize_complex_fixture_direct_bridge_regression",
+        test_gn_finalize_complex_fixture_direct_bridge_regression,
     )
     context.run_case(
-        "gn_finalize_retry_preserves_plan_diagnostic_regression",
-        test_gn_finalize_retry_preserves_plan_diagnostic_regression,
+        "gn_finalize_repeat_requires_new_preview_regression",
+        test_gn_finalize_repeat_requires_new_preview_regression,
     )
     context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)

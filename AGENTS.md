@@ -64,69 +64,10 @@
 ## 验证
 - 完成修改前，优先运行最小必要的验证命令；无法验证时明确说明原因。
 
-## Agent 规格对齐与阶段门禁
+## 用户可见功能的验收规则
 
-### Feature Chamfer Phase C 当前产品语义
-
-- 当前唯一计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。
-- 无交叉的 Pipe 直接选中槽口左右两侧完整 Edge Loop，一次性交给 Blender 原生 Bridge；Pipe 交叉时，在 junction 两端切成连续槽段，逐段 Bridge 左右完整边链，最后 Fill 剩余交叉孔洞。
-- 两侧 Vertex / Edge 数量无需一致，也不要求逐点、逐边或逐 fragment 对应；duplicate/degenerate、零面积、degree、branch、cycle、normalization、canonicalization 和 raw→canonical 诊断不是 Bridge 前置门槛。只有实际选不到同一槽段的两侧完整边链、跨 junction 混入其他槽、Bridge/Fill 失败或最终产品验收失败时才 Stop。
-- 旧 pre-Boolean pairing、maximal-chain、Merge/canonicalization 与 operand 调整文档仅为历史证据，不得恢复为当前开发方向。
-- 第一阶段优先 `simple`、`tricky_b`、`mixed` 三个 fixture 的 10 个 matrix cells；它们全部通过即可作为第一阶段可用成果。`tricky` 的 4 个 cells 允许安全失败并延后处理，不得阻塞第一阶段交付，但失败必须保持 source 不变和完整回滚。
-
-### 目标入口契约
-
-涉及 UI、Blender Operator、Geometry Nodes 或用户工作流的任务，修改前必须在计划或 tasklist 中明确并核对：
-
-```text
-UI 按钮/菜单
-→ Operator bl_idname
-→ action / invoke / execute
-→ 实际 runtime path
-→ 用户可见结果
-```
-
-- 首轮代码定位必须沿该路径逐段确认；不能只实现旁路 builder、实验 Operator 或离线 probe。
-- 若实现过程中发现目标入口与原假设不一致，必须立即停止并更新计划，不得先完成旁路 prototype 后宣称已接入。
-- “资产已存在”“底层函数可运行”“artifact 可打开”均不等于目标 Operator 已使用该实现。
-
-### 四层验收
-
-所有用户可见功能必须区分四层证据：
-
-1. `Algorithm`：算法或数据合同正确。
-2. `Backend`：Mesh、Curve、Geometry Nodes 等 backend 能生成 artifact。
-3. `Operator`：从目标 Operator 入口运行，确认实际 runtime path 使用新 backend。
-4. `Visual/Product`：真实文件中的用户可见结果符合产品语义。
-
-低层通过不能代替高层。测试数量、字段存在、topology clean、headless JSON 或离线 `.blend` 只能支持对应层级的声明。
-
-### Stop / Go 硬门禁
-
-- 分阶段计划中的 Stop/Go 是硬约束，不是建议。
-- 前一阶段任一必要门槛失败时，下一阶段只能更新设计和诊断，禁止实现或接入正式 runtime path。
-- 每个阶段开始前必须写明：目标 Operator、用户操作、预期可见变化、自动证据、Go 条件。
-- 每个阶段结束时必须从目标 Operator 做验收并留下可读取 artifact；旁路 probe 不能替代入口验收。
-
-### 状态分级
-
-阶段交付只能使用以下状态：
-
-- `PROTOTYPE`：算法或 backend 局部可运行。
-- `INTEGRATED`：目标 Operator 已接入。
-- `VERIFIED`：真实文件的数值、拓扑和固定近景通过。
-- `ACCEPTED`：用户在真实 UI 中验收通过。
-
-禁止跨级声明完成。交付时必须同时报告当前状态、未通过门槛和本轮明确未做的范围。
-
-### 完成前独立 Spec Audit
-
-影响核心工作流的功能在完成声明前，必须进行独立 spec audit，至少核对：
-
-- diff 是否实际修改目标 runtime path；
-- 每项计划门槛是否有直接证据；
-- 是否存在越阶段实现或 scope creep；
-- 测试是否从目标 Operator 开始；
-- 文档阶段状态是否与代码和用户可见行为一致。
-
-发现任一高严重度偏差时，不得给出完成声明，应先恢复正确阶段边界。
+- 涉及 UI、Blender Operator 或 Geometry Nodes 的任务，必须从用户入口核对到实际 runtime 和用户可见结果，不能以旁路 probe 或底层 artifact 代替正式入口验收。
+- 区分算法、backend、正式 Operator、最终视觉/产品四层证据；低层通过不能替代高层。
+- 分阶段计划中的 Stop / Go 是硬门槛；前一阶段未通过时，不得跨阶段接入或声明完成。
+- 阶段状态使用 `PROTOTYPE`、`INTEGRATED`、`VERIFIED`、`ACCEPTED`，不得跨级声明。
+- 核心工作流在完成前做独立规格审计，确认正式 runtime、测试入口、文档状态和用户可见行为一致。

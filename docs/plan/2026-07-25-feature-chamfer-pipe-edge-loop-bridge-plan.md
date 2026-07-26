@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`AUTHORIZED / INTEGRATED / PRODUCT GATE PENDING`
+状态：`AUTHORIZED / VERIFIED`（尚未由用户在真实 UI 中 `ACCEPTED`）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -26,6 +26,15 @@ Pipe 交叉时，原本连续的槽必须在交叉区域两端断开，分别对
 - 只要能够可靠选中同一槽段的左右两侧完整边链，就直接 Bridge，不研究 loop 内逐点、逐边 pairing；
 - junction Fill 只消费所有槽段 Bridge 后自然剩余的交叉孔洞，不得提前用 Fill 替代可 Bridge 的普通槽段。
 
+失败与半径重试规则：
+
+- “完整回滚”只指 source 与最终产品事务：source Mesh、变换和已有数据保持不变，坏的最终 Mesh 不得交付；它不等于删除诊断现场；
+- 当前 Radius 无法安全补面时，正式 Finalize 必须保留同一 Preview，并在失败边界留下醒目的红色诊断，直接告诉用户此处空间不足或边界过于复杂，建议减小 Radius 后重试；
+- Radius 只能由用户显式修改后重新执行 Preview → Finalize；Operator 不得自动或静默降低 Radius；
+- 原请求 Radius 必须如实记录为 `RADIUS_LIMIT_DIAGNOSTIC`，不能伪装成成功。若同一对象由正式 Operator 在明确更小的 Radius 得到 `PRODUCT_SUCCESS`，该场景可记为 `PRODUCT_SUCCESS_WITH_RADIUS_RETRY`，并同时保留失败 Radius 与成功 Radius 两份证据；
+- 只有失败位置可见、source 不变、坏输出不存在、较小 Radius 正式成功四项同时成立，才允许按“降低半径后通过”计入阶段验收。其他 Bridge/Fill 或产品失败不得借此放行。
+- 红色位置合同只适用于已经得到真实边界坐标的 Bridge、Fill 或最终几何失败。若流程在尚未形成可定位边界的 Preview/身份合同阶段停止，应保留已有 Preview、保持 source 不变并给出明确错误提示；不得为了满足视觉形式而猜测或伪造问题位置。
+
 ## 2. 目标入口契约
 
 ```text
@@ -41,7 +50,19 @@ UI Feature Chamfer GN
 ```
 
 用户可见结果：Preview 中已经正确的槽形状被保留；Finalize 后普通槽段由
-Blender Bridge 生成、交叉孔洞由 Fill 封闭，原模型槽外区域不变。
+Blender Bridge 生成、交叉孔洞由 Fill 封闭，原模型槽外区域不变。若当前 Radius
+无法可靠完成，用户会在保留的 Preview 上直接看到红色问题边界和减小 Radius 的提示。
+Bridge/Fill 新面在尚未恢复 Custom Normal 时可能显示为黑色三角或楔形；这属于 shading
+诊断，不等同于孔洞。正式产品验收必须先确认边界已封闭，再启用与旧 Feature Chamfer
+一致的 source Custom Normal Transfer 后检查最终视图；不得用关闭法线传递的诊断图否决
+已经完整补面的结果。
+孔洞只由真实 Mesh 边界、non-manifold 结果和 Blender 线框拓扑确认；禁止用渲染图中的
+极暗像素数量、黑色连通块或类似颜色阈值推断孔洞，因为这些指标会把线框、轮廓、阴影
+和 Custom Normal 一并误计。
+
+最终法线处理按旧 Feature Chamfer 的既有模式：完成全部 Bridge / Fill 并重新计算几何
+朝向后，从 source 传递 Custom Normal；若还需要对新补面执行 Set from Faces，必须以真实
+Blender 结果证明它不会被后续传递覆盖。产品近景必须使用正式输出的最终法线结果。
 
 ## 3. 实现阶段与 Stop / Go
 
@@ -52,6 +73,7 @@ Blender Bridge 生成、交叉孔洞由 Fill 封闭，原模型槽外区域不�
 - 不再自行探测、恢复或重建 Boundary Edge identity；
 - 没有 junction 的 cyclic 槽保留两条完整 cyclic Edge Loop；
 - 在 junction 处，以 Boundary Edge 的多 Pipe owner 变化作为确定性交叉边界，把全局 Loop 切成单一 Pipe 的连续 runs；若交叉只在槽的一侧产生切点，则使用 Preview Pipe 同槽段携带的归一化弧长 station，在另一侧唯一对应的边内同步插入切点。station 只同步已经由 Pipe/槽段/Surface Patch 身份锁定的两侧，不承担 Pipe 猜测或逐边配对；
+- 实现中的 edge-count、局部长度和 station 数值阈值，只用于已经锁定 Pipe、槽段和 Surface Patch 后的 junction witness 有效性与切点分段；它们不得用于猜 Pipe、从候选中挑“较像”的两侧，也不得成为普通完整 Loop 进入 Bridge 的前置门槛；
 - 不按 edge 数、edge 长度或世界坐标选择“较大两条”，不按距离恢复 Pipe，不重排原始 Boundary Edge；
 - 将同一 Pipe 在相邻两个 junction 之间、或 junction 与 terminal 之间的左右两条连续 run 配成一个槽段 Bridge job；
 - 左右名称只表示两组输入，不表达逐边对应关系。
@@ -119,7 +141,7 @@ Stop：Bridge 没有生成 Faces、连接到其他 Pipe，或产生明显翻面�
 - 所有可配对槽段必须先 Bridge；
 - 在 Bridge 后 Mesh 上，仅收集自然剩余的 junction 孔洞边界；
 - 每个孔洞一次交给 Blender Fill，禁止 center fan、fixture 特判或提前填掉普通槽段；
-- Fill 失败必须完整回滚，不保留半成品。
+- Fill 或 Fill 后几何检查失败必须回滚 source 与最终输出，不保留坏 Mesh；有真实孔洞边界坐标时，同时保留 Preview并在该边界留下红色诊断。
 
 Go：所有槽段 Bridge 已消费，剩余孔洞只位于 Pipe 交叉处；Fill 后最终 Mesh 封闭，没有跨孔连接、翻面或槽外变化。
 Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错误连成一个孔，或 Fill 没有生成有效 Faces。
@@ -137,22 +159,29 @@ Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错�
 每个目标保存可打开的 `.blend` 和固定近景，检查：
 
 - Bridge 后槽面连续、junction Fill 正确，视觉结果符合用户截图；
+- 输出保持旧 Feature Chamfer 的 source Custom Normal Transfer，固定近景必须使用正式法线结果；
 - 槽外原模型没有变化；
 - 输出没有意外开放边或多面共边；
 - 正逆 batch 顺序结果一致；
-- 失败会完整回滚，不留下半成品。
+- 可定位的 Bridge/Fill/最终几何失败必须 source 不变且没有坏输出，同时 Preview 与红色问题位置可见；更早的合同失败保留已有现场与明确提示；
+- 用户显式降低 Radius 的重试与原 Radius 结果分开记录，Operator 不静默改值。
 
-第一阶段 Go：上述三个优先文件的 10 个 cell 全部从目标 Operator 得到 `PRODUCT_SUCCESS`；`tricky` 即使失败，也必须保持 source 不变、完整回滚且不留下半成品。不得用 fixture 特判换取这 10 个 cell 通过。
+第一阶段 Go：上述三个优先文件的 10 个目标场景均从目标 Operator 得到
+`PRODUCT_SUCCESS`，或满足严格四项条件的 `PRODUCT_SUCCESS_WITH_RADIUS_RETRY`；
+后者必须保留原 Radius 的 `RADIUS_LIMIT_DIAGNOSTIC` 与更小 Radius 的独立成功证据，
+不得把原失败档位改写为成功。`tricky` 即使失败，也必须保持 source 不变、无坏输出；
+可定位的几何失败保留红色位置，较早的合同失败保留已有现场和明确提示。不得用 fixture
+特判换取这 10 个场景通过。
 
 ### Step 4 — 第一阶段正式验收与分层矩阵
 
 - 确认正式 `FINALIZE` 已接入相同流程；
-- 从 UI 入口先运行优先 10 cells × 3 repetitions；
+- 从 UI 入口先运行优先 10 cells × 3 repetitions；若某个 cell 触发半径限制，另以用户显式操作等价的独立 Operator 调用验证更小 Radius；
 - 另外运行或记录 `tricky` 4 cells 的安全失败结果，但不计入第一阶段产品成功率；
 - 保存每个 cell 的结果、日志和近景；
 - 独立 Spec Audit 核对正式 runtime 确实走槽段两侧完整边链 → Blender Bridge → junction Fill，而不是历史 pairing/canonicalization 旁路。
 
-Go：优先 10 cells 全部通过，目标 Operator、视觉结果、source 不变和回滚门禁通过；此时可作为第一阶段可用成果交付。
+Go：优先 10 个目标场景全部直接通过或严格满足“降低半径后通过”，目标 Operator、视觉结果、source 不变、诊断可见和回滚门禁通过；此时可作为第一阶段可用成果交付。
 Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge/Fill 失败或修改槽外模型才能通过。
 
 第二阶段再处理 `tricky` 4 cells。它们全部通过后，才把范围提升为完整 14-cell 产品矩阵通过。
@@ -161,12 +190,12 @@ Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Brid
 
 1. `Algorithm`：不等数量的两组 open Edge Loop 可直接 Bridge；已有 5-vs-3 证据继续保留。
 2. `Backend`：真实 Pipe 能在 junction 处切出槽段、Bridge 两侧边链并 Fill 剩余交叉孔洞。
-3. `Operator`：正式 UI/Operator 已接入“槽段 Bridge → junction Fill”，失败可回滚。
+3. `Operator`：正式 UI/Operator 已接入“槽段 Bridge → junction Fill”；失败可回滚 source 与坏输出；可定位的几何失败保留 Preview 和红色问题位置供用户调小 Radius，较早的合同失败保留已有现场和明确提示。
 4. `Visual/Product`：第一阶段先要求 `simple / tricky_b / mixed` 三个文件的 10 个 cell 真实文件和固定近景通过；`tricky` 留到第二阶段。
 
-低层通过不能替代高层。当前为 `INTEGRATED / PRODUCT GATE PENDING`：正式 Operator runtime
-已经接入，但优先 10 cells、固定近景与独立 Spec Audit 尚未全部通过，因此还不是
-`VERIFIED` 或 `ACCEPTED`。
+低层通过不能替代高层。当前为 `VERIFIED`：正式 Operator runtime、优先 10 cells、
+最终法线后的固定近景和独立 Spec Audit 均已通过。用户尚未在真实 UI 中验收，因此不是
+`ACCEPTED`。
 
 ## 5. 明确废弃
 
@@ -183,15 +212,32 @@ Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Brid
 
 ## 6. 当前下一步
 
-正式入口已经接入，优先 10 cells 的三次重复自动证据也已生成；但固定近景发现
-`tricky_b / Extruded.002 / radius 0.03` 的 junction 区域存在明显错面，因此当前仍停在
-`INTEGRATED / PRODUCT GATE PENDING`，自动闭合检查不得替代视觉失败。下一步先修正
-“全部槽段 Bridge 后再 Fill junction”的视觉结果，再完整重跑优先 10 cells、保存可读
-`.blend` 与固定近景；随后单独记录 `tricky` 4 cells 的安全结果并执行独立 Spec Audit。
+正式入口已经接入 Direct Edge-Loop Bridge 与 junction Fill。最终自动矩阵
+`tests/artifacts/feature_chamfer_phase1_normal_final/results.json` 中，
+`simple / tricky_b / mixed` 的 10 个第一阶段目标场景均在原请求 Radius 直接得到
+`PRODUCT_SUCCESS`，每项连续 3 次稳定，source 不变，最终 Mesh 无开放边、无多面共边、
+无零面积 Face，并保留正式 source Custom Normal Transfer；这份证据支持 Algorithm、
+Backend 和 Operator 三层，不单独构成视觉通过。
 
-本轮已把该视觉失败定位为真实几何自交：原实现把一条仍跨越 junction 的连续边链
-整段交给 Bridge，会产生 147 组非邻接面相交。按截图语义在交叉 witness 两端分段后，
-Bridge 阶段已降为 0；Fill 后仍有 6 组相交，全部来自同一个由 segment 13/18 与
-四条 Bridge 连接边组成的 12-edge junction 孔。正式 Operator 现会检测并完整回滚，
-不再把“封闭但自交”的结果误报为产品成功。剩余工作是让该交叉区域形成手工操作中
-实际可见的独立孔洞，再逐孔 Fill，而不是把跨空间的整圈直接当作一个孔。
+延后范围 `tests/artifacts/feature_chamfer_tricky_safety_normal_final/results.json` 中的
+4 个 `tricky` cell 均连续 3 次 `SAFETY_PASS`：source 不变、没有坏输出；其中可运行
+Preview 的失败保留 Preview，尚未形成真实边界坐标的早期失败不伪造红色位置。该结果
+满足第一阶段的 deferred safety，不代表第二阶段产品成功。
+
+先前把固定近景中的黑色三角判成缺面属于错误验收：用户已确认它是 Fill 新面的
+Custom Normal 表现，渲染颜色阈值也已明确废弃。现有输出原本已复用旧 Feature Chamfer
+的 source Normal Transfer。额外尝试“新面 Set from Faces、原区域 Normal Transfer”时，
+发现 Vertex Group 无法准确表达 shared boundary loop 的逐 corner 法线归属，不能作为正确
+实现接入。当前保留旧工具的全量 Normal Transfer，并把法线表现与真实孔洞分开验收；
+最终法线后的全部 10 个目标 cell 均保存 overview / wireframe 固定近景；视觉验收没有
+使用极暗像素或颜色阈值。逐项肉眼复核未发现跨槽、翻面、异常长三角、未 Fill 孔洞或
+槽外明显变化。状态提升为 `VERIFIED`，但尚未由用户在真实 UI 中 `ACCEPTED`。
+
+正式入口相关的 5 项重点回归已经通过；独立 Spec Audit 也确认 runtime 为
+Boolean Pro Boundary Edges → junction 分段 → Blender Bridge → residual Fill → 正式法线恢复，
+没有 fixture 特判、逐边 pairing 或 Bridge 前 canonicalization。完整项目回归共 145 项；
+首次运行 143 项通过，2 项为仍断言旧 Preview 直连与旧 Boundary binding 字段的过时预期，
+已更新为验证当前属性链和 Direct Bridge runtime；这 2 项随后在同一最终代码上单独通过，
+因此本轮变更相关的 145 项均有通过证据。提交前保留上述
+自动矩阵、固定近景、重点回归、完整回归与独立审计证据。用户真实 UI 验收前不声明
+`ACCEPTED`。

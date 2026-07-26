@@ -88,11 +88,13 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 ```
 
 结果：`tests/artifacts/feature_chamfer_batched_matrix/results.json`。开发诊断可用重复 `--case <case_id>` 缩小运行范围；第一阶段 Stop/Go 以 `simple`、`tricky_b`、`mixed` 的 10 cells × 3 repetitions 为准，完整 14 cells 留作第二阶段最终门槛。
-> `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；任何失败必须 fail-closed 并完整回滚。
+> `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；失败必须 fail-closed：source 不变、无坏的最终 Mesh。Bridge、Fill 或最终几何检查能够给出真实问题边界时，同时保留 Preview 并显示红色诊断，供用户显式减小 Radius 后重试；较早的 Preview/身份合同失败只保留已有现场和明确错误提示，不得伪造位置。
 > 历史 Object Boolean、槽面删除、rail pairing 与 canonicalization 路线仅保留回归证据，不是当前正式 Finalize runtime，也不得作为 Bridge 前置门槛。
 > 当前 Phase C 方向直接消费 Boolean Pro Boundary Edges。没有交叉的 Pipe 以两条完整 Loop 一次 Bridge；在 junction 处按 Pipe owner 变化切成“交叉点之间的连续槽段”，每段左右边链一次 Bridge，最后 Fill Bridge 后剩余的交叉孔洞。不得按距离重排边或建立逐边 correspondence；两侧数量可以不同，Blender 负责内部连接。
-> 正式输出会标记新生成的槽面，并从隐藏的原 Mesh 传递 custom normals；历史 PATCHED dissolve 行为不属于当前 Direct Bridge runtime。
-> 当前状态为正式入口已接入、产品门禁待完成；自动闭合检查不能替代固定近景的视觉验收。
+> 正式输出会标记新生成的槽面，并沿用旧 Feature Chamfer 从隐藏 source 传递 custom normals 的既有方式；历史 PATCHED dissolve 行为不属于当前 Direct Bridge runtime。
+> Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。产品固定近景必须使用正式法线结果；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
+> 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
+> 当前第一阶段状态为 `VERIFIED`：10 个目标 cell × 3 次、正式法线后的 10 组固定近景、正式入口回归和独立规格审计均已通过；用户真实 UI 验收前不记为 `ACCEPTED`。自动闭合检查仍不能替代固定近景的视觉验收。
 
 ## Experimental Pipe Chamfer API Probe
 
@@ -181,10 +183,13 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 
 - 固定运行 `tests/fixtures/` 中 7 个对象 × radius `{0.01, 0.03}`。
 - 每个 cell 从目标 `hst.feature_chamfer_gn` PREVIEW→FINALIZE 开始，并重复 3 次验证 shared plan determinism。
-- 分类为 `PRODUCT_SUCCESS`、`EXPECTED_UNSUPPORTED`、`REGRESSION_FAILURE`、`SAFETY_PASS`；fail-closed 不计产品成功。
-- 第一阶段门槛只统计 `simple`、`tricky_b`、`mixed` 的 10 cells，要求 10/10 × 3 repetitions 全部 `PRODUCT_SUCCESS`；`tricky` 4 cells 单独记录安全结果并延后。
+- 分类至少区分 `PRODUCT_SUCCESS`、`RADIUS_LIMIT_DIAGNOSTIC`、`PRODUCT_SUCCESS_WITH_RADIUS_RETRY`、`EXPECTED_UNSUPPORTED`、`REGRESSION_FAILURE`、`SAFETY_PASS`。普通 fail-closed 不计产品成功。
+- 每个请求 Radius 都保留独立结果；不得把失败 Radius 改写为成功。若正式 Operator 在复杂孔洞位置安全失败、Preview 与红色问题边界可见，且同一对象在明确更小 Radius 独立得到 `PRODUCT_SUCCESS`，该目标场景可汇总为 `PRODUCT_SUCCESS_WITH_RADIUS_RETRY`。
+- 产品矩阵默认另外运行 Radius `0.005` 与 `0.015` 作为独立 retry 证据；它们不覆盖或改写固定的 `0.01 / 0.03` 结果。
+- 第一阶段门槛只统计 `simple`、`tricky_b`、`mixed` 的 10 个目标场景，要求 10/10 × 3 repetitions 为直接成功或满足上述严格条件的降低半径后成功；`tricky` 4 cells 单独记录安全结果并延后。
 - 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
+- 第一阶段最终证据：`tests/artifacts/feature_chamfer_phase1_normal_final/results.json`；延后安全结果：`tests/artifacts/feature_chamfer_tricky_safety_normal_final/results.json`；全部 10 个目标 cell 的正式法线近景位于前者的 `visual/` 子目录。
 
 ## 设计原则
 

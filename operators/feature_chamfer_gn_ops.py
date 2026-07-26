@@ -13,10 +13,15 @@ from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
 from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
 from ..utils.feature_chamfer_direct_bridge_utils import build_direct_edge_loop_chamfer
+from ..utils.feature_chamfer_diagnostic_utils import RADIUS_LIMIT_ERROR_CODES
+from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
+from ..utils.feature_chamfer_diagnostic_utils import show_feature_chamfer_failure_diagnostic
+from ..utils.feature_chamfer_normal_utils import restore_feature_chamfer_normals
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
 from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
+from ..utils.feature_chamfer_gn_utils import live_preview_parameters
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
 from ..utils.feature_chamfer_gn_utils import preview_state
 from ..utils.feature_chamfer_plan_utils import read_chamfer_plan
@@ -163,6 +168,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
 
         if actual_action == "CANCEL_PREVIEW":
             cancel_gn_feature_chamfer_preview(source_object)
+            clear_feature_chamfer_diagnostics(source_object)
             self.report({"INFO"}, "Feature Chamfer Preview removed")
             return {"FINISHED"}
         if actual_action == "FINALIZE":
@@ -209,6 +215,17 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     preview_chamfer_plan,
                 )
             except FeatureChamferDirectBridgeError as error:
+                diagnostic = show_feature_chamfer_failure_diagnostic(
+                    source_object,
+                    error.error_code,
+                    error.stats,
+                    preview_chamfer_plan.radius,
+                )
+                error.stats.update(
+                    requested_radius=float(preview_chamfer_plan.radius),
+                    final_state="PREVIEW_RETAINED",
+                    diagnostic=diagnostic,
+                )
                 context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
                     error.stats,
                     ensure_ascii=False,
@@ -221,7 +238,14 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     preview_show_viewport, preview_show_render,
                     active_object_before, selected_objects_before,
                 )
-                self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
+                if error.error_code in RADIUS_LIMIT_ERROR_CODES and diagnostic["exists"]:
+                    self.report(
+                        {"WARNING"},
+                        "Feature Chamfer cannot safely fill the red marked area at "
+                        f"Radius {preview_chamfer_plan.radius:.4f}; reduce Radius and retry",
+                    )
+                else:
+                    self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
                 return {"CANCELLED"}
             except Exception:
                 _restore_id_properties(source_object, source_property_snapshot)
@@ -269,6 +293,16 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                         backend_chamfer_attribute
                         and backend_chamfer_attribute.data[polygon.index].value
                     )
+                normal_stats = restore_feature_chamfer_normals(
+                    output,
+                    source_object,
+                )
+                patch_stats.update(normal_stats)
+                context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+                    patch_stats,
+                    ensure_ascii=False,
+                    default=str,
+                )
                 preview_modifier = owned_preview_modifier(source_object)
                 if preview_modifier is not None:
                     preview_modifier.show_viewport = False
@@ -283,6 +317,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     selected_object.select_set(False)
                 output.select_set(True)
                 context.view_layer.objects.active = output
+                clear_feature_chamfer_diagnostics(source_object)
                 self.report(
                     {"INFO"},
                     f"Feature Chamfer finalized: {patch_stats['regular_patch_face_count']} Bridge Faces, {patch_stats['junction_patch_face_count']} Fill Faces",
@@ -320,6 +355,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
         except FeatureChamferPreviewError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        clear_feature_chamfer_diagnostics(source_object)
         self.report({"INFO"}, "Feature Chamfer GN Preview ready")
         return {"FINISHED"}
 

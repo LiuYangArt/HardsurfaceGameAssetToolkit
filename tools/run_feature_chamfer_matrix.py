@@ -49,6 +49,20 @@ def run(argv=None):
         dest="cases",
         help="Run only the named matrix case; repeat for multiple cases",
     )
+    parser.add_argument(
+        "--radius",
+        action="append",
+        type=float,
+        dest="radii",
+        help="Run explicit Radius values instead of the default 0.01 and 0.03",
+    )
+    parser.add_argument(
+        "--retry-radius",
+        action="append",
+        type=float,
+        dest="retry_radii",
+        help="Add an explicit lower Radius as separate retry evidence",
+    )
     args = parser.parse_args(argv)
 
     if args.repetitions < 3:
@@ -71,6 +85,11 @@ def run(argv=None):
     environment["HST_ADDON_ROOT"] = str(repo_root)
     environment["HST_FEATURE_CHAMFER_MATRIX_ARTIFACT_DIR"] = str(artifact_directory)
     environment["HST_FEATURE_CHAMFER_MATRIX_REPETITIONS"] = str(args.repetitions)
+    if args.radii:
+        environment["HST_FEATURE_CHAMFER_MATRIX_RADII"] = json.dumps(args.radii)
+        environment["HST_FEATURE_CHAMFER_RETRY_RADII"] = "[]"
+    elif args.retry_radii:
+        environment["HST_FEATURE_CHAMFER_RETRY_RADII"] = json.dumps(args.retry_radii)
     if args.cases:
         environment["HST_FEATURE_CHAMFER_MATRIX_CASES"] = json.dumps(args.cases)
     driver_path = repo_root / "tests" / "feature_chamfer_matrix_driver.py"
@@ -88,7 +107,8 @@ def run(argv=None):
     print(f"Using Blender: {blender_executable}")
     print(
         "Running Feature Chamfer product matrix: "
-        f"{len(args.cases) if args.cases else 14} cells x {args.repetitions} repetitions"
+        f"{len(args.cases) if args.cases else 'required cells plus retry evidence'} "
+        f"x {args.repetitions} repetitions"
     )
     completed = subprocess.run(command, cwd=repo_root, env=environment)
     return completed.returncode
