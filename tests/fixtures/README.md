@@ -22,12 +22,15 @@
 
 当前推进计划：`docs/plan/2026-07-25-feature-chamfer-pipe-edge-loop-bridge-plan.md`。第一阶段优先验证 `simple`、`tricky_b`、`mixed` 三个 fixture，共 10 个目标场景。每个请求 Radius 都必须保留独立结果；原 Radius 失败不能改写成成功。若复杂孔洞在原 Radius 安全失败、source 不变、无坏输出、Preview 与红色问题边界可见，并且同一对象由正式 Operator 在明确更小 Radius 独立成功，则该场景可记为 `PRODUCT_SUCCESS_WITH_RADIUS_RETRY`。禁止 Operator 自动或静默降低 Radius。`tricky` 的 4 个 cell 允许安全失败并延后到第二阶段，但必须单独报告；可定位的几何失败显示红色位置，较早的合同失败保留已有现场并给出明确提示。完整产品范围最终仍是 14 个 cell。
 
-产品近景必须使用正式输出的 source Custom Normal Transfer。黑色三角只作为 shading 诊断，不得直接当作孔洞；是否真正缺面仍由边界、non-manifold 和线框拓扑检查判定。
+法线恢复本阶段暂缓，正式输出不接入已知错误的法线处理。黑色三角只作为 shading 诊断，不得直接当作孔洞；是否真正缺面仍由边界、non-manifold 和线框拓扑检查判定。
 
 当前产品操作语义：无交叉的 Pipe 直接 Bridge 槽口两侧完整 Loop；即使原本连续的
 Pipe，与另一根 Pipe 交叉时也要在 junction 处切成连续槽段，逐段 Bridge 两侧完整
 边链，最后 Fill 剩余交叉孔洞。
 fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 artifact 为准。
-第一阶段最终矩阵位于 `tests/artifacts/feature_chamfer_phase1_normal_final/results.json`，
-10 个目标 cell 均连续 3 次通过；`tricky` 的 4 个延后安全结果位于
-`tests/artifacts/feature_chamfer_tricky_safety_normal_final/results.json`。
+当前全局 Curve 规则下的第一阶段 required scope 位于
+`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
+10 个目标 cell 均连续 3 次从正式 Operator 得到 `PRODUCT_SUCCESS`，并保存 overview / wire
+固定视图。`tricky` 的 4 个延后场景均连续 3 次 `SAFETY_PASS`，结果位于
+`tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`。
+当前为 `VERIFIED`；用户真实 UI 验收前仍不是 `ACCEPTED`。

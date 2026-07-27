@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`AUTHORIZED / VERIFIED`（尚未由用户在真实 UI 中 `ACCEPTED`）
+状态：`VERIFIED / USER ACCEPTANCE REQUIRED`（Curve 全局连接规则已纠偏；法线问题暂缓）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -53,16 +53,16 @@ UI Feature Chamfer GN
 Blender Bridge 生成、交叉孔洞由 Fill 封闭，原模型槽外区域不变。若当前 Radius
 无法可靠完成，用户会在保留的 Preview 上直接看到红色问题边界和减小 Radius 的提示。
 Bridge/Fill 新面在尚未恢复 Custom Normal 时可能显示为黑色三角或楔形；这属于 shading
-诊断，不等同于孔洞。正式产品验收必须先确认边界已封闭，再启用与旧 Feature Chamfer
-一致的 source Custom Normal Transfer 后检查最终视图；不得用关闭法线传递的诊断图否决
+诊断，不等同于孔洞。正式产品验收必须先确认边界已封闭；法线视觉恢复本轮不再作为
+急角 Curve 修复的 Stop / Go，也不得用关闭法线恢复的诊断图否决
 已经完整补面的结果。
 孔洞只由真实 Mesh 边界、non-manifold 结果和 Blender 线框拓扑确认；禁止用渲染图中的
 极暗像素数量、黑色连通块或类似颜色阈值推断孔洞，因为这些指标会把线框、轮廓、阴影
 和 Custom Normal 一并误计。
 
-最终法线处理按旧 Feature Chamfer 的既有模式：完成全部 Bridge / Fill 并重新计算几何
-朝向后，从 source 传递 Custom Normal；若还需要对新补面执行 Set from Faces，必须以真实
-Blender 结果证明它不会被后续传递覆盖。产品近景必须使用正式输出的最终法线结果。
+法线问题暂缓：正式 FINALIZE 不执行法线恢复，也不接入本轮试验的 Set from Faces、
+全对象 Data Transfer、烘焙、新面 flat shading 或 Corner 重写。后续单独以更简单的
+法线方案处理。
 
 ## 3. 实现阶段与 Stop / Go
 
@@ -159,7 +159,7 @@ Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错�
 每个目标保存可打开的 `.blend` 和固定近景，检查：
 
 - Bridge 后槽面连续、junction Fill 正确，视觉结果符合用户截图；
-- 输出保持旧 Feature Chamfer 的 source Custom Normal Transfer，固定近景必须使用正式法线结果；
+- 法线视觉问题单独记录，不与急角 Curve / Cutter 拓扑修复混合验收；
 - 槽外原模型没有变化；
 - 输出没有意外开放边或多面共边；
 - 正逆 batch 顺序结果一致；
@@ -193,9 +193,13 @@ Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Brid
 3. `Operator`：正式 UI/Operator 已接入“槽段 Bridge → junction Fill”；失败可回滚 source 与坏输出；可定位的几何失败保留 Preview 和红色问题位置供用户调小 Radius，较早的合同失败保留已有现场和明确提示。
 4. `Visual/Product`：第一阶段先要求 `simple / tricky_b / mixed` 三个文件的 10 个 cell 真实文件和固定近景通过；`tricky` 留到第二阶段。
 
-低层通过不能替代高层。当前为 `VERIFIED`：正式 Operator runtime、优先 10 cells、
-最终法线后的固定近景和独立 Spec Audit 均已通过。用户尚未在真实 UI 中验收，因此不是
-`ACCEPTED`。
+低层通过不能替代高层。实现接入时曾处于 `INTEGRATED`：用户否决的“所有 junction 一律拆成短 spline”
+方案已撤回，恢复既有完整 strand 连续性。正式 Operator 在全局连接选择阶段把每个急角的
+两侧设为不可回连关系；普通转角尽量连续，连接角大于 90° 时优先相连，同分时沿用端点
+埋入主体的评分选择更贴主体的 U 形。真实 `Solid 44` 回归直接检查两处急角两侧属于不同
+连续 spline、全部 Sharp Edge 唯一覆盖，且不会把普通转角拆成短段。法线按用户决定暂缓；
+自动矩阵、固定视图与独立审计支持 `VERIFIED`；用户在真实 UI 打开 Show Cutter / Boolean
+Preview 复核前，不声明 `ACCEPTED`。
 
 ## 5. 明确废弃
 
@@ -212,32 +216,37 @@ Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Brid
 
 ## 6. 当前下一步
 
-正式入口已经接入 Direct Edge-Loop Bridge 与 junction Fill。最终自动矩阵
-`tests/artifacts/feature_chamfer_phase1_normal_final/results.json` 中，
-`simple / tricky_b / mixed` 的 10 个第一阶段目标场景均在原请求 Radius 直接得到
-`PRODUCT_SUCCESS`，每项连续 3 次稳定，source 不变，最终 Mesh 无开放边、无多面共边、
-无零面积 Face，并保留正式 source Custom Normal Transfer；这份证据支持 Algorithm、
-Backend 和 Operator 三层，不单独构成视觉通过。
+正式入口已经接入 Direct Edge-Loop Bridge 与 junction Fill。2026-07-26 用户两次复核
+`simple / Solid 44`：第一次定位到急角 closed Curve 的 cyclic 回连；改为 open 后，第二次
+复核确认它仍通过下方路径绕回急角，实际依旧是一条 spline，并未得到用户要求的两条
+真正独立 Curve。现有自动测试只证明 Curve 不再 cyclic、输出拓扑闭合，未证明 Cutter
+形状与 Boolean 结果正确；相关 `PRODUCT_SUCCESS` 记录作废，不得作为产品验收证据。
 
-延后范围 `tests/artifacts/feature_chamfer_tricky_safety_normal_final/results.json` 中的
-4 个 `tricky` cell 均连续 3 次 `SAFETY_PASS`：source 不变、没有坏输出；其中可运行
+2026-07-27 用户确认最终 Curve 规则：急角断开是全局硬约束，不能在另一端重新连接；
+其余连接尽量保持完整，大于 90° 的转角优先相连；等价 U 形优先选择整体贴主体且端点
+埋入主体的方案。实现已回到全局 strand matching 阶段解决，不再让 Boolean 后的槽段
+划分控制 Preview Curve spline。普通 90°、三/四叉配对、共面 U 形与平滑闭环合同均恢复。
+
+当前最终代码的第一阶段 required scope 位于
+`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
+`simple / tricky_b / mixed` 10 个目标 cell 均从正式 PREVIEW → FINALIZE 连续 3 次得到
+`PRODUCT_SUCCESS`，source 不变，最终 Mesh 无开放边、多面共边或零面积 Face，且 runtime
+明确使用 Boolean Pro Boundary Edges → 槽段 Bridge → residual Fill。每个 cell 的目录保存
+可打开的 `preview.blend`、`final.blend` 和 overview / wire 固定视图；这些视图只检查轮廓、
+线框和补面位置，不用于法线验收。
+
+延后范围位于
+`tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`：
+4 个 `tricky` cell 均连续 3 次 `SAFETY_PASS`，source 不变、没有坏输出；其中可运行
 Preview 的失败保留 Preview，尚未形成真实边界坐标的早期失败不伪造红色位置。该结果
 满足第一阶段的 deferred safety，不代表第二阶段产品成功。
 
-先前把固定近景中的黑色三角判成缺面属于错误验收：用户已确认它是 Fill 新面的
-Custom Normal 表现，渲染颜色阈值也已明确废弃。现有输出原本已复用旧 Feature Chamfer
-的 source Normal Transfer。额外尝试“新面 Set from Faces、原区域 Normal Transfer”时，
-发现 Vertex Group 无法准确表达 shared boundary loop 的逐 corner 法线归属，不能作为正确
-实现接入。当前保留旧工具的全量 Normal Transfer，并把法线表现与真实孔洞分开验收；
-最终法线后的全部 10 个目标 cell 均保存 overview / wireframe 固定近景；视觉验收没有
-使用极暗像素或颜色阈值。逐项肉眼复核未发现跨槽、翻面、异常长三角、未 Fill 孔洞或
-槽外明显变化。状态提升为 `VERIFIED`，但尚未由用户在真实 UI 中 `ACCEPTED`。
+法线问题明确暂缓。本轮已从正式 FINALIZE 撤回 Set from Faces、全对象 Data Transfer、
+烘焙、新面 flat shading 和 Corner 重写。不使用法线结果声明本轮修复完成。
 
-正式入口相关的 5 项重点回归已经通过；独立 Spec Audit 也确认 runtime 为
-Boolean Pro Boundary Edges → junction 分段 → Blender Bridge → residual Fill → 正式法线恢复，
-没有 fixture 特判、逐边 pairing 或 Bridge 前 canonicalization。完整项目回归共 145 项；
-首次运行 143 项通过，2 项为仍断言旧 Preview 直连与旧 Boundary binding 字段的过时预期，
-已更新为验证当前属性链和 Direct Bridge runtime；这 2 项随后在同一最终代码上单独通过，
-因此本轮变更相关的 145 项均有通过证据。提交前保留上述
-自动矩阵、固定近景、重点回归、完整回归与独立审计证据。用户真实 UI 验收前不声明
-`ACCEPTED`。
+重点回归证明普通 90°、三/四叉配对、共面 U 形、平滑闭环、端点贴主体评分和急角全局
+禁回连合同；完整项目回归 146/146 通过。独立 Spec Audit 已核对正式 UI/Operator runtime、
+required 10 cells × 3、延后 4 cells × 3、固定视图、法线暂缓边界与 source 不变清理范围，
+未发现剩余高严重度偏差。正式 Finalize 路径仍为 Boolean Pro Boundary Edges → junction
+分段 → Blender Bridge → residual Fill → 最终 Mesh；Curve 分组与 Bridge 槽段分组是两个
+独立阶段，不得再次混用。当前提升为 `VERIFIED`；用户真实 UI 验收前不声明 `ACCEPTED`。

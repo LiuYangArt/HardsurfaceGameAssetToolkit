@@ -16,7 +16,6 @@ from ..utils.feature_chamfer_direct_bridge_utils import build_direct_edge_loop_c
 from ..utils.feature_chamfer_diagnostic_utils import RADIUS_LIMIT_ERROR_CODES
 from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
 from ..utils.feature_chamfer_diagnostic_utils import show_feature_chamfer_failure_diagnostic
-from ..utils.feature_chamfer_normal_utils import restore_feature_chamfer_normals
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
 from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
@@ -293,11 +292,6 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                         backend_chamfer_attribute
                         and backend_chamfer_attribute.data[polygon.index].value
                     )
-                normal_stats = restore_feature_chamfer_normals(
-                    output,
-                    source_object,
-                )
-                patch_stats.update(normal_stats)
                 context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
                     patch_stats,
                     ensure_ascii=False,

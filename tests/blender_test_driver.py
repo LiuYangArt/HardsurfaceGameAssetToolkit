@@ -7204,7 +7204,146 @@ def test_gn_preview_operator_splits_acute_miter(
         and all(len(spline.points) == 2 for spline in curve_source.data.splines),
         "Miter scale exceeded turn was not split into independent splines",
     )
+    ensure(
+        not any(spline.use_cyclic_u for spline in curve_source.data.splines),
+        "Miter scale exceeded turn retained a cyclic Curve seam",
+    )
+    ensure(
+        not any(
+            len(spline.points) > 2
+            and Vector(spline.points[0].co[:3])
+            == Vector(spline.points[-1].co[:3])
+            for spline in curve_source.data.splines
+        ),
+        "Miter scale exceeded turn still returns to the split point in one spline",
+    )
     result.add_detail("Acute miter produced two independent 2-point splines")
+
+
+# 验证真实 Solid 44 的急角两侧最终属于不同 Curve，同时保留普通转角连续性。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_solid44_acute_split_does_not_reconnect_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    load_fixture_blend("feature-chamfer-product-simple.blend")
+    source = bpy.data.objects["Solid 44"]
+    source_hash = _mesh_fingerprint(source)
+    operator_result, modifier = run_feature_chamfer_gn(
+        source,
+        action="PREVIEW",
+        radius=0.01,
+        show_cutter=True,
+    )
+    ensure(operator_result == {"FINISHED"}, "Solid 44 acute Preview failed")
+    curve_source = test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source)
+    ensure(curve_source is not None, "Solid 44 Preview did not create owned Curve")
+    contract = json.loads(
+        curve_source[test_context.addon.const.FEATURE_CHAMFER_CURVE_PIPE_CONTRACT_TAG]
+    )
+    preview_stats = test_context.addon.utils.experimental_pipe_chamfer_utils._base_stats(
+        source,
+        0.01,
+        4,
+        35.0,
+        3.0,
+        1.5,
+        "PREVIEW",
+    )
+    preview_groups = (
+        test_context.addon.utils.experimental_pipe_chamfer_utils._build_preview_feature_graph(
+            source,
+            0.01,
+            preview_stats,
+        )
+    )
+    plan = test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(modifier)
+    ensure(
+        len(preview_groups) == len(plan.feature_strands),
+        "Solid 44 formal Preview and persisted plan disagree",
+    )
+    stats = preview_stats
+    acute_records = [
+        record
+        for record in stats["vertex_matching"]
+        if len(record["incident_edge_ids"]) == 2
+        and any(
+            "MITER_SCALE_EXCEEDED" in str(candidate.get("split_reason", ""))
+            for candidate in record["pair_candidates"]
+        )
+    ]
+    ensure(len(acute_records) == 2, f"Solid 44 acute identity drifted: {acute_records}")
+    acute_results = []
+    for acute_record in acute_records:
+        acute_edge_ids = set(acute_record["incident_edge_ids"])
+        acute_pipes = [
+            pipe
+            for pipe in contract["pipes"]
+            if acute_edge_ids & set(pipe["edge_indices"])
+        ]
+        ensure(
+            len(acute_pipes) == 2
+            and all(len(acute_edge_ids & set(pipe["edge_indices"])) == 1 for pipe in acute_pipes),
+            f"Solid 44 acute sides reconnected through the opposite side: {acute_pipes}",
+        )
+        ensure(
+            all(not pipe["is_cyclic"] for pipe in acute_pipes),
+            "Solid 44 acute side still belongs to a cyclic Curve",
+        )
+        ensure(
+            any(len(pipe["points"]) > 2 for pipe in acute_pipes),
+            "Solid 44 ordinary turns were all split into isolated Edge segments",
+        )
+        acute_results.append(
+            {
+                "acute_vertex_index": acute_record["vertex_index"],
+                "acute_edge_ids": sorted(acute_edge_ids),
+                "acute_pipe_ids": [pipe["pipe_id"] for pipe in acute_pipes],
+                "acute_pipe_point_counts": [len(pipe["points"]) for pipe in acute_pipes],
+            }
+        )
+    covered_edges = [edge_id for pipe in contract["pipes"] for edge_id in pipe["edge_indices"]]
+    ensure(
+        len(covered_edges) == len(set(covered_edges)),
+        "Solid 44 Curve decomposition duplicated a source Sharp Edge",
+    )
+    cutter_guard = evaluated_preview_mesh_guard(source)
+    ensure(
+        cutter_guard["boundary_edge_count"] == 0
+        and cutter_guard["non_manifold_edge_count"] == 0
+        and cutter_guard["zero_area_face_count"] == 0,
+        f"Solid 44 separated Cutter is invalid: {cutter_guard}",
+    )
+    ensure(_mesh_fingerprint(source) == source_hash, "Solid 44 Preview changed source Mesh")
+    blend_artifact_path = (
+        ARTIFACT_DIR / "feature_chamfer_gn_solid44_global_curve_show_cutter.blend"
+    )
+    save_result = bpy.ops.wm.save_as_mainfile(
+        filepath=str(blend_artifact_path),
+        copy=True,
+    )
+    ensure(save_result == {"FINISHED"}, "Solid 44 Show Cutter artifact save failed")
+    artifact_path = ARTIFACT_DIR / "feature_chamfer_gn_solid44_acute_segments.json"
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "target_operator": "hst.feature_chamfer_gn(action=PREVIEW)",
+                "fixture": "feature-chamfer-product-simple.blend",
+                "object": "Solid 44",
+                "radius": 0.01,
+                "acute_splits": acute_results,
+                "source_edge_coverage_unique": len(covered_edges) == len(set(covered_edges)),
+                "cutter_guard": cutter_guard,
+                "source_unchanged": _mesh_fingerprint(source) == source_hash,
+                "show_cutter_blend": str(blend_artifact_path),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    result.add_detail(
+        f"Solid 44 acute sides stayed in two continuous Curves; artifact={artifact_path}"
+    )
 
 
 # 验证目标 Operator 将普通 90° Sharp turn 保持为单一连续 miter spline。
@@ -8209,8 +8348,8 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
     )
     ensure(output.data.attributes.get("hst_feature_chamfer_face") is not None, "Chamfer Face attribute missing")
     ensure(
-        any(modifier.type == "DATA_TRANSFER" and modifier.object == source for modifier in output.modifiers),
-        "Finalize output has no source normal transfer",
+        not any(modifier.type == "DATA_TRANSFER" for modifier in output.modifiers),
+        "Finalize unexpectedly applied the deferred normal workaround",
     )
     result.add_detail(f"output={output.name}, faces={len(output.data.polygons)}")
 
@@ -8268,7 +8407,7 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
     result.add_detail("Mixed fixture Operator removed the extra long terminal connection")
 
 
-# 验证正式 Direct Bridge runtime 已支持原复杂 fixture，并保持 source 与法线合同。
+# 验证正式 Direct Bridge runtime 已支持原复杂 fixture，并保持 source 不变。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_finalize_complex_fixture_direct_bridge_regression(test_context: TestContext, result: TestCaseResult):
     load_fixture_blend("feature-chamfer-gn-junction-safe.blend")
@@ -8304,11 +8443,8 @@ def test_gn_finalize_complex_fixture_direct_bridge_regression(test_context: Test
     )
     bm.free()
     ensure(
-        any(
-            item.type == "DATA_TRANSFER" and item.object is source
-            for item in output.modifiers
-        ),
-        "Complex fixture output has no source Custom Normal transfer",
+        not any(item.type == "DATA_TRANSFER" for item in output.modifiers),
+        "Complex fixture unexpectedly applied the deferred normal workaround",
     )
     result.add_detail("Complex fixture finalized through Direct Bridge with a clean output")
 
@@ -11603,6 +11739,10 @@ def main():
     context.run_case(
         "gn_preview_operator_splits_acute_miter",
         test_gn_preview_operator_splits_acute_miter,
+    )
+    context.run_case(
+        "gn_preview_solid44_acute_split_does_not_reconnect_regression",
+        test_gn_preview_solid44_acute_split_does_not_reconnect_regression,
     )
     context.run_case(
         "gn_preview_operator_keeps_right_angle_miter_continuous",

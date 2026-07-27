@@ -36,6 +36,9 @@ class FeatureChamferDirectBridgeError(RuntimeError):
 
 
 BRIDGE_EDGE_OWNER_LAYER = "hst_direct_bridge_owner"
+MAX_RESIDUAL_CYCLE_CANDIDATES = 64
+MAX_RESIDUAL_CYCLE_ENUMERATION_STATES = 4096
+MAX_RESIDUAL_CYCLE_PAIRING_STATES = 4096
 
 
 # 返回 BMesh Edge 自然连通分量，不重排、不合并、也不要求两组长度一致。
@@ -156,6 +159,146 @@ def _ordered_chain_vertices(edges):
     return ordered_vertices
 
 
+# 枚举分支 Boundary 图中的 simple cycles，并选出覆盖边最多的互斥孔集合。
+# residual_component: Bridge 后的自然 Boundary 连通分量；返回可独立 Fill 的 cyclic Edge Loop。
+def _boundary_cycles_by_graph(residual_component):
+    cyclic, endpoint_count = _component_shape(residual_component)
+    if cyclic and endpoint_count == 0:
+        return [set(residual_component)]
+    adjacency = {}
+    edge_by_vertex_pair = {}
+    for edge in residual_component:
+        first_vertex, second_vertex = edge.verts
+        adjacency.setdefault(first_vertex, set()).add(second_vertex)
+        adjacency.setdefault(second_vertex, set()).add(first_vertex)
+        edge_by_vertex_pair[frozenset((first_vertex, second_vertex))] = edge
+
+    vertex_keys = {
+        vertex: tuple(round(float(component), 9) for component in vertex.co)
+        for vertex in adjacency
+    }
+    vertex_ranks = {
+        vertex: rank
+        for rank, vertex in enumerate(
+            sorted(adjacency, key=lambda item: (vertex_keys[item], item.index))
+        )
+    }
+
+    def edge_geometry_key(edge):
+        return tuple(sorted(vertex_keys[vertex] for vertex in edge.verts))
+
+    def cycle_geometry_key(edges):
+        return tuple(sorted(edge_geometry_key(edge) for edge in edges))
+
+    cycle_edge_sets = set()
+    cycle_enumeration_states = 0
+    ordered_vertices = sorted(adjacency, key=lambda vertex: vertex_ranks[vertex])
+    for start_vertex in ordered_vertices:
+        def walk(current_vertex, path, visited_vertices):
+            nonlocal cycle_enumeration_states
+            cycle_enumeration_states += 1
+            if cycle_enumeration_states > MAX_RESIDUAL_CYCLE_ENUMERATION_STATES:
+                raise FeatureChamferDirectBridgeError(
+                    "junction_hole_cycle_budget_exceeded",
+                    "Residual junction Boundary is too complex to split safely",
+                    {
+                        "edge_count": len(residual_component),
+                        "search_state_limit": MAX_RESIDUAL_CYCLE_ENUMERATION_STATES,
+                    },
+                )
+            for next_vertex in sorted(
+                adjacency[current_vertex],
+                key=lambda vertex: vertex_ranks[vertex],
+            ):
+                if next_vertex is start_vertex:
+                    if len(path) >= 3:
+                        cycle_edges = frozenset(
+                            edge_by_vertex_pair[frozenset((first, second))]
+                            for first, second in zip(
+                                path,
+                                path[1:] + [start_vertex],
+                            )
+                        )
+                        cycle_edge_sets.add(cycle_edges)
+                        if len(cycle_edge_sets) > MAX_RESIDUAL_CYCLE_CANDIDATES:
+                            raise FeatureChamferDirectBridgeError(
+                                "junction_hole_cycle_budget_exceeded",
+                                "Residual junction Boundary exposes too many hole candidates",
+                                {
+                                    "edge_count": len(residual_component),
+                                    "candidate_limit": MAX_RESIDUAL_CYCLE_CANDIDATES,
+                                },
+                            )
+                    continue
+                if (
+                    next_vertex in visited_vertices
+                    or vertex_ranks[next_vertex] < vertex_ranks[start_vertex]
+                ):
+                    continue
+                walk(
+                    next_vertex,
+                    path + [next_vertex],
+                    visited_vertices | {next_vertex},
+                )
+
+        walk(start_vertex, [start_vertex], {start_vertex})
+
+    simple_cycles = sorted(
+        (
+            set(cycle_edges)
+            for cycle_edges in cycle_edge_sets
+            if _component_shape(set(cycle_edges))[0]
+        ),
+        key=cycle_geometry_key,
+    )
+    best_cycles = []
+    best_coverage = -1
+    best_signature = None
+    cycle_pairing_states = 0
+
+    def choose(cycle_index, chosen_cycles, claimed_edges):
+        nonlocal best_cycles, best_coverage, best_signature, cycle_pairing_states
+        cycle_pairing_states += 1
+        if cycle_pairing_states > MAX_RESIDUAL_CYCLE_PAIRING_STATES:
+            raise FeatureChamferDirectBridgeError(
+                "junction_hole_cycle_budget_exceeded",
+                "Residual junction Boundary pairing exceeded the safe search budget",
+                {
+                    "edge_count": len(residual_component),
+                    "candidate_count": len(simple_cycles),
+                    "search_state_limit": MAX_RESIDUAL_CYCLE_PAIRING_STATES,
+                },
+            )
+        if cycle_index == len(simple_cycles):
+            coverage = len(claimed_edges)
+            signature = tuple(sorted(
+                cycle_geometry_key(cycle_edges)
+                for cycle_edges in chosen_cycles
+            ))
+            if (
+                coverage > best_coverage
+                or (
+                    coverage == best_coverage
+                    and (best_signature is None or signature < best_signature)
+                )
+            ):
+                best_coverage = coverage
+                best_cycles = list(chosen_cycles)
+                best_signature = signature
+            return
+        choose(cycle_index + 1, chosen_cycles, claimed_edges)
+        cycle_edges = simple_cycles[cycle_index]
+        if not cycle_edges & claimed_edges:
+            choose(
+                cycle_index + 1,
+                chosen_cycles + [cycle_edges],
+                claimed_edges | cycle_edges,
+            )
+
+    choose(0, [], set())
+    return best_cycles
+
+
 # 清理 Boolean Pro 留下的单面孤岛，真正空孔按 Blender Fill 后显式三角化非平面 n-gon。
 # bm/residual_components: 全部槽段 Bridge 后的 BMesh 与自然 Boundary components；返回 Fill/清理记录和新面。
 def _fill_junction_holes(
@@ -183,6 +326,13 @@ def _fill_junction_holes(
             )
         ordered_vertices = _ordered_cycle_vertices(residual_component)
         component_vertices = set(ordered_vertices)
+        internal_chords = [
+            edge
+            for edge in bm.edges
+            if edge not in residual_component
+            and all(vertex in component_vertices for vertex in edge.verts)
+        ]
+        has_internal_chord = bool(internal_chords)
         occupying_faces = [
             face
             for face in bm.faces
@@ -249,7 +399,10 @@ def _fill_junction_holes(
                 {"edge_count": len(residual_component)},
             )
         triangulated_faces = set(new_faces)
-        if any(len(face.verts) > 4 for face in new_faces):
+        if (
+            not has_internal_chord
+            and any(len(face.verts) > 4 for face in new_faces)
+        ):
             triangulate_result = bmesh.ops.triangulate(
                 bm,
                 faces=list(new_faces),
@@ -321,12 +474,21 @@ def _fill_junction_holes(
                     ],
                 },
             )
+        bm.normal_update()
+        bm.verts.index_update()
+        bm.edges.index_update()
+        bm.faces.index_update()
         fill_records.append(
             {
                 "edge_count": len(residual_component),
                 "face_count": len(triangulated_faces),
                 "native_operator": "Blender Fill",
-                "triangulated": True,
+                "triangulated": not has_internal_chord,
+                "kept_ngon_to_preserve_existing_chord": has_internal_chord,
+                "internal_chord_count": len(internal_chords),
+                "internal_chord_edge_indices": sorted(
+                    edge.index for edge in internal_chords
+                ),
                 "created_self_intersection_count": len(fill_intersections),
             }
         )
@@ -342,6 +504,11 @@ def _split_junction_hole_components(
 ):
     junction_holes = []
     for residual_component in residual_components:
+        graph_cycles = _boundary_cycles_by_graph(residual_component)
+        if graph_cycles:
+            junction_holes.extend(graph_cycles)
+            continue
+        _, endpoint_count = _component_shape(residual_component)
         owner_edges = {}
         for edge in residual_component:
             segment_ids = [
@@ -362,6 +529,8 @@ def _split_junction_hole_components(
                         "edge_index": edge.index,
                         "segment_ids": segment_ids,
                         "bridge_owner": bridge_owner,
+                        "component_edge_count": len(residual_component),
+                        "component_endpoint_count": endpoint_count,
                     },
                 )
             owner_edges.setdefault(owner_id, set()).add(edge)
@@ -1339,29 +1508,37 @@ def _split_interrupted_segment_jobs(
     ], set(complete_runs[1])
 
 
-# 只焊接 Bridge 后坐标重合的 Vertex，让 junction Fill 消费焊接后重新形成的真实孔洞。
-# bm: 已完成全部 Bridge 的 BMesh；返回焊接前的零面积 Face 数。
-def _weld_coincident_vertices(bm):
-    zero_area_count = sum(
-        face.calc_area() <= 1.0e-12
-        for face in bm.faces
-    )
-    if zero_area_count:
-        bmesh.ops.remove_doubles(
-            bm,
-            verts=list(bm.verts),
-            dist=1.0e-8,
-        )
-    return zero_area_count
-
-
-# 在最终检查前清除焊接后仍残留的零面积 Faces，并保持边界重新可检测。
-# bm: Bridge/Fill 完成后的 BMesh；返回删除 Face 数量。
-def _remove_zero_area_faces(bm):
+# 只焊接 Bridge 后新增区域附近的重合 Vertex，让 junction Fill 消费真实孔洞且不改变槽外 source。
+# bm/chamfer_face_layer: 已完成全部 Bridge 的 BMesh 与新增 Face 标记；返回焊接前的新增零面积 Face 数。
+def _weld_coincident_vertices(bm, chamfer_face_layer):
     zero_area_faces = [
         face
         for face in bm.faces
-        if face.calc_area() <= 1.0e-12
+        if bool(face[chamfer_face_layer]) and face.calc_area() <= 1.0e-12
+    ]
+    if zero_area_faces:
+        affected_vertices = {
+            linked_vertex
+            for face in zero_area_faces
+            for vertex in face.verts
+            for edge in vertex.link_edges
+            for linked_vertex in edge.verts
+        }
+        bmesh.ops.remove_doubles(
+            bm,
+            verts=list(affected_vertices),
+            dist=1.0e-8,
+        )
+    return len(zero_area_faces)
+
+
+# 在最终检查前清除新增区域仍残留的零面积 Faces，并保持边界重新可检测。
+# bm/chamfer_face_layer: Bridge/Fill 完成后的 BMesh 与新增 Face 标记；返回删除 Face 数量。
+def _remove_zero_area_faces(bm, chamfer_face_layer):
+    zero_area_faces = [
+        face
+        for face in bm.faces
+        if bool(face[chamfer_face_layer]) and face.calc_area() <= 1.0e-12
     ]
     for face in zero_area_faces:
         if not face.is_valid:
@@ -1385,6 +1562,79 @@ def _remove_zero_area_faces(bm):
     return len(zero_area_faces)
 
 
+# 清理新增零面积 Face 合并后形成的重复 Edge，恢复闭合曲面的二面共边合同。
+# bm/chamfer_face_layer: 已完成零面积清理的 BMesh 与新增 Face 标记；返回重复 Edge 数。
+def _weld_duplicate_edges(bm, chamfer_face_layer):
+    edges_by_vertex_pair = {}
+    for edge in bm.edges:
+        vertex_pair = frozenset(edge.verts)
+        edges_by_vertex_pair.setdefault(vertex_pair, []).append(edge)
+    duplicate_edges = [
+        edge
+        for group in edges_by_vertex_pair.values()
+        if len(group) > 1
+        for edge in group[1:]
+        if any(bool(face[chamfer_face_layer]) for face in edge.link_faces)
+    ]
+    if duplicate_edges:
+        affected_vertices = {
+            linked_vertex
+            for edge in duplicate_edges
+            for vertex in edge.verts
+            for linked_edge in vertex.link_edges
+            for linked_vertex in linked_edge.verts
+        }
+        bmesh.ops.remove_doubles(
+            bm,
+            verts=list(affected_vertices),
+            dist=1.0e-8,
+        )
+    return len(duplicate_edges)
+
+
+# 移除新增零面积 Face 清理后留下的局部孤立 Edge，不触碰槽外 source 几何。
+# bm/chamfer_face_layer: 已完成退化 Face 合并的 BMesh 与新增 Face 标记；返回删除的孤立 Edge 数。
+def _remove_wire_edges(bm, chamfer_face_layer):
+    wire_edges = [
+        edge
+        for edge in bm.edges
+        if len(edge.link_faces) == 0
+        and any(
+            any(bool(face[chamfer_face_layer]) for face in linked_edge.link_faces)
+            for vertex in edge.verts
+            for linked_edge in vertex.link_edges
+            if linked_edge is not edge
+        )
+    ]
+    if wire_edges:
+        bmesh.ops.delete(
+            bm,
+            geom=wire_edges,
+            context="EDGES",
+        )
+    return len(wire_edges)
+
+
+# 返回最终拓扑异常 Edge 的最小诊断，区分孤立边、开放边和多面共边。
+# bm: 已完成清理的 BMesh；返回最多 16 条异常 Edge 记录。
+def _non_manifold_edge_records(bm):
+    return [
+        {
+            "edge_index": edge.index,
+            "face_count": len(edge.link_faces),
+            "length": edge.calc_length(),
+            "vertex_indices": [vertex.index for vertex in edge.verts],
+            "coordinates": [
+                [float(component) for component in vertex.co]
+                for vertex in edge.verts
+            ],
+            "face_indices": [face.index for face in edge.link_faces],
+        }
+        for edge in bm.edges
+        if len(edge.link_faces) != 2
+    ][:16]
+
+
 # 返回 Mesh 非邻接自交记录；可只统计与本次新 Faces 有关的 pair。
 # bm/target_faces: 待检查 BMesh 与可选新面集合；返回稳定诊断列表。
 def _self_intersection_records(bm, target_faces=None):
@@ -1399,6 +1649,7 @@ def _self_intersection_records(bm, target_faces=None):
         )
     temporary_mesh = bpy.data.meshes.new("HST_FeatureChamfer_IntersectionCheck")
     bm.to_mesh(temporary_mesh)
+    temporary_mesh.update()
     bm.faces.layers.int.remove(target_layer)
     triangulated = bmesh.new()
     triangulated.from_mesh(temporary_mesh)
@@ -1872,7 +2123,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 {"deferred_segments": deferred_segments},
             )
 
-        zero_area_faces_welded_before_fill = _weld_coincident_vertices(bm)
+        zero_area_faces_welded_before_fill = _weld_coincident_vertices(
+            bm,
+            chamfer_face_layer,
+        )
         bm.edges.index_update()
         bm.faces.index_update()
         residual_edges = {
@@ -1923,7 +2177,15 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 if face.calc_area() <= 1.0e-12
             ],
         }
-        zero_area_faces_removed = _remove_zero_area_faces(bm)
+        zero_area_faces_removed = _remove_zero_area_faces(
+            bm,
+            chamfer_face_layer,
+        )
+        duplicate_edges_welded = _weld_duplicate_edges(
+            bm,
+            chamfer_face_layer,
+        )
+        wire_edges_removed = _remove_wire_edges(bm, chamfer_face_layer)
         bmesh.ops.recalc_face_normals(
             bm,
             faces=list(bm.faces),
@@ -1964,6 +2226,9 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     "topology_before_zero_cleanup": topology_before_zero_cleanup,
                     "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
                     "zero_area_faces_removed": zero_area_faces_removed,
+                    "duplicate_edges_welded": duplicate_edges_welded,
+                    "wire_edges_removed": wire_edges_removed,
+                    "non_manifold_edges": _non_manifold_edge_records(bm),
                     "bridge_records": bridge_records,
                     "deferred_segments": deferred_segments,
                     "junction_fill_records": fill_records,
@@ -2037,6 +2302,8 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "boolean_cleanup_records": cleanup_records,
             "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
             "zero_area_faces_removed": zero_area_faces_removed,
+            "duplicate_edges_welded": duplicate_edges_welded,
+            "wire_edges_removed": wire_edges_removed,
             "topology_before_zero_cleanup": topology_before_zero_cleanup,
             "regular_patch_face_count": sum(record["face_count"] for record in bridge_records),
             "junction_patch_face_count": sum(record["face_count"] for record in fill_records),

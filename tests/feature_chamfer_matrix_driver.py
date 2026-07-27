@@ -462,7 +462,6 @@ def classify_result(
         and output.get("zero_area_face_count") == 0
         and output.get("chamfer_attribute_exists")
         and output.get("chamfer_face_count", 0) > 0
-        and output.get("custom_normal_transfer")
     )
     backend_stats = backend_capture.get("stats", {})
     direct_bridge_product = (
@@ -878,7 +877,25 @@ def main():
         "case_count": len(matrix_cases),
         "required_matrix_radii": list(MATRIX_RADII),
         "retry_evidence_radii": list(RETRY_RADII),
-        "run_scope": "DIAGNOSTIC_PARTIAL" if CASE_FILTER else "FULL_MATRIX",
+        "run_scope": (
+            "FIRST_STAGE_REQUIRED"
+            if CASE_FILTER
+            and len(matrix_cases) == 10
+            and all(
+                case["delivery_role"] == "FIRST_STAGE_REQUIRED"
+                for case in matrix_cases
+            )
+            else (
+                "DEFERRED_TRICKY"
+                if CASE_FILTER
+                and len(matrix_cases) == 4
+                and all(
+                    case["delivery_role"] == "DEFERRED_SAFE_RESULT"
+                    for case in matrix_cases
+                )
+                else "DIAGNOSTIC_PARTIAL" if CASE_FILTER else "FULL_MATRIX"
+            )
+        ),
         "cases": matrix_cases,
     }
     write_summary(summary)
@@ -1004,7 +1021,11 @@ def main():
         ),
         "all_cells_stable": all(case["stable"] for case in matrix_cases),
         "all_sources_unchanged": all(case["source_unchanged"] for case in matrix_cases),
-        "all_runtime_paths_proven": all(case["runtime_path_proven"] for case in matrix_cases),
+        "all_required_runtime_paths_proven": all(
+            case["runtime_path_proven"]
+            for case in matrix_cases
+            if case["delivery_role"] == "FIRST_STAGE_REQUIRED"
+        ),
         "all_cells_classified": all(
             case["classification"] in CLASSIFICATIONS for case in matrix_cases
         ),

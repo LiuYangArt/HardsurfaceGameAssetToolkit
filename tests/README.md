@@ -43,12 +43,12 @@
 - Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
 - 清理上一轮 Boolean Preview 后首次 OPEN_BOUNDARY 即成功的 dependency-graph 同步回归
 - Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
-- PATCHED 后 dissolve 为 chamfer n-gon、FACE attribute 标记与原 Mesh custom normal transfer smoke test
+- 历史 PATCHED 后 dissolve、chamfer FACE attribute 与法线传递 smoke（非当前 Direct Bridge FINALIZE）
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 - Feature Chamfer GN 发布资产 exact/version import、Preview modifier 幂等与 source fingerprint 回归
 - Feature Chamfer GN 正式 Preview 保留受控 Boolean Pro 主链并禁止原生 Mesh Boolean 回归
-- Feature Chamfer GN 90° miter 连续、极锐角断开、三根正交 branch 与 degree-3/4 deterministic strand pairing 回归
+- Feature Chamfer GN 90° miter 连续、极锐角断开后两侧不能从网络另一端重新归入同一 Curve、degree-3/4 junction 保持确定性连续配对的回归
 - Feature Chamfer GN Task 2.1：完整 Sharp cube 从目标 Operator 分解为四条共面 `]`/`U` strands，并验证正交旋转变体保持共面 bracket 合同
 - Feature Chamfer GN Task 2.2A：正式 Operator 的 smooth degree-2/cyclic chain 不受 Surface Patch/convexity metadata 波动切断；acute miter 仍 fail-closed
 - Feature Chamfer GN Task 2.2B：junction 候选以 source-solid endpoint containment 处理等价 U 朝向，优先把圆形端盖埋入 attachment body，且移除固定四 strand 偏好
@@ -91,10 +91,10 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；失败必须 fail-closed：source 不变、无坏的最终 Mesh。Bridge、Fill 或最终几何检查能够给出真实问题边界时，同时保留 Preview 并显示红色诊断，供用户显式减小 Radius 后重试；较早的 Preview/身份合同失败只保留已有现场和明确错误提示，不得伪造位置。
 > 历史 Object Boolean、槽面删除、rail pairing 与 canonicalization 路线仅保留回归证据，不是当前正式 Finalize runtime，也不得作为 Bridge 前置门槛。
 > 当前 Phase C 方向直接消费 Boolean Pro Boundary Edges。没有交叉的 Pipe 以两条完整 Loop 一次 Bridge；在 junction 处按 Pipe owner 变化切成“交叉点之间的连续槽段”，每段左右边链一次 Bridge，最后 Fill Bridge 后剩余的交叉孔洞。不得按距离重排边或建立逐边 correspondence；两侧数量可以不同，Blender 负责内部连接。
-> 正式输出会标记新生成的槽面，并沿用旧 Feature Chamfer 从隐藏 source 传递 custom normals 的既有方式；历史 PATCHED dissolve 行为不属于当前 Direct Bridge runtime。
-> Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。产品固定近景必须使用正式法线结果；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
+> 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。
+> Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
-> 当前第一阶段状态为 `VERIFIED`：10 个目标 cell × 3 次、正式法线后的 10 组固定近景、正式入口回归和独立规格审计均已通过；用户真实 UI 验收前不记为 `ACCEPTED`。自动闭合检查仍不能替代固定近景的视觉验收。
+> 2026-07-27 用户确认 Curve 全局规则：急角断开后两侧不能从网络另一端重新归入同一 Curve；普通转角尽量连续，尤其连接角大于 90° 时优先相连；多种等价连接中优先选择端点埋入主体、整体贴合主体的 U 形。正式 Preview 已恢复“一条完整 Feature strand 对应一条 Curve spline”，并在全局连接选择时淘汰急角回连方案。真实 `Solid 44` 回归确认两处急角的两侧分别属于不同的连续 Curve，普通转角没有被拆成短段。第一阶段 required scope 的 10 cells × 3、延后 `tricky` 4 cells × 3、146 项项目回归与独立 Spec Audit 均已完成；每个 required cell 保存 overview / wire 固定视图。当前为 `VERIFIED`，用户真实 UI 验收前不是 `ACCEPTED`；法线暂缓。
 
 ## Experimental Pipe Chamfer API Probe
 
@@ -189,7 +189,7 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 - 第一阶段门槛只统计 `simple`、`tricky_b`、`mixed` 的 10 个目标场景，要求 10/10 × 3 repetitions 为直接成功或满足上述严格条件的降低半径后成功；`tricky` 4 cells 单独记录安全结果并延后。
 - 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
-- 第一阶段最终证据：`tests/artifacts/feature_chamfer_phase1_normal_final/results.json`；延后安全结果：`tests/artifacts/feature_chamfer_tricky_safety_normal_final/results.json`；全部 10 个目标 cell 的正式法线近景位于前者的 `visual/` 子目录。
+- 第一阶段 required scope：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`；这是第一阶段完整 10 cells，不是完整 14-cell matrix。延后 `tricky`：`tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`。急角专项还必须同时证明真实 `Solid 44` 每个急角的两支属于不同 spline、全部 source Sharp Edge 唯一覆盖、普通转角仍保持连续，并从正式 Operator 检查 Cutter/Boolean；只证明非 cyclic 与拓扑闭合仍不算通过。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
 
 ## 设计原则
 

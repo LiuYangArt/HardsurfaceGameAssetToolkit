@@ -1503,12 +1503,15 @@ def _strand_endpoint_containment_score(strand_records, source_bvh, clearance):
 
 
 # 枚举所有 junction matching 组合，并在评分时保留已确定的 degree-2 拓扑连续关系。
-# vertex_edges/metadata/fixed_strand_pairs: junction 邻接、逐 Edge metadata 与固定 pairing；返回 junction pair map 与诊断。
+# vertex_edges/metadata/miter_scale_limit: junction 邻接、逐 Edge metadata 与 miter 上限。
+# fixed_strand_pairs/forbidden_reconnections: 固定 pairing 与禁止从网络另一端回连的急角半边。
+# source_bvh/endpoint_clearance: source Mesh BVH 与端点埋入主体的采样距离；返回 junction pair map 与诊断。
 def _global_surface_patch_strand_pairs(
     vertex_edges,
     metadata,
     miter_scale_limit,
     fixed_strand_pairs=None,
+    forbidden_reconnections=(),
     source_bvh=None,
     endpoint_clearance=0.0,
 ):
@@ -1627,7 +1630,15 @@ def _global_surface_patch_strand_pairs(
                 remaining.remove(current_edge)
                 current_vertex = current_edge.other_vert(current_vertex)
                 current_edge = pair_links.get((current_vertex, current_edge))
-            cyclic = current_vertex is start
+            cyclic = (
+                current_vertex is start
+                and pair_links.get((current_vertex, ordered_edges[-1])) is seed
+            )
+            strand_endpoint_half_edges = (
+                ()
+                if cyclic
+                else ((start, seed), (current_vertex, ordered_edges[-1]))
+            )
             common_patch_ids = set(metadata[ordered_edges[0]]["patch_pair"])
             for edge in ordered_edges[1:]:
                 common_patch_ids &= set(metadata[edge]["patch_pair"])
@@ -1635,6 +1646,7 @@ def _global_surface_patch_strand_pairs(
                 "edge_count": len(ordered_edges),
                 "common_patch_ids": tuple(sorted(common_patch_ids)),
                 "cyclic": cyclic,
+                "endpoint_half_edges": strand_endpoint_half_edges,
                 "endpoint_samples": [],
             }
             if not cyclic and endpoint_clearance > 0.0:
@@ -1654,6 +1666,17 @@ def _global_surface_patch_strand_pairs(
                     ),
                 ]
             strand_records.append(record)
+
+        # 急角已经判定断开后，两侧 Edge 也不能从网络另一端重新归入同一条 Curve。
+        if any(
+            any(
+                (vertex, edge_a) in record["endpoint_half_edges"]
+                and (vertex, edge_b) in record["endpoint_half_edges"]
+                for record in strand_records
+            )
+            for vertex, edge_a, edge_b in forbidden_reconnections
+        ):
+            continue
 
         unsupported_turn_count = sum(
             max(0, record["edge_count"] - 1)
@@ -1694,6 +1717,10 @@ def _global_surface_patch_strand_pairs(
                 "pair_links": pair_links,
             }
 
+    if best is None:
+        raise RuntimeError(
+            "Global strand matching cannot keep an acute split disconnected"
+        )
     strand_pairs = {vertex: {} for vertex in vertex_edges}
     records = []
     for option in best["options"]:
@@ -1794,6 +1821,20 @@ def _build_feature_graph(
     # Preview 的 global solver 只处理真实 junction；degree-2 topology pairing 必须保留。
     if global_surface_patch_matching:
         source_bvh = BVHTree.FromBMesh(bm)
+        forbidden_reconnections = []
+        for vertex, edges in vertex_edges.items():
+            if len(edges) != 2:
+                continue
+            record = next(
+                item
+                for item in vertex_matching_records
+                if item["vertex_index"] == vertex.index
+            )
+            if any(
+                "MITER_SCALE_EXCEEDED" in str(candidate.get("split_reason", ""))
+                for candidate in record["pair_candidates"]
+            ):
+                forbidden_reconnections.append((vertex, *edges))
         global_pairs, global_records = _global_surface_patch_strand_pairs(
             {
                 vertex: edges
@@ -1807,6 +1848,7 @@ def _build_feature_graph(
                 for vertex, pairs in strand_pairs.items()
                 if len(vertex_edges[vertex]) == 2
             },
+            forbidden_reconnections=tuple(forbidden_reconnections),
             source_bvh=source_bvh,
             endpoint_clearance=endpoint_clearance,
         )
@@ -1867,14 +1909,21 @@ def _build_feature_graph(
             ordered_edges.append(current_edge)
             remaining.discard(current_edge)
             current = current_edge.other_vert(current)
-            if current is start:
+            if (
+                current is start
+                and strand_pairs.get(current, {}).get(current_edge) is seed
+            ):
                 break
             ordered_vertices.append(current)
             current_edge = strand_pairs.get(current, {}).get(current_edge)
+        closes_through_pair = (
+            current is start
+            and strand_pairs.get(current, {}).get(ordered_edges[-1]) is ordered_edges[0]
+        )
         endpoint_half_edges = [
             (ordered_vertices[0], ordered_edges[0])
-        ] if current is not start else []
-        if current is not start:
+        ] if not closes_through_pair else []
+        if not closes_through_pair:
             endpoint_half_edges.append((current, ordered_edges[-1]))
         cyclic = not endpoint_half_edges
         if not cyclic and len(endpoint_half_edges) != 2:
