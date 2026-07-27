@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED / USER ACCEPTANCE REQUIRED`（Curve 全局连接规则已纠偏；法线问题暂缓）
+状态：`INTEGRATED / MIXED PRODUCT REGRESSION OPEN`（Curve 全局连接规则已纠偏；Mixed Bridge 形态待修；法线问题暂缓）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -227,13 +227,21 @@ Preview 复核前，不声明 `ACCEPTED`。
 埋入主体的方案。实现已回到全局 strand matching 阶段解决，不再让 Boolean 后的槽段
 划分控制 Preview Curve spline。普通 90°、三/四叉配对、共面 U 形与平滑闭环合同均恢复。
 
-当前最终代码的第一阶段 required scope 位于
+当前代码的第一阶段自动 required scope 位于
 `tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
-`simple / tricky_b / mixed` 10 个目标 cell 均从正式 PREVIEW → FINALIZE 连续 3 次得到
-`PRODUCT_SUCCESS`，source 不变，最终 Mesh 无开放边、多面共边或零面积 Face，且 runtime
+`simple / tricky_b / mixed` 10 个目标 cell 曾被自动分类为连续 3 次 `PRODUCT_SUCCESS`，
+source 不变，最终 Mesh 无开放边、多面共边或零面积 Face，且 runtime
 明确使用 Boolean Pro Boundary Edges → 槽段 Bridge → residual Fill。每个 cell 的目录保存
 可打开的 `preview.blend`、`final.blend` 和 overview / wire 固定视图；这些视图只检查轮廓、
-线框和补面位置，不用于法线验收。
+线框和补面位置，不用于法线验收。2026-07-27 用户真实 UI 复核发现 `mixed` 两个 Radius
+存在错误 Bridge 形态：部分任务虽然封闭 Mesh，却选择了不属于同一槽段左右侧的 Edge
+Loop，产生跨槽长斜面、扭曲面和错误 chamfer 轮廓。因此 `mixed` 的 2 个 cell 以及旧矩阵的
+`first_stage_go / VERIFIED` 结论作废；自动“闭合、无零面积、无自交”不足以代表产品成功。
+
+现有诊断直接暴露错误选择：`mixed` Radius 0.01 至少有一组 Bridge 两侧长度约为
+`0.014 / 0.335`，另一个任务把 56 条 junction residual Edge 混入普通槽段 Bridge。后续修复
+必须从正式 Operator 复现并逐 Bridge 任务标色，核对左右链的 Pipe、槽段区间和 junction
+端点；不得恢复逐边对应、距离猜 Pipe 或 fixture 特判。
 
 延后范围位于
 `tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`：
@@ -245,8 +253,11 @@ Preview 的失败保留 Preview，尚未形成真实边界坐标的早期失败�
 烘焙、新面 flat shading 和 Corner 重写。不使用法线结果声明本轮修复完成。
 
 重点回归证明普通 90°、三/四叉配对、共面 U 形、平滑闭环、端点贴主体评分和急角全局
-禁回连合同；完整项目回归 146/146 通过。独立 Spec Audit 已核对正式 UI/Operator runtime、
-required 10 cells × 3、延后 4 cells × 3、固定视图、法线暂缓边界与 source 不变清理范围，
-未发现剩余高严重度偏差。正式 Finalize 路径仍为 Boolean Pro Boundary Edges → junction
-分段 → Blender Bridge → residual Fill → 最终 Mesh；Curve 分组与 Bridge 槽段分组是两个
-独立阶段，不得再次混用。当前提升为 `VERIFIED`；用户真实 UI 验收前不声明 `ACCEPTED`。
+禁回连合同；完整项目回归 146/146 通过，但上述 `mixed` 视觉回归证明当前产品门禁仍缺少
+Bridge 选链形态约束。下一步只修正式 FINALIZE 的槽段左右链选择与形态保护：两侧必须
+属于同一 Pipe、同一对 junction 之间的同一槽段；不得混入交叉孔 residual Edge。Bridge 后
+新增通用形态保护，发现跨其他槽段、明显回折或长距离横穿时安全失败并标红。先验证
+`mixed` 两个 Radius，再重跑此前通过的其余 8 个 required cells、完整 10 cells × 3、
+固定近景和独立 Spec Audit。正式路径仍为 Boolean Pro Boundary Edges → junction 分段 →
+Blender Bridge → residual Fill → 最终 Mesh；Curve 分组与 Bridge 槽段分组继续保持独立。
+修复并由用户复核前，状态回退为 `INTEGRATED`，不得声明 `VERIFIED / ACCEPTED`。

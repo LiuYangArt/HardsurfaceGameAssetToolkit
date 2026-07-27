@@ -28,9 +28,12 @@
 Pipe，与另一根 Pipe 交叉时也要在 junction 处切成连续槽段，逐段 Bridge 两侧完整
 边链，最后 Fill 剩余交叉孔洞。
 fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 artifact 为准。
-当前全局 Curve 规则下的第一阶段 required scope 位于
+当前全局 Curve 规则下的旧第一阶段自动 scope 位于
 `tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
-10 个目标 cell 均连续 3 次从正式 Operator 得到 `PRODUCT_SUCCESS`，并保存 overview / wire
-固定视图。`tricky` 的 4 个延后场景均连续 3 次 `SAFETY_PASS`，结果位于
+其中 `mixed` 两个 cell 虽被自动分类为 `PRODUCT_SUCCESS`，但用户真实 UI 复核发现部分
+Bridge 选错槽段左右 Edge Loop，产生跨槽长斜面、扭曲面和错误 chamfer 轮廓，因此这 2 个
+结果及第一阶段通过结论已作废。其余 8 个 required cells 是修复时必须保持的回归基线。
+`tricky` 的 4 个延后场景均连续 3 次 `SAFETY_PASS`，结果位于
 `tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`。
-当前为 `VERIFIED`；用户真实 UI 验收前仍不是 `ACCEPTED`。
+当前为 `INTEGRATED`；修复 `mixed`、重跑 10 cells × 3 并完成视觉验收前不得声明
+`VERIFIED / ACCEPTED`。
