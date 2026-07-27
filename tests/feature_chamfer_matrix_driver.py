@@ -287,14 +287,24 @@ def output_diagnostics(output_object):
         if modifier.type == "DATA_TRANSFER"
         and modifier.data_types_loops == {"CUSTOM_NORMAL"}
     ]
+    vertex_coordinates = {
+        vertex.index: tuple(round(component, 9) for component in vertex.co)
+        for vertex in mesh.vertices
+    }
     fingerprint_payload = {
-        "vertices": [
-            [round(component, 9) for component in vertex.co]
+        "vertices": sorted(
+            list(vertex_coordinates[vertex.index])
             for vertex in mesh.vertices
-        ],
-        "edges": [list(edge.vertices) for edge in mesh.edges],
-        "faces": [list(polygon.vertices) for polygon in mesh.polygons],
-        "chamfer_faces": chamfer_values,
+        ),
+        "edges": sorted(
+            sorted(vertex_coordinates[index] for index in edge.vertices)
+            for edge in mesh.edges
+        ),
+        "faces": sorted(
+            sorted(vertex_coordinates[index] for index in polygon.vertices)
+            for polygon in mesh.polygons
+        ),
+        "chamfer_face_count": sum(chamfer_values),
     }
     fingerprint = hashlib.sha256(
         json.dumps(
@@ -464,6 +474,19 @@ def classify_result(
         and output.get("chamfer_face_count", 0) > 0
     )
     backend_stats = backend_capture.get("stats", {})
+    bridge_shape_records = backend_stats.get("bridge_records", ())
+    bridge_shape_contract = (
+        backend_stats.get("bridge_shape_contract")
+        == "SEGMENT_OWNER_INTERVAL_OVERLAP_V1"
+        and bool(bridge_shape_records)
+        and all(
+            record.get("station_interval_overlap_valid")
+            and record.get("foreign_existing_edge_count") == 0
+            and record.get("owner_surface_pair")
+            in record.get("contract_owner_surface_pairs", ())
+            for record in bridge_shape_records
+        )
+    )
     direct_bridge_product = (
         backend_capture.get("called")
         and backend_capture.get("status") == "finished"
@@ -476,6 +499,7 @@ def classify_result(
         and backend_stats.get("non_manifold_edge_count") == 0
         and backend_stats.get("zero_area_face_count") == 0
         and backend_stats.get("self_intersection_count") == 0
+        and bridge_shape_contract
     )
     safety_failure = (
         preview_result in (["FINISHED"], ["CANCELLED"])
@@ -550,7 +574,18 @@ def repetition_signature(repetition):
         "source_before": repetition["source_before"]["fingerprint"],
         "source_after_preview": repetition["source_after_preview"],
         "source_after_finalize": repetition["source_after_finalize"],
-        "output_fingerprint": repetition["output"].get("fingerprint"),
+        "output_contract": {
+            key: repetition["output"].get(key)
+            for key in (
+                "vertex_count",
+                "edge_count",
+                "face_count",
+                "boundary_edge_count",
+                "non_manifold_edge_count",
+                "zero_area_face_count",
+                "chamfer_face_count",
+            )
+        },
         "final_state": repetition["final_state"],
         "failure_diagnostic": repetition.get("failure_diagnostic"),
         "custom_normal_transfer": repetition["output"].get(
@@ -572,6 +607,7 @@ def repetition_signature(repetition):
             key: repetition.get("backend", {}).get("stats", {}).get(key)
             for key in (
                 "runtime_path",
+                "bridge_shape_contract",
                 "bridge_job_count",
                 "bridge_face_count",
                 "deferred_segment_count",

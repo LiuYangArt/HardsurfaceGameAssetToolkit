@@ -179,6 +179,10 @@ def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius
                 "strand_id": strand.strand_id,
                 "ordered_edge_keys": list(strand.ordered_edge_keys),
                 "edge_indices": [int(index) for index in group["edge_indices"]],
+                "owner_surface_pairs_by_edge": [
+                    [int(patch_id) for patch_id in owner_surface_pair]
+                    for owner_surface_pair in group["patch_pair_by_edge"]
+                ],
                 "vertex_indices": [int(index) for index in group["vertex_indices"]],
                 "points": [
                     [round(float(component), 10) for component in point]
@@ -305,6 +309,24 @@ def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius
                     ** 0.5
                 )
             cyclic_segment = bool(pipe_spec["is_cyclic"] and not port_pair)
+            source_edge_offsets = list(point_indices[:-1])
+            if cyclic_segment:
+                source_edge_offsets.append(point_indices[-1])
+            source_edge_indices = [
+                pipe_spec["edge_indices"][edge_offset]
+                for edge_offset in source_edge_offsets
+            ]
+            owner_surface_pairs = []
+            for edge_offset in source_edge_offsets:
+                owner_surface_pair = tuple(
+                    pipe_spec["owner_surface_pairs_by_edge"][edge_offset]
+                )
+                if owner_surface_pair not in owner_surface_pairs:
+                    owner_surface_pairs.append(owner_surface_pair)
+            if not source_edge_indices or not owner_surface_pairs:
+                raise FeatureChamferPreviewError(
+                    f"Preview segment {segment_id} 缺少 source Edge owner Surface pair"
+                )
             total_length = cumulative_lengths[-1]
             if cyclic_segment and len(point_coordinates) > 1:
                 total_length += sum(
@@ -329,6 +351,11 @@ def _serialize_preview_pipe_contract(source_object, groups, chamfer_plan, radius
                     "global_point_indices": [
                         point_offsets_by_pipe_id[pipe_spec["pipe_id"]] + point_index
                         for point_index in point_indices
+                    ],
+                    "source_edge_indices": source_edge_indices,
+                    "owner_surface_pairs": [
+                        list(owner_surface_pair)
+                        for owner_surface_pair in owner_surface_pairs
                     ],
                     "point_coordinates": point_coordinates,
                     "point_stations": [
@@ -429,6 +456,7 @@ def _rebuild_owned_preview_curve(source_object, radius):
         groups,
         radius,
         "GN_PREVIEW_V1",
+        source_patch_ids=_source_face_patch_ids(source_object),
     )
     curve_data = bpy.data.curves.new(
         f"{source_object.name}_FeatureChamferPreviewCurve",

@@ -94,7 +94,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。
 > Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
-> 2026-07-27 用户确认 Curve 全局规则：急角断开后两侧不能从网络另一端重新归入同一 Curve；普通转角尽量连续，尤其连接角大于 90° 时优先相连；多种等价连接中优先选择端点埋入主体、整体贴合主体的 U 形。该 Curve 修复及 146 项项目回归已通过。随后用户真实 UI 复核发现 `mixed` 两个 cell 的部分 Bridge 选错槽段左右 Edge Loop，虽拓扑闭合却产生跨槽长斜面、扭曲面和错误 chamfer 轮廓；旧 `PRODUCT_SUCCESS / VERIFIED` 结论对这 2 个 cell 作废。当前回退为 `INTEGRATED`，先修 `mixed` 并防止其余 8 个已通过场景回归；法线继续暂缓。
+> 2026-07-27 用户确认 Curve 全局规则：急角断开后两侧不能从网络另一端重新归入同一 Curve；普通转角尽量连续，尤其连接角大于 90° 时优先相连；多种等价连接中优先选择端点埋入主体、整体贴合主体的 U 形。随后用户真实 UI 复核推翻了旧 `mixed` 两个 cell 的假绿结论。当前修复已让每个槽段只使用 source Edge 冻结的 owner Surface pair，并把完整链自然端点与槽内 junction witness 分开；正式 10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，延期 4 cells × 3 全部 `SAFETY_PASS`，完整项目回归 146/146。状态为 `VERIFIED / USER REVIEW PENDING`；用户真实 UI 复核前不得声明 `ACCEPTED`，法线继续暂缓。
 
 ## Experimental Pipe Chamfer API Probe
 
@@ -189,7 +189,7 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 - 第一阶段门槛只统计 `simple`、`tricky_b`、`mixed` 的 10 个目标场景，要求 10/10 × 3 repetitions 为直接成功或满足上述严格条件的降低半径后成功；`tricky` 4 cells 单独记录安全结果并延后。
 - 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
-- 旧第一阶段自动证据：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`；其中 `mixed` 2 cells 已被用户视觉复核推翻，不能再用该文件声明第一阶段通过。延后 `tricky`：`tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`。后续矩阵必须增加 Bridge 左右链属于同一 Pipe/槽段区间及补面形态的证据；只证明非 cyclic、闭合、无零面积或无自交仍不算产品通过。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
+- 旧第一阶段自动证据：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`；其中 `mixed` 2 cells 已被用户视觉复核推翻，不能再用该文件声明第一阶段通过。当前正式证据位于 `/private/tmp/hst-required10x3-final7-20260727/results.json`：10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，并要求每个 Bridge record 通过 source owner pair、同槽段 station overlap、junction fragment 排除与跨槽复用 Edge 门禁。延期 `tricky` 证据位于 `/private/tmp/hst-tricky-safety-final2-20260727/results.json`；完整项目回归位于 `/private/tmp/hst-full-regression-final3-20260727/results.json`。只证明非 cyclic、闭合、无零面积或无自交仍不算产品通过。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
 
 ## 设计原则
 

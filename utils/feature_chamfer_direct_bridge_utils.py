@@ -672,11 +672,46 @@ def _exclusive_segment_edges(
     }
 
 
-# 依据 ChamferPlan owner Surface pairs 选择唯一槽段左右两侧，其他 Patch 只留给 junction Fill。
-# components/patch_layers/owner_pairs: 当前槽段分量、Boolean Pro Patch 属性与计划 pairs；返回唯一 pair、两侧 chains 和 junction fragments。
-def _segment_side_chains(components, patch_layers, owner_pairs):
+# 从 component 的自然端点恢复两端 station，作为完整槽段左右链的 terminal interval 身份。
+# component/segment_id/layers: 单一 open chain、槽段 ID 与 point provenance；返回有序端点 station 或 None。
+def _component_terminal_station_interval(
+    component,
+    segment_id,
+    segment_point_layers,
+    station_point_layers,
+    station_squared_point_layers,
+):
+    endpoints = _component_endpoints(component)
+    if endpoints is None:
+        return None
+    endpoint_stations = [
+        sum(
+            _vertex_station_endpoints(
+                vertex,
+                segment_id,
+                segment_point_layers,
+                station_point_layers,
+                station_squared_point_layers,
+            )
+        )
+        * 0.5
+        for vertex in endpoints
+    ]
+    return tuple(sorted(endpoint_stations))
+
+
+# 依据槽段 exact owner Surface pair 与 station 区间选择唯一左右两侧，歧义候选留给 fail-closed。
+# components/patch_layers/owner_pairs/segment_id/layers: 当前槽段分量、Patch、source pairs、槽段与 Point provenance；返回唯一 pair、两侧 chains 和 junction fragments。
+def _segment_side_chains(
+    components,
+    patch_layers,
+    owner_pairs,
+    segment_id,
+    segment_point_layers,
+    station_point_layers,
+    station_squared_point_layers,
+):
     patch_components = {}
-    junction_fragments = set()
     for component in components:
         component_patch_ids = {
             patch_id
@@ -684,7 +719,6 @@ def _segment_side_chains(components, patch_layers, owner_pairs):
             if all(bool(edge[layer]) for edge in component)
         }
         if len(component_patch_ids) != 1:
-            junction_fragments.update(component)
             continue
         patch_components.setdefault(next(iter(component_patch_ids)), []).append(component)
     complete_patch_components = {
@@ -695,121 +729,94 @@ def _segment_side_chains(components, patch_layers, owner_pairs):
         ]
         for patch_id, components_for_patch in patch_components.items()
     }
-    fragmented_owner_pairs = [
-        owner_pair
-        for owner_pair in owner_pairs
-        if all(complete_patch_components.get(patch_id) for patch_id in owner_pair)
-        and any(
-            len(complete_patch_components.get(patch_id, ())) > 1
+    component_pair_candidates = []
+    for owner_pair in owner_pairs:
+        component_groups = [
+            complete_patch_components.get(patch_id, [])
             for patch_id in owner_pair
-        )
-    ]
-    if fragmented_owner_pairs:
-        has_one_sided_interruption = any(
-            sum(
-                len(complete_patch_components.get(patch_id, ())) > 1
-                for patch_id in owner_pair
-            )
-            == 1
-            for owner_pair in fragmented_owner_pairs
-        )
-        if has_one_sided_interruption and len(owner_pairs) == 1:
-            return None, None, junction_fragments
-    direct_candidate_pairs = [
-        owner_pair
-        for owner_pair in owner_pairs
-        if all(complete_patch_components.get(patch_id) for patch_id in owner_pair)
-    ]
-    for owner_pair in direct_candidate_pairs:
-        first_candidates = complete_patch_components[owner_pair[0]]
-        second_candidates = complete_patch_components[owner_pair[1]]
-        if len(first_candidates) == 1 and len(second_candidates) > 1:
-            partner_candidates = [
-                component
-                for component in second_candidates
-                if _component_shape(component)[0] or len(component) > 1
-            ]
-            if len(partner_candidates) == 1:
-                selected = [first_candidates[0], partner_candidates[0]]
-                selected_edges = set().union(*selected)
-                junction_fragments.update(
-                    edge
-                    for component in second_candidates
-                    for edge in component
-                    if edge not in selected_edges
-                )
-                return owner_pair, selected, junction_fragments
-        if len(second_candidates) == 1 and len(first_candidates) > 1:
-            partner_candidates = [
-                component
-                for component in first_candidates
-                if _component_shape(component)[0] or len(component) > 1
-            ]
-            if len(partner_candidates) == 1:
-                selected = [partner_candidates[0], second_candidates[0]]
-                selected_edges = set().union(*selected)
-                junction_fragments.update(
-                    edge
-                    for component in first_candidates
-                    for edge in component
-                    if edge not in selected_edges
-                )
-                return owner_pair, selected, junction_fragments
-    for owner_pair in direct_candidate_pairs:
-        full_span_components = []
-        for patch_id in owner_pair:
-            candidates = complete_patch_components[patch_id]
-            full_span = [
-                component
-                for component in candidates
-                if len(candidates) == 1
-                or _component_shape(component)[0]
-                or len(component) > 4
-            ]
-            if len(full_span) != 1:
-                break
-            full_span_components.append(full_span[0])
-        else:
-            if len(full_span_components) == 2:
-                selected_edges = set().union(*full_span_components)
-                junction_fragments.update(
-                    edge
-                    for patch_group in patch_components.values()
-                    for component in patch_group
-                    for edge in component
-                    if edge not in selected_edges
-                )
-                return owner_pair, full_span_components, junction_fragments
-    candidate_pairs = [
-        owner_pair
-        for owner_pair in owner_pairs
-        if all(complete_patch_components.get(patch_id) for patch_id in owner_pair)
-    ]
-    if len(candidate_pairs) != 1:
-        return None, None, junction_fragments
-    selected_pair = candidate_pairs[0]
-    selected_components = []
-    for patch_id in selected_pair:
-        candidates = complete_patch_components[patch_id]
-        eligible = [
-            component
-            for component in candidates
-            if len(candidates) == 1
-            or _component_shape(component)[0]
-            or len(component) > 4
         ]
-        if len(eligible) != 1:
-            return None, None, junction_fragments
-        selected_components.append(eligible[0])
-    selected_edges = set().union(*selected_components)
-    junction_fragments.update(
+        if not all(component_groups):
+            continue
+        if not all(len(component_group) == 1 for component_group in component_groups):
+            continue
+        first_component, second_component = (
+            component_groups[0][0],
+            component_groups[1][0],
+        )
+        if all(
+            _component_shape(component)[0]
+            for component in (first_component, second_component)
+        ):
+            component_pair_candidates.append(
+                (owner_pair, first_component, second_component)
+            )
+            continue
+        first_interval = _component_terminal_station_interval(
+            first_component,
+            segment_id,
+            segment_point_layers,
+            station_point_layers,
+            station_squared_point_layers,
+        )
+        second_interval = _component_terminal_station_interval(
+            second_component,
+            segment_id,
+            segment_point_layers,
+            station_point_layers,
+            station_squared_point_layers,
+        )
+        if first_interval is not None and second_interval is not None:
+            component_pair_candidates.append(
+                (owner_pair, first_component, second_component)
+            )
+    if len(component_pair_candidates) != 1:
+        return None, None, set()
+    selected_pair, first_component, second_component = component_pair_candidates[0]
+    selected_components = [first_component, second_component]
+    junction_fragments = {
         edge
         for patch_id, patch_group in patch_components.items()
         if patch_id not in selected_pair
         for component in patch_group
         for edge in component
-    )
+    }
     return selected_pair, selected_components, junction_fragments
+
+
+# 从 Preview 冻结合同读取当前槽段的 exact source Edge owner Surface pairs，并与 ChamferPlan 交叉核验。
+# segment/expected_chamfer_plan: 当前槽段 JSON 记录与 immutable plan；返回保持 source Edge 顺序去重后的 pairs。
+def _segment_owner_surface_pairs(segment, expected_chamfer_plan):
+    owner_pairs = []
+    for raw_owner_pair in segment.get("owner_surface_pairs", ()):
+        owner_pair = tuple(int(patch_id) for patch_id in raw_owner_pair)
+        if len(owner_pair) != 2 or owner_pair[0] == owner_pair[1]:
+            raise FeatureChamferDirectBridgeError(
+                "segment_owner_pair_invalid",
+                f"Segment {segment['segment_id']} has an invalid owner Surface pair",
+            )
+        if owner_pair not in owner_pairs:
+            owner_pairs.append(owner_pair)
+    plan_owner_pairs = {
+        correspondence.owner_surface_pair
+        for correspondence in expected_chamfer_plan.strip_correspondences
+        if correspondence.owner_strand_id == segment["strand_id"]
+    }
+    if not owner_pairs:
+        raise FeatureChamferDirectBridgeError(
+            "segment_owner_pair_missing",
+            f"Segment {segment['segment_id']} has no source Edge owner Surface pair",
+        )
+    if any(owner_pair not in plan_owner_pairs for owner_pair in owner_pairs):
+        raise FeatureChamferDirectBridgeError(
+            "segment_owner_pair_plan_mismatch",
+            f"Segment {segment['segment_id']} owner Surface pair does not match ChamferPlan",
+            {
+                "segment_id": int(segment["segment_id"]),
+                "contract_owner_pairs": [list(pair) for pair in owner_pairs],
+                "plan_owner_pairs": [list(pair) for pair in sorted(plan_owner_pairs)],
+            },
+        )
+    return owner_pairs
 
 
 # 当一侧在 Surface Patch 接缝切换时，按组件顺序和共同 owner pair 选中整条槽边。
@@ -886,6 +893,7 @@ def _component_junction_witnesses(
     station_squared_point_layers,
 ):
     witnesses = []
+    component_endpoints = set(_component_endpoints(component) or ())
     for vertex in {item for edge in component for item in edge.verts}:
         foreign_ids = sorted({
             other_id
@@ -898,6 +906,7 @@ def _component_junction_witnesses(
         witnesses.append(
             {
                 "vertex_index": vertex.index,
+                "component_endpoint": vertex in component_endpoints,
                 "foreign_segment_ids": foreign_ids,
                 "station_endpoints": list(
                     _vertex_station_endpoints(
@@ -929,6 +938,44 @@ def _edge_station_midpoint(
             f"Segment {segment_id} Edge lacks station membership",
         )
     return float(edge[station_edge_layers[segment_id]]) / membership
+
+
+# 验证同一 Bridge job 的两侧链在 segment station 上相交，防止跨槽段或反向错连。
+# components/segment_id/layers: 已按 exact owner pair 锁定的两侧链、槽段与 station layers；返回两侧区间与 overlap 身份。
+def _validate_bridge_job_station_interval(
+    components,
+    segment_id,
+    segment_layers,
+    station_edge_layers,
+):
+    side_station_intervals = []
+    for component in components:
+        stations = [
+            _edge_station_midpoint(
+                edge,
+                segment_id,
+                segment_layers,
+                station_edge_layers,
+            )
+            for edge in component
+        ]
+        side_station_intervals.append((min(stations), max(stations)))
+    overlap_low = max(interval[0] for interval in side_station_intervals)
+    overlap_high = min(interval[1] for interval in side_station_intervals)
+    interval_overlap_valid = overlap_low <= overlap_high + 5.0e-4
+    if not interval_overlap_valid:
+        raise FeatureChamferDirectBridgeError(
+            "segment_station_interval_mismatch",
+            f"Segment {segment_id} side chains do not share one station interval",
+            {
+                "segment_id": segment_id,
+                "side_station_intervals": [
+                    [float(value) for value in interval]
+                    for interval in side_station_intervals
+                ],
+            },
+        )
+    return side_station_intervals, interval_overlap_valid
 
 
 # 在已锁定的一侧完整 chain 中按 station 唯一定位并插入一个同步 junction 切点。
@@ -1197,14 +1244,18 @@ def _split_connected_segment_jobs(
 ):
     segment_id = int(segment["segment_id"])
     witness_groups = [
-        _component_junction_witnesses(
-            component,
-            segment_id,
-            segment_layers,
-            segment_point_layers,
-            station_point_layers,
-            station_squared_point_layers,
-        )
+        [
+            witness
+            for witness in _component_junction_witnesses(
+                component,
+                segment_id,
+                segment_layers,
+                segment_point_layers,
+                station_point_layers,
+                station_squared_point_layers,
+            )
+            if not witness["component_endpoint"]
+        ]
         for component in side_chains
     ]
     paired_foreign_segments = [
@@ -1333,7 +1384,7 @@ def _split_connected_segment_jobs(
     return jobs_by_interval, junction_fragments
 
 
-# 对被另一根 Pipe 截断的同一槽段，按 owner Patch 与 station 生成多个实际 Bridge jobs。
+# 对被另一根 Pipe 截断的同一槽段，按 owner Patch、junction witness 与 station 生成多个实际 Bridge jobs。
 # components/segment/layers/owner_pairs: 当前自然分量、合同、provenance 与 Plan owner pairs；返回 Bridge jobs 或 None。
 def _split_interrupted_segment_jobs(
     components,
@@ -1374,6 +1425,8 @@ def _split_interrupted_segment_jobs(
         elif len(component_group) == 1:
             complete_side = component_group[0]
     if interrupted_side is None or complete_side is None:
+        return None
+    if any(_component_shape(component)[0] for component in interrupted_side):
         return None
     interrupted_endpoints = [
         vertex
@@ -1429,7 +1482,7 @@ def _split_interrupted_segment_jobs(
     paired_groups = [group for group in foreign_groups.values() if len(group) == 2]
     if len(paired_groups) == 1:
         junction_vertices = paired_groups[0]
-    if not junction_vertices and len(interrupted_side) >= 2:
+    if len(interrupted_side) >= 2:
         regular_components = [
             component
             for component in interrupted_side
@@ -1453,6 +1506,49 @@ def _split_interrupted_segment_jobs(
                 )
             interrupted_side = regular_components
             junction_vertices = set(_component_endpoints(regular_components[0]) or ())
+        else:
+            complete_side_length = sum(edge.calc_length() for edge in complete_side)
+            comparable_components = [
+                component
+                for component in interrupted_side
+                if sum(edge.calc_length() for edge in component)
+                > 0.1 * complete_side_length
+            ]
+            if len(comparable_components) == 1:
+                selected_component = comparable_components[0]
+                selected_endpoints = _component_endpoints(selected_component) or ()
+                selected_foreign_ids = {
+                    other_id
+                    for vertex in selected_endpoints
+                    for edge in vertex.link_edges
+                    for other_id, layer in segment_layers.items()
+                    if other_id != segment_id
+                    and float(edge[layer]) > 1.0e-6
+                }
+                deferred_components = [
+                    component
+                    for component in interrupted_side
+                    if component is not selected_component
+                ]
+                deferred_foreign_ids = [
+                    {
+                        other_id
+                        for vertex in (_component_endpoints(component) or ())
+                        for edge in vertex.link_edges
+                        for other_id, layer in segment_layers.items()
+                        if other_id != segment_id
+                        and float(edge[layer]) > 1.0e-6
+                    }
+                    for component in deferred_components
+                ]
+                if not all(
+                    selected_foreign_ids & foreign_ids
+                    for foreign_ids in deferred_foreign_ids
+                ):
+                    return None
+                return owner_pair, [(selected_component, complete_side)], set().union(
+                    *deferred_components
+                )
     if len(junction_vertices) != 2:
         return None
     cut_stations = []
@@ -1801,18 +1897,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     }
                 )
                 continue
-            owner_pairs = []
-            for correspondence in expected_chamfer_plan.strip_correspondences:
-                if (
-                    correspondence.owner_strand_id == segment["strand_id"]
-                    and correspondence.owner_surface_pair not in owner_pairs
-                ):
-                    owner_pairs.append(correspondence.owner_surface_pair)
-            if not owner_pairs:
-                raise FeatureChamferDirectBridgeError(
-                    "segment_owner_pair_missing",
-                    f"Segment {segment_id} has no owner Surface pair",
-                )
+            owner_pairs = _segment_owner_surface_pairs(
+                segment,
+                expected_chamfer_plan,
+            )
             owner_pair = None
             junction_fragments = set()
             bridge_jobs = None
@@ -1821,6 +1909,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     components,
                     patch_layers,
                     owner_pairs,
+                    segment_id,
+                    segment_point_layers,
+                    station_point_layers,
+                    station_squared_point_layers,
                 )
             else:
                 interrupted_result = _split_interrupted_segment_jobs(
@@ -1844,6 +1936,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         components,
                         patch_layers,
                         owner_pairs,
+                        segment_id,
+                        segment_point_layers,
+                        station_point_layers,
+                        station_squared_point_layers,
                     )
                 if side_chains is None:
                     raise FeatureChamferDirectBridgeError(
@@ -2019,6 +2115,30 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         f"Segment {segment_id} exposes incomplete side chains",
                         {"segment_id": segment_id, "shapes": shapes},
                     )
+                if selected_edges & junction_fragments:
+                    raise FeatureChamferDirectBridgeError(
+                        "segment_junction_fragment_selected",
+                        f"Segment {segment_id} Bridge includes a junction fragment",
+                    )
+                side_station_intervals, interval_overlap_valid = (
+                    _validate_bridge_job_station_interval(
+                        components,
+                        segment_id,
+                        segment_layers,
+                        station_edge_layers,
+                    )
+                )
+                side_junction_witnesses = [
+                    _component_junction_witnesses(
+                        component,
+                        segment_id,
+                        segment_layers,
+                        segment_point_layers,
+                        station_point_layers,
+                        station_squared_point_layers,
+                    )
+                    for component in components
+                ]
                 if selected_edges & claimed_edges:
                     raise FeatureChamferDirectBridgeError(
                         "segment_selection_overlap",
@@ -2050,6 +2170,29 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     raise FeatureChamferDirectBridgeError(
                         "bridge_created_no_faces",
                         f"Blender Bridge created no Faces for segment {segment_id}",
+                    )
+                foreign_existing_edges = {
+                    edge
+                    for face in bridge_faces
+                    for edge in face.edges
+                    if edge in edges_before_bridge and edge not in selected_edges
+                    and any(
+                        other_segment_id != segment_id
+                        and float(edge[layer]) > 1.0e-6
+                        for other_segment_id, layer in segment_layers.items()
+                    )
+                }
+                if foreign_existing_edges:
+                    raise FeatureChamferDirectBridgeError(
+                        "bridge_crosses_other_segment",
+                        f"Blender Bridge crosses another segment for segment {segment_id}",
+                        {
+                            "segment_id": segment_id,
+                            "bridge_job_index": bridge_job_index,
+                            "foreign_edge_indices": sorted(
+                                edge.index for edge in foreign_existing_edges
+                            ),
+                        },
                     )
                 claimed_edges.update(selected_edges)
                 chamfer_faces.update(bridge_faces)
@@ -2103,12 +2246,38 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "bridge_job_index": bridge_job_index,
                         "pipe_id": int(segment["pipe_id"]),
                         "port_indices": list(segment.get("port_indices", ())),
+                        "source_edge_indices": list(
+                            segment.get("source_edge_indices", ())
+                        ),
+                        "contract_owner_surface_pairs": [
+                            list(pair) for pair in owner_pairs
+                        ],
                         "owner_surface_pair": list(owner_pair) if owner_pair else None,
                         "side_edge_counts": sorted(len(component) for component in components),
                         "side_lengths": sorted(
                             sum(edge.calc_length() for edge in component)
                             for component in components
                         ),
+                        "side_station_intervals": [
+                            [float(value) for value in interval]
+                            for interval in side_station_intervals
+                        ],
+                        "side_terminal_witness_counts": [
+                            sum(
+                                bool(witness["component_endpoint"])
+                                for witness in witnesses
+                            )
+                            for witnesses in side_junction_witnesses
+                        ],
+                        "side_interior_witness_counts": [
+                            sum(
+                                not witness["component_endpoint"]
+                                for witness in witnesses
+                            )
+                            for witnesses in side_junction_witnesses
+                        ],
+                        "station_interval_overlap_valid": interval_overlap_valid,
+                        "foreign_existing_edge_count": 0,
                         "junction_fragment_edge_count": len(junction_fragments),
                         "face_count": len(bridge_faces),
                         "cumulative_self_intersection_count": bridge_self_intersection_count,
@@ -2287,6 +2456,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 "Blender Bridge Edge Loops -> Blender Fill"
             ),
             "feature_graph_contract": "GN_PREVIEW_V1",
+            "bridge_shape_contract": "SEGMENT_OWNER_INTERVAL_OVERLAP_V1",
             "plan_id": expected_chamfer_plan.plan_id,
             "source_fingerprint_unchanged": True,
             "initial_boundary_edge_count": initial_boundary_count,

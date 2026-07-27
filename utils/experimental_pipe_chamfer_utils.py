@@ -7034,6 +7034,7 @@ def _build_pipe_chamfer_impl(
             groups,
             radius,
             feature_graph_contract,
+            source_patch_ids=_source_face_patch_ids(source_object),
         )
         stats["chamfer_plan"] = {
             "mode": chamfer_plan.mode,

@@ -8360,51 +8360,112 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
     test_context: TestContext,
     result: TestCaseResult,
 ):
-    load_fixture_blend("feature-chamfer-topology-defect-mixed.blend")
-    source = bpy.data.objects.get("Extruded.002")
-    ensure(source is not None, "Mixed fixture source is missing")
-    source_hash = _mesh_fingerprint(source)
-    preview_result, _ = run_feature_chamfer_gn(source, radius=0.01)
-    ensure(preview_result == {"FINISHED"}, f"Mixed fixture Preview failed: {preview_result}")
-    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    ensure(finalize_result == {"FINISHED"}, f"Mixed fixture Finalize failed: {finalize_result}")
-    output = bpy.context.active_object
-    ensure(output is not None and output is not source, "Mixed fixture created no separate output")
-    ensure(_mesh_fingerprint(source) == source_hash, "Mixed fixture Finalize changed source")
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_builder = operator_module.build_direct_edge_loop_chamfer
+    evidence_by_radius = {}
 
-    bm = bmesh.new()
-    bm.from_mesh(output.data)
-    boundary_count = sum(len(edge.link_faces) == 1 for edge in bm.edges)
-    non_manifold_count = sum(len(edge.link_faces) != 2 for edge in bm.edges)
-    zero_area_count = sum(face.calc_area() <= 1.0e-12 for face in bm.faces)
-    focus_point = Vector((0.613128722, 0.204837114, 0.062097311))
-    focus_vertex = min(bm.verts, key=lambda vertex: (vertex.co - focus_point).length_squared)
-    ensure(
-        (focus_vertex.co - focus_point).length <= 1.0e-6,
-        f"Mixed fixture focus terminal moved: {tuple(focus_vertex.co)}",
+    def captured_builder(*args, **kwargs):
+        stats = original_builder(*args, **kwargs)
+        evidence_by_radius[round(float(args[1].radius), 6)] = stats
+        return stats
+
+    operator_module.build_direct_edge_loop_chamfer = captured_builder
+    try:
+        for radius in (0.01, 0.03):
+            load_fixture_blend("feature-chamfer-topology-defect-mixed.blend")
+            source = bpy.data.objects.get("Extruded.002")
+            ensure(source is not None, "Mixed fixture source is missing")
+            source_hash = _mesh_fingerprint(source)
+            preview_result, _ = run_feature_chamfer_gn(source, radius=radius)
+            ensure(
+                preview_result == {"FINISHED"},
+                f"Mixed fixture Preview failed at Radius {radius}: {preview_result}",
+            )
+            finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+            ensure(
+                finalize_result == {"FINISHED"},
+                f"Mixed fixture Finalize failed at Radius {radius}: {finalize_result}",
+            )
+            output = bpy.context.active_object
+            ensure(
+                output is not None and output is not source,
+                "Mixed fixture created no separate output",
+            )
+            ensure(
+                _mesh_fingerprint(source) == source_hash,
+                "Mixed fixture Finalize changed source",
+            )
+
+            bm = bmesh.new()
+            bm.from_mesh(output.data)
+            boundary_count = sum(len(edge.link_faces) == 1 for edge in bm.edges)
+            non_manifold_count = sum(len(edge.link_faces) != 2 for edge in bm.edges)
+            zero_area_count = sum(face.calc_area() <= 1.0e-12 for face in bm.faces)
+            if radius == 0.01:
+                focus_point = Vector((0.613128722, 0.204837114, 0.062097311))
+                focus_vertex = min(
+                    bm.verts,
+                    key=lambda vertex: (vertex.co - focus_point).length_squared,
+                )
+                ensure(
+                    (focus_vertex.co - focus_point).length <= 1.0e-6,
+                    f"Mixed fixture focus terminal moved: {tuple(focus_vertex.co)}",
+                )
+                long_neighbors = [
+                    edge.other_vert(focus_vertex)
+                    for edge in focus_vertex.link_edges
+                    if (edge.other_vert(focus_vertex).co - focus_vertex.co).length > 1.0
+                ]
+                ensure(
+                    len(long_neighbors) == 1,
+                    "Mixed fixture terminal retained an extra diagonal/duplicate long connection",
+                )
+                long_direction = (long_neighbors[0].co - focus_vertex.co).normalized()
+                ensure(
+                    abs(long_direction.dot(Vector((0.0, 0.0, 1.0)))) >= 0.999,
+                    f"Mixed fixture terminal long connection is not vertical: {tuple(long_direction)}",
+                )
+            bm.free()
+            ensure(
+                boundary_count == 0 and non_manifold_count == 0 and zero_area_count == 0,
+                "Mixed fixture output is not a clean closed Mesh",
+            )
+            ensure(
+                output.data.attributes.get("hst_feature_chamfer_face") is not None,
+                "Mixed fixture output has no Chamfer Face attribute",
+            )
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+
+    for radius, stats in evidence_by_radius.items():
+        ensure(
+            stats.get("bridge_shape_contract")
+            == "SEGMENT_OWNER_INTERVAL_OVERLAP_V1",
+            f"Mixed fixture shape contract missing at Radius {radius}",
+        )
+        records_by_source_edges = {
+            tuple(record.get("source_edge_indices", ())): record
+            for record in stats["bridge_records"]
+        }
+        ensure(
+            records_by_source_edges[(1949,)]["owner_surface_pair"] == [17, 18]
+            and records_by_source_edges[(1947,)]["owner_surface_pair"] == [17, 19],
+            f"Mixed fixture top slot selected the wrong Surface pair at Radius {radius}",
+        )
+        lower_record = records_by_source_edges[
+            (295, 317, 321, 325, 329, 333, 337, 341, 345, 349, 354, 359, 691)
+        ]
+        ensure(
+            lower_record["owner_surface_pair"] == [4, 15]
+            and lower_record["side_edge_counts"] == [13, 46]
+            and lower_record["junction_fragment_edge_count"] == 0
+            and lower_record["side_interior_witness_counts"] == [0, 0],
+            f"Mixed fixture lower slot did not keep both full Edge Loops at Radius {radius}",
+        )
+
+    result.add_detail(
+        "Mixed fixture kept exact source-pair Edge Loops at Radius 0.01 and 0.03"
     )
-    long_neighbors = [
-        edge.other_vert(focus_vertex)
-        for edge in focus_vertex.link_edges
-        if (edge.other_vert(focus_vertex).co - focus_vertex.co).length > 1.0
-    ]
-    ensure(
-        len(long_neighbors) == 1,
-        "Mixed fixture terminal retained an extra diagonal/duplicate long connection",
-    )
-    long_direction = (long_neighbors[0].co - focus_vertex.co).normalized()
-    ensure(
-        abs(long_direction.dot(Vector((0.0, 0.0, 1.0)))) >= 0.999,
-        f"Mixed fixture terminal long connection is not vertical: {tuple(long_direction)}",
-    )
-    bm.free()
-    ensure(
-        boundary_count == 0 and non_manifold_count == 0 and zero_area_count == 0,
-        "Mixed fixture output is not a clean closed Mesh",
-    )
-    chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
-    ensure(chamfer_attribute is not None, "Mixed fixture output has no Chamfer Face attribute")
-    result.add_detail("Mixed fixture Operator removed the extra long terminal connection")
 
 
 # 验证正式 Direct Bridge runtime 已支持原复杂 fixture，并保持 source 不变。

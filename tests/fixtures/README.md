@@ -32,8 +32,10 @@ fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 ar
 `tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
 其中 `mixed` 两个 cell 虽被自动分类为 `PRODUCT_SUCCESS`，但用户真实 UI 复核发现部分
 Bridge 选错槽段左右 Edge Loop，产生跨槽长斜面、扭曲面和错误 chamfer 轮廓，因此这 2 个
-结果及第一阶段通过结论已作废。其余 8 个 required cells 是修复时必须保持的回归基线。
+结果及当时的第一阶段通过结论已作废。Mixed 修复后，正式 10 cells × 3 证据位于
+`/private/tmp/hst-required10x3-final7-20260727/results.json`：全部稳定 `PRODUCT_SUCCESS`，
+source 不变，并且每个 Bridge record 均通过槽段自己的 source owner pair 与形态门禁。
 `tricky` 的 4 个延后场景均连续 3 次 `SAFETY_PASS`，结果位于
-`tests/artifacts/feature_chamfer_tricky_safety_global_curve_final_no_normals/results.json`。
-当前为 `INTEGRATED`；修复 `mixed`、重跑 10 cells × 3 并完成视觉验收前不得声明
-`VERIFIED / ACCEPTED`。
+`/private/tmp/hst-tricky-safety-final2-20260727/results.json`。完整项目回归 146/146 位于
+`/private/tmp/hst-full-regression-final3-20260727/results.json`。当前为
+`VERIFIED / USER REVIEW PENDING`；用户真实 UI 复核前不得声明 `ACCEPTED`。

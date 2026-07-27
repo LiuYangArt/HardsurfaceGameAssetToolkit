@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`INTEGRATED / MIXED PRODUCT REGRESSION OPEN`（Curve 全局连接规则已纠偏；Mixed Bridge 形态待修；法线问题暂缓）
+状态：`VERIFIED / USER REVIEW PENDING`（第一阶段 10-cell 产品门禁已恢复；第二阶段 tricky 与法线仍暂缓）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -214,7 +214,7 @@ Preview 复核前，不声明 `ACCEPTED`。
 
 历史探针和 artifact 只保留为排查记录，不能再决定当前 Stop / Go。
 
-## 6. 当前下一步
+## 6. 历史纠偏与当前验证
 
 正式入口已经接入 Direct Edge-Loop Bridge 与 junction Fill。2026-07-26 用户两次复核
 `simple / Solid 44`：第一次定位到急角 closed Curve 的 cyclic 回连；改为 open 后，第二次
@@ -252,12 +252,34 @@ Preview 的失败保留 Preview，尚未形成真实边界坐标的早期失败�
 法线问题明确暂缓。本轮已从正式 FINALIZE 撤回 Set from Faces、全对象 Data Transfer、
 烘焙、新面 flat shading 和 Corner 重写。不使用法线结果声明本轮修复完成。
 
-重点回归证明普通 90°、三/四叉配对、共面 U 形、平滑闭环、端点贴主体评分和急角全局
-禁回连合同；完整项目回归 146/146 通过，但上述 `mixed` 视觉回归证明当前产品门禁仍缺少
-Bridge 选链形态约束。下一步只修正式 FINALIZE 的槽段左右链选择与形态保护：两侧必须
-属于同一 Pipe、同一对 junction 之间的同一槽段；不得混入交叉孔 residual Edge。Bridge 后
-新增通用形态保护，发现跨其他槽段、明显回折或长距离横穿时安全失败并标红。先验证
-`mixed` 两个 Radius，再重跑此前通过的其余 8 个 required cells、完整 10 cells × 3、
-固定近景和独立 Spec Audit。正式路径仍为 Boolean Pro Boundary Edges → junction 分段 →
-Blender Bridge → residual Fill → 最终 Mesh；Curve 分组与 Bridge 槽段分组继续保持独立。
-修复并由用户复核前，状态回退为 `INTEGRATED`，不得声明 `VERIFIED / ACCEPTED`。
+重点回归曾证明普通 90°、三/四叉配对、共面 U 形、平滑闭环、端点贴主体评分和急角全局
+禁回连合同；当时完整项目回归虽为 146/146，通过的自动门禁仍缺少 Bridge 选链形态约束，
+因此状态一度回退为 `INTEGRATED`。以下记录修复后的新证据；用户复核前仍不得声明
+`ACCEPTED`。
+
+2026-07-27 已完成 Mixed Bridge 选链修复。根因有两处：旧 Finalize 把整条 Curve 的全部
+Surface pair 都交给单个槽段，导致短 junction fragment 抢占真正的另一侧；同时把完整链
+自然端点上的相邻槽段 witness 当成槽内交叉点，错误切掉了槽段主体。现在 Preview 合同按
+source Edge 冻结每个槽段自己的 owner Surface pair 与 source Edge identity；Finalize 只在
+该 pair 内选择两侧完整 Edge Loop，并把自然端点与槽内 witness 分开。Bridge 前后新增
+station 区间、junction fragment 和跨其他槽段复用 Edge 的通用形态门禁。未恢复逐边配对、
+距离猜 Pipe、fixture 特判或 canonicalization；法线仍按既定决定暂缓。
+
+正式 Operator 验证证据：
+
+- `/private/tmp/hst-required10x3-final7-20260727/results.json`：第一阶段 10 cells × 3 全部稳定
+  `PRODUCT_SUCCESS`，`first_stage_go / run_go` 均为 true，source 全部不变；每个 Bridge
+  record 均通过 `SEGMENT_OWNER_INTERVAL_OVERLAP_V1` 形态合同。
+- 同一目录的每个 cell 保存 `preview.blend`、`final.blend` 与 `evidence/final_overview.png`、
+  `evidence/final_closeup_wire.png`；Mixed 两个 Radius 的固定近景不再出现用户截图中的
+  跨槽斜面和扭曲面。
+- `/private/tmp/hst-tricky-safety-final2-20260727/results.json`：延期 4 cells × 3 全部稳定
+  `SAFETY_PASS`，source 不变且没有坏输出；这仍不是第二阶段产品成功。
+- `/private/tmp/hst-full-regression-final3-20260727/results.json`：完整项目回归 146/146 通过，
+  包含 Mixed 0.01 / 0.03 exact owner pair 与完整左右 Edge Loop 回归。
+
+独立 Spec Audit 结论：正式入口仍为 UI Operator → Preview immutable plan → Boolean Pro
+Boundary Edges → segment-local 两侧完整 Edge Loop → Blender Bridge Edge Loops → residual
+junction Fill → clean separate Mesh；矩阵把形态合同纳入产品成功条件。实现未引用 fixture
+名称、对象名或测试 Edge ID；测试中的 Edge ID 只作为真实 Mixed 回归断言。当前可声明
+`VERIFIED`，但在用户用真实 UI 复核 Show Cutter / Boolean Preview 前不得声明 `ACCEPTED`。
