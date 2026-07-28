@@ -63,6 +63,23 @@ MATRIX_RADII = tuple(
         os.environ.get("HST_FEATURE_CHAMFER_MATRIX_RADII", "[0.01, 0.03]")
     )
 )
+# 产品矩阵已知 U 形拓扑身份；只用于断言通用几何规则的结果，生产实现不读取这些值。
+TURN_SPLIT_REGRESSION_CONTRACTS = {
+    ("mixed", "Extruded.002"): {
+        "segment_id": 25,
+        "pipe_id": 4,
+        "owner_surface_pair": [5, 15],
+        "job_count": 7,
+        "turn_count": 6,
+    },
+    ("tricky_b", "Extruded.002"): {
+        "segment_id": 18,
+        "pipe_id": 10,
+        "owner_surface_pair": [8, 9],
+        "job_count": 3,
+        "turn_count": 2,
+    },
+}
 RETRY_RADII = tuple(
     float(radius)
     for radius in json.loads(
@@ -456,7 +473,7 @@ def classify_result(
     final_state,
     diagnostic,
     allow_safe_failure,
-    require_mixed_u_turn_split,
+    required_turn_split_contract,
 ):
     contract_violations = []
     if not source_before["mesh"]["closed_manifold"]:
@@ -488,40 +505,34 @@ def classify_result(
             for record in bridge_shape_records
         )
     )
-    mixed_u_turn_records = [
-        record
-        for record in bridge_shape_records
-        if record.get("segment_id") == 25
-        and record.get("pipe_id") == 4
-        and record.get("owner_surface_pair") == [5, 15]
-    ]
-    mixed_u_turn_split_contract = (
-        not require_mixed_u_turn_split
-        or (
-            len(mixed_u_turn_records) == 7
+    turn_split_contract = True
+    if required_turn_split_contract is not None:
+        target_records = [
+            record
+            for record in bridge_shape_records
+            if record.get("segment_id")
+            == required_turn_split_contract["segment_id"]
+            and record.get("pipe_id") == required_turn_split_contract["pipe_id"]
+            and record.get("owner_surface_pair")
+            == required_turn_split_contract["owner_surface_pair"]
+        ]
+        expected_job_count = required_turn_split_contract["job_count"]
+        expected_turn_count = required_turn_split_contract["turn_count"]
+        turn_split_contract = (
+            len(target_records) == expected_job_count
             and sorted(
                 record.get("turn_split_job_index")
-                for record in mixed_u_turn_records
+                for record in target_records
             )
-            == list(range(7))
+            == list(range(expected_job_count))
             and all(
                 record.get("common_turn_split_applied")
-                and record.get("turn_split_job_count") == 7
+                and record.get("turn_split_job_count") == expected_job_count
                 and record.get("native_operator") == "Blender Bridge Edge Loops"
-                and len(record.get("common_turns", ())) == 6
-                for record in mixed_u_turn_records
-            )
-            and not any(
-                record.get("common_turn_split_applied")
-                and not (
-                    record.get("segment_id") == 25
-                    and record.get("pipe_id") == 4
-                    and record.get("owner_surface_pair") == [5, 15]
-                )
-                for record in bridge_shape_records
+                and len(record.get("common_turns", ())) == expected_turn_count
+                for record in target_records
             )
         )
-    )
     direct_bridge_product = (
         backend_capture.get("called")
         and backend_capture.get("status") == "finished"
@@ -535,7 +546,7 @@ def classify_result(
         and backend_stats.get("zero_area_face_count") == 0
         and backend_stats.get("self_intersection_count") == 0
         and bridge_shape_contract
-        and mixed_u_turn_split_contract
+        and turn_split_contract
     )
     safety_failure = (
         preview_result in (["FINISHED"], ["CANCELLED"])
@@ -794,6 +805,9 @@ def run_repetition(
         backend_capture.get("called")
         and backend_capture.get("feature_graph_contract") == "GN_PREVIEW_V1"
     )
+    required_turn_split_contract = TURN_SPLIT_REGRESSION_CONTRACTS.get(
+        (fixture_label, object_name)
+    )
     classification, classification_reason, contract_violations = classify_result(
         source_before,
         preview_result,
@@ -805,7 +819,7 @@ def run_repetition(
         final_state,
         diagnostic,
         fixture_label in DEFERRED_LABELS,
-        fixture_label == "mixed",
+        required_turn_split_contract,
     )
     if repetition_index == 0:
         save_artifact_copy(case_directory / "final.blend")

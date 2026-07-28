@@ -20,6 +20,7 @@
 - Feature Chamfer Boolean/source-surface rail A/B 统一 RailPairRecord contract smoke test
 - Feature Chamfer open Rail 单调、scale-invariant correspondence / terminal constraint regression
 - Feature Chamfer mixed fixture 目标 Operator PREVIEW→FINALIZE terminal topology 回归
+- Feature Chamfer Tricky-b 标准 180° open U 形由两个同步局部转折拆成三个原生 Bridge 任务回归
 - Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
 - decal project smoke test
 - quickweight smoke test
@@ -94,8 +95,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。
 > Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
-> 2026-07-28 全部 32 组正式 Bridge 输入经 `1a/1b ... 32a/32b` 人工复核后，用户确认实际错误任务是 `26a/26b`：两侧配对正确、长度均约 `5.73`，但整段跨越巨大 U 形和多个显著转折。手动整组原生 Bridge 可复现错误，在大转折处分段后逐段 Bridge 正确。正式实现已采用“共同大转折同步分段 + 每段原生 Bridge”，不是自定义逐点对应或重采样；第一阶段状态现为 `VERIFIED`，法线继续暂缓。
-> 为保护普通槽段，共同转折分段只在至少四处双方共同显著转折、累计转向至少 360° 时启用；Mixed `26a/26b` 在 Radius `0.01/0.03` 都识别出六处 90° 转折并拆成 7 个连续原生 Bridge job，其余任务不得被该规则拆分。
+> 2026-07-28 全部正式 Bridge 输入经 `1a/1b ...` 人工复核后，Mixed `26a/26b` 与 Tricky-b `32a/32b` 都证明：已配对正确的 open U 形长链若整组交给原生 Bridge，可能在转角处产生扭曲。共同转折分段必须逐处独立生效，不设置累计 360° 或至少四处转折门槛；cyclic Loop 保持完整闭环。两组现由同一正式几何规则命中，禁止 fixture 特判、逐点对应或重采样。新证据为 `/private/tmp/hst-general-turn-split-required10-final-20260728/results.json`（10 cells × 3）、`/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`（延期 4 cells × 3）与 `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`（147 / 147）；独立审计已通过，状态为 `VERIFIED`，用户真实 UI 复核前仍非 `ACCEPTED`，法线继续暂缓。
 
 ## Experimental Pipe Chamfer API Probe
 
@@ -190,7 +190,7 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 - 第一阶段门槛只统计 `simple`、`tricky_b`、`mixed` 的 10 个目标场景，要求 10/10 × 3 repetitions 为直接成功或满足上述严格条件的降低半径后成功；`tricky` 4 cells 单独记录安全结果并延后。
 - 汇总：`tests/artifacts/feature_chamfer_matrix/results.json`。
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
-- 旧第一阶段自动证据：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`、`/private/tmp/hst-required10x3-final7-20260727/results.json` 和 `/private/tmp/hst-required10-strip-final-20260728/results.json`；前两份被 `mixed` 真实 UI 复核推翻，最后一份依赖已撤回的自定义逐点对应，都不能声明第一阶段通过。最终证据为 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`：10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，并显式验证 Mixed `26a/26b` 六切点/七个原生 Bridge job、其余任务未触发分段。延期安全证据为 `/private/tmp/hst-turn-split-tricky-safe-20260728/results.json`，最终完整回归为 `/private/tmp/hst-turn-split-final-full-regression-20260728/results.json`（146 / 146）。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
+- 旧第一阶段自动证据：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`、`/private/tmp/hst-required10x3-final7-20260727/results.json`、`/private/tmp/hst-required10-strip-final-20260728/results.json` 与 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`；前三份分别被真实 UI 或禁用的逐点对应路线推翻，最后一份使用过拟合 Mixed 的累计转角门槛，也不能继续声明通过。通用逐处规则的新证据为 `/private/tmp/hst-general-turn-split-required10-final-20260728/results.json`：10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，显式验证 Mixed 六切点/七 job 与 Tricky-b 两切点/三 job。延期安全证据为 `/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`，完整回归为 `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`（147 / 147）。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
 
 ## 设计原则
 

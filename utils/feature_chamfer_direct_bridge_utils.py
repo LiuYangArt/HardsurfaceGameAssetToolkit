@@ -42,8 +42,6 @@ MAX_RESIDUAL_CYCLE_ENUMERATION_STATES = 4096
 MAX_RESIDUAL_CYCLE_PAIRING_STATES = 4096
 MIN_TURN_SAMPLE_RADIANS = math.radians(1.0)
 MIN_MAJOR_TURN_RADIANS = math.radians(30.0)
-MIN_COMMON_TURN_COUNT = 4
-MIN_COMMON_TURN_TOTAL_RADIANS = math.radians(360.0)
 
 
 # 返回 BMesh Edge 自然连通分量，不重排、不合并、也不要求两组长度一致。
@@ -1473,14 +1471,7 @@ def _split_bridge_job_at_common_turns(
                 "side_cuts": side_cuts,
             }
         )
-    if (
-        len(common_turns) < MIN_COMMON_TURN_COUNT
-        or sum(
-            math.radians(turn["contract_turn_degrees"])
-            for turn in common_turns
-        )
-        < MIN_COMMON_TURN_TOTAL_RADIANS
-    ):
+    if not common_turns:
         return None
     side_runs = [
         _component_station_runs(

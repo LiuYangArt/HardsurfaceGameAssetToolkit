@@ -36,9 +36,16 @@ fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 ar
 Bridge 选错槽段左右 Edge Loop，产生跨槽长斜面、扭曲面和错误 chamfer 轮廓，因此这 2 个
 结果及当时的第一阶段通过结论已作废。2026-07-27 的后续修复同样被用户对 Mixed 下方
 U 形槽的真实 UI 复核推翻，不再作为正式证据。共同大转折分段修复后的正式 10 cells × 3
-证据位于 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`：全部稳定
-`PRODUCT_SUCCESS`，source 不变；Mixed `26a/26b` 在两个 Radius 都由六个共同转折拆成
-七个连续原生 Bridge job，其他任务未触发该规则。`tricky` 的 4 个延后场景均连续 3 次
+证据位于 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`；该证据曾证明
+Mixed `26a/26b` 在两个 Radius 由六个共同转折拆成七个连续原生 Bridge job，但随后被
+Tricky-b `32a/32b` 的标准 180° open U 形扭曲推翻为过拟合，不能继续声明第一阶段通过。
+通用规则必须逐处处理双方同步局部大转折，不使用累计角度、最少转折数或 fixture 身份。
+`tricky` 的 4 个延后场景均连续 3 次
 `SAFETY_PASS`，结果位于 `/private/tmp/hst-turn-split-tricky-safe-20260728/results.json`。
 最终完整项目回归 146/146 位于 `/private/tmp/hst-turn-split-final-full-regression-20260728/results.json`。
-当前为 `VERIFIED`；用户真实 UI 复核最终产品前不得声明 `ACCEPTED`。
+通用逐处规则的新证据位于 `/private/tmp/hst-general-turn-split-required10-final-20260728/results.json`：
+10 cells × 3 全部稳定 `PRODUCT_SUCCESS`；Mixed `26a/26b` 六切点/七 job，Tricky-b
+`32a/32b` 两切点/三 job，均由同一正式规则命中。延期安全证据位于
+`/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`，完整回归
+147 / 147 位于 `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`。
+独立审计已通过，状态恢复为 `VERIFIED`；用户真实 UI 复核前不得声明 `ACCEPTED`。

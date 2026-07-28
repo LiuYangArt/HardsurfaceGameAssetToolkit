@@ -8452,14 +8452,25 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             and records_by_source_edges[(1947,)]["owner_surface_pair"] == [17, 19],
             f"Mixed fixture top slot selected the wrong Surface pair at Radius {radius}",
         )
-        lower_record = records_by_source_edges[
-            (295, 317, 321, 325, 329, 333, 337, 341, 345, 349, 354, 359, 691)
+        lower_records = [
+            record
+            for record in stats["bridge_records"]
+            if tuple(record.get("source_edge_indices", ()))
+            == (295, 317, 321, 325, 329, 333, 337, 341, 345, 349, 354, 359, 691)
         ]
         ensure(
-            lower_record["owner_surface_pair"] == [4, 15]
-            and lower_record["side_edge_counts"] == [13, 46]
-            and lower_record["junction_fragment_edge_count"] == 0
-            and lower_record["side_interior_witness_counts"] == [0, 0],
+            lower_records
+            and all(
+                record["owner_surface_pair"] == [4, 15]
+                and record["junction_fragment_edge_count"] == 0
+                and record["side_interior_witness_counts"] == [0, 0]
+                for record in lower_records
+            )
+            and [
+                sum(record["side_edge_counts"][side_index] for record in lower_records)
+                for side_index in range(2)
+            ]
+            == [13, 46],
             f"Mixed fixture lower slot did not keep both full Edge Loops at Radius {radius}",
         )
         mixed_u_turn_records = [
@@ -8495,21 +8506,103 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             ),
             f"Mixed fixture 26a/26b common-turn proof drifted at Radius {radius}: {common_turns}",
         )
+
+    result.add_detail(
+        "Mixed fixture split 26a/26b at six synchronized local turns"
+    )
+
+
+# 验证标准 180° open U 形由通用共同转折规则拆成三段，不依赖累计 360°。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_finalize_tricky_b_u_turn_split_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_builder = operator_module.build_direct_edge_loop_chamfer
+    evidence_by_radius = {}
+
+    def captured_builder(*args, **kwargs):
+        stats = original_builder(*args, **kwargs)
+        evidence_by_radius[round(float(args[1].radius), 6)] = stats
+        return stats
+
+    operator_module.build_direct_edge_loop_chamfer = captured_builder
+    try:
+        for radius in (0.01, 0.03):
+            load_fixture_blend("feature-chamfer-product-tricky-b.blend")
+            source = bpy.data.objects.get("Extruded.002")
+            ensure(source is not None, "Tricky-b U-turn source is missing")
+            source_hash = _mesh_fingerprint(source)
+            preview_result, _ = run_feature_chamfer_gn(source, radius=radius)
+            ensure(
+                preview_result == {"FINISHED"},
+                f"Tricky-b U-turn Preview failed at Radius {radius}",
+            )
+            finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+            ensure(
+                finalize_result == {"FINISHED"},
+                f"Tricky-b U-turn Finalize failed at Radius {radius}",
+            )
+            output = bpy.context.active_object
+            ensure(
+                output is not None and output is not source,
+                "Tricky-b U-turn created no separate output",
+            )
+            ensure(
+                _mesh_fingerprint(source) == source_hash,
+                "Tricky-b U-turn Finalize changed source",
+            )
+            bm = bmesh.new()
+            bm.from_mesh(output.data)
+            ensure(
+                not any(len(edge.link_faces) != 2 for edge in bm.edges)
+                and not any(face.calc_area() <= 1.0e-12 for face in bm.faces),
+                "Tricky-b U-turn output is not a clean closed Mesh",
+            )
+            bm.free()
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+
+    ensure(
+        set(evidence_by_radius) == {0.01, 0.03},
+        f"Tricky-b U-turn evidence incomplete: {sorted(evidence_by_radius)}",
+    )
+    for radius, stats in evidence_by_radius.items():
+        target_records = [
+            record
+            for record in stats["bridge_records"]
+            if record.get("segment_id") == 18
+            and record.get("pipe_id") == 10
+            and record.get("owner_surface_pair") == [8, 9]
+        ]
         ensure(
-            not any(
+            len(target_records) == 3
+            and sorted(
+                record.get("turn_split_job_index") for record in target_records
+            )
+            == [0, 1, 2]
+            and all(
                 record.get("common_turn_split_applied")
-                and not (
-                    record.get("segment_id") == 25
-                    and record.get("pipe_id") == 4
-                    and record.get("owner_surface_pair") == [5, 15]
-                )
-                for record in stats["bridge_records"]
+                and record.get("turn_split_job_count") == 3
+                and record.get("native_operator") == "Blender Bridge Edge Loops"
+                for record in target_records
             ),
-            f"Mixed fixture common-turn split expanded beyond 26a/26b at Radius {radius}",
+            f"Tricky-b 32a/32b was not split into three native Bridge jobs at Radius {radius}",
+        )
+        common_turns = target_records[0].get("common_turns", ())
+        ensure(
+            len(common_turns) == 2
+            and all(
+                abs(turn.get("contract_turn_degrees", 0.0) - 90.0) <= 1.0e-3
+                and len(turn.get("side_cut_stations", ())) == 2
+                for turn in common_turns
+            ),
+            f"Tricky-b U-turn common-turn proof drifted at Radius {radius}: {common_turns}",
         )
 
     result.add_detail(
-        "Mixed fixture split 26a/26b at six common turns and kept other Edge Loop jobs unchanged"
+        "Tricky-b 32a/32b split at two synchronized local turns without a cumulative-angle gate"
     )
 
 
@@ -12019,6 +12112,10 @@ def main():
     context.run_case(
         "gn_finalize_mixed_fixture_terminal_topology_regression",
         test_gn_finalize_mixed_fixture_terminal_topology_regression,
+    )
+    context.run_case(
+        "gn_finalize_tricky_b_u_turn_split_regression",
+        test_gn_finalize_tricky_b_u_turn_split_regression,
     )
 
     context.run_case(

@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED`（Mixed 下方槽已修复并通过第一阶段产品门禁；第二阶段 tricky 产品支持与法线仍暂缓）
+状态：`VERIFIED`（Mixed 与 Tricky-b 的 open U 形已由同一通用规则修复并通过产品门禁与独立审计；用户真实 UI 复核前仍非 `ACCEPTED`）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -147,8 +147,10 @@ Boundary Edges，也不改变共享资产。若 metadata 导致 Boolean 几何�
 - 普通、短且形态单一的槽段，将两组完整边界一次性交给 Blender 原生 Bridge；
 - 对已确认配对正确但包含多个显著空间转折的 open 槽段，先忽略重合短边等数值噪声，
   以链的累计弧长与局部转向确认两侧共同的大转折；仅在双方都有唯一对应转折时同步切段；
-- 当前产品门禁将这一例外收紧为至少四个共同显著转折、累计转向至少 360°，避免普通 90°、
-  S 形或短槽被不必要地拆分；`26a/26b` 六处转折累计 540°，两个 Radius 都唯一满足该门禁；
+- 共同转折逐处独立生效：任何 open 槽段只要两侧在同一 station 区间都存在唯一、显著的
+  局部转折，就在该处同步切段；不设置累计转向或最少转折数量门槛，也不要求特定 U 形复杂度；
+- cyclic Loop 保持完整闭环，不走 open 槽段转折分段；普通直段、单侧转折或两侧不能唯一同步
+  的候选保持原任务或安全停止；
 - 每一对子段分别交给 Blender 原生 Bridge；不得新增 Vertex、不得把一侧投影到另一侧、
   不得按最近距离建立逐点关系；
 - 子段必须保持原链拓扑顺序，首尾连续且全集无重叠、无遗漏；共同转折不明确时安全停止；
@@ -331,11 +333,12 @@ Bridge 能复现同样的跨槽错误，而在大转折处分段并逐段 Bridge
 局部 rebuild、距离猜 Pipe 与 fixture 特判。以下新证据完成后，状态已由该次
 `INTEGRATED / STOP` 提升为 `VERIFIED`；法线继续暂缓。
 
-2026-07-28 已完成共同大转折分段修复与正式验收。正式 runtime 仅在至少四处双方共同
-显著转折且累计转向至少 360° 时启用该规则；Mixed `26a/26b` 在 Radius `0.01 / 0.03`
-均识别六处 90° 转折，复用既有 Boundary Vertex 拆成 7 个连续 job，每段仍调用 Blender
-原生 Bridge。其余 Bridge job 不触发该规则；实现没有对象名、fixture、Edge ID 特判，也
-没有逐点对应、重采样、局部重建或 canonicalization。
+2026-07-28 曾以至少四处共同转折、累计 360° 作为门槛并完成一次自动验收；用户随后用
+Tricky-b `32a/32b` 的标准 open U 形证明该门槛过拟合 Mixed。该 U 形约转向 180°，整组
+原生 Bridge 同样产生转角扭曲，却因旧门槛未分段。旧 `VERIFIED` 结论及“其他任务不得
+触发分段”的断言因此作废，状态退回 `INTEGRATED`。正式通用语义改为逐处识别双方共同
+局部大转折，不再检查累计角度或最少转折数；Mixed `26a/26b` 与 Tricky-b `32a/32b`
+必须由同一几何规则自然命中，禁止 fixture、对象名或组号特判。
 
 - `/private/tmp/hst-turn-split-final-required10-20260728/results.json`：第一阶段 10 cells × 3 全部稳定
   `PRODUCT_SUCCESS`，`first_stage_go / run_go` 均为 true；source 全部不变，正式 runtime、
@@ -346,7 +349,30 @@ Bridge 能复现同样的跨槽错误，而在大转折处分段并逐段 Bridge
 - `/private/tmp/hst-mixed-turn-split-gate-20260728/`：Mixed 两个 Radius 的可打开 `final.blend`、
   正式矩阵诊断与下方槽固定 wire 近景；补面限制在槽宽内，不再出现跨槽扇形/长斜面。
 
-独立 Spec Audit 确认：切点全部复用既有 BMesh Vertex；分段前后对原 Boundary Edge 做全集、
-无重叠覆盖检查；普通 8 cells × 3 没有任何额外分段；Mixed 只有通用合同锁定的目标槽触发。
-正式 runtime、回归门禁与本文语义一致。当前可声明 `VERIFIED`；仍需用户在真实 UI 复核
-最终产品后才可声明 `ACCEPTED`。法线和第二阶段 tricky 产品支持均不在本轮范围。
+旧证据仍可证明切点复用既有 BMesh Vertex、分段覆盖无遗漏无重叠，以及 Mixed 结果已修复；
+但不能证明新的通用规则。完成 Tricky-b `32a/32b` 修复、重跑第一阶段 10 cells × 3、固定
+近景与独立 Spec Audit 前不得恢复 `VERIFIED`。法线和第二阶段 tricky 产品支持仍不在本轮范围。
+
+2026-07-28 通用逐处规则已接入正式 runtime。任何 open 双链只要双方在同一 station 区间
+都有唯一的局部大转折，就复用现有 Boundary Vertex 同步切开；没有累计角度或最少转折数
+门槛，cyclic Loop 不参与该分段。Tricky-b `32a/32b` 在 Radius `0.01 / 0.03` 均识别两处
+约 90° 共同转折并拆成 3 个原生 Bridge job；Mixed `26a/26b` 仍由同一规则识别六处转折
+并拆成 7 个原生 Bridge job。实现未读取 fixture、对象、组号或测试 Edge ID，也未增加
+逐点对应、重采样、局部重建或 canonicalization。
+
+- `/private/tmp/hst-general-turn-split-required10-final-20260728/results.json`：第一阶段 10 cells × 3
+  全部稳定 `PRODUCT_SUCCESS`，`first_stage_go / run_go=true`，source 全部不变；
+- `/private/tmp/hst-general-turn-split-targets-final-20260728/results.json`：Tricky-b `32a/32b` 与
+  Mixed `26a/26b` 两个 Radius 的正式 Operator 分段合同均连续 3 次通过；
+- `/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`：第二阶段延期 4 cells × 3
+  全部稳定 `SAFETY_PASS`，`deferred_tricky_go=true`；
+- `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`：完整项目回归
+  `147 / 147` 通过；
+- `/private/tmp/hst-general-turn-split-visual-20260728/`：Tricky-b 两个 Radius 的固定 wire 近景。
+
+独立 Spec Audit 已确认正式 runtime、测试和本文一致：规则只处理 open 双链两侧同步出现的
+局部显著转折，cyclic Loop 不进入分段；切点复用既有 Boundary Vertex，分段前后原 Edge
+全集完整且互斥；生产实现没有 fixture、对象名、组号或测试 Edge ID 特判，也没有逐点对应、
+重采样、局部重建或 canonicalization。状态恢复为 `VERIFIED`，用户真实 UI 复核前仍不得
+声明 `ACCEPTED`。审计记录的非阻断后续项是补充 cyclic、单侧转折、阈值边界和不同弯曲
+方向的合成负例；当前正式产品矩阵和完整回归均未发现 regression。
