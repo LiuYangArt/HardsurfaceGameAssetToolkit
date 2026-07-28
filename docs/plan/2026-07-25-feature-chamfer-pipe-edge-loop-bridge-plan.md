@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED / USER REVIEW PENDING`（第一阶段 10-cell 产品门禁已恢复；第二阶段 tricky 与法线仍暂缓）
+状态：`VERIFIED`（Mixed 下方槽已修复并通过第一阶段产品门禁；第二阶段 tricky 产品支持与法线仍暂缓）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -14,16 +14,26 @@ identity 恢复去反推切口边。
 槽口左右两侧完整 Edge Loop，执行 Blender 原生 `Bridge Edge Loops`；Pipe 与另一根
 Pipe 交叉时，原本连续的槽必须在交叉区域两端断开，分别对每个“交叉点之间的连续
 槽段”左右两侧完整边链执行 Bridge，最后对所有 Bridge 后剩余的交叉处孔洞执行 Fill。
+原生 Bridge 若在已确认的 open 左右链之间生成明显越过槽宽的内部连接，则产品门禁失败；
+不得用自定义逐点、逐边对应替换原生 Bridge。对于已经确认配对正确、但包含多个显著
+空间转折且整段原生 Bridge 可复现跨槽错连的 open 槽段，允许在两侧共同的大转折边界
+同步切成较短的连续子段，再逐段调用原生 Bridge。该分段只限定原生 Bridge 的局部范围，
+不生成逐点对应、不重采样、不重建边界。正式 fail-closed 门禁只有在不误拦既有正确场景
+时才能接入。
 
 固定规则：
 
 - 左右两侧允许 Vertex / Edge 数量不同；
 - 不要求逐 Vertex、逐 Edge 或逐 fragment 对应；
-- 不要求预先生成相同分段，也不要求 quad-only；
-- Blender 负责不等数量两侧的内部连接，可生成 tri/quad 混合结果；
+- 不要求两侧预先具有相同 Edge/Vertex 分段，也不要求 quad-only；允许用两侧共同的显著
+  转折作为 Bridge job 边界，但不得为了等点数而细分或重采样；
+- Blender 负责不等数量两侧的内部连接，可生成 tri/quad 混合结果；若结果越过槽宽则
+  产品不能通过；
 - 中间 Boolean 数据中的重合点、零面积 Face、degree、branch、cycle 或 canonicalization 诊断，不是 Bridge 的前置门槛；
 - 配对单位是交叉点之间的连续槽段，不是整根 Pipe，也不是整个连通 cutter network；
-- 只要能够可靠选中同一槽段的左右两侧完整边链，就直接 Bridge，不研究 loop 内逐点、逐边 pairing；
+- 只要能够可靠选中同一槽段的左右两侧完整边链，就直接 Bridge；若整段包含多个显著
+  转折且原生 Bridge 产生跨槽错连，则先按两侧共同转折切成完整连续子段。不得用距离、
+  fixture 身份或自定义逐点对应生成补面；
 - junction Fill 只消费所有槽段 Bridge 后自然剩余的交叉孔洞，不得提前用 Fill 替代可 Bridge 的普通槽段。
 
 失败与半径重试规则：
@@ -73,13 +83,18 @@ Bridge/Fill 新面在尚未恢复 Custom Normal 时可能显示为黑色三角�
 - 不再自行探测、恢复或重建 Boundary Edge identity；
 - 没有 junction 的 cyclic 槽保留两条完整 cyclic Edge Loop；
 - 在 junction 处，以 Boundary Edge 的多 Pipe owner 变化作为确定性交叉边界，把全局 Loop 切成单一 Pipe 的连续 runs；若交叉只在槽的一侧产生切点，则使用 Preview Pipe 同槽段携带的归一化弧长 station，在另一侧唯一对应的边内同步插入切点。station 只同步已经由 Pipe/槽段/Surface Patch 身份锁定的两侧，不承担 Pipe 猜测或逐边配对；
-- 实现中的 edge-count、局部长度和 station 数值阈值，只用于已经锁定 Pipe、槽段和 Surface Patch 后的 junction witness 有效性与切点分段；它们不得用于猜 Pipe、从候选中挑“较像”的两侧，也不得成为普通完整 Loop 进入 Bridge 的前置门槛；
+- 实现中的 edge-count、局部长度和 station 数值阈值，只用于已经锁定 Pipe、槽段和 Surface Patch 后的 junction witness 有效性、共同大转折确认与切点分段；它们不得用于猜 Pipe、从候选中挑“较像”的两侧，也不得成为普通完整 Loop 进入 Bridge 的前置门槛；
 - 不按 edge 数、edge 长度或世界坐标选择“较大两条”，不按距离恢复 Pipe，不重排原始 Boundary Edge；
 - 将同一 Pipe 在相邻两个 junction 之间、或 junction 与 terminal 之间的左右两条连续 run 配成一个槽段 Bridge job；
 - 左右名称只表示两组输入，不表达逐边对应关系。
-- 这里的“完整”是对单个槽段而言：从一个 junction/terminal 边界连续走到另一个 junction/terminal 边界；不得把跨过 junction 的整根 Pipe 强行视为一个 Bridge job。
+- 这里的“完整”首先是对单个槽段而言：从一个 junction/terminal 边界连续走到另一个
+  junction/terminal 边界；不得把跨过 junction 的整根 Pipe 强行视为一个 Bridge job。
+  对已锁定的复杂 open 槽段，显著转折可以继续成为子段边界；全部子段必须按顺序、无重叠、
+  无遗漏地覆盖原左右链。
 
-Go：Boolean Pro Boundary Edges 被完整分成槽段左右边链与 junction 孔洞边界；每个 Bridge job 恰好包含同一槽段的两条完整边链，且不跨过 junction 或混入其他槽。
+Go：Boolean Pro Boundary Edges 被完整分成槽段左右边链与 junction 孔洞边界；每个 Bridge
+job 恰好包含同一槽段的两条完整边链，或由共同显著转折确定的一对连续子链，且不跨过
+junction、不混入其他槽，所有子段合计完整覆盖原槽段。
 Stop：无法确定某条连续 run 的 Pipe owner、无法确定同槽段的另一侧，或者槽段范围跨过 junction / 混入其他槽。
 
 以下情况不得单独触发 Stop：两侧数量不同、中间数据有重合/零面积记录、局部 degree>2、cycle、缺少逐边身份或无法建立 raw→canonical 映射。
@@ -129,12 +144,21 @@ Boundary Edges，也不改变共享资产。若 metadata 导致 Boolean 几何�
 
 ### Step 2 — 直接调用 Blender Bridge
 
-- 将两组完整边界一次性交给 Blender 原生 Bridge；
+- 普通、短且形态单一的槽段，将两组完整边界一次性交给 Blender 原生 Bridge；
+- 对已确认配对正确但包含多个显著空间转折的 open 槽段，先忽略重合短边等数值噪声，
+  以链的累计弧长与局部转向确认两侧共同的大转折；仅在双方都有唯一对应转折时同步切段；
+- 当前产品门禁将这一例外收紧为至少四个共同显著转折、累计转向至少 360°，避免普通 90°、
+  S 形或短槽被不必要地拆分；`26a/26b` 六处转折累计 540°，两个 Radius 都唯一满足该门禁；
+- 每一对子段分别交给 Blender 原生 Bridge；不得新增 Vertex、不得把一侧投影到另一侧、
+  不得按最近距离建立逐点关系；
+- 子段必须保持原链拓扑顺序，首尾连续且全集无重叠、无遗漏；共同转折不明确时安全停止；
 - 使用普通 Bridge，不启用 Merge；
 - 不在调用前执行逐边匹配、重采样、Merge by Distance、局部 rebuild 或自研 zipper。
 
-Go：Blender 返回 Bridge Faces，选中的两侧均被连接。
-Stop：Bridge 没有生成 Faces、连接到其他 Pipe，或产生明显翻面、跨槽连接。
+Go：每个普通槽段或转折子段均由 Blender 返回 Bridge Faces，选中的两侧全部被连接，
+子段合计完整消费原左右链。
+Stop：共同转折不能唯一同步、子段覆盖不完整、Bridge 没有生成 Faces、连接到其他 Pipe，
+或产生明显翻面、跨槽连接。
 
 ### Step 2.5 — Fill junction 孔洞
 
@@ -265,7 +289,8 @@ source Edge 冻结每个槽段自己的 owner Surface pair 与 source Edge ident
 station 区间、junction fragment 和跨其他槽段复用 Edge 的通用形态门禁。未恢复逐边配对、
 距离猜 Pipe、fixture 特判或 canonicalization；法线仍按既定决定暂缓。
 
-正式 Operator 验证证据：
+2026-07-27 的历史 Operator 验证证据（已被 2026-07-28 的下方槽复核替代，不得用于当前
+完成声明）：
 
 - `/private/tmp/hst-required10x3-final7-20260727/results.json`：第一阶段 10 cells × 3 全部稳定
   `PRODUCT_SUCCESS`，`first_stage_go / run_go` 均为 true，source 全部不变；每个 Bridge
@@ -283,3 +308,45 @@ Boundary Edges → segment-local 两侧完整 Edge Loop → Blender Bridge Edge 
 junction Fill → clean separate Mesh；矩阵把形态合同纳入产品成功条件。实现未引用 fixture
 名称、对象名或测试 Edge ID；测试中的 Edge ID 只作为真实 Mixed 回归断言。当前可声明
 `VERIFIED`，但在用户用真实 UI 复核 Show Cutter / Boolean Preview 前不得声明 `ACCEPTED`。
+
+2026-07-28 用户再次复核指出 Mixed 下方 U 形凹槽仍有跨槽长斜边。新诊断证明当前左右
+槽段和 owner Surface pair 身份相同；早期诊断曾把另一组 `13 / 46` 不均匀采样链误认为
+目标，并由此得到最长新边约 `1.23` 的非目标证据。变更 Edge 输入顺序、twist、pair 模式
+以及只细分最长边均不能解释用户指出的位置。曾验证过 main 旧方案的单调 Strip 能得到
+局部正确形态，但独立审计
+确认它实质恢复了用户禁止的逐点对应，因此已撤回，不能作为产品修复。另一个原生
+Bridge 后槽宽门禁试验能拦住 Mixed，却同时拦住此前通过的 5/8 个对照场景，因此也已撤回，
+没有接入正式实现。
+
+该阶段状态曾为 `INTEGRATED / STOP`：当时正式实现仍会产出用户截图中的错误结果，Mixed
+Radius `0.01 / 0.03` 的正确原生 Bridge 输出尚未恢复，旧第一阶段 10-cell 产品门禁因此作废。
+
+2026-07-28 第三次人工诊断已定位实际错误任务：把正式 runtime 的全部 32 组 Bridge 输入
+分别保存为 `1a/1b ... 32a/32b` 后，用户确认问题来自 `26a/26b`。这两条链配对正确，均为
+长度约 `5.73`、包含多个显著转折的长 open Edge Loop；用户手动整组选中后执行 Blender
+Bridge 能复现同样的跨槽错误，而在大转折处分段并逐段 Bridge 可以得到正确结果。这推翻了
+“当前错误来自左右链选错”以及“只能自定义补面或重采样”的判断：根因是一次原生 Bridge
+跨越巨大 U 形和多重转折时内部对应关系错位。用户已授权扩展正式规格，允许已锁定的左右链
+在双方共同的显著转折处分成连续子段，再分别调用原生 Bridge；仍禁止逐点对应、重采样、
+局部 rebuild、距离猜 Pipe 与 fixture 特判。以下新证据完成后，状态已由该次
+`INTEGRATED / STOP` 提升为 `VERIFIED`；法线继续暂缓。
+
+2026-07-28 已完成共同大转折分段修复与正式验收。正式 runtime 仅在至少四处双方共同
+显著转折且累计转向至少 360° 时启用该规则；Mixed `26a/26b` 在 Radius `0.01 / 0.03`
+均识别六处 90° 转折，复用既有 Boundary Vertex 拆成 7 个连续 job，每段仍调用 Blender
+原生 Bridge。其余 Bridge job 不触发该规则；实现没有对象名、fixture、Edge ID 特判，也
+没有逐点对应、重采样、局部重建或 canonicalization。
+
+- `/private/tmp/hst-turn-split-final-required10-20260728/results.json`：第一阶段 10 cells × 3 全部稳定
+  `PRODUCT_SUCCESS`，`first_stage_go / run_go` 均为 true；source 全部不变，正式 runtime、
+  形态合同、clean output 与 Mixed 六切点/七子段合同全部通过。
+- `/private/tmp/hst-turn-split-tricky-safe-20260728/results.json`：延期 4 cells × 3 全部稳定
+  `SAFETY_PASS`，`deferred_tricky_go=true`；source 不变且没有坏输出，仍不代表第二阶段产品成功。
+- `/private/tmp/hst-turn-split-final-full-regression-20260728/results.json`：完整项目回归 `146 / 146` 通过。
+- `/private/tmp/hst-mixed-turn-split-gate-20260728/`：Mixed 两个 Radius 的可打开 `final.blend`、
+  正式矩阵诊断与下方槽固定 wire 近景；补面限制在槽宽内，不再出现跨槽扇形/长斜面。
+
+独立 Spec Audit 确认：切点全部复用既有 BMesh Vertex；分段前后对原 Boundary Edge 做全集、
+无重叠覆盖检查；普通 8 cells × 3 没有任何额外分段；Mixed 只有通用合同锁定的目标槽触发。
+正式 runtime、回归门禁与本文语义一致。当前可声明 `VERIFIED`；仍需用户在真实 UI 复核
+最终产品后才可声明 `ACCEPTED`。法线和第二阶段 tricky 产品支持均不在本轮范围。

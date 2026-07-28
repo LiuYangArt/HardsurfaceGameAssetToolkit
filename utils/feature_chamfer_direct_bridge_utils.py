@@ -2,6 +2,7 @@
 """从 Boolean Pro Boundary Edges 直接执行槽段 Bridge 与 junction Fill。"""
 
 import json
+import math
 
 import bpy
 import bmesh
@@ -39,6 +40,10 @@ BRIDGE_EDGE_OWNER_LAYER = "hst_direct_bridge_owner"
 MAX_RESIDUAL_CYCLE_CANDIDATES = 64
 MAX_RESIDUAL_CYCLE_ENUMERATION_STATES = 4096
 MAX_RESIDUAL_CYCLE_PAIRING_STATES = 4096
+MIN_TURN_SAMPLE_RADIANS = math.radians(1.0)
+MIN_MAJOR_TURN_RADIANS = math.radians(30.0)
+MIN_COMMON_TURN_COUNT = 4
+MIN_COMMON_TURN_TOTAL_RADIANS = math.radians(360.0)
 
 
 # 返回 BMesh Edge 自然连通分量，不重排、不合并、也不要求两组长度一致。
@@ -1230,6 +1235,295 @@ def _component_station_runs(
     )
 
 
+# 从 Pipe 合同的弧长采样中归并圆角采样，找出彼此由直段分开的显著转折区间。
+# segment: 已锁定槽段的 immutable Pipe 合同；返回按 station 排序的转折区间。
+def _segment_major_turn_regions(segment):
+    point_coordinates = tuple(segment.get("point_coordinates", ()))
+    point_stations = tuple(float(value) for value in segment.get("point_stations", ()))
+    if (
+        len(point_coordinates) < 3
+        or len(point_coordinates) != len(point_stations)
+    ):
+        return []
+    points = [tuple(float(value) for value in point) for point in point_coordinates]
+    turn_samples = []
+    for point_index in range(1, len(points) - 1):
+        previous_vector = tuple(
+            points[point_index][axis] - points[point_index - 1][axis]
+            for axis in range(3)
+        )
+        next_vector = tuple(
+            points[point_index + 1][axis] - points[point_index][axis]
+            for axis in range(3)
+        )
+        previous_length = math.sqrt(sum(value * value for value in previous_vector))
+        next_length = math.sqrt(sum(value * value for value in next_vector))
+        if previous_length <= 1.0e-9 or next_length <= 1.0e-9:
+            continue
+        cosine = sum(
+            previous_vector[axis] * next_vector[axis]
+            for axis in range(3)
+        ) / (previous_length * next_length)
+        turn_radians = math.acos(max(-1.0, min(1.0, cosine)))
+        if turn_radians < MIN_TURN_SAMPLE_RADIANS:
+            continue
+        turn_samples.append(
+            {
+                "point_index": point_index,
+                "station": point_stations[point_index],
+                "turn_radians": turn_radians,
+            }
+        )
+    turn_clusters = []
+    for sample in turn_samples:
+        split_cluster = not turn_clusters
+        if turn_clusters:
+            previous_sample = turn_clusters[-1][-1]
+            previous_index = previous_sample["point_index"]
+            point_index = sample["point_index"]
+            if point_index > previous_index + 1:
+                split_cluster = True
+            else:
+                connector_length = math.dist(
+                    points[previous_index],
+                    points[point_index],
+                )
+                previous_sample_length = math.dist(
+                    points[previous_index - 1],
+                    points[previous_index],
+                )
+                next_sample_length = math.dist(
+                    points[point_index],
+                    points[point_index + 1],
+                )
+                split_cluster = connector_length > 2.0 * max(
+                    previous_sample_length,
+                    next_sample_length,
+                )
+        if split_cluster:
+            turn_clusters.append([sample])
+        else:
+            turn_clusters[-1].append(sample)
+    regions = []
+    for cluster in turn_clusters:
+        total_turn = sum(sample["turn_radians"] for sample in cluster)
+        if total_turn < MIN_MAJOR_TURN_RADIANS:
+            continue
+        first_index = cluster[0]["point_index"]
+        last_index = cluster[-1]["point_index"]
+        regions.append(
+            {
+                "station_low": point_stations[first_index],
+                "station_high": point_stations[last_index],
+                "cut_station": point_stations[last_index],
+                "turn_radians": total_turn,
+            }
+        )
+    return regions
+
+
+# 将 chain 上重合的连续 Boolean 顶点折叠为几何采样，避免零长度边伪造局部急转。
+# component: 单一 open chain；返回按拓扑顺序排列的代表 Vertex。
+def _distinct_chain_vertices(component):
+    ordered_vertices = _ordered_chain_vertices(component)
+    if len(ordered_vertices) != len(component) + 1:
+        return []
+    chain_length = sum(edge.calc_length() for edge in component)
+    coordinate_tolerance = max(1.0e-8, chain_length * 1.0e-8)
+    vertex_groups = []
+    for vertex in ordered_vertices:
+        if (
+            vertex_groups
+            and (vertex.co - vertex_groups[-1][-1].co).length <= coordinate_tolerance
+        ):
+            vertex_groups[-1].append(vertex)
+        else:
+            vertex_groups.append([vertex])
+    return [group[len(group) // 2] for group in vertex_groups]
+
+
+# 验证一侧 chain 在合同转折区间内确有同向几何转折，并选取现有转折边界 Vertex。
+# component/region/segment_id/layers: 槽边、转折区间、槽段与 provenance；返回切点与实测 station。
+def _component_turn_cut_vertex(
+    component,
+    region,
+    segment_id,
+    segment_point_layers,
+    station_point_layers,
+    station_squared_point_layers,
+):
+    distinct_vertices = _distinct_chain_vertices(component)
+    if len(distinct_vertices) < 3:
+        return None
+    station_vertices = []
+    for vertex in distinct_vertices:
+        station_endpoints = _vertex_station_endpoints(
+            vertex,
+            segment_id,
+            segment_point_layers,
+            station_point_layers,
+            station_squared_point_layers,
+        )
+        station_vertices.append((sum(station_endpoints) * 0.5, vertex))
+    if station_vertices[0][0] > station_vertices[-1][0]:
+        station_vertices.reverse()
+    station_tolerance = max(
+        5.0e-4,
+        (region["station_high"] - region["station_low"]) * 0.25,
+    )
+    turn_radians = 0.0
+    for vertex_index in range(1, len(station_vertices) - 1):
+        station, vertex = station_vertices[vertex_index]
+        if not (
+            region["station_low"] - station_tolerance
+            <= station
+            <= region["station_high"] + station_tolerance
+        ):
+            continue
+        previous_vertex = station_vertices[vertex_index - 1][1]
+        next_vertex = station_vertices[vertex_index + 1][1]
+        previous_vector = vertex.co - previous_vertex.co
+        next_vector = next_vertex.co - vertex.co
+        if previous_vector.length <= 1.0e-9 or next_vector.length <= 1.0e-9:
+            continue
+        turn_radians += previous_vector.angle(next_vector)
+    if turn_radians < MIN_MAJOR_TURN_RADIANS:
+        return None
+    interior_candidates = station_vertices[1:-1]
+    cut_station, cut_vertex = min(
+        interior_candidates,
+        key=lambda item: (
+            abs(item[0] - region["cut_station"]),
+            item[0] < region["cut_station"],
+            item[1].index,
+        ),
+    )
+    if abs(cut_station - region["cut_station"]) > station_tolerance:
+        return None
+    return cut_vertex, cut_station, turn_radians
+
+
+# 对已经锁定且含多个共同大转折的左右 chain 同步切段，不插点也不建立逐点对应。
+# components/segment/layers: 同一 Bridge job 的两侧 chain、合同与 provenance；返回子 jobs 与切段诊断。
+def _split_bridge_job_at_common_turns(
+    components,
+    segment,
+    segment_layers,
+    segment_point_layers,
+    station_edge_layers,
+    station_point_layers,
+    station_squared_point_layers,
+):
+    if len(components) != 2 or any(
+        _component_shape(component) != (False, 2)
+        for component in components
+    ):
+        return None
+    segment_id = int(segment["segment_id"])
+    side_station_intervals, _ = _validate_bridge_job_station_interval(
+        components,
+        segment_id,
+        segment_layers,
+        station_edge_layers,
+    )
+    overlap_low = max(interval[0] for interval in side_station_intervals)
+    overlap_high = min(interval[1] for interval in side_station_intervals)
+    common_turns = []
+    for region in _segment_major_turn_regions(segment):
+        if not (
+            overlap_low + 5.0e-4
+            < region["cut_station"]
+            < overlap_high - 5.0e-4
+        ):
+            continue
+        side_cuts = [
+            _component_turn_cut_vertex(
+                component,
+                region,
+                segment_id,
+                segment_point_layers,
+                station_point_layers,
+                station_squared_point_layers,
+            )
+            for component in components
+        ]
+        if any(cut is None for cut in side_cuts):
+            continue
+        side_cut_stations = [cut[1] for cut in side_cuts]
+        station_tolerance = max(
+            1.0e-3,
+            (region["station_high"] - region["station_low"]) * 0.5,
+        )
+        if abs(side_cut_stations[0] - side_cut_stations[1]) > station_tolerance:
+            continue
+        if any(
+            common_turns
+            and cut[0] is common_turns[-1]["side_cuts"][side_index][0]
+            for side_index, cut in enumerate(side_cuts)
+        ):
+            continue
+        common_turns.append(
+            {
+                "contract_station": region["cut_station"],
+                "contract_turn_degrees": math.degrees(region["turn_radians"]),
+                "side_cut_stations": side_cut_stations,
+                "side_turn_degrees": [
+                    math.degrees(cut[2]) for cut in side_cuts
+                ],
+                "side_cuts": side_cuts,
+            }
+        )
+    if (
+        len(common_turns) < MIN_COMMON_TURN_COUNT
+        or sum(
+            math.radians(turn["contract_turn_degrees"])
+            for turn in common_turns
+        )
+        < MIN_COMMON_TURN_TOTAL_RADIANS
+    ):
+        return None
+    side_runs = [
+        _component_station_runs(
+            component,
+            [turn["side_cuts"][side_index][0] for turn in common_turns],
+            segment_id,
+            segment_layers,
+            station_edge_layers,
+        )
+        for side_index, component in enumerate(components)
+    ]
+    if len(side_runs[0]) != len(common_turns) + 1 or len(side_runs[1]) != len(side_runs[0]):
+        raise FeatureChamferDirectBridgeError(
+            "segment_turn_split_incomplete",
+            f"Segment {segment_id} common turn split did not preserve both chains",
+            {
+                "segment_id": segment_id,
+                "common_turn_count": len(common_turns),
+                "side_run_counts": [len(runs) for runs in side_runs],
+            },
+        )
+    for side_index, component in enumerate(components):
+        if set().union(*side_runs[side_index]) != set(component) or sum(
+            len(run) for run in side_runs[side_index]
+        ) != len(component):
+            raise FeatureChamferDirectBridgeError(
+                "segment_turn_split_incomplete",
+                f"Segment {segment_id} common turn split lost or reused Boundary Edges",
+                {"segment_id": segment_id, "side_index": side_index},
+            )
+    return (
+        list(zip(side_runs[0], side_runs[1])),
+        [
+            {
+                key: value
+                for key, value in turn.items()
+                if key != "side_cuts"
+            }
+            for turn in common_turns
+        ],
+    )
+
+
 # 即使 Boundary 仍连通，也按交叉 witness 在槽两侧同步插点并拆成 Bridge jobs。
 # side_chains/segment/layers: 同一槽段两侧完整链与 provenance；返回 jobs 或 None。
 def _split_connected_segment_jobs(
@@ -2106,7 +2400,41 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     },
                 )
             bridge_jobs = bridge_jobs or [side_chains]
-            for bridge_job_index, components in enumerate(bridge_jobs):
+            expanded_bridge_jobs = []
+            for parent_bridge_job_index, components in enumerate(bridge_jobs):
+                turn_split = _split_bridge_job_at_common_turns(
+                    components,
+                    segment,
+                    segment_layers,
+                    segment_point_layers,
+                    station_edge_layers,
+                    station_point_layers,
+                    station_squared_point_layers,
+                )
+                if turn_split is None:
+                    expanded_bridge_jobs.append(
+                        {
+                            "components": components,
+                            "parent_bridge_job_index": parent_bridge_job_index,
+                            "turn_split_job_index": 0,
+                            "turn_split_job_count": 1,
+                            "common_turns": [],
+                        }
+                    )
+                    continue
+                split_jobs, common_turns = turn_split
+                expanded_bridge_jobs.extend(
+                    {
+                        "components": split_components,
+                        "parent_bridge_job_index": parent_bridge_job_index,
+                        "turn_split_job_index": split_job_index,
+                        "turn_split_job_count": len(split_jobs),
+                        "common_turns": common_turns,
+                    }
+                    for split_job_index, split_components in enumerate(split_jobs)
+                )
+            for bridge_job_index, bridge_job in enumerate(expanded_bridge_jobs):
+                components = bridge_job["components"]
                 selected_edges = set().union(*components)
                 shapes = [_component_shape(component) for component in components]
                 if any(endpoint_count not in {0, 2} for _, endpoint_count in shapes):
@@ -2244,6 +2572,19 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     {
                         "segment_id": segment_id,
                         "bridge_job_index": bridge_job_index,
+                        "parent_bridge_job_index": bridge_job[
+                            "parent_bridge_job_index"
+                        ],
+                        "common_turn_split_applied": bool(
+                            bridge_job["common_turns"]
+                        ),
+                        "common_turns": bridge_job["common_turns"],
+                        "turn_split_job_index": bridge_job[
+                            "turn_split_job_index"
+                        ],
+                        "turn_split_job_count": bridge_job[
+                            "turn_split_job_count"
+                        ],
                         "pipe_id": int(segment["pipe_id"]),
                         "port_indices": list(segment.get("port_indices", ())),
                         "source_edge_indices": list(

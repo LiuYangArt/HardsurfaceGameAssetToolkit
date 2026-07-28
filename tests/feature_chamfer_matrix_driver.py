@@ -456,6 +456,7 @@ def classify_result(
     final_state,
     diagnostic,
     allow_safe_failure,
+    require_mixed_u_turn_split,
 ):
     contract_violations = []
     if not source_before["mesh"]["closed_manifold"]:
@@ -487,6 +488,40 @@ def classify_result(
             for record in bridge_shape_records
         )
     )
+    mixed_u_turn_records = [
+        record
+        for record in bridge_shape_records
+        if record.get("segment_id") == 25
+        and record.get("pipe_id") == 4
+        and record.get("owner_surface_pair") == [5, 15]
+    ]
+    mixed_u_turn_split_contract = (
+        not require_mixed_u_turn_split
+        or (
+            len(mixed_u_turn_records) == 7
+            and sorted(
+                record.get("turn_split_job_index")
+                for record in mixed_u_turn_records
+            )
+            == list(range(7))
+            and all(
+                record.get("common_turn_split_applied")
+                and record.get("turn_split_job_count") == 7
+                and record.get("native_operator") == "Blender Bridge Edge Loops"
+                and len(record.get("common_turns", ())) == 6
+                for record in mixed_u_turn_records
+            )
+            and not any(
+                record.get("common_turn_split_applied")
+                and not (
+                    record.get("segment_id") == 25
+                    and record.get("pipe_id") == 4
+                    and record.get("owner_surface_pair") == [5, 15]
+                )
+                for record in bridge_shape_records
+            )
+        )
+    )
     direct_bridge_product = (
         backend_capture.get("called")
         and backend_capture.get("status") == "finished"
@@ -500,6 +535,7 @@ def classify_result(
         and backend_stats.get("zero_area_face_count") == 0
         and backend_stats.get("self_intersection_count") == 0
         and bridge_shape_contract
+        and mixed_u_turn_split_contract
     )
     safety_failure = (
         preview_result in (["FINISHED"], ["CANCELLED"])
@@ -769,6 +805,7 @@ def run_repetition(
         final_state,
         diagnostic,
         fixture_label in DEFERRED_LABELS,
+        fixture_label == "mixed",
     )
     if repetition_index == 0:
         save_artifact_copy(case_directory / "final.blend")

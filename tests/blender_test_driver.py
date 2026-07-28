@@ -8462,9 +8462,54 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             and lower_record["side_interior_witness_counts"] == [0, 0],
             f"Mixed fixture lower slot did not keep both full Edge Loops at Radius {radius}",
         )
+        mixed_u_turn_records = [
+            record
+            for record in stats["bridge_records"]
+            if record.get("segment_id") == 25
+            and record.get("pipe_id") == 4
+            and record.get("owner_surface_pair") == [5, 15]
+        ]
+        ensure(
+            len(mixed_u_turn_records) == 7
+            and sorted(
+                record.get("turn_split_job_index")
+                for record in mixed_u_turn_records
+            )
+            == list(range(7))
+            and all(
+                record.get("common_turn_split_applied")
+                and record.get("turn_split_job_count") == 7
+                and record.get("native_operator") == "Blender Bridge Edge Loops"
+                for record in mixed_u_turn_records
+            ),
+            f"Mixed fixture 26a/26b was not split into seven native Bridge jobs at Radius {radius}",
+        )
+        common_turns = mixed_u_turn_records[0].get("common_turns", ())
+        ensure(
+            len(common_turns) == 6
+            and all(
+                abs(turn.get("contract_turn_degrees", 0.0) - 90.0) <= 1.0e-3
+                and len(turn.get("side_cut_stations", ())) == 2
+                and len(turn.get("side_turn_degrees", ())) == 2
+                for turn in common_turns
+            ),
+            f"Mixed fixture 26a/26b common-turn proof drifted at Radius {radius}: {common_turns}",
+        )
+        ensure(
+            not any(
+                record.get("common_turn_split_applied")
+                and not (
+                    record.get("segment_id") == 25
+                    and record.get("pipe_id") == 4
+                    and record.get("owner_surface_pair") == [5, 15]
+                )
+                for record in stats["bridge_records"]
+            ),
+            f"Mixed fixture common-turn split expanded beyond 26a/26b at Radius {radius}",
+        )
 
     result.add_detail(
-        "Mixed fixture kept exact source-pair Edge Loops at Radius 0.01 and 0.03"
+        "Mixed fixture split 26a/26b at six common turns and kept other Edge Loop jobs unchanged"
     )
 
 

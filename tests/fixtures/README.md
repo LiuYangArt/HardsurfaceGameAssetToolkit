@@ -24,18 +24,21 @@
 
 法线恢复本阶段暂缓，正式输出不接入已知错误的法线处理。黑色三角只作为 shading 诊断，不得直接当作孔洞；是否真正缺面仍由边界、non-manifold 和线框拓扑检查判定。
 
-当前产品操作语义：无交叉的 Pipe 直接 Bridge 槽口两侧完整 Loop；即使原本连续的
-Pipe，与另一根 Pipe 交叉时也要在 junction 处切成连续槽段，逐段 Bridge 两侧完整
-边链，最后 Fill 剩余交叉孔洞。
+当前产品操作语义：无交叉且形态单一的 Pipe 直接 Bridge 槽口两侧完整 Loop；即使原本
+连续的 Pipe，与另一根 Pipe 交叉时也要在 junction 处切成连续槽段。已锁定配对但包含
+巨大 U 形和多个共同显著转折的长 open 槽段，允许在共同转折处复用既有 Boundary Vertex
+同步切成连续子段；每段仍调用原生 Bridge，最后 Fill 剩余交叉孔洞。禁止逐点对应、
+重采样、局部重建、距离猜 Pipe 与 fixture 特判。
 fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 artifact 为准。
 当前全局 Curve 规则下的旧第一阶段自动 scope 位于
 `tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
 其中 `mixed` 两个 cell 虽被自动分类为 `PRODUCT_SUCCESS`，但用户真实 UI 复核发现部分
 Bridge 选错槽段左右 Edge Loop，产生跨槽长斜面、扭曲面和错误 chamfer 轮廓，因此这 2 个
-结果及当时的第一阶段通过结论已作废。Mixed 修复后，正式 10 cells × 3 证据位于
-`/private/tmp/hst-required10x3-final7-20260727/results.json`：全部稳定 `PRODUCT_SUCCESS`，
-source 不变，并且每个 Bridge record 均通过槽段自己的 source owner pair 与形态门禁。
-`tricky` 的 4 个延后场景均连续 3 次 `SAFETY_PASS`，结果位于
-`/private/tmp/hst-tricky-safety-final2-20260727/results.json`。完整项目回归 146/146 位于
-`/private/tmp/hst-full-regression-final3-20260727/results.json`。当前为
-`VERIFIED / USER REVIEW PENDING`；用户真实 UI 复核前不得声明 `ACCEPTED`。
+结果及当时的第一阶段通过结论已作废。2026-07-27 的后续修复同样被用户对 Mixed 下方
+U 形槽的真实 UI 复核推翻，不再作为正式证据。共同大转折分段修复后的正式 10 cells × 3
+证据位于 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`：全部稳定
+`PRODUCT_SUCCESS`，source 不变；Mixed `26a/26b` 在两个 Radius 都由六个共同转折拆成
+七个连续原生 Bridge job，其他任务未触发该规则。`tricky` 的 4 个延后场景均连续 3 次
+`SAFETY_PASS`，结果位于 `/private/tmp/hst-turn-split-tricky-safe-20260728/results.json`。
+最终完整项目回归 146/146 位于 `/private/tmp/hst-turn-split-final-full-regression-20260728/results.json`。
+当前为 `VERIFIED`；用户真实 UI 复核最终产品前不得声明 `ACCEPTED`。
