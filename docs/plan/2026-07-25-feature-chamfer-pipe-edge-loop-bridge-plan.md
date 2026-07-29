@@ -376,3 +376,12 @@ Tricky-b `32a/32b` 的标准 open U 形证明该门槛过拟合 Mixed。该 U �
 重采样、局部重建或 canonicalization。状态恢复为 `VERIFIED`，用户真实 UI 复核前仍不得
 声明 `ACCEPTED`。审计记录的非阻断后续项是补充 cyclic、单侧转折、阈值边界和不同弯曲
 方向的合成负例；当前正式产品矩阵和完整回归均未发现 regression。
+
+2026-07-29 用户真实 UI 复核确认 Mixed 与 Tricky-b 的大范围错误补面已消失，通用 U 形
+分段可保留 `VERIFIED`；但 Tricky-b `Extruded.002` 的局部环形补面仍可见轻微布线扭曲，
+因此整体仍不提升为 `ACCEPTED`。当前 Stop / Go 回到 Bridge 输入核对：已从 Radius `0.01`
+正式 Preview / Finalize runtime 捕获 U 形分段之后、实际交给 Blender 原生 Bridge 的全部
+32 组左右链，按 `1a/1b ... 32a/32b` 保存到
+`/private/tmp/hst-tricky-b-ext002-runtime-pairs-20260729/tricky-b-ext002-actual-bridge-pairs.blend`；
+配套 `pair-manifest.json` 已确认 32 组均恰有两侧且 runtime 序号连续。用户指出具体组号前，
+不得根据截图猜边或修改 Bridge 配对规则。
