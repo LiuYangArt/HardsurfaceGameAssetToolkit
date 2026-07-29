@@ -34,6 +34,17 @@ CLASSIFICATIONS = {
 }
 FIRST_STAGE_LABELS = {"simple", "tricky_b", "mixed"}
 DEFERRED_LABELS = {"tricky"}
+CYCLIC_FIX_TARGET_SCOPE = {("tricky_b", "Extruded.002", 0.01)}
+CYCLIC_FIX_REGRESSION_SCOPE = {
+    ("simple", "Extruded.002", 0.01),
+    ("simple", "Extruded.002", 0.03),
+    ("simple", "Solid 44", 0.01),
+    ("simple", "Solid 44", 0.03),
+    ("tricky_b", "Extruded.003", 0.01),
+    ("tricky_b", "Extruded.003", 0.03),
+    ("mixed", "Extruded.002", 0.01),
+    ("mixed", "Extruded.002", 0.03),
+}
 FIXTURE_HASHES = {
     "feature-chamfer-product-simple.blend": (
         "1cbab4c83c4d9f77bd2b0799257953aaec32aa416994a1d8810425f3c2b94d8c"
@@ -79,6 +90,23 @@ TURN_SPLIT_REGRESSION_CONTRACTS = {
         "job_count": 3,
         "turn_count": 2,
     },
+}
+# 产品矩阵已知 cyclic 目标身份；只断言正式通用规则的结果，生产实现不读取这些值。
+CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
+    ("tricky_b", "Extruded.002", 0.01): (
+        {
+            "segment_id": 16,
+            "pipe_id": 8,
+            "owner_surface_pair": [5, 6],
+            "source_side_edge_counts": [27, 86],
+        },
+        {
+            "segment_id": 19,
+            "pipe_id": 2,
+            "owner_surface_pair": [2, 3],
+            "source_side_edge_counts": [31, 122],
+        },
+    ),
 }
 RETRY_RADII = tuple(
     float(radius)
@@ -474,6 +502,7 @@ def classify_result(
     diagnostic,
     allow_safe_failure,
     required_turn_split_contract,
+    required_cyclic_split_contracts,
 ):
     contract_violations = []
     if not source_before["mesh"]["closed_manifold"]:
@@ -533,6 +562,65 @@ def classify_result(
                 for record in target_records
             )
         )
+    cyclic_split_contract = True
+    for cyclic_contract in required_cyclic_split_contracts:
+        target_records = [
+            record
+            for record in bridge_shape_records
+            if record.get("segment_id") == cyclic_contract["segment_id"]
+            and record.get("pipe_id") == cyclic_contract["pipe_id"]
+            and record.get("owner_surface_pair")
+            == cyclic_contract["owner_surface_pair"]
+        ]
+        source_side_edges = (
+            target_records[0].get("cyclic_source_side_edge_indices", ())
+            if target_records
+            else ()
+        )
+        cyclic_split_contract = cyclic_split_contract and (
+            len(target_records) == 4
+            and sorted(
+                record.get("cyclic_split_job_index")
+                for record in target_records
+            ) == [0, 1, 2, 3]
+            and all(
+                record.get("cyclic_split_applied")
+                and record.get("cyclic_split_job_count") == 4
+                and record.get("native_operator") == "Blender Bridge Edge Loops"
+                for record in target_records
+            )
+            and sorted(len(side_edges) for side_edges in source_side_edges)
+            == cyclic_contract["source_side_edge_counts"]
+            and all(
+                len(
+                    [
+                        edge_index
+                        for record in target_records
+                        for edge_index in record.get(
+                            "cyclic_job_side_edge_indices", ((), ())
+                        )[side_index]
+                    ]
+                )
+                == len(
+                    set(
+                        edge_index
+                        for record in target_records
+                        for edge_index in record.get(
+                            "cyclic_job_side_edge_indices", ((), ())
+                        )[side_index]
+                    )
+                )
+                and sum(
+                    record.get("bridge_input_cleanup", ({}, {}))[side_index].get(
+                        "source_edge_count",
+                        0,
+                    )
+                    for record in target_records
+                )
+                == len(source_side_edges[side_index])
+                for side_index in range(2)
+            )
+        )
     direct_bridge_product = (
         backend_capture.get("called")
         and backend_capture.get("status") == "finished"
@@ -547,6 +635,7 @@ def classify_result(
         and backend_stats.get("self_intersection_count") == 0
         and bridge_shape_contract
         and turn_split_contract
+        and cyclic_split_contract
     )
     safety_failure = (
         preview_result in (["FINISHED"], ["CANCELLED"])
@@ -665,6 +754,24 @@ def repetition_signature(repetition):
                 "zero_area_face_count",
             )
         },
+        "cyclic_bridge_splits": [
+            {
+                key: record.get(key)
+                for key in (
+                    "segment_id",
+                    "pipe_id",
+                    "owner_surface_pair",
+                    "cyclic_split_job_index",
+                    "cyclic_split_job_count",
+                    "common_cyclic_stations",
+                    "cyclic_job_side_edge_indices",
+                )
+            }
+            for record in repetition.get("backend", {})
+            .get("stats", {})
+            .get("bridge_records", ())
+            if record.get("cyclic_split_applied")
+        ],
     }
     return hashlib.sha256(
         json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -808,6 +915,10 @@ def run_repetition(
     required_turn_split_contract = TURN_SPLIT_REGRESSION_CONTRACTS.get(
         (fixture_label, object_name)
     )
+    required_cyclic_split_contracts = CYCLIC_SPLIT_REGRESSION_CONTRACTS.get(
+        (fixture_label, object_name, round(float(radius), 6)),
+        (),
+    )
     classification, classification_reason, contract_violations = classify_result(
         source_before,
         preview_result,
@@ -820,6 +931,7 @@ def run_repetition(
         diagnostic,
         fixture_label in DEFERRED_LABELS,
         required_turn_split_contract,
+        required_cyclic_split_contracts,
     )
     if repetition_index == 0:
         save_artifact_copy(case_directory / "final.blend")
@@ -1149,9 +1261,29 @@ def main():
     deferred_cases = [
         case for case in matrix_cases if case["fixture_label"] in DEFERRED_LABELS
     ]
+    selected_first_stage_scope = {
+        (
+            case["fixture_label"],
+            case["object_name"],
+            round(float(case["radius"]), 6),
+        )
+        for case in first_stage_cases
+    }
+    target_cyclic_scope = selected_first_stage_scope == CYCLIC_FIX_TARGET_SCOPE
+    cyclic_fix_regression_scope = (
+        selected_first_stage_scope == CYCLIC_FIX_REGRESSION_SCOPE
+    )
+    cyclic_fix_temporary_gate_scope = selected_first_stage_scope == (
+        CYCLIC_FIX_TARGET_SCOPE | CYCLIC_FIX_REGRESSION_SCOPE
+    )
     selected_first_stage_complete = len(first_stage_cases) == 10
     first_stage_go_conditions = {
-        "required_scope_selected": selected_first_stage_complete,
+        "required_scope_selected": (
+            selected_first_stage_complete
+            or target_cyclic_scope
+            or cyclic_fix_regression_scope
+            or cyclic_fix_temporary_gate_scope
+        ),
         "required_cells_product_success": all(
             case["classification"]
             in {"PRODUCT_SUCCESS", "PRODUCT_SUCCESS_WITH_RADIUS_RETRY"}

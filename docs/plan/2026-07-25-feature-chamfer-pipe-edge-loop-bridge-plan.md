@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED`（Mixed 与 Tricky-b 的 open U 形已由同一通用规则修复并通过产品门禁与独立审计；用户真实 UI 复核前仍非 `ACCEPTED`）
+状态：`VERIFIED`（open U 形与 Tricky-b cyclic Bridge 分段均已通过正式入口、矩阵、视觉和独立审计；等待用户真实 UI 复核后再决定是否 `ACCEPTED`）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -17,23 +17,26 @@ Pipe 交叉时，原本连续的槽必须在交叉区域两端断开，分别对
 原生 Bridge 若在已确认的 open 左右链之间生成明显越过槽宽的内部连接，则产品门禁失败；
 不得用自定义逐点、逐边对应替换原生 Bridge。对于已经确认配对正确、但包含多个显著
 空间转折且整段原生 Bridge 可复现跨槽错连的 open 槽段，允许在两侧共同的大转折边界
-同步切成较短的连续子段，再逐段调用原生 Bridge。该分段只限定原生 Bridge 的局部范围，
-不生成逐点对应、不重采样、不重建边界。正式 fail-closed 门禁只有在不误拦既有正确场景
-时才能接入。
+同步切成较短的连续子段，再逐段调用原生 Bridge。配对正确的 cyclic 左右 Boundary Loop
+若因两侧采样差异导致整环原生 Bridge 扭曲，也允许在 Boolean 完成后、Bridge 调用前按共同
+环绕 station 划成局部弧段。两类分段都只限定 Bridge job 的范围，不修改 Cutter Curve、
+不修改 Boolean 切槽结果，不生成逐点对应、不重采样、不重建边界。正式 fail-closed 门禁
+只有在不误拦既有正确场景时才能接入。
 
 固定规则：
 
 - 左右两侧允许 Vertex / Edge 数量不同；
 - 不要求逐 Vertex、逐 Edge 或逐 fragment 对应；
 - 不要求两侧预先具有相同 Edge/Vertex 分段，也不要求 quad-only；允许用两侧共同的显著
-  转折作为 Bridge job 边界，但不得为了等点数而细分或重采样；
+  转折或共同 cyclic station 作为 Bridge job 边界，但不得为了等点数而细分或重采样；
 - Blender 负责不等数量两侧的内部连接，可生成 tri/quad 混合结果；若结果越过槽宽则
   产品不能通过；
 - 中间 Boolean 数据中的重合点、零面积 Face、degree、branch、cycle 或 canonicalization 诊断，不是 Bridge 的前置门槛；
 - 配对单位是交叉点之间的连续槽段，不是整根 Pipe，也不是整个连通 cutter network；
 - 只要能够可靠选中同一槽段的左右两侧完整边链，就直接 Bridge；若整段包含多个显著
-  转折且原生 Bridge 产生跨槽错连，则先按两侧共同转折切成完整连续子段。不得用距离、
-  fixture 身份或自定义逐点对应生成补面；
+  转折且原生 Bridge 产生跨槽错连，则先按两侧共同转折切成完整连续子段；若两侧均为
+  完整 cyclic Boundary Loop，则只在 Bridge 前按冻结 Pipe 合同的共同环绕 station 逻辑分段。
+  不得用距离、fixture 身份或自定义逐点对应生成补面；
 - junction Fill 只消费所有槽段 Bridge 后自然剩余的交叉孔洞，不得提前用 Fill 替代可 Bridge 的普通槽段。
 
 失败与半径重试规则：
@@ -81,7 +84,8 @@ Bridge/Fill 新面在尚未恢复 Custom Normal 时可能显示为黑色三角�
 - 从真实目标 Operator 的 Boolean Pro evaluated result 开始；
 - 直接读取 Boolean Pro 已输出的全部切口 Boundary Edges；
 - 不再自行探测、恢复或重建 Boundary Edge identity；
-- 没有 junction 的 cyclic 槽保留两条完整 cyclic Edge Loop；
+- Cutter Curve 与 Boolean 切槽阶段，没有 junction 的 cyclic Pipe 必须保持完整闭环，以生成
+  连续干净的槽；Boolean 输出的两条 Boundary Loop 也必须先以完整环参与配对和身份校验；
 - 在 junction 处，以 Boundary Edge 的多 Pipe owner 变化作为确定性交叉边界，把全局 Loop 切成单一 Pipe 的连续 runs；若交叉只在槽的一侧产生切点，则使用 Preview Pipe 同槽段携带的归一化弧长 station，在另一侧唯一对应的边内同步插入切点。station 只同步已经由 Pipe/槽段/Surface Patch 身份锁定的两侧，不承担 Pipe 猜测或逐边配对；
 - 实现中的 edge-count、局部长度和 station 数值阈值，只用于已经锁定 Pipe、槽段和 Surface Patch 后的 junction witness 有效性、共同大转折确认与切点分段；它们不得用于猜 Pipe、从候选中挑“较像”的两侧，也不得成为普通完整 Loop 进入 Bridge 的前置门槛；
 - 不按 edge 数、edge 长度或世界坐标选择“较大两条”，不按距离恢复 Pipe，不重排原始 Boundary Edge；
@@ -149,17 +153,21 @@ Boundary Edges，也不改变共享资产。若 metadata 导致 Boolean 几何�
   以链的累计弧长与局部转向确认两侧共同的大转折；仅在双方都有唯一对应转折时同步切段；
 - 共同转折逐处独立生效：任何 open 槽段只要两侧在同一 station 区间都存在唯一、显著的
   局部转折，就在该处同步切段；不设置累计转向或最少转折数量门槛，也不要求特定 U 形复杂度；
-- cyclic Loop 保持完整闭环，不走 open 槽段转折分段；普通直段、单侧转折或两侧不能唯一同步
-  的候选保持原任务或安全停止；
+- cyclic 的 Cutter Curve、Boolean 槽和 Bridge 配对输入保持完整闭环，不走 open 槽段转折
+  分段；仅在上述阶段全部完成后，Bridge 预处理可按冻结 Pipe 合同的共同环绕 station 将
+  一对完整 cyclic Boundary Loop 逻辑划成局部开放弧段，原环 Edge 全集不得改变；
+- 普通直段、单侧转折或两侧不能唯一同步的候选保持原任务或安全停止；
 - 每一对子段分别交给 Blender 原生 Bridge；不得新增 Vertex、不得把一侧投影到另一侧、
   不得按最近距离建立逐点关系；
-- 子段必须保持原链拓扑顺序，首尾连续且全集无重叠、无遗漏；共同转折不明确时安全停止；
+- 子段必须保持原链拓扑顺序，首尾连续且 Edge 全集无重叠、无遗漏；相邻子段只共享已有
+  Boundary Vertex。open 共同转折或 cyclic station 不能唯一同步时安全停止；
 - 使用普通 Bridge，不启用 Merge；
-- 不在调用前执行逐边匹配、重采样、Merge by Distance、局部 rebuild 或自研 zipper。
+- 不在调用前执行逐边匹配、重采样、跨侧 Merge by Distance、局部 rebuild 或自研 zipper；
+  允许按下文严格规则分别清理每侧极近点与无形状影响的共线零散点。
 
 Go：每个普通槽段或转折子段均由 Blender 返回 Bridge Faces，选中的两侧全部被连接，
 子段合计完整消费原左右链。
-Stop：共同转折不能唯一同步、子段覆盖不完整、Bridge 没有生成 Faces、连接到其他 Pipe，
+Stop：共同转折或 cyclic station 不能唯一同步、子段覆盖不完整、Bridge 没有生成 Faces、连接到其他 Pipe，
 或产生明显翻面、跨槽连接。
 
 ### Step 2.5 — Fill junction 孔洞
@@ -177,7 +185,8 @@ Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错�
 第一阶段优先让 `tricky` 以外的三个测试文件可用：
 
 1. `simple`：2 个对象 × 2 个 radius，共 4 个 cell；
-2. `tricky_b`：2 个对象 × 2 个 radius，共 4 个 cell；
+2. `tricky_b`：长期范围为 2 个对象 × 2 个 radius，共 4 个 cell；本轮 cyclic 修复不运行
+   `Extruded.002` Radius `0.03`，临时门禁只计其余 3 个；
 3. `mixed`：1 个对象 × 2 个 radius，共 2 个 cell。
 
 `tricky` 的 2 个对象 × 2 个 radius 共 4 个 cell 延后到第二阶段；它们允许安全失败，不阻塞第一阶段交付。
@@ -192,22 +201,43 @@ Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错�
 - 可定位的 Bridge/Fill/最终几何失败必须 source 不变且没有坏输出，同时 Preview 与红色问题位置可见；更早的合同失败保留已有现场与明确提示；
 - 用户显式降低 Radius 的重试与原 Radius 结果分开记录，Operator 不静默改值。
 
-第一阶段 Go：上述三个优先文件的 10 个目标场景均从目标 Operator 得到
+2026-07-29 Bridge 输入清理规格补充：用户确认实际任务 `37a/37b` 与 `40a/40b` 配对本身
+无明显错误，残余扭曲更可能来自 Boolean Boundary 上的极近重复点与直线零散点干扰原生
+Bridge。正式方向改为在所有 open / cyclic 分段完成后、每个原生 Bridge job 执行前，同时做：
+
+- 左右侧分别以远小于 Radius 的相对阈值执行 Merge by Distance，只合并极近点；不得把两侧
+  放在同一个 merge selection，也不得使用 fixture 固定距离；
+- 对 merge 后每侧链中没有第三条 Boundary Edge 接入、几何上严格落在相邻两点直线段内、
+  且移除不会改变链端点或 cyclic/open 形态的 degree-2 Vertex 执行 Dissolve；
+- Dissolve 只清理不改变形状的零散 Vertex，不按目标点数、采样均匀度或对侧点位做简化；
+- 清理后重新取得实际 Bridge Edge Loop，并验证仍为两条完整简单链、source 外形不变、没有
+  分支；无法证明时安全停止；
+- 分段只负责大范围空间转折或 cyclic 累计错位；极近/共线碎点优先由 Merge + Dissolve
+  处理，不继续无限增加 Bridge job。
+
+旧条目中“Bridge 前不得 Merge by Distance”只针对用 merge 制造左右侧对应或修改 Boundary
+身份的方案，现由以上严格局部清理规则取代；仍禁止跨侧合并、重采样、局部重建和逐点对应。
+
+长期第一阶段 Go：上述三个优先文件的 10 个目标场景均从目标 Operator 得到
 `PRODUCT_SUCCESS`，或满足严格四项条件的 `PRODUCT_SUCCESS_WITH_RADIUS_RETRY`；
 后者必须保留原 Radius 的 `RADIUS_LIMIT_DIAGNOSTIC` 与更小 Radius 的独立成功证据，
 不得把原失败档位改写为成功。`tricky` 即使失败，也必须保持 source 不变、无坏输出；
 可定位的几何失败保留红色位置，较早的合同失败保留已有现场和明确提示。不得用 fixture
-特判换取这 10 个场景通过。
+特判换取这 10 个场景通过。本轮 cyclic 修复单独以目标 Radius `0.01` 连续 3 次通过，且
+其余 8 个第一阶段 cell 连续 3 次无回归作为临时 Go；不执行的 `0.03` 不得伪装成通过。
 
 ### Step 4 — 第一阶段正式验收与分层矩阵
 
 - 确认正式 `FINALIZE` 已接入相同流程；
-- 从 UI 入口先运行优先 10 cells × 3 repetitions；若某个 cell 触发半径限制，另以用户显式操作等价的独立 Operator 调用验证更小 Radius；
+- 长期验收从 UI 入口运行优先 10 cells × 3 repetitions；本轮 cyclic 修复运行目标 Radius
+  `0.01` × 3 与其余 8 cells × 3；若某个已运行 cell 触发半径限制，另以用户显式操作等价的独立 Operator 调用验证更小 Radius；
 - 另外运行或记录 `tricky` 4 cells 的安全失败结果，但不计入第一阶段产品成功率；
 - 保存每个 cell 的结果、日志和近景；
 - 独立 Spec Audit 核对正式 runtime 确实走槽段两侧完整边链 → Blender Bridge → junction Fill，而不是历史 pairing/canonicalization 旁路。
 
-Go：优先 10 个目标场景全部直接通过或严格满足“降低半径后通过”，目标 Operator、视觉结果、source 不变、诊断可见和回滚门禁通过；此时可作为第一阶段可用成果交付。
+Go：长期范围仍要求优先 10 个目标场景全部直接通过或严格满足“降低半径后通过”；本轮只在
+目标 `0.01` 与其余 8 cells 的 Operator、视觉结果、source 不变、诊断可见和回滚门禁全部
+通过后恢复 `VERIFIED`，不据此声明未运行的目标 `0.03` 或完整 10-cell 新证据通过。
 Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge/Fill 失败或修改槽外模型才能通过。
 
 第二阶段再处理 `tricky` 4 cells。它们全部通过后，才把范围提升为完整 14-cell 产品矩阵通过。
@@ -355,7 +385,8 @@ Tricky-b `32a/32b` 的标准 open U 形证明该门槛过拟合 Mixed。该 U �
 
 2026-07-28 通用逐处规则已接入正式 runtime。任何 open 双链只要双方在同一 station 区间
 都有唯一的局部大转折，就复用现有 Boundary Vertex 同步切开；没有累计角度或最少转折数
-门槛，cyclic Loop 不参与该分段。Tricky-b `32a/32b` 在 Radius `0.01 / 0.03` 均识别两处
+门槛。该次实现仅覆盖 open 分段，当时 cyclic Loop 尚未参与 Bridge 前分段。Tricky-b
+`32a/32b` 在 Radius `0.01 / 0.03` 均识别两处
 约 90° 共同转折并拆成 3 个原生 Bridge job；Mixed `26a/26b` 仍由同一规则识别六处转折
 并拆成 7 个原生 Bridge job。实现未读取 fixture、对象、组号或测试 Edge ID，也未增加
 逐点对应、重采样、局部重建或 canonicalization。
@@ -370,12 +401,11 @@ Tricky-b `32a/32b` 的标准 open U 形证明该门槛过拟合 Mixed。该 U �
   `147 / 147` 通过；
 - `/private/tmp/hst-general-turn-split-visual-20260728/`：Tricky-b 两个 Radius 的固定 wire 近景。
 
-独立 Spec Audit 已确认正式 runtime、测试和本文一致：规则只处理 open 双链两侧同步出现的
-局部显著转折，cyclic Loop 不进入分段；切点复用既有 Boundary Vertex，分段前后原 Edge
-全集完整且互斥；生产实现没有 fixture、对象名、组号或测试 Edge ID 特判，也没有逐点对应、
-重采样、局部重建或 canonicalization。状态恢复为 `VERIFIED`，用户真实 UI 复核前仍不得
-声明 `ACCEPTED`。审计记录的非阻断后续项是补充 cyclic、单侧转折、阈值边界和不同弯曲
-方向的合成负例；当前正式产品矩阵和完整回归均未发现 regression。
+该次独立 Spec Audit 只确认 open 分段的正式 runtime、测试和本文一致：切点复用既有
+Boundary Vertex，分段前后原 Edge 全集完整且互斥；生产实现没有 fixture、对象名、组号或
+测试 Edge ID 特判，也没有逐点对应、重采样、局部重建或 canonicalization。该审计曾支持
+open 范围恢复为 `VERIFIED`，但其“cyclic 不分段”边界已被 2026-07-29 的真实 UI 证据推翻，
+不能继续作为整体状态或 cyclic 行为的完成证据。
 
 2026-07-29 用户真实 UI 复核确认 Mixed 与 Tricky-b 的大范围错误补面已消失，通用 U 形
 分段可保留 `VERIFIED`；但 Tricky-b `Extruded.002` 的局部环形补面仍可见轻微布线扭曲，
@@ -385,3 +415,54 @@ Tricky-b `32a/32b` 的标准 open U 形证明该门槛过拟合 Mixed。该 U �
 `/private/tmp/hst-tricky-b-ext002-runtime-pairs-20260729/tricky-b-ext002-actual-bridge-pairs.blend`；
 配套 `pair-manifest.json` 已确认 32 组均恰有两侧且 runtime 序号连续。用户指出具体组号前，
 不得根据截图猜边或修改 Bridge 配对规则。
+
+随后用户确认问题来自实际 Bridge 输入 `26a/26b` 与 `31a/31b`。两组均为已经正确、完整
+配对的 cyclic Boundary Loop，边数分别约为 `86/27` 与 `122/31`；把整环交给 Blender 原生
+Bridge 时，手工操作也能复现累计错位。因此本轮只在 Boolean 与完整环配对完成后增加通用
+cyclic Bridge 预处理：沿冻结 Pipe 合同累计包含闭合边的无符号转向，以合同 seam 与方向为
+唯一锚点，按累计转向划出约 90° 的共同环绕 station，再用两侧已有 Boundary Vertex 划成
+局部弧段并逐段调用原生 Bridge；归一化弧长每 `0.25` 不能冒充 90° 转向。不得插点、重采样、要求等边数、
+建立逐边对应、搜索最佳旋转起点，或对对象名、组号和 fixture 特判；共同 station 不能唯一
+同步时必须安全失败，不能回退整环 Bridge。同一 station 的连续碎点可以归并为一个唯一 plateau；
+若同一 station 非连续重复或 plateau 不能唯一确定，则视为歧义。分段前后的原 Boundary Edge 全集必须不变、无遗漏、无重叠，相邻弧段
+只共享已有端点。本轮 Tricky-b `Extruded.002` 只验收 Radius `0.01`，不运行 `0.03`。
+
+2026-07-29 cyclic Bridge 预处理已接入正式 Preview → Finalize runtime。目标 Radius `0.01`
+连续 3 次稳定成功：实际输入 26（`86/27`）与 31（`122/31`）均按共同 station 划为
+4 个局部原生 Bridge job，两侧原 Edge 精确、互斥且完整覆盖；另外 4 组 cyclic 双环也使用
+同一通用规则。其余 8 个第一阶段 cell 各连续 3 次全部成功，完整项目回归 `150 / 150`
+通过。固定近景未见此前的环绕扭曲；独立规格审计确认正式入口、生产实现、测试合同和本文
+一致，未发现对象名、组号、目标边数或 fixture 特判。安全失败覆盖共同 station 缺失、非连续重复
+plateau 与无效 cyclic 合同；少于 8 条边的最小 cyclic 双环保留原生整环 Bridge，避免把分段用于
+没有足够内部端点形成四个非空局部弧段的闭环。自动证据支持状态恢复为 `VERIFIED`，用户真实 UI 复核前仍不得声明
+`ACCEPTED`。
+
+- 目标矩阵：`/private/tmp/hst-cyclic-target-matrix-final4-20260729/results.json`；
+- 其余 8 cells：`/private/tmp/hst-cyclic-other-eight-final-20260729/results.json`；
+- 完整回归：`/private/tmp/hst-cyclic-full-regression-final3-20260729/results.json`；
+- 可打开结果与固定近景：`/private/tmp/hst-cyclic-target-matrix-final4-20260729/` 与
+  `/private/tmp/hst-cyclic-target-matrix-audit-final-20260729/evidence/`。
+
+2026-07-29 用户继续确认实际 runtime 组 37 与 40 的左右链配对无明显错误，问题来自 Bridge
+输入上的退化采样而非需要继续分段。正式实现现于所有 open / cyclic 分段之后、每个原生
+Bridge job 之前，对左右侧分别执行受限清理：Merge 距离为 `Radius × 1e-6`，只在同侧连通
+selection 内合并，open 端点受保护；随后只 Dissolve 没有第三条 Edge 接入、偏离直线不超过
+`0.1°` 且点到弦线距离不超过同一 Merge 阈值的中间 Vertex。清理后重新验证 chain 仍为同一
+open/cyclic 形态和端点，并双向核对清理前后折线的最大空间偏差及弧长变化；不能证明几何
+等价时安全停止。该规则不读取对象名、组号或 fixture，不按对侧点位简化，也不建立逐点对应。
+
+目标 Radius `0.01` 连续 3 次稳定 `PRODUCT_SUCCESS`。用户确认的 runtime 37 由 `22/7`
+清为 `21/7`，runtime 40 由 `21/20` 清为 `20/20`，两组极近边均归零；全对象共合并 6 个
+极近点并 Dissolve 13 个严格共线零散点，最终 Mesh 闭合、无零面积或自交，source 不变。
+其余 8 个第一阶段 cell 各连续 3 次全部 `PRODUCT_SUCCESS`。独立审计指出原清理只证明
+拓扑形态、未显式证明几何等价，并且旧完整回归只有 `150 / 151`；现已补上双向空间偏差、
+弧长变化门禁，以及跨侧极近、open 端点、第三条 Edge、轻微折角和偏线超阈值合同测试。
+修正后的完整项目回归统一入口为 `152 / 152` 全绿。延期 `tricky` 4 cells × 3 仍全部稳定
+`SAFETY_PASS`、source 不变、没有坏输出；runner 因仅选择延期 scope 而返回非零，但安全门禁
+`deferred_tricky_go=true`。用户真实 UI 复核前状态仍为 `VERIFIED`，不声明 `ACCEPTED`。
+
+- 目标矩阵与可打开结果：`/private/tmp/hst-bridge-cleanup-target2-20260729/`；
+- 其余 8 cells：`/private/tmp/hst-bridge-cleanup-other8-20260729/results.json`；
+- 完整回归：`/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`；
+- 延期 tricky 安全矩阵：`/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`；
+- 37 / 40 固定近景：`/private/tmp/hst-bridge-cleanup-target2-20260729/evidence/`。

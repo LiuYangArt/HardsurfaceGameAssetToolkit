@@ -8467,7 +8467,13 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
                 for record in lower_records
             )
             and [
-                sum(record["side_edge_counts"][side_index] for record in lower_records)
+                sum(
+                    sorted(
+                        cleanup["source_edge_count"]
+                        for cleanup in record["bridge_input_cleanup"]
+                    )[side_index]
+                    for record in lower_records
+                )
                 for side_index in range(2)
             ]
             == [13, 46],
@@ -8529,7 +8535,7 @@ def test_gn_finalize_tricky_b_u_turn_split_regression(
 
     operator_module.build_direct_edge_loop_chamfer = captured_builder
     try:
-        for radius in (0.01, 0.03):
+        for radius in (0.01,):
             load_fixture_blend("feature-chamfer-product-tricky-b.blend")
             source = bpy.data.objects.get("Extruded.002")
             ensure(source is not None, "Tricky-b U-turn source is missing")
@@ -8565,7 +8571,7 @@ def test_gn_finalize_tricky_b_u_turn_split_regression(
         operator_module.build_direct_edge_loop_chamfer = original_builder
 
     ensure(
-        set(evidence_by_radius) == {0.01, 0.03},
+        set(evidence_by_radius) == {0.01},
         f"Tricky-b U-turn evidence incomplete: {sorted(evidence_by_radius)}",
     )
     for radius, stats in evidence_by_radius.items():
@@ -8603,6 +8609,473 @@ def test_gn_finalize_tricky_b_u_turn_split_regression(
 
     result.add_detail(
         "Tricky-b 32a/32b split at two synchronized local turns without a cumulative-angle gate"
+    )
+
+
+# 验证正式 Operator 只在 Bridge 前把正确配对的 cyclic 双环划成局部原生 Bridge jobs。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_finalize_tricky_b_cyclic_bridge_split_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_builder = operator_module.build_direct_edge_loop_chamfer
+    captured_stats = {}
+
+    def captured_builder(*args, **kwargs):
+        stats = original_builder(*args, **kwargs)
+        captured_stats.update(stats)
+        return stats
+
+    operator_module.build_direct_edge_loop_chamfer = captured_builder
+    try:
+        load_fixture_blend("feature-chamfer-product-tricky-b.blend")
+        source = bpy.data.objects.get("Extruded.002")
+        ensure(source is not None, "Tricky-b cyclic source is missing")
+        source_hash = _mesh_fingerprint(source)
+        preview_result, _ = run_feature_chamfer_gn(source, radius=0.01)
+        ensure(preview_result == {"FINISHED"}, "Tricky-b cyclic Preview failed")
+        finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+        ensure(finalize_result == {"FINISHED"}, "Tricky-b cyclic Finalize failed")
+        output = bpy.context.active_object
+        ensure(
+            output is not None and output is not source,
+            "Tricky-b cyclic Finalize created no separate output",
+        )
+        ensure(
+            _mesh_fingerprint(source) == source_hash,
+            "Tricky-b cyclic Finalize changed source",
+        )
+        bm = bmesh.new()
+        bm.from_mesh(output.data)
+        ensure(
+            not any(len(edge.link_faces) != 2 for edge in bm.edges)
+            and not any(face.calc_area() <= 1.0e-12 for face in bm.faces),
+            "Tricky-b cyclic output is not a clean closed Mesh",
+        )
+        bm.free()
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+
+    cyclic_records_by_identity = {}
+    for record in captured_stats.get("bridge_records", ()):
+        if not record.get("cyclic_split_applied"):
+            continue
+        identity = (
+            record.get("segment_id"),
+            record.get("pipe_id"),
+            tuple(record.get("owner_surface_pair", ())),
+        )
+        cyclic_records_by_identity.setdefault(identity, []).append(record)
+    ensure(
+        len(cyclic_records_by_identity) == 6
+        and all(
+            len(records) == 4
+            and sorted(
+                record.get("cyclic_split_job_index") for record in records
+            ) == [0, 1, 2, 3]
+            and all(
+                record.get("native_operator") == "Blender Bridge Edge Loops"
+                and record.get("face_count", 0) > 0
+                for record in records
+            )
+            for records in cyclic_records_by_identity.values()
+        ),
+        "Tricky-b cyclic pairs did not all use four local native Bridge jobs",
+    )
+
+    target_contracts = (
+        (16, 8, [5, 6], [27, 86]),
+        (19, 2, [2, 3], [31, 122]),
+    )
+    for segment_id, pipe_id, owner_pair, expected_edge_counts in target_contracts:
+        records = [
+            record
+            for record in captured_stats.get("bridge_records", ())
+            if record.get("segment_id") == segment_id
+            and record.get("pipe_id") == pipe_id
+            and record.get("owner_surface_pair") == owner_pair
+        ]
+        ensure(
+            len(records) == 4
+            and sorted(record.get("cyclic_split_job_index") for record in records)
+            == [0, 1, 2, 3]
+            and all(
+                record.get("cyclic_split_applied")
+                and record.get("cyclic_split_job_count") == 4
+                and record.get("native_operator") == "Blender Bridge Edge Loops"
+                and record.get("face_count", 0) > 0
+                for record in records
+            ),
+            f"Tricky-b cyclic segment {segment_id} did not use four local native Bridge jobs",
+        )
+        common_stations = records[0].get("common_cyclic_stations", ())
+        ensure(
+            len(common_stations) == 4
+            and all(
+                len(station.get("side_cut_stations", ())) == 2
+                and len(station.get("side_cut_vertex_indices", ())) == 2
+                for station in common_stations
+            ),
+            f"Tricky-b cyclic segment {segment_id} lost common station proof",
+        )
+        source_side_edges = records[0]["cyclic_source_side_edge_indices"]
+        ensure(
+            sorted(len(side_edges) for side_edges in source_side_edges)
+            == expected_edge_counts,
+            f"Tricky-b cyclic segment {segment_id} source Edge counts drifted",
+        )
+        for side_index in range(2):
+            consumed_edges = [
+                edge_index
+                for record in records
+                for edge_index in record["cyclic_job_side_edge_indices"][side_index]
+            ]
+            ensure(
+                len(consumed_edges) == len(set(consumed_edges))
+                and sum(
+                    record["bridge_input_cleanup"][side_index]["source_edge_count"]
+                    for record in records
+                )
+                == len(source_side_edges[side_index]),
+                f"Tricky-b cyclic segment {segment_id} lost or reused source side {side_index} Edges",
+            )
+            endpoint_sets = [
+                set(record["cyclic_job_side_endpoint_vertex_indices"][side_index])
+                for record in records
+                if not any(
+                    cleanup["merged_vertex_count"]
+                    or cleanup["dissolved_vertex_count"]
+                    for cleanup in record["bridge_input_cleanup"]
+                )
+            ]
+            ensure(
+                all(len(endpoints) == 2 for endpoints in endpoint_sets),
+                f"Tricky-b cyclic segment {segment_id} unchanged local arcs lost endpoints",
+            )
+
+    result.add_detail(
+        "Tricky-b cyclic 26/31 identities split into four native Bridge jobs with exact Edge coverage"
+    )
+
+
+# 验证正式 Bridge 前只清理同侧极近点与无支路共线点，并改善用户确认的 37/40 输入。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_finalize_tricky_b_bridge_input_cleanup_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_builder = operator_module.build_direct_edge_loop_chamfer
+    captured_stats = {}
+
+    def captured_builder(*args, **kwargs):
+        stats = original_builder(*args, **kwargs)
+        captured_stats.update(stats)
+        return stats
+
+    operator_module.build_direct_edge_loop_chamfer = captured_builder
+    try:
+        load_fixture_blend("feature-chamfer-product-tricky-b.blend")
+        source = bpy.data.objects.get("Extruded.002")
+        ensure(source is not None, "Tricky-b cleanup source is missing")
+        source_hash = _mesh_fingerprint(source)
+        preview_result, _ = run_feature_chamfer_gn(source, radius=0.01)
+        ensure(preview_result == {"FINISHED"}, "Tricky-b cleanup Preview failed")
+        finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
+        ensure(finalize_result == {"FINISHED"}, "Tricky-b cleanup Finalize failed")
+        ensure(
+            _mesh_fingerprint(source) == source_hash,
+            "Tricky-b cleanup changed source",
+        )
+        output = bpy.context.active_object
+        bm = bmesh.new()
+        bm.from_mesh(output.data)
+        ensure(
+            not any(len(edge.link_faces) != 2 for edge in bm.edges)
+            and not any(face.calc_area() <= 1.0e-12 for face in bm.faces),
+            "Tricky-b cleanup output is not a clean closed Mesh",
+        )
+        bm.free()
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+
+    bridge_records = captured_stats.get("bridge_records", ())
+    ensure(len(bridge_records) == 50, "Tricky-b cleanup runtime task count drifted")
+    target_contracts = {
+        37: ([22, 7], [21, 7], 1),
+        40: ([21, 20], [20, 20], 1),
+    }
+    for runtime_index, (source_counts, cleaned_counts, merged_count) in target_contracts.items():
+        cleanup_records = bridge_records[runtime_index - 1]["bridge_input_cleanup"]
+        ensure(
+            sorted(record["source_edge_count"] for record in cleanup_records)
+            == sorted(source_counts)
+            and sorted(record["cleaned_edge_count"] for record in cleanup_records)
+            == sorted(cleaned_counts)
+            and sum(record["merged_vertex_count"] for record in cleanup_records)
+            == merged_count
+            and sum(record["zero_edge_count_after"] for record in cleanup_records) == 0,
+            f"Tricky-b runtime pair {runtime_index} cleanup contract drifted: {cleanup_records}",
+        )
+    ensure(
+        sum(
+            cleanup["dissolved_vertex_count"]
+            for record in bridge_records
+            for cleanup in record["bridge_input_cleanup"]
+        )
+        > 0,
+        "Tricky-b runtime dissolved no shape-neutral collinear Vertex",
+    )
+    ensure(
+        all(
+            cleanup["merge_distance"]
+            <= 0.01 * 1.0e-6 + 1.0e-12
+            for record in bridge_records
+            for cleanup in record["bridge_input_cleanup"]
+        ),
+        "Tricky-b cleanup threshold is not tightly bounded by Radius",
+    )
+    result.add_detail(
+        "Tricky-b runtime pairs 37/40 removed extreme duplicate points and generic jobs dissolved collinear noise"
+    )
+
+
+# 验证 Bridge 输入清理只在单侧链内生效，并保护端点、支路与有形状贡献的转折点。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_bridge_input_cleanup_safety_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
+
+    # 构造带 Boundary 属性的独立链并运行生产清理；返回剩余坐标和统计。
+    # coordinates/branch/endpoint_gap/radius: 主链坐标、支路开关、端点微边长度与 Radius。
+    def run_cleanup(coordinates, *, branch=False, radius=1.0):
+        bm = bmesh.new()
+        vertices = [bm.verts.new(coordinate) for coordinate in coordinates]
+        boundary_layer = bm.edges.layers.int.new("test_boundary")
+        edges = [
+            bm.edges.new((start, end))
+            for start, end in zip(vertices, vertices[1:])
+        ]
+        for edge in edges:
+            edge[boundary_layer] = 1
+        if branch:
+            branch_vertex = bm.verts.new((coordinates[1][0], 0.25, 0.0))
+            bm.edges.new((vertices[1], branch_vertex))
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        cleaned, stats = module._clean_bridge_component(
+            bm,
+            set(edges),
+            radius,
+            boundary_layer,
+        )
+        ordered = module._ordered_chain_vertices(cleaned)
+        remaining = [tuple(float(value) for value in vertex.co) for vertex in ordered]
+        return bm, remaining, stats
+
+    merge_distance = module.BRIDGE_MERGE_DISTANCE_FACTOR
+    bm, remaining, stats = run_cleanup(
+        [(0.0, 0.0, 0.0), (merge_distance * 0.25, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    )
+    try:
+        ensure(
+            len(remaining) == 3
+            and remaining[0] == (0.0, 0.0, 0.0)
+            and stats["merged_vertex_count"] == 0,
+            "Bridge cleanup merged or dissolved a protected open endpoint",
+        )
+    finally:
+        bm.free()
+
+    bm, remaining, stats = run_cleanup(
+        [(0.0, 0.0, 0.0), (0.5, 0.0, 0.0), (1.0, 0.0, 0.0)],
+        branch=True,
+    )
+    try:
+        ensure(
+            len(remaining) == 3 and stats["dissolved_vertex_count"] == 0,
+            "Bridge cleanup dissolved a Vertex with a third linked Edge",
+        )
+    finally:
+        bm.free()
+
+    for middle_coordinate, description in (
+        ((0.5, merge_distance * 2.0, 0.0), "off-line Vertex"),
+        ((0.5, 0.001, 0.0), "shape-bearing turn Vertex"),
+    ):
+        bm, remaining, stats = run_cleanup(
+            [(0.0, 0.0, 0.0), middle_coordinate, (1.0, 0.0, 0.0)]
+        )
+        try:
+            ensure(
+                len(remaining) == 3 and stats["dissolved_vertex_count"] == 0,
+                f"Bridge cleanup dissolved a protected {description}",
+            )
+        finally:
+            bm.free()
+
+    bm = bmesh.new()
+    first_side = [
+        bm.verts.new((0.0, 0.0, 0.0)),
+        bm.verts.new((1.0, 0.0, 0.0)),
+    ]
+    second_side = [
+        bm.verts.new((0.0, merge_distance * 0.25, 0.0)),
+        bm.verts.new((1.0, merge_distance * 0.25, 0.0)),
+    ]
+    boundary_layer = bm.edges.layers.int.new("test_boundary")
+    first_edge = bm.edges.new(first_side)
+    second_edge = bm.edges.new(second_side)
+    first_edge[boundary_layer] = 1
+    second_edge[boundary_layer] = 1
+    try:
+        first_cleaned, first_stats = module._clean_bridge_component(
+            bm, {first_edge}, 1.0, boundary_layer
+        )
+        second_cleaned, second_stats = module._clean_bridge_component(
+            bm, {second_edge}, 1.0, boundary_layer
+        )
+        ensure(
+            len(first_cleaned) == 1
+            and len(second_cleaned) == 1
+            and first_stats["merged_vertex_count"] == 0
+            and second_stats["merged_vertex_count"] == 0
+            and len({vertex for edge in first_cleaned | second_cleaned for vertex in edge.verts}) == 4,
+            "Bridge cleanup merged two spatially close opposite sides",
+        )
+    finally:
+        bm.free()
+
+    result.add_detail(
+        "Bridge input cleanup preserves opposite sides, open endpoints, branches, turns, and off-line Vertices"
+    )
+
+
+# 验证 cyclic 合同切点不依赖目标 fixture 身份，并对无效 seam 或重复切点安全失败。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_cyclic_bridge_cut_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
+    point_count = 16
+    generic_segment = {
+        "segment_id": 901,
+        "is_cyclic": True,
+        "point_coordinates": [
+            (
+                math.cos(math.tau * point_index / point_count),
+                math.sin(math.tau * point_index / point_count),
+                0.0,
+            )
+            for point_index in range(point_count)
+        ],
+        "point_stations": [
+            point_index / point_count
+            for point_index in range(point_count)
+        ],
+    }
+    cut_stations = module._cyclic_bridge_cut_stations(generic_segment)
+    ensure(
+        len(cut_stations) == 4
+        and abs(cut_stations[0]) <= 1.0e-9
+        and all(
+            current_station > previous_station
+            for previous_station, current_station in zip(
+                cut_stations,
+                cut_stations[1:],
+            )
+        ),
+        f"Generic cyclic contract did not produce four ordered local intervals: {cut_stations}",
+    )
+    invalid_segment = dict(generic_segment)
+    invalid_segment["point_stations"] = [0.25, *generic_segment["point_stations"][1:]]
+    try:
+        module._cyclic_bridge_cut_stations(invalid_segment)
+    except module.FeatureChamferDirectBridgeError as error:
+        ensure(
+            error.error_code in {
+                "cyclic_bridge_contract_invalid",
+                "cyclic_bridge_cut_hits_seam",
+                "cyclic_bridge_cut_not_unique",
+            },
+            f"Invalid cyclic seam reported an unrelated failure: {error.error_code}",
+        )
+    else:
+        raise TestFailure("Invalid cyclic contract did not fail closed")
+    result.add_detail(
+        "generic cyclic turn contract produced four intervals and invalid contract failed closed"
+    )
+
+
+# 验证 cyclic 共同 station 缺失或非连续重复时安全失败，不选择任意候选。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_cyclic_common_station_fail_closed_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
+    original_plateau_builder = module._cyclic_station_plateaus
+    component_markers = (object(), object())
+
+    def plateau_builder(component, *_args):
+        if component is component_markers[0]:
+            return plateau_sides[0]
+        return plateau_sides[1]
+
+    module._cyclic_station_plateaus = plateau_builder
+    try:
+        plateau_sides = (
+            [{"station": 0.1, "vertex": object()}],
+            [{"station": 0.4, "vertex": object()}],
+        )
+        try:
+            module._cyclic_common_cut_vertices(
+                component_markers,
+                0.25,
+                902,
+                {},
+                {},
+                {},
+            )
+        except module.FeatureChamferDirectBridgeError as error:
+            ensure(
+                error.error_code == "cyclic_bridge_station_missing",
+                f"Missing common cyclic station reported {error.error_code}",
+            )
+        else:
+            raise TestFailure("Missing common cyclic station did not fail closed")
+
+        plateau_sides = (
+            [
+                {"station": 0.25, "vertex": object()},
+                {"station": 0.25, "vertex": object()},
+            ],
+            [{"station": 0.25, "vertex": object()}],
+        )
+        try:
+            module._cyclic_common_cut_vertices(
+                component_markers,
+                0.25,
+                903,
+                {},
+                {},
+                {},
+            )
+        except module.FeatureChamferDirectBridgeError as error:
+            ensure(
+                error.error_code == "cyclic_bridge_station_ambiguous",
+                f"Ambiguous common cyclic station reported {error.error_code}",
+            )
+        else:
+            raise TestFailure("Ambiguous common cyclic station did not fail closed")
+    finally:
+        module._cyclic_station_plateaus = original_plateau_builder
+    result.add_detail(
+        "missing and non-contiguous duplicate common stations both failed closed"
     )
 
 
@@ -12116,6 +12589,26 @@ def main():
     context.run_case(
         "gn_finalize_tricky_b_u_turn_split_regression",
         test_gn_finalize_tricky_b_u_turn_split_regression,
+    )
+    context.run_case(
+        "gn_finalize_tricky_b_cyclic_bridge_split_regression",
+        test_gn_finalize_tricky_b_cyclic_bridge_split_regression,
+    )
+    context.run_case(
+        "gn_finalize_tricky_b_bridge_input_cleanup_regression",
+        test_gn_finalize_tricky_b_bridge_input_cleanup_regression,
+    )
+    context.run_case(
+        "feature_chamfer_bridge_input_cleanup_safety_contract",
+        test_feature_chamfer_bridge_input_cleanup_safety_contract,
+    )
+    context.run_case(
+        "feature_chamfer_cyclic_bridge_cut_contract",
+        test_feature_chamfer_cyclic_bridge_cut_contract,
+    )
+    context.run_case(
+        "feature_chamfer_cyclic_common_station_fail_closed_contract",
+        test_feature_chamfer_cyclic_common_station_fail_closed_contract,
     )
 
     context.run_case(

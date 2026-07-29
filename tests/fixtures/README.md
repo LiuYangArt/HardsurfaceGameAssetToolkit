@@ -29,6 +29,9 @@
 巨大 U 形和多个共同显著转折的长 open 槽段，允许在共同转折处复用既有 Boundary Vertex
 同步切成连续子段；每段仍调用原生 Bridge，最后 Fill 剩余交叉孔洞。禁止逐点对应、
 重采样、局部重建、距离猜 Pipe 与 fixture 特判。
+Cutter Curve 与 Boolean cyclic 槽必须保持完整闭环；仅在 Boolean 完成且两条完整 Boundary
+Loop 已配对后，Bridge 预处理可以按冻结 Pipe 合同的共同环绕 station 划成局部开放弧段。
+该逻辑分段不得修改 Cutter、切槽结果或原 Boundary Edge 全集。
 fixture 清单不代表当前通过率；验收状态只以正式产品矩阵 artifact 为准。
 当前全局 Curve 规则下的旧第一阶段自动 scope 位于
 `tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`：
@@ -48,4 +51,25 @@ Tricky-b `32a/32b` 的标准 180° open U 形扭曲推翻为过拟合，不能�
 `32a/32b` 两切点/三 job，均由同一正式规则命中。延期安全证据位于
 `/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`，完整回归
 147 / 147 位于 `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`。
-独立审计已通过，状态恢复为 `VERIFIED`；用户真实 UI 复核前不得声明 `ACCEPTED`。
+该证据与独立审计只证明 open 分段达到 `VERIFIED`。2026-07-29 的真实 UI 复核又发现
+Tricky-b `Extruded.002` Radius `0.01` 的 cyclic 整环原生 Bridge 存在局部累计错位，整体状态
+已回退为 `INTEGRATED`；本轮只验收该 Radius，不运行该对象的 `0.03`。
+本轮同时运行其余 8 个第一阶段 cell 作为回归门禁；长期 10-cell 产品矩阵范围保持不变。
+cyclic Bridge 预处理现已在正式 Operator runtime 中完成并达到 `VERIFIED`：目标 Radius
+`0.01` 连续 3 次成功，26（`86/27`）与 31（`122/31`）均分为四段且原 Edge 精确、互斥、
+完整覆盖；其余 8 cells × 3 全部稳定成功，完整项目回归 `150 / 150`。证据分别位于
+`/private/tmp/hst-cyclic-target-matrix-final4-20260729/results.json`、
+`/private/tmp/hst-cyclic-other-eight-final-20260729/results.json` 与
+`/private/tmp/hst-cyclic-full-regression-final3-20260729/results.json`。用户真实 UI 复核前不声明
+`ACCEPTED`。
+
+2026-07-29 Bridge 前输入清理继续使用同一 `tricky_b / Extruded.002 / 0.01` 产品 fixture。
+用户确认 runtime 组 37 与 40 配对正确；正式实现按左右侧分别 Merge 极近点并 Dissolve
+无支路严格共线 Vertex。组 37 清理 `22/7 → 21/7`，组 40 清理 `21/20 → 20/20`，两组
+零长度输入归零且 source 不变。新目标矩阵位于
+`/private/tmp/hst-bridge-cleanup-target2-20260729/results.json`，其余 8-cell 回归位于
+`/private/tmp/hst-bridge-cleanup-other8-20260729/results.json`，固定近景位于目标目录的
+`evidence/runtime_37_wire.png` 与 `evidence/runtime_40_wire.png`。清理安全合同覆盖跨侧极近点、
+open 端点、第三条 Edge、轻微折角和偏线超阈值；完整回归 `152 / 152` 位于
+`/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`，延期 tricky
+4 cells × 3 的稳定安全失败位于 `/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`。
