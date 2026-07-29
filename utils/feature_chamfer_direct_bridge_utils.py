@@ -44,9 +44,10 @@ MIN_TURN_SAMPLE_RADIANS = math.radians(1.0)
 MIN_MAJOR_TURN_RADIANS = math.radians(30.0)
 TARGET_CYCLIC_BRIDGE_TURN_RADIANS = math.radians(90.0)
 MIN_CYCLIC_BRIDGE_SIDE_EDGE_COUNT = 8
-BRIDGE_MERGE_DISTANCE_FACTOR = 1.0e-6
+BRIDGE_MERGE_DISTANCE_FACTOR = 1.0e-2
 MIN_BRIDGE_MERGE_DISTANCE = 1.0e-12
 MAX_BRIDGE_DISSOLVE_DEVIATION_RADIANS = math.radians(0.1)
+MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO = 0.01
 
 
 # 返回 BMesh Edge 自然连通分量，不重排、不合并、也不要求两组长度一致。
@@ -1759,7 +1760,7 @@ def _cyclic_station_plateaus(
     return plateaus
 
 
-# 在两侧 station plateau 中唯一选择同一合同切点，禁止各侧独立猜测最近 Vertex。
+# 在两侧 station plateau 中先锁定合同邻域，再以两侧真实空间相邻关系选择同一切点。
 # components/target_station/segment_id/layers: 完整双环、合同 station 与 provenance；返回两侧已有切点和实测 station。
 def _cyclic_common_cut_vertices(
     components,
@@ -1793,28 +1794,47 @@ def _cyclic_common_cut_vertices(
             )
             if station_delta > 5.0e-4:
                 continue
-            score = (
-                circular_distance(first_plateau["station"], target_station)
-                + circular_distance(second_plateau["station"], target_station)
+            contract_distance = max(
+                circular_distance(first_plateau["station"], target_station),
+                circular_distance(second_plateau["station"], target_station),
             )
-            candidates.append((score, station_delta, first_plateau, second_plateau))
-    candidates.sort(key=lambda item: (item[0], item[1]))
+            boundary_distance = (
+                first_plateau["vertex"].co - second_plateau["vertex"].co
+            ).length
+            candidates.append(
+                (
+                    station_delta,
+                    boundary_distance,
+                    contract_distance,
+                    first_plateau,
+                    second_plateau,
+                )
+            )
     if not candidates:
         raise FeatureChamferDirectBridgeError(
             "cyclic_bridge_station_missing",
             f"Segment {segment_id} cyclic sides lack a common cut station",
             {"segment_id": segment_id, "contract_station": target_station},
         )
-    if len(candidates) > 1 and (
-        abs(candidates[0][0] - candidates[1][0]) <= 1.0e-7
-        and abs(candidates[0][1] - candidates[1][1]) <= 1.0e-7
-    ):
-        raise FeatureChamferDirectBridgeError(
-            "cyclic_bridge_station_ambiguous",
-            f"Segment {segment_id} cyclic station has multiple common plateaus",
-            {"segment_id": segment_id, "contract_station": target_station},
+    best_contract_distance = min(item[2] for item in candidates)
+    station_neighborhood = max(1.0e-6, best_contract_distance + 1.0e-4)
+    local_candidates = [
+        item
+        for item in candidates
+        if item[2] <= station_neighborhood
+    ]
+    local_candidates.sort(
+        key=lambda item: (
+            item[1],
+            item[0],
+            item[2],
+            tuple(float(value) for value in item[3]["vertex"].co),
+            tuple(float(value) for value in item[4]["vertex"].co),
+            item[3]["vertex"].index,
+            item[4]["vertex"].index,
         )
-    _, _, first_plateau, second_plateau = candidates[0]
+    )
+    _, _, _, first_plateau, second_plateau = local_candidates[0]
     return [
         (first_plateau["vertex"], first_plateau["station"]),
         (second_plateau["vertex"], second_plateau["station"]),
@@ -1822,7 +1842,7 @@ def _cyclic_common_cut_vertices(
 
 
 # 沿原环拓扑把 N 个已有切点划成 N 条 open Edge runs，不按空间位置重排或建立逐边对应。
-# component/cut_vertices: 完整 cyclic Boundary 与按合同顺序选出的切点；返回同顺序的 open Edge sets。
+# component/cut_vertices: 完整 cyclic Boundary 与合同切点；返回按当前环拓扑位置排列的 open Edge sets，调用方再按共同端点对重排两侧。
 def _cyclic_component_runs(component, cut_vertices):
     ordered_vertices = _ordered_cycle_vertices(component)
     positions = {vertex: index for index, vertex in enumerate(ordered_vertices)}
@@ -2366,7 +2386,7 @@ def _split_interrupted_segment_jobs(
     ], set(complete_runs[1])
 
 
-# 在单侧 Bridge chain 内合并极近点，并溶解无第三条 Edge 接入的严格共线中间点。
+# 在单侧 Bridge chain 内逐个处理极短 Edge 连通簇，并溶解无第三条 Edge 接入的严格共线中间点。
 # bm/component/radius/boundary_layer: 当前 BMesh、单侧真实 Bridge chain、Radius 与 Boundary layer；返回清理后的 chain 和统计。
 def _clean_bridge_component(
     bm,
@@ -2397,8 +2417,13 @@ def _clean_bridge_component(
         )
     source_length = _polyline_length(source_coordinates, source_cyclic)
     protected_endpoints = set(_component_endpoints(source_component) or ())
+    source_edge_lengths = sorted(edge.calc_length() for edge in source_component)
+    median_edge_length = source_edge_lengths[len(source_edge_lengths) // 2]
     merge_distance = max(
-        float(radius) * BRIDGE_MERGE_DISTANCE_FACTOR,
+        min(
+            float(radius) * BRIDGE_MERGE_DISTANCE_FACTOR,
+            median_edge_length * MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO,
+        ),
         MIN_BRIDGE_MERGE_DISTANCE,
     )
     zero_edge_count_before = sum(
@@ -2406,17 +2431,55 @@ def _clean_bridge_component(
         for edge in source_component
     )
     source_vertex_count = len(source_vertices)
-    merge_vertices = sorted(
-        source_vertices - protected_endpoints,
-        key=lambda vertex: vertex.index,
-    )
-    if len(merge_vertices) >= 2:
+    merge_vertices = set(source_vertices - protected_endpoints)
+
+    # 只把阈值内的真实 source Edge 组成局部连通簇，避免一次范围查询越过长边折叠整环。
+    # merge_vertices/source_component/merge_distance: 可动点、原侧链与阈值；循环消费仍有效的极短 Edge 簇。
+    merge_edges = {
+        edge
+        for edge in source_component
+        if edge.calc_length() <= merge_distance
+        and all(vertex in merge_vertices for vertex in edge.verts)
+        and all(
+            len(vertex.link_edges) == 2
+            or edge.calc_length() <= MIN_BRIDGE_MERGE_DISTANCE
+            for vertex in edge.verts
+        )
+    }
+    while merge_edges:
+        merge_components = _edge_components(merge_edges)
+        merge_component = min(
+            merge_components,
+            key=lambda item: min(edge.index for edge in item),
+        )
+        component_vertices = {
+            vertex
+            for edge in merge_component
+            for vertex in edge.verts
+        }
         bmesh.ops.remove_doubles(
             bm,
-            verts=merge_vertices,
+            verts=sorted(component_vertices, key=lambda vertex: vertex.index),
             use_connected=True,
             dist=merge_distance,
         )
+        merge_vertices = {
+            vertex
+            for vertex in merge_vertices
+            if vertex.is_valid
+        }
+        merge_edges = {
+            edge
+            for edge in source_component
+            if edge.is_valid
+            and edge.calc_length() <= merge_distance
+            and all(vertex in merge_vertices for vertex in edge.verts)
+            and all(
+                len(vertex.link_edges) == 2
+                or edge.calc_length() <= MIN_BRIDGE_MERGE_DISTANCE
+                for vertex in edge.verts
+            )
+        }
 
     active_vertices = {
         vertex
@@ -2567,6 +2630,11 @@ def _clean_bridge_component(
         )
     return cleaned_component, {
         "merge_distance": merge_distance,
+        "radius_merge_distance": float(radius) * BRIDGE_MERGE_DISTANCE_FACTOR,
+        "median_source_edge_length": median_edge_length,
+        "median_edge_merge_cap": (
+            median_edge_length * MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO
+        ),
         "source_edge_count": len(source_component),
         "cleaned_edge_count": len(cleaned_component),
         "source_vertex_count": source_vertex_count,
@@ -2859,6 +2927,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             for edge in bm.edges
         )
         claimed_edges = set()
+        claimed_source_edges = set()
         bridge_records = []
         deferred_segments = []
         chamfer_faces = set()
@@ -3103,6 +3172,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 )
                 if cyclic_split is not None:
                     split_jobs, common_stations, source_side_edge_indices = cyclic_split
+                    source_side_edge_sets = [set(component) for component in components]
                     expanded_bridge_jobs.extend(
                         {
                             "components": split_components,
@@ -3114,6 +3184,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                             "cyclic_split_job_count": len(split_jobs),
                             "common_cyclic_stations": common_stations,
                             "cyclic_source_side_edge_indices": source_side_edge_indices,
+                            "cyclic_source_side_edge_sets": source_side_edge_sets,
                         }
                         for split_job_index, split_components in enumerate(split_jobs)
                     )
@@ -3139,6 +3210,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                             "cyclic_split_job_count": 1,
                             "common_cyclic_stations": [],
                             "cyclic_source_side_edge_indices": [],
+                            "cyclic_source_side_edge_sets": [],
                         }
                     )
                     continue
@@ -3154,6 +3226,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "cyclic_split_job_count": 1,
                         "common_cyclic_stations": [],
                         "cyclic_source_side_edge_indices": [],
+                        "cyclic_source_side_edge_sets": [],
                     }
                     for split_job_index, split_components in enumerate(split_jobs)
                 )
@@ -3161,12 +3234,21 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 components = []
                 bridge_cleanup_records = []
                 for component in bridge_job["components"]:
+                    source_edges = set(component)
+                    if source_edges & claimed_source_edges:
+                        raise FeatureChamferDirectBridgeError(
+                            "segment_source_selection_overlap",
+                            f"Segment {segment_id} reuses an earlier source Bridge edge",
+                        )
+                    source_edge_indices = sorted(edge.index for edge in source_edges)
+                    claimed_source_edges.update(source_edges)
                     cleaned_component, cleanup_record = _clean_bridge_component(
                         bm,
                         component,
                         expected_chamfer_plan.radius,
                         boundary_layer,
                     )
+                    cleanup_record["source_edge_indices"] = source_edge_indices
                     components.append(cleaned_component)
                     bridge_cleanup_records.append(cleanup_record)
                 selected_edges = set().union(*components)
@@ -3356,9 +3438,25 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "cyclic_source_side_edge_indices": bridge_job[
                             "cyclic_source_side_edge_indices"
                         ],
+                        "cyclic_source_side_edge_counts": [
+                            len(side_edges)
+                            for side_edges in bridge_job[
+                                "cyclic_source_side_edge_sets"
+                            ]
+                        ],
+                        "cyclic_source_side_edge_identity_tokens": [
+                            sorted(id(edge) for edge in side_edges)
+                            for side_edges in bridge_job[
+                                "cyclic_source_side_edge_sets"
+                            ]
+                        ],
                         "cyclic_job_side_edge_indices": [
-                            sorted(edge.index for edge in component)
-                            for component in components
+                            record["source_edge_indices"]
+                            for record in bridge_cleanup_records
+                        ],
+                        "cyclic_job_side_edge_identity_tokens": [
+                            sorted(id(edge) for edge in component)
+                            for component in bridge_job["components"]
                         ],
                         "cyclic_job_side_endpoint_vertex_indices": [
                             sorted(vertex.index for vertex in _component_endpoints(component))

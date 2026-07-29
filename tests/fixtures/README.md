@@ -73,3 +73,22 @@ cyclic Bridge 预处理现已在正式 Operator runtime 中完成并达到 `VERI
 open 端点、第三条 Edge、轻微折角和偏线超阈值；完整回归 `152 / 152` 位于
 `/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`，延期 tricky
 4 cells × 3 的稳定安全失败位于 `/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`。
+
+用户真实 UI 随后证明组 40 在 `Radius × 1e-6` 下仍扭曲，而手动 `0.01 cm` Merge 后正常；
+旧目标和完整回归 artifact 因此不能继续证明视觉修复。正式相对阈值现改为 `Radius × 0.01`，
+并受单侧链中位 Edge 长度 `1%` 的上限约束；在该 fixture 中为 `1e-4` Blender unit，用于清理旧规则遗漏的 `6.59e-5` 极短边；新的产品矩阵、
+近景和完整回归完成前状态为 `INTEGRATED`。
+
+用户确认 Tricky-b 清理修复后，`simple / Extruded.002` 两个 Radius 又暴露 cyclic 双环共同
+切点回归：正式实际输入 3/4/7/8 中，一侧同一 station 邻域存在两个不连续 plateau，旧数值
+排序选中了远离另一侧槽边的切点，造成后半圈长短弧错配。修复必须先锁定既有 Pipe、槽段、
+owner pair 与 station 邻域，再以两侧 Boundary 的局部空间邻接关系消歧，并按同一相邻
+station 区间生成每个 Bridge job；禁止安全停止、跳过或整环回退。完成正式入口和全范围
+回归前状态为 `INTEGRATED / STOP`。
+
+该回归现已修复并达到 `VERIFIED`。simple `Extruded.002` Radius `0.01 / 0.03` 各连续
+3 次正式成功，3/4/7/8 的两侧 station 区间一致且弧长比小于 `1.04`，输出闭合、无零面积
+或反面；第一阶段 10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，完整项目回归 `154 / 154`。
+证据位于 `/private/tmp/hst-simple-cyclic-final-10cells-20260729/results.json` 与
+`/private/tmp/hst-simple-cyclic-final-regression2-20260729/results.json`。用户真实 UI 验收前
+不声明 `ACCEPTED`。

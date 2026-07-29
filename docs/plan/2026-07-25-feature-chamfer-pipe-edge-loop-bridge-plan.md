@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED`（open U 形与 Tricky-b cyclic Bridge 分段均已通过正式入口、矩阵、视觉和独立审计；等待用户真实 UI 复核后再决定是否 `ACCEPTED`）
+状态：`VERIFIED`（simple cyclic 共同切点、Tricky-b 输入清理与第一阶段 10-cell 正式入口均已通过；等待用户真实 UI 复核后再决定是否 `ACCEPTED`）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -156,18 +156,20 @@ Boundary Edges，也不改变共享资产。若 metadata 导致 Boolean 几何�
 - cyclic 的 Cutter Curve、Boolean 槽和 Bridge 配对输入保持完整闭环，不走 open 槽段转折
   分段；仅在上述阶段全部完成后，Bridge 预处理可按冻结 Pipe 合同的共同环绕 station 将
   一对完整 cyclic Boundary Loop 逻辑划成局部开放弧段，原环 Edge 全集不得改变；
-- 普通直段、单侧转折或两侧不能唯一同步的候选保持原任务或安全停止；
+- 普通直段与单侧转折保持原任务；有效冻结 cyclic 合同内的重复 plateau 必须以两侧局部
+  Boundary 邻接关系确定共同切点，不得取消、跳过或回退整环；
 - 每一对子段分别交给 Blender 原生 Bridge；不得新增 Vertex、不得把一侧投影到另一侧、
   不得按最近距离建立逐点关系；
 - 子段必须保持原链拓扑顺序，首尾连续且 Edge 全集无重叠、无遗漏；相邻子段只共享已有
-  Boundary Vertex。open 共同转折或 cyclic station 不能唯一同步时安全停止；
+  Boundary Vertex。open 共同转折无法同步属于合同失败；cyclic 有效合同中的非连续重复
+  station 必须完成确定性消歧，不能作为产品安全停止路径；
 - 使用普通 Bridge，不启用 Merge；
 - 不在调用前执行逐边匹配、重采样、跨侧 Merge by Distance、局部 rebuild 或自研 zipper；
   允许按下文严格规则分别清理每侧极近点与无形状影响的共线零散点。
 
 Go：每个普通槽段或转折子段均由 Blender 返回 Bridge Faces，选中的两侧全部被连接，
 子段合计完整消费原左右链。
-Stop：共同转折或 cyclic station 不能唯一同步、子段覆盖不完整、Bridge 没有生成 Faces、连接到其他 Pipe，
+Stop：共同转折无法同步、cyclic provenance 缺失、子段覆盖不完整、Bridge 没有生成 Faces、连接到其他 Pipe，
 或产生明显翻面、跨槽连接。
 
 ### Step 2.5 — Fill junction 孔洞
@@ -422,9 +424,10 @@ Bridge 时，手工操作也能复现累计错位。因此本轮只在 Boolean �
 cyclic Bridge 预处理：沿冻结 Pipe 合同累计包含闭合边的无符号转向，以合同 seam 与方向为
 唯一锚点，按累计转向划出约 90° 的共同环绕 station，再用两侧已有 Boundary Vertex 划成
 局部弧段并逐段调用原生 Bridge；归一化弧长每 `0.25` 不能冒充 90° 转向。不得插点、重采样、要求等边数、
-建立逐边对应、搜索最佳旋转起点，或对对象名、组号和 fixture 特判；共同 station 不能唯一
-同步时必须安全失败，不能回退整环 Bridge。同一 station 的连续碎点可以归并为一个唯一 plateau；
-若同一 station 非连续重复或 plateau 不能唯一确定，则视为歧义。分段前后的原 Boundary Edge 全集必须不变、无遗漏、无重叠，相邻弧段
+建立逐边对应、搜索最佳旋转起点，或对对象名、组号和 fixture 特判。同一 station 的连续
+碎点可以归并为一个 plateau；同一侧若在冻结 station 邻域出现非连续重复 plateau，必须只在
+已锁定的 Pipe、槽段与 owner pair 内，以两侧 Boundary 的局部空间邻接关系确定共同切点，
+不能取消、跳过或回退整环。分段前后的原 Boundary Edge 全集必须不变、无遗漏、无重叠，相邻弧段
 只共享已有端点。本轮 Tricky-b `Extruded.002` 只验收 Radius `0.01`，不运行 `0.03`。
 
 2026-07-29 cyclic Bridge 预处理已接入正式 Preview → Finalize runtime。目标 Radius `0.01`
@@ -432,8 +435,9 @@ cyclic Bridge 预处理：沿冻结 Pipe 合同累计包含闭合边的无符号
 4 个局部原生 Bridge job，两侧原 Edge 精确、互斥且完整覆盖；另外 4 组 cyclic 双环也使用
 同一通用规则。其余 8 个第一阶段 cell 各连续 3 次全部成功，完整项目回归 `150 / 150`
 通过。固定近景未见此前的环绕扭曲；独立规格审计确认正式入口、生产实现、测试合同和本文
-一致，未发现对象名、组号、目标边数或 fixture 特判。安全失败覆盖共同 station 缺失、非连续重复
-plateau 与无效 cyclic 合同；少于 8 条边的最小 cyclic 双环保留原生整环 Bridge，避免把分段用于
+一致，未发现对象名、组号、目标边数或 fixture 特判。旧版本曾把非连续重复 plateau 当作
+歧义并安全停止；该规则已被 simple 回归推翻，不再是当前规格。provenance 缺失与无效 cyclic
+合同只作为实现或数据合同错误让测试失败。少于 8 条边的最小 cyclic 双环保留原生整环 Bridge，避免把分段用于
 没有足够内部端点形成四个非空局部弧段的闭环。自动证据支持状态恢复为 `VERIFIED`，用户真实 UI 复核前仍不得声明
 `ACCEPTED`。
 
@@ -451,6 +455,9 @@ selection 内合并，open 端点受保护；随后只 Dissolve 没有第三条 
 open/cyclic 形态和端点，并双向核对清理前后折线的最大空间偏差及弧长变化；不能证明几何
 等价时安全停止。该规则不读取对象名、组号或 fixture，不按对侧点位简化，也不建立逐点对应。
 
+以上为已被后续真实 UI 推翻的历史规则；当前规则见本文末尾的 `Radius × 0.01`、单侧链
+中位 Edge 长度 `1%` 上限与逐个极短 Edge 连通簇约束。
+
 目标 Radius `0.01` 连续 3 次稳定 `PRODUCT_SUCCESS`。用户确认的 runtime 37 由 `22/7`
 清为 `21/7`，runtime 40 由 `21/20` 清为 `20/20`，两组极近边均归零；全对象共合并 6 个
 极近点并 Dissolve 13 个严格共线零散点，最终 Mesh 闭合、无零面积或自交，source 不变。
@@ -466,3 +473,44 @@ open/cyclic 形态和端点，并双向核对清理前后折线的最大空间�
 - 完整回归：`/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`；
 - 延期 tricky 安全矩阵：`/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`；
 - 37 / 40 固定近景：`/private/tmp/hst-bridge-cleanup-target2-20260729/evidence/`。
+
+2026-07-29 用户真实 UI 复核推翻了上述 `Radius × 1e-6` 阈值及 runtime 40 的自动通过结论：
+40 的配对正确，但正式结果仍有局部扭曲；在同一真实输入上手动以 `0.01 cm` 执行 Merge by
+Distance 后再 Bridge，布线正常，不 Merge 则稳定复现扭曲。该 fixture 使用 `METRIC / CENTIMETERS`
+且 `scale_length=1`，因此手动 `0.01 cm` 等于 `1e-4` Blender unit；目标 Radius `0.01` 下对应
+`Radius × 0.01`。逐 Bridge 任务探针进一步证明：旧阈值只清掉 40a 的一条 `7.45e-9` 近零边，
+却遗漏 40b 的 `6.59e-5` 极短边；`1e-4` 阈值会额外清掉该点，而不会吞并下一条
+`8.11e-4` 边。正式通用阈值因此改为 `Radius × 0.01`，并再受当前单侧链中位 Edge 长度的
+`1%` 上限约束，避免大 Radius 在本身采样很密的链上吞掉连续短边；仍严格限定同侧连通
+selection、保护 open 端点，并保留第三条 Edge、拓扑、双向空间偏差和弧长门禁。该相对规则不读取 scene
+单位、对象名、组号或 fixture。完成新目标近景、其余场景、完整回归与独立审计前，状态退回
+`INTEGRATED`，旧目标 artifact 不得继续证明 40 已修复。
+
+2026-07-29 用户确认 Tricky-b 的 Bridge 输入清理已在真实 UI 中修复，但随后在
+`simple / Extruded.002` 发现 cyclic 双环分段回归。正式 runtime 的 `3a/3b`、`4a/4b`、
+`7a/7b`、`8a/8b` 中，一侧 Boolean Boundary 会在两个不连续位置出现近乎相同的 station
+plateau；旧逻辑只按接近合同 station 的数值排序，选中了远离另一侧真实槽边的错误切点，
+使后半圈被配成一长一短的错误弧段。目标 `0.01 / 0.03` 均稳定复现，证明这是共同切点消歧
+合同缺失，而非原生 Bridge、Radius 或点清理阈值问题。
+
+正式规格新增硬要求：cyclic 双环必须先由冻结 Pipe station 锁定同一目标区间；若同一侧在
+该 station 邻域存在多个不连续 plateau，只能在已锁定的 Pipe、槽段、owner pair 和 station
+候选内，以两侧 Boundary 的局部空间邻接关系确定同一槽宽上的切点。这不是用距离猜 Pipe，
+也不建立逐点对应。随后按同一对相邻共同 station 生成 Bridge job；每个 job 的两侧必须覆盖
+相同环绕区间，全部 job 合计仍须精确、互斥地覆盖原环。该类错配属于实现 bug，禁止通过
+安全停止、跳过、整环回退或降级路径掩盖。修复 simple 两个 Radius、复核 Tricky-b cyclic
+目标、其余第一阶段场景和完整回归前，当前状态退回 `INTEGRATED / STOP`。
+
+2026-07-29 最终修复与审计完成。simple `Extruded.002` 的两个 Radius 各连续 3 次从正式
+Preview → Finalize 成功，实际输入 3/4/7/8 的两侧 station 区间完全一致，弧长比均小于
+`1.04`，最终 Mesh 闭合、无零面积、整体朝向为正且逐 Face 与重新计算结果一致。修复没有
+以安全停止或整环回退处理重复 plateau，而是在冻结 station 邻域内确定真实相邻的两侧切点。
+同时把 Bridge 输入 Merge 收紧为逐个极短 Edge 连通簇处理，第三条 Edge 继续受保护，避免
+一次大范围合并在 Tricky-b Radius `0.03` 上破坏 cyclic 形态。第一阶段 10 cells × 3 全部
+稳定 `PRODUCT_SUCCESS`、source 不变；统一完整回归 `154 / 154` 通过。独立规格审计确认
+正式 runtime、矩阵硬门禁、测试说明与本文一致，状态恢复为 `VERIFIED`；用户尚未在真实
+Blender UI 验收，因此不声明 `ACCEPTED`。
+
+- 第一阶段 10-cell 矩阵：`/private/tmp/hst-simple-cyclic-final-10cells-20260729/results.json`；
+- 完整项目回归：`/private/tmp/hst-simple-cyclic-final-regression2-20260729/results.json`；
+- simple 配对可检查文件：`/private/tmp/hst-simple-extruded002-fixed-bridge-pairs-r001-20260729/bridge-pairs.blend` 与 `/private/tmp/hst-simple-extruded002-fixed-bridge-pairs-r003-20260729/bridge-pairs.blend`。

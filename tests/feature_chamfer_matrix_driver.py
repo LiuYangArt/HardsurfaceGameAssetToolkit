@@ -93,6 +93,42 @@ TURN_SPLIT_REGRESSION_CONTRACTS = {
 }
 # 产品矩阵已知 cyclic 目标身份；只断言正式通用规则的结果，生产实现不读取这些值。
 CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
+    ("simple", "Extruded.002", 0.01): (
+        {
+            "segment_id": 0,
+            "pipe_id": 2,
+            "owner_surface_pair": [2, 4],
+            "source_side_edge_counts": [27, 67],
+            "maximum_side_length_ratio": 1.04,
+            "station_interval_tolerance": 1.0e-6,
+        },
+        {
+            "segment_id": 1,
+            "pipe_id": 3,
+            "owner_surface_pair": [2, 3],
+            "source_side_edge_counts": [27, 67],
+            "maximum_side_length_ratio": 1.04,
+            "station_interval_tolerance": 1.0e-6,
+        },
+    ),
+    ("simple", "Extruded.002", 0.03): (
+        {
+            "segment_id": 0,
+            "pipe_id": 2,
+            "owner_surface_pair": [2, 4],
+            "source_side_edge_counts": [27, 65],
+            "maximum_side_length_ratio": 1.04,
+            "station_interval_tolerance": 1.0e-6,
+        },
+        {
+            "segment_id": 1,
+            "pipe_id": 3,
+            "owner_surface_pair": [2, 3],
+            "source_side_edge_counts": [27, 65],
+            "maximum_side_length_ratio": 1.04,
+            "station_interval_tolerance": 1.0e-6,
+        },
+    ),
     ("tricky_b", "Extruded.002", 0.01): (
         {
             "segment_id": 16,
@@ -572,10 +608,11 @@ def classify_result(
             and record.get("owner_surface_pair")
             == cyclic_contract["owner_surface_pair"]
         ]
-        source_side_edges = (
-            target_records[0].get("cyclic_source_side_edge_indices", ())
-            if target_records
-            else ()
+        maximum_side_length_ratio = cyclic_contract.get(
+            "maximum_side_length_ratio"
+        )
+        station_interval_tolerance = cyclic_contract.get(
+            "station_interval_tolerance"
         )
         cyclic_split_contract = cyclic_split_contract and (
             len(target_records) == 4
@@ -589,36 +626,50 @@ def classify_result(
                 and record.get("native_operator") == "Blender Bridge Edge Loops"
                 for record in target_records
             )
-            and sorted(len(side_edges) for side_edges in source_side_edges)
+            and sorted(
+                target_records[0].get("cyclic_source_side_edge_counts", ())
+            )
             == cyclic_contract["source_side_edge_counts"]
             and all(
-                len(
-                    [
-                        edge_index
+                (
+                    consumed_edges := [
+                        edge_token
                         for record in target_records
-                        for edge_index in record.get(
-                            "cyclic_job_side_edge_indices", ((), ())
+                        for edge_token in record.get(
+                            "cyclic_job_side_edge_identity_tokens", ((), ())
                         )[side_index]
                     ]
                 )
-                == len(
-                    set(
-                        edge_index
-                        for record in target_records
-                        for edge_index in record.get(
-                            "cyclic_job_side_edge_indices", ((), ())
-                        )[side_index]
-                    )
+                and len(consumed_edges) == len(set(consumed_edges))
+                and set(consumed_edges)
+                == set(
+                    target_records[0].get(
+                        "cyclic_source_side_edge_identity_tokens", ((), ())
+                    )[side_index]
                 )
-                and sum(
-                    record.get("bridge_input_cleanup", ({}, {}))[side_index].get(
-                        "source_edge_count",
-                        0,
+                for side_index in range(2)
+            )
+            and (
+                maximum_side_length_ratio is None
+                or all(
+                    min(record.get("side_lengths", (0.0,))) > 0.0
+                    and max(record["side_lengths"]) / min(record["side_lengths"])
+                    <= maximum_side_length_ratio
+                    for record in target_records
+                )
+            )
+            and (
+                station_interval_tolerance is None
+                or all(
+                    len(record.get("side_station_intervals", ())) == 2
+                    and all(
+                        abs(first - second) <= station_interval_tolerance
+                        for first, second in zip(
+                            *record["side_station_intervals"]
+                        )
                     )
                     for record in target_records
                 )
-                == len(source_side_edges[side_index])
-                for side_index in range(2)
             )
         )
     direct_bridge_product = (
@@ -765,6 +816,8 @@ def repetition_signature(repetition):
                     "cyclic_split_job_count",
                     "common_cyclic_stations",
                     "cyclic_job_side_edge_indices",
+                    "side_lengths",
+                    "side_station_intervals",
                 )
             }
             for record in repetition.get("backend", {})

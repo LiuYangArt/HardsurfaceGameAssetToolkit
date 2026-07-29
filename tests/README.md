@@ -70,7 +70,7 @@
 - Feature Chamfer 历史 Phase C 回归：旧 setback、DP correspondence、pre-Boolean pairing、normalization 与 exactly-once 合同仅防止旧代码静默回归，不代表当前产品路线或 Bridge 前置门槛
 - Feature Chamfer 当前 Phase C 合同：没有交叉的普通 Pipe 先以两侧完整 Loop 完成配对；遇到 Pipe 交叉时，在 junction 两端切成连续槽段；已确认配对正确但包含多个显著空间转折的长 open 槽段，可继续按两侧共同大转折同步切成连续子段；已确认配对正确但整环原生 Bridge 累计错位的 cyclic 双环，仅在 Boolean 后、Bridge 前按冻结合同的共同环绕 station 划分局部弧段；每段仍使用原生 Bridge，最后 Fill 剩余交叉孔洞
 - 槽段两侧 Vertex/Edge 数量可不同，不要求逐边/逐点对应；只在槽段归属不明、跨 junction 混入其他槽、Bridge/Fill 实际失败或最终结果破坏槽外模型时停止，中间重合、零面积、degree、branch、cycle 与 canonicalization 不单独阻止 Bridge
-- 每个最终 Bridge job 在原生 Bridge 前按左右侧分别清理输入：以 Radius 的百万分之一阈值 Merge 极近点，并 Dissolve 没有第三条 Edge 接入且严格共线的中间 Vertex；不得跨侧合并、按对侧采样简化或改变 open/cyclic 形态
+- 每个最终 Bridge job 在原生 Bridge 前按左右侧分别清理输入：以 `Radius × 0.01` 且不超过当前单侧链中位 Edge 长度 `1%` 的阈值 Merge 极近点，并 Dissolve 没有第三条 Edge 接入且严格共线的中间 Vertex；不得跨侧合并、按对侧采样简化或改变 open/cyclic 形态
 - 旧 Feature Chamfer REGULAR_PATCHED 经统一 Patch Module legacy Adapter dispatch 回归
 
 > 当前正式 Preview 输入只读取显式 `sharp_edge` attribute，不读取 Edit Mode 选区，不回退 Seam/angle select，也不调用 Curve bevel、Mesh bevel 或 Bevel modifier。
@@ -97,8 +97,8 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
 > 2026-07-28 全部正式 Bridge 输入经 `1a/1b ...` 人工复核后，Mixed `26a/26b` 与 Tricky-b `32a/32b` 都证明：已配对正确的 open U 形长链若整组交给原生 Bridge，可能在转角处产生扭曲。共同转折分段必须逐处独立生效，不设置累计 360° 或至少四处转折门槛。Cutter Curve 与 Boolean cyclic 槽仍必须保持完整；Boolean 后、Bridge 前的一对完整 cyclic Boundary Loop 可按冻结合同的共同环绕 station 逻辑划分局部 Bridge jobs。两类分段均禁止 fixture 特判、逐点对应或重采样。
-> 2026-07-29 Tricky-b `Extruded.002` Radius `0.01` 的正式 runtime 进一步确认：`26a/26b` 与 `31a/31b` 均为正确、完整的 cyclic 双环，但整环原生 Bridge 会因两侧采样差异产生累计错位。本轮只验收该 Radius；cyclic 分段必须完整覆盖原 Edge、只共享已有端点，并在共同 station 不能唯一同步时安全失败。
-> 2026-07-29 后续真实 Bridge 输入 `37a/37b` 与 `40a/40b` 配对正确，但分别含极近重复点。正式清理后两组由 `22/7 → 21/7` 与 `21/20 → 20/20`，零长度输入均归零；同一通用 Dissolve 规则也清除了其他 job 的严格共线零散 Vertex。目标 1 cell × 3 与其余 8 cells × 3 均稳定成功；完整回归首次运行的唯一失败是旧 Edge 数断言未按清理前统计，修正断言后该 case 独立通过。
+> 2026-07-29 Tricky-b `Extruded.002` Radius `0.01` 的正式 runtime 进一步确认：`26a/26b` 与 `31a/31b` 均为正确、完整的 cyclic 双环，但整环原生 Bridge 会因两侧采样差异产生累计错位。本轮只验收该 Radius；cyclic 分段必须完整覆盖原 Edge、只共享已有端点。simple 后续证明同一 station 邻域可能存在非连续重复 plateau；有效冻结合同必须在局部候选内用两侧 Boundary 邻接关系消歧，不能取消、跳过或回退整环。
+> 2026-07-29 后续真实 Bridge 输入 `37a/37b` 与 `40a/40b` 配对正确，但分别含极近重复点。这里记录的是随后被真实 UI 推翻的历史清理结果：旧规则曾报告 `22/7 → 21/7` 与 `21/20 → 20/20`；它不能证明当前视觉修复。
 
 ## Experimental Pipe Chamfer API Probe
 
@@ -196,7 +196,10 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 - 每 cell artifact：`tests/artifacts/feature_chamfer_matrix/<case>/`。
 - 旧第一阶段自动证据：`tests/artifacts/feature_chamfer_phase1_required_global_curve_final_no_normals/results.json`、`/private/tmp/hst-required10x3-final7-20260727/results.json`、`/private/tmp/hst-required10-strip-final-20260728/results.json` 与 `/private/tmp/hst-turn-split-final-required10-20260728/results.json`；前三份分别被真实 UI 或禁用的逐点对应路线推翻，最后一份使用过拟合 Mixed 的累计转角门槛，也不能继续声明通过。通用逐处规则的新证据为 `/private/tmp/hst-general-turn-split-required10-final-20260728/results.json`：10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，显式验证 Mixed 六切点/七 job 与 Tricky-b 两切点/三 job。延期安全证据为 `/private/tmp/hst-general-turn-split-tricky-safe-final-20260728/results.json`，完整回归为 `/private/tmp/hst-general-turn-split-full-regression-final-20260728/results.json`（147 / 147）。法线暂缓，矩阵中的法线字段只用于确认错误方案未接入，不是产品成功门槛。
 - 2026-07-29 cyclic 修复证据：目标 Radius `0.01` × 3 位于 `/private/tmp/hst-cyclic-target-matrix-final4-20260729/results.json`，26（`86/27`）与 31（`122/31`）均为四个局部原生 Bridge job，原 Edge 精确且互斥覆盖；其余 8 cells × 3 位于 `/private/tmp/hst-cyclic-other-eight-final-20260729/results.json`，全部稳定 `PRODUCT_SUCCESS`；完整项目回归 `150 / 150` 位于 `/private/tmp/hst-cyclic-full-regression-final3-20260729/results.json`。该证据支持 `VERIFIED`，用户真实 UI 复核前不声明 `ACCEPTED`。
-- 2026-07-29 Bridge 输入清理证据：目标实际任务 37/40 的极近点已在同侧按 `Radius × 1e-6` 合并，无第三条 Edge 且严格共线的零散点被 Dissolve；清理前后另有拓扑、端点、双向空间偏差和弧长等价门禁。目标矩阵位于 `/private/tmp/hst-bridge-cleanup-target2-20260729/results.json`，其余 8 cells × 3 位于 `/private/tmp/hst-bridge-cleanup-other8-20260729/results.json`，延期 tricky 安全矩阵位于 `/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`，完整回归 `152 / 152` 位于 `/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`。
+- 2026-07-29 Bridge 输入清理历史证据：目标实际任务 37/40 曾在同侧按 `Radius × 1e-6` 合并，无第三条 Edge 且严格共线的零散点被 Dissolve；清理前后另有拓扑、端点、双向空间偏差和弧长等价门禁。该阈值与对应 artifact 随后被用户真实 UI 推翻，只保留为历史诊断，不能证明视觉修复。
+- 上述 `Radius × 1e-6` 证据已被用户真实 UI 复核推翻：runtime 40 仍扭曲，手动 `0.01 cm` Merge 后正常。正式规则改为同侧 `Radius × 0.01`，并受当前单侧链中位 Edge 长度 `1%` 的上限约束；目标 fixture 中阈值仍为 `1e-4` Blender unit，可清掉旧规则遗漏的 `6.59e-5` 极短边，同时避免大 Radius 在密集采样链上连续吞边。新的完整证据生成前，旧 artifact 只保留为历史诊断，不能证明 40 已修复。
+- Tricky-b 清理经用户真实 UI 确认后，`simple / Extruded.002` 暴露 cyclic 双环共同切点回归：一侧在同一 station 邻域存在两个不连续 plateau，旧数值排序选中了远离真实另一侧槽边的切点，导致实际输入 3/4/7/8 的后半圈一长一短。正式合同改为先锁定 Pipe、槽段、owner pair 和 station 邻域，再以两侧 Boundary 的局部空间邻接关系消歧，并按同一相邻 station 区间配对；这不用于猜 Pipe，也不建立逐点对应。禁止用安全停止、跳过或整环回退掩盖该算法缺陷。修复并重跑 simple 两个 Radius、Tricky-b cyclic 目标、其余场景与完整回归前状态为 `INTEGRATED / STOP`。
+- 该 simple cyclic 回归现已修复并达到 `VERIFIED`：两个 Radius 各连续 3 次正式成功，3/4/7/8 的两侧 station 区间一致、弧长比小于 `1.04`，输出闭合、无零面积、无反面；第一阶段 10 cells × 3 全部稳定 `PRODUCT_SUCCESS`，完整项目回归 `154 / 154`。Bridge 输入 Merge 改为逐个极短 Edge 连通簇处理，并新增 Tricky-b Radius `0.03` cyclic 形态回归。证据位于 `/private/tmp/hst-simple-cyclic-final-10cells-20260729/results.json` 与 `/private/tmp/hst-simple-cyclic-final-regression2-20260729/results.json`。用户真实 UI 验收前不声明 `ACCEPTED`。
 
 ## 设计原则
 
