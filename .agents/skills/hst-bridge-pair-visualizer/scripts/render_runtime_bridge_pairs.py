@@ -7,7 +7,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 
-# 把捕获的每组真实左右链生成为编号 Curve、标签、总览图与可检查 Blend。
+# 把捕获的每组真实左右链生成为编号 Curve、总览图与可检查 Blend。
 # 命令行参数: fixture、捕获 JSON、输出 Blend、PNG 与 manifest 路径。
 def main():
     arguments = sys.argv[sys.argv.index("--") + 1 :]
@@ -85,23 +85,6 @@ def main():
             marker.show_in_front = True
             curve_data.materials.append(material)
             pair_collection.objects.link(marker)
-
-            label_data = bpy.data.curves.new(
-                f"{object_label}_LabelCurve",
-                "FONT",
-            )
-            label_data.body = object_label
-            label_data.align_x = "CENTER"
-            label_data.align_y = "CENTER"
-            label_data.size = 0.04
-            label = bpy.data.objects.new(f"{object_label}_label", label_data)
-            label.matrix_world = source_matrix
-            label.location = coordinates[len(coordinates) // 2] + Vector(
-                (0.0, 0.0, 0.025 + side_index * 0.025)
-            )
-            label.show_in_front = True
-            label_data.materials.append(material)
-            pair_collection.objects.link(label)
 
             world_points.extend(
                 source_matrix @ coordinate for coordinate in coordinates

@@ -41,7 +41,7 @@ python3 .agents/skills/hst-bridge-pair-visualizer/scripts/create_bridge_pair_vis
   --output-dir /private/tmp/hst-bridge-pairs-run
 ```
 
-The orchestrator runs the formal UI Operator Preview and Finalize. A temporary hook records each native Bridge call after production job segmentation. The render script creates one collection per pair and objects named `1a`, `1b`, `2a`, `2b`, and so on. Cyclic sides remain cyclic in the visualization.
+The orchestrator runs the formal UI Operator Preview and Finalize. A temporary hook records each native Bridge call after production job segmentation. The render script creates one collection per pair and only the Curve objects named `1a`, `1b`, `2a`, `2b`, and so on; it does not create separate label objects. Cyclic sides remain cyclic in the visualization.
 
 ## Validate
 
