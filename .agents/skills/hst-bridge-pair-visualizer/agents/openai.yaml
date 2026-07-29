@@ -1,0 +1,4 @@
+interface:
+  display_name: "HST Bridge Pair Visualizer"
+  short_description: "捕获并标注正式 Bridge 的全部左右 Edge Loop 配对"
+  default_prompt: "使用 $hst-bridge-pair-visualizer 捕获并标注 Feature Chamfer 正式流程实际使用的全部 Bridge 左右 Edge Loop。"
