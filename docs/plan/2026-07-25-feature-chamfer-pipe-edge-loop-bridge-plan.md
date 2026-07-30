@@ -1,7 +1,7 @@
 # Feature Chamfer Phase C — Pipe Edge Loop 直接 Bridge 计划
 
 日期：2026-07-25
-状态：`VERIFIED`（simple cyclic 共同切点、Tricky-b 输入清理与第一阶段 10-cell 正式入口均已通过；等待用户真实 UI 复核后再决定是否 `ACCEPTED`）
+状态：`ACCEPTED`（Mixed/Simple cyclic 共同切点、Tricky-b 输入清理与第一阶段 10-cell 正式入口均已通过；2026-07-30 用户已在真实 Blender UI 手动复核多个测试场景并确认效果正常）
 
 2026-07-25 规格补充：Boundary Edge acquisition 已由受控 Boolean Pro 的
 `Boundary Edges` 输出解决。正式 Preview 已将该 selection 保存到 evaluated
@@ -187,8 +187,7 @@ Stop：剩余孔洞包含尚未 Bridge 的普通槽段、多个 junction 被错�
 第一阶段优先让 `tricky` 以外的三个测试文件可用：
 
 1. `simple`：2 个对象 × 2 个 radius，共 4 个 cell；
-2. `tricky_b`：长期范围为 2 个对象 × 2 个 radius，共 4 个 cell；本轮 cyclic 修复不运行
-   `Extruded.002` Radius `0.03`，临时门禁只计其余 3 个；
+2. `tricky_b`：2 个对象 × 2 个 radius，共 4 个 cell；
 3. `mixed`：1 个对象 × 2 个 radius，共 2 个 cell。
 
 `tricky` 的 2 个对象 × 2 个 radius 共 4 个 cell 延后到第二阶段；它们允许安全失败，不阻塞第一阶段交付。
@@ -225,21 +224,20 @@ Bridge。正式方向改为在所有 open / cyclic 分段完成后、每个原�
 后者必须保留原 Radius 的 `RADIUS_LIMIT_DIAGNOSTIC` 与更小 Radius 的独立成功证据，
 不得把原失败档位改写为成功。`tricky` 即使失败，也必须保持 source 不变、无坏输出；
 可定位的几何失败保留红色位置，较早的合同失败保留已有现场和明确提示。不得用 fixture
-特判换取这 10 个场景通过。本轮 cyclic 修复单独以目标 Radius `0.01` 连续 3 次通过，且
-其余 8 个第一阶段 cell 连续 3 次无回归作为临时 Go；不执行的 `0.03` 不得伪装成通过。
+特判换取这 10 个场景通过。2026-07-29 曾以目标 Radius `0.01` 和其余 8 个第一阶段 cell
+作为临时 Go；2026-07-30 Mixed 修复已恢复完整 10-cell 门禁，两档 Radius 均须纳入。
 
 ### Step 4 — 第一阶段正式验收与分层矩阵
 
 - 确认正式 `FINALIZE` 已接入相同流程；
-- 长期验收从 UI 入口运行优先 10 cells × 3 repetitions；本轮 cyclic 修复运行目标 Radius
-  `0.01` × 3 与其余 8 cells × 3；若某个已运行 cell 触发半径限制，另以用户显式操作等价的独立 Operator 调用验证更小 Radius；
+- 从 UI 入口运行优先 10 cells × 3 repetitions；若某个已运行 cell 触发半径限制，另以用户
+  显式操作等价的独立 Operator 调用验证更小 Radius；
 - 另外运行或记录 `tricky` 4 cells 的安全失败结果，但不计入第一阶段产品成功率；
 - 保存每个 cell 的结果、日志和近景；
 - 独立 Spec Audit 核对正式 runtime 确实走槽段两侧完整边链 → Blender Bridge → junction Fill，而不是历史 pairing/canonicalization 旁路。
 
-Go：长期范围仍要求优先 10 个目标场景全部直接通过或严格满足“降低半径后通过”；本轮只在
-目标 `0.01` 与其余 8 cells 的 Operator、视觉结果、source 不变、诊断可见和回滚门禁全部
-通过后恢复 `VERIFIED`，不据此声明未运行的目标 `0.03` 或完整 10-cell 新证据通过。
+Go：优先 10 个目标场景全部直接通过或严格满足“降低半径后通过”，且 Operator、用户可见
+Mesh、source 不变、诊断可见和回滚门禁全部通过后恢复 `VERIFIED`。
 Stop：任一优先 cell 只能靠 fixture 特判、距离猜 Pipe、忽略 Bridge/Fill 失败或修改槽外模型才能通过。
 
 第二阶段再处理 `tricky` 4 cells。它们全部通过后，才把范围提升为完整 14-cell 产品矩阵通过。
@@ -514,3 +512,34 @@ Blender UI 验收，因此不声明 `ACCEPTED`。
 - 第一阶段 10-cell 矩阵：`/private/tmp/hst-simple-cyclic-final-10cells-20260729/results.json`；
 - 完整项目回归：`/private/tmp/hst-simple-cyclic-final-regression2-20260729/results.json`；
 - simple 配对可检查文件：`/private/tmp/hst-simple-extruded002-fixed-bridge-pairs-r001-20260729/bridge-pairs.blend` 与 `/private/tmp/hst-simple-extruded002-fixed-bridge-pairs-r003-20260729/bridge-pairs.blend`。
+
+2026-07-30 用户真实 UI 复核发现，`mixed / Extruded.002` 的同一 cyclic 槽段仍有后两段
+长短弧错配；Radius `0.03` 的实际 Bridge 输入为第 71/72 组，Radius `0.01` 的同一槽段
+对应第 75/76 组。正式 runtime 已执行四分段，但共同切点规则要求两侧原始 station 差不
+超过固定极小值，导致 Boolean 两侧相差一个局部离散采样步的真实相邻槽边被提前排除，反而
+选择数值相同、空间上远离的重复 plateau。错误候选槽宽约 `0.405`，真实相邻候选约
+`0.042`；因此问题属于共同切点候选域错误，不是 Radius、原生 Bridge 或分段入口失效。
+
+正式规格补充：共同切点必须以冻结 cyclic Pipe 的局部采样间隔定义合同邻域，两侧分别在
+同一目标 station 的邻域内保留最近 plateau，再在这些已锁定的局部候选之间以 Boundary
+空间邻接确定真实槽宽配对。不得要求两侧经 Boolean 插值后的原始 station 数值完全相等，
+也不得扩大为全环距离搜索、逐点对应或针对 fixture 的阈值。每个生成的局部 job 仍须在测试
+中证明两侧覆盖同一环绕区间、弧长比例合理，四个 job 合计精确且互斥覆盖原双环。完成
+Mixed 两个 Radius、Simple、Tricky-b、第一阶段矩阵与完整回归前，状态退回
+`INTEGRATED / STOP`。
+
+2026-07-30 通用修复与独立审计完成。共同切点候选域现由冻结 Pipe 的目标前后采样间隔与
+全环中位采样间隔共同限定；每侧只保留最接近同一合同目标的一层 plateau，随后以局部空间
+邻接为主判据，并以 station 采样偏差保证确定性。实现不读取 fixture、对象名、
+组号、Radius 特例或测试 Edge ID，也不做全环最近距离配对。Mixed 两个 Radius 的目标
+cyclic 槽段均恢复四个匹配局部 job：两侧切点均位于同一冻结 Pipe 局部合同邻域；实际异常的
+后两组不再出现长短环错配。
+
+正式 Operator 定向回归覆盖 Mixed、Simple、Tricky-b 与通用局部采样偏差合同，全部通过；
+第一阶段 10 cells × 3 均稳定 `PRODUCT_SUCCESS`、source 不变；统一完整回归
+`154 / 154` 通过。独立规格审计确认正式 runtime、矩阵硬门禁、测试说明与本文一致，状态
+恢复为 `VERIFIED`。2026-07-30 用户随后在真实 Blender UI 手动复核多个测试场景并确认
+效果正常，本轮 Mixed/Simple cyclic 与 Tricky-b 清理范围提升为 `ACCEPTED`。
+
+- 第一阶段 10-cell 矩阵：`/private/tmp/hst-mixed-cyclic-general-10cells-final-20260730/results.json`；
+- 完整项目回归：`/private/tmp/hst-mixed-cyclic-general-full-regression-20260730/results.json`。

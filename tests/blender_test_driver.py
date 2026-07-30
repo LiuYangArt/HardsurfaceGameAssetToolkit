@@ -8437,6 +8437,10 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
     finally:
         operator_module.build_direct_edge_loop_chamfer = original_builder
 
+    ensure(
+        set(evidence_by_radius) == {0.01, 0.03},
+        f"Mixed fixture did not capture Direct Bridge evidence at both Radii: {sorted(evidence_by_radius)}",
+    )
     for radius, stats in evidence_by_radius.items():
         ensure(
             stats.get("bridge_shape_contract")
@@ -8512,9 +8516,43 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             ),
             f"Mixed fixture 26a/26b common-turn proof drifted at Radius {radius}: {common_turns}",
         )
+        mixed_cyclic_records = [
+            record
+            for record in stats["bridge_records"]
+            if record.get("segment_id") == 30
+            and record.get("pipe_id") == 15
+            and record.get("owner_surface_pair") == [13, 14]
+        ]
+        ensure(
+            len(mixed_cyclic_records) == 4
+            and sorted(
+                record.get("cyclic_split_job_index")
+                for record in mixed_cyclic_records
+            )
+            == list(range(4))
+            and all(
+                record.get("cyclic_split_applied")
+                and min(record["side_lengths"]) > 0.0
+                and max(record["side_lengths"]) / min(record["side_lengths"])
+                <= 1.26
+                for record in mixed_cyclic_records
+            )
+            and all(
+                all(
+                    min(
+                        abs(side_station - cut["contract_station"]) % 1.0,
+                        (-abs(side_station - cut["contract_station"])) % 1.0,
+                    )
+                    <= 0.025
+                    for side_station in cut["side_cut_stations"]
+                )
+                for cut in mixed_cyclic_records[0]["common_cyclic_stations"]
+            ),
+            f"Mixed fixture cyclic local arcs mismatched at Radius {radius}: {mixed_cyclic_records}",
+        )
 
     result.add_detail(
-        "Mixed fixture split 26a/26b at six synchronized local turns"
+        "Mixed fixture keeps synchronized U-turn and cyclic local Bridge jobs at both Radii"
     )
 
 
@@ -9140,8 +9178,23 @@ def test_feature_chamfer_cyclic_bridge_cut_contract(
         )
     else:
         raise TestFailure("Invalid cyclic contract did not fail closed")
+
+    repeated_station_segment = dict(generic_segment)
+    repeated_station_segment["point_stations"] = [0.0] * point_count
+    try:
+        module._cyclic_contract_station_neighborhood(
+            repeated_station_segment,
+            0.0,
+        )
+    except module.FeatureChamferDirectBridgeError as error:
+        ensure(
+            error.error_code == "cyclic_bridge_contract_invalid",
+            f"Repeated cyclic stations reported an unrelated failure: {error.error_code}",
+        )
+    else:
+        raise TestFailure("Repeated cyclic stations did not fail with a contract error")
     result.add_detail(
-        "generic cyclic turn contract produced four intervals and invalid contract failed closed"
+        "generic cyclic turn contract produced four intervals and invalid/repeated station contracts failed closed"
     )
 
 
@@ -9170,6 +9223,7 @@ def test_feature_chamfer_cyclic_common_station_selection_contract(
             module._cyclic_common_cut_vertices(
                 component_markers,
                 0.25,
+                0.05,
                 902,
                 {},
                 {},
@@ -9196,6 +9250,7 @@ def test_feature_chamfer_cyclic_common_station_selection_contract(
         selected = module._cyclic_common_cut_vertices(
             component_markers,
             0.25,
+            0.05,
             903,
             {},
             {},
@@ -9205,10 +9260,45 @@ def test_feature_chamfer_cyclic_common_station_selection_contract(
             selected[0][0] is near_vertex and selected[1][0] is opposite_vertex,
             "Duplicate cyclic station did not select the spatially adjacent Boundary pair",
         )
+
+        first_local_vertex = SimpleNamespace(co=Vector((0.0, 0.0, 0.0)), index=6)
+        first_exact_distant_vertex = SimpleNamespace(
+            co=Vector((5.0, 0.0, 0.0)),
+            index=7,
+        )
+        second_local_vertex = SimpleNamespace(co=Vector((0.04, 0.0, 0.0)), index=8)
+        second_exact_distant_vertex = SimpleNamespace(
+            co=Vector((5.4, 0.0, 0.0)),
+            index=9,
+        )
+        plateau_sides = (
+            [
+                {"station": 0.496, "vertex": first_local_vertex},
+                {"station": 0.504, "vertex": first_exact_distant_vertex},
+            ],
+            [
+                {"station": 0.504, "vertex": second_local_vertex},
+                {"station": 0.504, "vertex": second_exact_distant_vertex},
+            ],
+        )
+        selected = module._cyclic_common_cut_vertices(
+            component_markers,
+            0.5,
+            0.025,
+            904,
+            {},
+            {},
+            {},
+        )
+        ensure(
+            selected[0][0] is first_local_vertex
+            and selected[1][0] is second_local_vertex,
+            "Local cyclic sampling offset did not preserve the spatially adjacent Boundary pair",
+        )
     finally:
         module._cyclic_station_plateaus = original_plateau_builder
     result.add_detail(
-        "missing common station reports invalid data and duplicate station selects adjacent Boundaries"
+        "missing station reports invalid data and local sampling offsets select adjacent Boundaries"
     )
 
 

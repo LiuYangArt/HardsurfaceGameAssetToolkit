@@ -35,6 +35,10 @@ CLASSIFICATIONS = {
 FIRST_STAGE_LABELS = {"simple", "tricky_b", "mixed"}
 DEFERRED_LABELS = {"tricky"}
 CYCLIC_FIX_TARGET_SCOPE = {("tricky_b", "Extruded.002", 0.01)}
+MIXED_CYCLIC_FIX_TARGET_SCOPE = {
+    ("mixed", "Extruded.002", 0.01),
+    ("mixed", "Extruded.002", 0.03),
+}
 CYCLIC_FIX_REGRESSION_SCOPE = {
     ("simple", "Extruded.002", 0.01),
     ("simple", "Extruded.002", 0.03),
@@ -141,6 +145,26 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
             "pipe_id": 2,
             "owner_surface_pair": [2, 3],
             "source_side_edge_counts": [31, 122],
+        },
+    ),
+    ("mixed", "Extruded.002", 0.01): (
+        {
+            "segment_id": 30,
+            "pipe_id": 15,
+            "owner_surface_pair": [13, 14],
+            "source_side_edge_counts": [42, 97],
+            "maximum_side_length_ratio": 1.26,
+            "maximum_contract_station_distance": 0.025,
+        },
+    ),
+    ("mixed", "Extruded.002", 0.03): (
+        {
+            "segment_id": 30,
+            "pipe_id": 15,
+            "owner_surface_pair": [13, 14],
+            "source_side_edge_counts": [42, 97],
+            "maximum_side_length_ratio": 1.26,
+            "maximum_contract_station_distance": 0.025,
         },
     ),
 }
@@ -614,6 +638,9 @@ def classify_result(
         station_interval_tolerance = cyclic_contract.get(
             "station_interval_tolerance"
         )
+        maximum_contract_station_distance = cyclic_contract.get(
+            "maximum_contract_station_distance"
+        )
         cyclic_split_contract = cyclic_split_contract and (
             len(target_records) == 4
             and sorted(
@@ -669,6 +696,25 @@ def classify_result(
                         )
                     )
                     for record in target_records
+                )
+            )
+            and (
+                maximum_contract_station_distance is None
+                or all(
+                    all(
+                        min(
+                            abs(side_station - cut["contract_station"])
+                            % 1.0,
+                            (-abs(side_station - cut["contract_station"]))
+                            % 1.0,
+                        )
+                        <= maximum_contract_station_distance
+                        for side_station in cut.get("side_cut_stations", ())
+                    )
+                    for cut in target_records[0].get(
+                        "common_cyclic_stations",
+                        (),
+                    )
                 )
             )
         )
@@ -1323,6 +1369,9 @@ def main():
         for case in first_stage_cases
     }
     target_cyclic_scope = selected_first_stage_scope == CYCLIC_FIX_TARGET_SCOPE
+    mixed_cyclic_target_scope = (
+        selected_first_stage_scope == MIXED_CYCLIC_FIX_TARGET_SCOPE
+    )
     cyclic_fix_regression_scope = (
         selected_first_stage_scope == CYCLIC_FIX_REGRESSION_SCOPE
     )
@@ -1334,6 +1383,7 @@ def main():
         "required_scope_selected": (
             selected_first_stage_complete
             or target_cyclic_scope
+            or mixed_cyclic_target_scope
             or cyclic_fix_regression_scope
             or cyclic_fix_temporary_gate_scope
         ),

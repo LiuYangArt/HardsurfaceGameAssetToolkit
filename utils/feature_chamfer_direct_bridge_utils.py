@@ -1713,6 +1713,57 @@ def _cyclic_bridge_cut_stations(segment):
     return [0.0, *cut_stations]
 
 
+# 根据冻结 Pipe 在目标切点前后的真实采样间隔，限定 Boolean Boundary 可接受的局部 station 邻域。
+# segment/target_station: cyclic Pipe 合同与其中一个切点；返回局部或典型采样一步的环绕 station 容差。
+def _cyclic_contract_station_neighborhood(segment, target_station):
+    point_stations = tuple(float(value) for value in segment.get("point_stations", ()))
+    if len(point_stations) < 3:
+        raise FeatureChamferDirectBridgeError(
+            "cyclic_bridge_contract_invalid",
+            f"Segment {segment.get('segment_id')} lacks cyclic station samples",
+        )
+
+    def circular_distance(first, second):
+        difference = abs(first - second)
+        return min(difference, 1.0 - difference)
+
+    target_index = min(
+        range(len(point_stations)),
+        key=lambda index: circular_distance(point_stations[index], target_station),
+    )
+    if circular_distance(point_stations[target_index], target_station) > 1.0e-6:
+        raise FeatureChamferDirectBridgeError(
+            "cyclic_bridge_cut_not_on_contract",
+            f"Segment {segment.get('segment_id')} cyclic cut is not a Pipe sample",
+        )
+    previous_station = point_stations[(target_index - 1) % len(point_stations)]
+    station = point_stations[target_index]
+    next_station = point_stations[(target_index + 1) % len(point_stations)]
+    previous_interval = (station - previous_station) % 1.0
+    next_interval = (next_station - station) % 1.0
+    positive_intervals = sorted(
+        (current_station - previous_station) % 1.0
+        for previous_station, current_station in zip(
+            point_stations,
+            (*point_stations[1:], point_stations[0]),
+        )
+        if (current_station - previous_station) % 1.0 > 1.0e-6
+    )
+    if not positive_intervals:
+        raise FeatureChamferDirectBridgeError(
+            "cyclic_bridge_contract_invalid",
+            f"Segment {segment.get('segment_id')} lacks positive cyclic station intervals",
+        )
+    median_interval = positive_intervals[len(positive_intervals) // 2]
+    neighborhood = max(previous_interval, next_interval, median_interval)
+    if neighborhood <= 1.0e-6 or neighborhood >= 0.5:
+        raise FeatureChamferDirectBridgeError(
+            "cyclic_bridge_contract_invalid",
+            f"Segment {segment.get('segment_id')} has an invalid local station interval",
+        )
+    return neighborhood + 1.0e-6
+
+
 # 用 station provenance 归并完整 Boundary 环上的连续同 station 碎点。
 # component/segment_id/layers: 完整 cyclic Boundary 与 provenance；返回按 topology 排列的 station plateau。
 def _cyclic_station_plateaus(
@@ -1760,11 +1811,12 @@ def _cyclic_station_plateaus(
     return plateaus
 
 
-# 在两侧 station plateau 中先锁定合同邻域，再以两侧真实空间相邻关系选择同一切点。
-# components/target_station/segment_id/layers: 完整双环、合同 station 与 provenance；返回两侧已有切点和实测 station。
+# 在两侧 station plateau 中先锁定局部合同邻域，再以真实空间邻接选择同一切点。
+# components/target_station/station_neighborhood/segment_id/layers: 完整双环、合同 station、局部采样容差与 provenance；返回两侧已有切点和实测 station。
 def _cyclic_common_cut_vertices(
     components,
     target_station,
+    station_neighborhood,
     segment_id,
     segment_point_layers,
     station_point_layers,
@@ -1785,15 +1837,43 @@ def _cyclic_common_cut_vertices(
         difference = abs(first - second)
         return min(difference, 1.0 - difference)
 
+    local_side_plateaus = []
+    nearest_side_contract_distances = []
+    contract_slack = max(1.0e-6, station_neighborhood * 0.01)
+    for plateaus in side_plateaus:
+        plateau_distances = [
+            (circular_distance(plateau["station"], target_station), plateau)
+            for plateau in plateaus
+            if circular_distance(plateau["station"], target_station)
+            <= station_neighborhood
+        ]
+        if not plateau_distances:
+            raise FeatureChamferDirectBridgeError(
+                "cyclic_bridge_station_missing",
+                f"Segment {segment_id} cyclic side lacks a local contract cut station",
+                {
+                    "segment_id": segment_id,
+                    "contract_station": target_station,
+                    "station_neighborhood": station_neighborhood,
+                },
+            )
+        nearest_distance = min(item[0] for item in plateau_distances)
+        nearest_side_contract_distances.append(nearest_distance)
+        local_side_plateaus.append(
+            [
+                plateau
+                for distance, plateau in plateau_distances
+                if distance <= nearest_distance + contract_slack
+            ]
+        )
+
     candidates = []
-    for first_plateau in side_plateaus[0]:
-        for second_plateau in side_plateaus[1]:
+    for first_plateau in local_side_plateaus[0]:
+        for second_plateau in local_side_plateaus[1]:
             station_delta = circular_distance(
                 first_plateau["station"],
                 second_plateau["station"],
             )
-            if station_delta > 5.0e-4:
-                continue
             contract_distance = max(
                 circular_distance(first_plateau["station"], target_station),
                 circular_distance(second_plateau["station"], target_station),
@@ -1803,9 +1883,9 @@ def _cyclic_common_cut_vertices(
             ).length
             candidates.append(
                 (
-                    station_delta,
-                    boundary_distance,
                     contract_distance,
+                    boundary_distance,
+                    station_delta,
                     first_plateau,
                     second_plateau,
                 )
@@ -1813,28 +1893,26 @@ def _cyclic_common_cut_vertices(
     if not candidates:
         raise FeatureChamferDirectBridgeError(
             "cyclic_bridge_station_missing",
-            f"Segment {segment_id} cyclic sides lack a common cut station",
-            {"segment_id": segment_id, "contract_station": target_station},
+            f"Segment {segment_id} cyclic sides lack a local contract cut station",
+            {
+                "segment_id": segment_id,
+                "contract_station": target_station,
+                "station_neighborhood": station_neighborhood,
+                "nearest_side_contract_distances": nearest_side_contract_distances,
+            },
         )
-    best_contract_distance = min(item[2] for item in candidates)
-    station_neighborhood = max(1.0e-6, best_contract_distance + 1.0e-4)
-    local_candidates = [
-        item
-        for item in candidates
-        if item[2] <= station_neighborhood
-    ]
-    local_candidates.sort(
+    candidates.sort(
         key=lambda item: (
             item[1],
-            item[0],
             item[2],
+            item[0],
             tuple(float(value) for value in item[3]["vertex"].co),
             tuple(float(value) for value in item[4]["vertex"].co),
             item[3]["vertex"].index,
             item[4]["vertex"].index,
         )
     )
-    _, _, _, first_plateau, second_plateau = local_candidates[0]
+    _, _, _, first_plateau, second_plateau = candidates[0]
     return [
         (first_plateau["vertex"], first_plateau["station"]),
         (second_plateau["vertex"], second_plateau["station"]),
@@ -1913,23 +1991,34 @@ def _split_cyclic_bridge_job(
             f"Segment {segment_id} exposes cyclic Boundary Loops without cyclic Pipe authority",
         )
     contract_cut_stations = _cyclic_bridge_cut_stations(segment)
+    station_neighborhoods = [
+        _cyclic_contract_station_neighborhood(segment, target_station)
+        for target_station in contract_cut_stations
+    ]
     common_cuts = [
         _cyclic_common_cut_vertices(
             components,
             target_station,
+            station_neighborhoods[cut_index],
             segment_id,
             segment_point_layers,
             station_point_layers,
             station_squared_point_layers,
         )
-        for target_station in contract_cut_stations
+        for cut_index, target_station in enumerate(contract_cut_stations)
     ]
     for cut_index, target_station in enumerate(contract_cut_stations):
         side_stations = [common_cuts[cut_index][side_index][1] for side_index in range(2)]
-        if abs(side_stations[0] - side_stations[1]) > 5.0e-4:
+        if any(
+            min(
+                abs(side_station - target_station),
+                1.0 - abs(side_station - target_station),
+            ) > station_neighborhoods[cut_index]
+            for side_station in side_stations
+        ):
             raise FeatureChamferDirectBridgeError(
-                "cyclic_bridge_station_mismatch",
-                f"Segment {segment_id} cyclic sides do not share one cut station",
+                "cyclic_bridge_station_outside_contract_neighborhood",
+                f"Segment {segment_id} cyclic side is outside its local Pipe interval",
                 {
                     "segment_id": segment_id,
                     "contract_station": target_station,
