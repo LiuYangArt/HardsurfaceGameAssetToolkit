@@ -396,14 +396,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
     export_collection_type: bpy.props.EnumProperty(
         name="Collection Type",
         description="选择本次导出的 Collection 类型",
-        items=[
-            ("ALL", "All", "导出当前所有可导出类型"),
-            ("PROP", "Prop", "只导出 Prop Collection"),
-            ("DECAL", "Decal", "只导出 Decal Collection"),
-            ("BAKE", "Bake", "只导出 Bake Low/High Collection"),
-            ("STATIC_MESH", "Static Mesh", "只导出未标记 Static Mesh Collection 和 CAT MeshGroup"),
-            ("SKELETAL", "Skeletal", "只导出 SKM 和 Rig Collection"),
-        ],
+        items=EXPORT_COLLECTION_TYPE_ITEMS,
         default="ALL",
     )
     move_objects_to_world_center: bpy.props.BoolProperty(
@@ -417,6 +410,9 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         if context.scene is None:
             self.report({"ERROR"}, "No active Scene | 没有可用的 Scene")
             return {"CANCELLED"}
+        parameters = context.scene.hst_params
+        self.export_collection_type = parameters.export_collection_type
+        self.move_objects_to_world_center = parameters.move_objects_to_world_center
         return self.execute(context)
 
     def draw(self, context):
@@ -430,6 +426,8 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         scene_objects = context.scene.objects #只导出当前 Scene 内的物体
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
+        parameters.export_collection_type = self.export_collection_type
+        parameters.move_objects_to_world_center = self.move_objects_to_world_center
         file_prefix = parameters.file_prefix
         export_format = parameters.export_format
         export_ext, _, staticmesh_exporter, skeletal_exporter = resolve_export_targets(export_format)

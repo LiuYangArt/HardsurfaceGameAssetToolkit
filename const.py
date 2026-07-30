@@ -144,6 +144,15 @@ ORIGIN_PREFIX = "SM_"
 DEFAULT_TEX_DENSITY = 1024
 DEFAULT_TEX_SIZE = 2048
 
+EXPORT_COLLECTION_TYPE_ITEMS = [
+    ("ALL", "All", "导出当前所有可导出类型"),
+    ("PROP", "Prop", "只导出 Prop Collection"),
+    ("DECAL", "Decal", "只导出 Decal Collection"),
+    ("BAKE", "Bake", "只导出 Bake Low/High Collection"),
+    ("STATIC_MESH", "Static Mesh", "只导出未标记 Static Mesh Collection 和 CAT MeshGroup"),
+    ("SKELETAL", "Skeletal", "只导出 SKM 和 Rig Collection"),
+]
+
 # unreal axis visualizer
 AXIS_COLLECTION = "_UE_AXIS_"
 AXIS_OBJECT_PREFIX = "__HST_AXIS_"

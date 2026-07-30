@@ -1121,6 +1121,56 @@ def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseR
     result.add_detail(f"FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
+# 验证导出选项写入 Scene 参数，并可随 .blend 保存和重新打开。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_staticmeshexport_options_persist_in_blend_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("PersistentExportOptionsCase")
+    make_test_mesh("PersistentExportOptionsMesh", collection)
+
+    export_dir = ARTIFACT_DIR / "exports" / "persistent_options"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    blend_path = ARTIFACT_DIR / "staticmeshexport_persistent_options.blend"
+    blend_path.unlink(missing_ok=True)
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    op_result = bpy.ops.hst.staticmeshexport(
+        export_collection_type="STATIC_MESH",
+        move_objects_to_world_center=True,
+    )
+    ensure("FINISHED" in op_result, "Persistent export options operator did not finish")
+    ensure(
+        params.export_collection_type == "STATIC_MESH",
+        "Collection Type was not copied to Scene parameters",
+    )
+    ensure(
+        params.move_objects_to_world_center is True,
+        "World-center option was not copied to Scene parameters",
+    )
+
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
+    ensure(blend_path.exists(), "Persistent export options .blend was not saved")
+    bpy.ops.wm.open_mainfile(filepath=str(blend_path))
+
+    reopened_params = bpy.context.scene.hst_params
+    ensure(
+        reopened_params.export_collection_type == "STATIC_MESH",
+        "Collection Type did not persist after reopening .blend",
+    )
+    ensure(
+        reopened_params.move_objects_to_world_center is True,
+        "World-center option did not persist after reopening .blend",
+    )
+    result.add_detail("Static Mesh and world-center options persisted after reopening the saved .blend")
+
+
+
 def test_staticmeshexport_collection_type_filter_regression(test_context: TestContext, result: TestCaseResult):
     collection_types = [
         ("PROP", "PropFilterCase", "SM_PropFilterCase.fbx"),
@@ -4171,6 +4221,7 @@ def main():
     context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_collection_type_filter_regression", test_staticmeshexport_collection_type_filter_regression)
+    context.run_case("staticmeshexport_options_persist_in_blend_regression", test_staticmeshexport_options_persist_in_blend_regression)
     context.run_case("staticmeshexport_world_center_restores_each_object_regression", test_staticmeshexport_world_center_restores_each_object_regression)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)

@@ -132,6 +132,19 @@ class UIParams(PropertyGroup):
         default="FBX",
     )
 
+    export_collection_type: EnumProperty(
+        name="Collection Type",
+        description="选择本次导出的 Collection 类型",
+        items=EXPORT_COLLECTION_TYPE_ITEMS,
+        default="ALL",
+    )
+
+    move_objects_to_world_center: BoolProperty(
+        name="Move Objects to World Center",
+        description="导出时将每个 Object 的世界坐标临时设为 (0, 0, 0)，完成后恢复",
+        default=False,
+    )
+
     file_prefix: StringProperty(
         name="File Prefix",
         description="文件名前缀，例如AAA，则导出的文件名是SM_AAACollectionName",

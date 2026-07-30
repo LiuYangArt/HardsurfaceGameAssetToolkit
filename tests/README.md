@@ -30,6 +30,7 @@
 - isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
 - static mesh Collection Type（All / Prop / Decal / Bake / Static Mesh / Skeletal）筛选回归
+- static mesh 导出选项随 .blend 保存与重新打开的持久化回归
 - static mesh 导出逐 Object 临时归世界中心并恢复变换回归
 - current Scene only FBX export regression test
 - CAT MeshGroup instance FBX export regression test
