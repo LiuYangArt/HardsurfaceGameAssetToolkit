@@ -1266,7 +1266,7 @@ def _build_preview_pipe_contract(
         or contract.get("contract") != "GN_PREVIEW_PIPE_V1"
         or contract.get("plan_id") != preview_plan.plan_id
         or contract.get("source_fingerprint") != source_fingerprint(source_object)
-        or abs(contract_radius - radius) > 1.0e-10
+        or abs(contract_radius - radius) > 1.0e-8
         or not isinstance(contract.get("pipes"), list)
     ):
         raise BatchedChamferError(
@@ -15496,7 +15496,7 @@ def build_batched_feature_chamfer(
     if (
         preview_plan is None
         or preview_plan.source_fingerprint != plan_fingerprint_before
-        or abs(float(preview_plan.radius) - radius) > 1.0e-10
+        or abs(float(preview_plan.radius) - radius) > 1.0e-8
         or preview_plan.input_contract != "GN_PREVIEW_V1"
     ):
         raise BatchedChamferError(

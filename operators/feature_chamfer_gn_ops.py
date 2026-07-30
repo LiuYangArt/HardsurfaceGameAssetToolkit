@@ -1,32 +1,25 @@
 # -*- coding: utf-8 -*-
-"""两阶段 Feature Chamfer Geometry Nodes Operator。"""
+"""一步式 Feature Chamfer Operator。"""
 
 import json
+import time
 
 import bpy
 
-from ..const import FEATURE_CHAMFER_GN_LAST_ACTION_TAG
-from ..const import FEATURE_CHAMFER_GN_MODIFIER
 from ..const import FEATURE_CHAMFER_GN_STATE_TAG
 from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
+from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
+from ..utils.feature_chamfer_diagnostic_utils import RADIUS_LIMIT_ERROR_CODES
+from ..utils.feature_chamfer_diagnostic_utils import show_feature_chamfer_failure_diagnostic
 from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
 from ..utils.feature_chamfer_direct_bridge_utils import build_direct_edge_loop_chamfer
-from ..utils.feature_chamfer_diagnostic_utils import RADIUS_LIMIT_ERROR_CODES
-from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
-from ..utils.feature_chamfer_diagnostic_utils import show_feature_chamfer_failure_diagnostic
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
-from ..utils.feature_chamfer_gn_utils import PREVIEW_VALID
 from ..utils.feature_chamfer_gn_utils import cancel_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
-from ..utils.feature_chamfer_gn_utils import live_preview_parameters
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
-from ..utils.feature_chamfer_gn_utils import preview_state
-from ..utils.feature_chamfer_plan_utils import read_chamfer_plan
 from ..utils.feature_chamfer_plan_utils import chamfer_plan_without_unsupported_regions
-from ..utils.feature_chamfer_plan_utils import PLAN_ID_PROPERTY
-from ..utils.feature_chamfer_plan_utils import PLAN_PROPERTY
 from ..utils.feature_chamfer_plan_utils import write_chamfer_plan
 
 
@@ -41,43 +34,9 @@ def _has_sharp_edge(source_object):
     )
 
 
-# 恢复 Finalize 失败前的 Object 可见性、Preview Modifier 与选择状态。
-# context/source/modifier: Blender 上下文对象；其余参数为调用前保存的状态。
-def _restore_finalize_context(
-    context,
-    source_object,
-    preview_modifier,
-    source_was_hidden,
-    preview_show_viewport,
-    preview_show_render,
-    active_object,
-    selected_objects,
-):
-    source_object.hide_set(source_was_hidden)
-    preview_modifier.show_viewport = preview_show_viewport
-    preview_modifier.show_render = preview_show_render
-    for selected_object in tuple(context.selected_objects):
-        selected_object.select_set(False)
-    for selected_object in selected_objects:
-        if bpy.data.objects.get(selected_object.name) == selected_object:
-            selected_object.select_set(True)
-    if active_object is not None and bpy.data.objects.get(active_object.name) == active_object:
-        context.view_layer.objects.active = active_object
-
-
-# 恢复 Finalize 前的 ID Property，确保安全失败不改变 source 或 Preview 状态。
-# id_block/property_snapshot: Object/Modifier 与属性名到 (是否存在, 原值) 的快照；无返回值。
-def _restore_id_properties(id_block, property_snapshot):
-    for property_name, (existed, value) in property_snapshot.items():
-        if existed:
-            id_block[property_name] = value
-        elif property_name in id_block:
-            del id_block[property_name]
-
-
-# 验证 Feature Chamfer 上下文并返回 source Object。
+# 验证正式一步式 Feature Chamfer 上下文并返回 source Object。
 # operator/context: 当前 Blender Operator 与 Context。
-def _validated_source(operator, context, require_feature_input=True):
+def _validated_source(operator, context):
     source_object = context.active_object
     if source_object is None or source_object.type != "MESH":
         operator.report({"ERROR"}, "Select one Mesh Object")
@@ -90,268 +49,246 @@ def _validated_source(operator, context, require_feature_input=True):
             return None
         source_object = linked_source
     if source_object.mode != "OBJECT":
-        operator.report({"ERROR"}, "Feature Chamfer GN requires Object Mode")
+        operator.report({"ERROR"}, "Feature Chamfer requires Object Mode")
         return None
     if len(context.selected_objects) != 1:
         operator.report({"ERROR"}, "Select exactly one Mesh Object")
         return None
-    if require_feature_input and any(abs(value - 1.0) > 1.0e-6 for value in source_object.scale):
-        operator.report({"ERROR"}, "Apply Object Scale before Feature Chamfer GN")
+    if any(abs(value - 1.0) > 1.0e-6 for value in source_object.scale):
+        operator.report({"ERROR"}, "Apply Object Scale before Feature Chamfer")
         return None
-    if require_feature_input and not _has_sharp_edge(source_object):
+    if not _has_sharp_edge(source_object):
         operator.report({"ERROR"}, "Mesh has no explicit sharp_edge selection")
         return None
     return source_object
 
 
+# 从 Direct Bridge 输出建立正式 Chamfer 属性并写入 immutable plan。
+# output/source_object/chamfer_plan: 输出 Object、原输入与本次计划；无返回值。
+def _finalize_output(output, source_object, chamfer_plan):
+    output.name = f"{source_object.name}_FeatureChamfer"
+    chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
+    if chamfer_attribute is not None:
+        output.data.attributes.remove(chamfer_attribute)
+    chamfer_attribute = output.data.attributes.new(
+        "hst_feature_chamfer_face",
+        type="BOOLEAN",
+        domain="FACE",
+    )
+    backend_chamfer_attribute = output.data.attributes.get(CHAMFER_FACE_ATTRIBUTE)
+    for polygon in output.data.polygons:
+        chamfer_attribute.data[polygon.index].value = bool(
+            backend_chamfer_attribute
+            and backend_chamfer_attribute.data[polygon.index].value
+        )
+    complete_plan = chamfer_plan_without_unsupported_regions(chamfer_plan)
+    output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
+    output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
+    write_chamfer_plan(output, complete_plan)
+
+
+# 把临时 Preview 当前显示的实际 Cutter 评估为独立 Mesh，供用户按需保留。
+# source_object/transaction: 正式输入与本次事务持有的临时 ID；返回可见 Cutter Object。
+def _keep_evaluated_cutter(source_object, transaction):
+    modifier = owned_preview_modifier(source_object)
+    if modifier is None or modifier.node_group is None:
+        raise FeatureChamferPreviewError("Feature Chamfer temporary Preview is missing")
+    identifiers = {
+        item.name: item.identifier
+        for item in modifier.node_group.interface.items_tree
+        if item.item_type == "SOCKET" and item.in_out == "INPUT"
+    }
+    show_cutter_identifier = identifiers.get("Show Cutter")
+    if show_cutter_identifier is None:
+        raise FeatureChamferPreviewError("Feature Chamfer Preview has no Show Cutter input")
+    modifier[show_cutter_identifier] = True
+    source_object.update_tag(refresh={"DATA"})
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+    cutter_mesh = bpy.data.meshes.new_from_object(
+        source_object.evaluated_get(depsgraph),
+        depsgraph=depsgraph,
+    )
+    transaction["cutter_data"] = cutter_mesh
+    cutter_object = bpy.data.objects.new(
+        f"{source_object.name}_FeatureChamferCutter",
+        cutter_mesh,
+    )
+    transaction["cutter"] = cutter_object
+    source_object.users_collection[0].objects.link(cutter_object)
+    cutter_object.matrix_world = source_object.matrix_world.copy()
+    cutter_object.hide_set(False)
+    cutter_object.hide_viewport = False
+    cutter_object.hide_render = False
+    cutter_object.show_in_front = True
+    return cutter_object
+
+
+# 在一次 Operator 事务内运行已验收的 Preview→Finalize 几何链，并移除临时 Preview 状态。
+# source_object/radius/show_cutter/transaction: 正式输入、参数与事务引用；返回 Direct Bridge 统计。
+def _build_preview_finalize_output(source_object, radius, show_cutter, transaction):
+    preview = ensure_gn_feature_chamfer_preview(
+        source_object=source_object,
+        radius=radius,
+        show_cutter=False,
+    )
+    chamfer_plan = preview["plan"]
+    patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
+    output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
+    if output is None:
+        raise FeatureChamferDirectBridgeError(
+            "one_step_output_missing",
+            "Feature Chamfer produced no output Object",
+        )
+    transaction["output"] = output
+    cutter_object = None
+    if show_cutter:
+        cutter_object = _keep_evaluated_cutter(source_object, transaction)
+    _finalize_output(output, source_object, chamfer_plan)
+    cancel_gn_feature_chamfer_preview(source_object)
+    patch_stats.update(
+        backend="GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE",
+        runtime_path=(
+            "FeatureGraph -> Curve Pipe -> Boolean Pro Boundary Edges -> "
+            "segment groups -> Blender Bridge/Fill"
+        ),
+        one_step_transaction=True,
+        temporary_preview_removed=True,
+        solver="BOOLEAN_PRO",
+        cutter_object_name=cutter_object.name if cutter_object is not None else None,
+        keep_cutter_requested=bool(show_cutter),
+        keep_cutter_supported=cutter_object is not None if show_cutter else True,
+    )
+    return patch_stats
+
+
+# 删除无用户的临时 Mesh 或 Curve datablock。
+# object_data: 本次事务创建的数据块；无返回值。
+def _discard_orphan_object_data(object_data):
+    if object_data is None or object_data.users != 0:
+        return
+    if isinstance(object_data, bpy.types.Mesh):
+        if bpy.data.meshes.get(object_data.name) == object_data:
+            bpy.data.meshes.remove(object_data)
+    elif isinstance(object_data, bpy.types.Curve):
+        if bpy.data.curves.get(object_data.name) == object_data:
+            bpy.data.curves.remove(object_data)
+
+
+# 删除本次事务产生的未发布结果与 Cutter，避免异常后留下伪成功对象。
+# transaction: 持有 output、cutter 与可能尚未链接数据块的事务字典；无返回值。
+def _discard_transaction_outputs(transaction):
+    for object_key, data_key in (("cutter", "cutter_data"), ("output", None)):
+        generated_object = transaction.get(object_key)
+        object_data = transaction.get(data_key) if data_key is not None else None
+        if (
+            generated_object is not None
+            and bpy.data.objects.get(generated_object.name) == generated_object
+        ):
+            object_data = generated_object.data
+            bpy.data.objects.remove(generated_object, do_unlink=True)
+        _discard_orphan_object_data(object_data)
+        transaction[object_key] = None
+        if data_key is not None:
+            transaction[data_key] = None
+
+
 class HST_OT_FeatureChamferGN(bpy.types.Operator):
-    """创建 procedural Feature Chamfer Preview，或固化有效 Preview"""
+    """一次执行并直接生成最终 Feature Chamfer Mesh"""
 
     bl_idname = "hst.feature_chamfer_gn"
-    bl_label = "Feature Chamfer GN Preview"
-    bl_description = "Preview or finalize a Geometry Nodes Feature Chamfer"
+    bl_label = "Feature Chamfer"
+    bl_description = "Create the final Feature Chamfer result in one operation"
     bl_options = {"REGISTER", "UNDO"}
 
-    action: bpy.props.EnumProperty(
-        items=(
-            ("AUTO", "Auto", "根据 Object 上的状态自动 Preview 或 Finalize"),
-            ("PREVIEW", "Preview", "创建或重建 procedural GN preview"),
-            ("FINALIZE", "Finalize", "固化当前 preview 并 Patch"),
-            ("CANCEL_PREVIEW", "Cancel Preview", "移除本工具创建的 preview"),
-        ),
-        default="AUTO",
-        options={"HIDDEN", "SKIP_SAVE"},
-    )
-    resolved_action: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     source_object_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     radius: bpy.props.FloatProperty(name="Radius", default=0.03, min=1.0e-5)
-    sample_length: bpy.props.FloatProperty(name="Sample Length", default=0.01, min=1.0e-5, options={"HIDDEN"})
-    voxel_size: bpy.props.FloatProperty(name="Voxel Size", default=0.0075, min=1.0e-5, options={"HIDDEN"})
-    adaptivity: bpy.props.FloatProperty(name="Adaptivity", default=0.05, min=0.0, max=1.0, options={"HIDDEN"})
-    show_cutter: bpy.props.BoolProperty(name="Show Cutter", default=False)
+    show_cutter: bpy.props.BoolProperty(name="Keep Cutter", default=False)
 
     def invoke(self, context, event):
         del event
-        source_object = _validated_source(
-            self,
-            context,
-            require_feature_input=self.action != "CANCEL_PREVIEW",
-        )
+        source_object = _validated_source(self, context)
         if source_object is None:
             return {"CANCELLED"}
         self.source_object_name = source_object.name
-        if self.action == "AUTO":
-            self.resolved_action = (
-                "FINALIZE" if preview_state(source_object) == PREVIEW_VALID else "PREVIEW"
-            )
-        else:
-            self.resolved_action = self.action
         return self.execute(context)
 
     def execute(self, context):
         source_object = bpy.data.objects.get(self.source_object_name) or _validated_source(
             self,
             context,
-            require_feature_input=(self.resolved_action or self.action) != "CANCEL_PREVIEW",
         )
         if source_object is None:
             return {"CANCELLED"}
-        actual_action = self.resolved_action or self.action
-        if actual_action == "AUTO":
-            actual_action = "FINALIZE" if preview_state(source_object) == PREVIEW_VALID else "PREVIEW"
-        last_action_before = (
-            FEATURE_CHAMFER_GN_LAST_ACTION_TAG in source_object,
-            source_object.get(FEATURE_CHAMFER_GN_LAST_ACTION_TAG),
-        )
-        source_object[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = actual_action
-
-        if actual_action == "CANCEL_PREVIEW":
-            cancel_gn_feature_chamfer_preview(source_object)
+        started_at = time.perf_counter()
+        transaction = {
+            "output": None,
+            "cutter": None,
+            "cutter_data": None,
+        }
+        try:
             clear_feature_chamfer_diagnostics(source_object)
-            self.report({"INFO"}, "Feature Chamfer Preview removed")
-            return {"FINISHED"}
-        if actual_action == "FINALIZE":
-            if preview_state(source_object) != PREVIEW_VALID:
-                self.report({"WARNING"}, "Feature Chamfer Preview is stale; rebuild Preview first")
-                return {"CANCELLED"}
-            preview_modifier = owned_preview_modifier(source_object)
-            preview_chamfer_plan = read_chamfer_plan(preview_modifier)
-            rollback_property_names = (
-                FEATURE_CHAMFER_GN_LAST_ACTION_TAG,
-                FEATURE_CHAMFER_GN_STATE_TAG,
-                PLAN_PROPERTY,
-                PLAN_ID_PROPERTY,
+            patch_stats = _build_preview_finalize_output(
+                source_object,
+                self.radius,
+                self.show_cutter,
+                transaction,
             )
-            source_property_snapshot = {
-                property_name: (
-                    property_name in source_object,
-                    source_object.get(property_name),
-                )
-                for property_name in rollback_property_names
-            }
-            source_property_snapshot[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = (
-                last_action_before
+            patch_stats.update(
+                total_seconds=time.perf_counter() - started_at,
             )
-            preview_property_snapshot = {
-                property_name: (
-                    property_name in preview_modifier,
-                    preview_modifier.get(property_name),
-                )
-                for property_name in rollback_property_names
-            }
-            preview_show_viewport = preview_modifier.show_viewport
-            preview_show_render = preview_modifier.show_render
-            preview_modifier.show_viewport = False
-            preview_modifier.show_render = False
-            source_was_hidden = source_object.hide_get()
-            active_object_before = context.view_layer.objects.active
-            selected_objects_before = tuple(context.selected_objects)
-            try:
-                preview_modifier.show_viewport = True
-                preview_modifier.show_render = True
-                patch_stats = build_direct_edge_loop_chamfer(
-                    source_object,
-                    preview_chamfer_plan,
-                )
-            except FeatureChamferDirectBridgeError as error:
-                diagnostic = show_feature_chamfer_failure_diagnostic(
-                    source_object,
-                    error.error_code,
-                    error.stats,
-                    preview_chamfer_plan.radius,
-                )
-                error.stats.update(
-                    requested_radius=float(preview_chamfer_plan.radius),
-                    final_state="PREVIEW_RETAINED",
-                    diagnostic=diagnostic,
-                )
-                context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
-                    error.stats,
-                    ensure_ascii=False,
-                    default=str,
-                )
-                _restore_id_properties(source_object, source_property_snapshot)
-                _restore_id_properties(preview_modifier, preview_property_snapshot)
-                _restore_finalize_context(
-                    context, source_object, preview_modifier, source_was_hidden,
-                    preview_show_viewport, preview_show_render,
-                    active_object_before, selected_objects_before,
-                )
-                if error.error_code in RADIUS_LIMIT_ERROR_CODES and diagnostic["exists"]:
-                    self.report(
-                        {"WARNING"},
-                        "Feature Chamfer cannot safely fill the red marked area at "
-                        f"Radius {preview_chamfer_plan.radius:.4f}; reduce Radius and retry",
-                    )
-                else:
-                    self.report({"WARNING"}, f"Finalize Patch failed [{error.error_code}]: {error}")
-                return {"CANCELLED"}
-            except Exception:
-                _restore_id_properties(source_object, source_property_snapshot)
-                _restore_id_properties(preview_modifier, preview_property_snapshot)
-                _restore_finalize_context(
-                    context, source_object, preview_modifier, source_was_hidden,
-                    preview_show_viewport, preview_show_render,
-                    active_object_before, selected_objects_before,
-                )
-                raise
-            output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
+            output = transaction["output"]
             context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
                 patch_stats,
                 ensure_ascii=False,
                 default=str,
             )
-            if output is None:
-                _restore_id_properties(source_object, source_property_snapshot)
-                _restore_id_properties(preview_modifier, preview_property_snapshot)
-                _restore_finalize_context(
-                    context, source_object, preview_modifier, source_was_hidden,
-                    preview_show_viewport, preview_show_render,
-                    active_object_before, selected_objects_before,
-                )
-                self.report({"WARNING"}, "Finalize Patch produced no output Object")
-                return {"CANCELLED"}
-            try:
-                complete_chamfer_plan = chamfer_plan_without_unsupported_regions(
-                    preview_chamfer_plan
-                )
-                output.name = f"{source_object.name}_FeatureChamfer"
-                chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
-                if chamfer_attribute is not None:
-                    output.data.attributes.remove(chamfer_attribute)
-                chamfer_attribute = output.data.attributes.new(
-                    "hst_feature_chamfer_face",
-                    type="BOOLEAN",
-                    domain="FACE",
-                )
-                backend_chamfer_attribute = output.data.attributes.get(
-                    CHAMFER_FACE_ATTRIBUTE
-                )
-                for polygon in output.data.polygons:
-                    chamfer_attribute.data[polygon.index].value = bool(
-                        backend_chamfer_attribute
-                        and backend_chamfer_attribute.data[polygon.index].value
-                    )
-                context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
-                    patch_stats,
-                    ensure_ascii=False,
-                    default=str,
-                )
-                preview_modifier = owned_preview_modifier(source_object)
-                if preview_modifier is not None:
-                    preview_modifier.show_viewport = False
-                    preview_modifier.show_render = False
-                source_object[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
-                output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
-                output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
-                write_chamfer_plan(source_object, complete_chamfer_plan)
-                write_chamfer_plan(preview_modifier, complete_chamfer_plan)
-                write_chamfer_plan(output, complete_chamfer_plan)
-                for selected_object in tuple(context.selected_objects):
-                    selected_object.select_set(False)
-                output.select_set(True)
-                context.view_layer.objects.active = output
-                clear_feature_chamfer_diagnostics(source_object)
-                self.report(
-                    {"INFO"},
-                    f"Feature Chamfer finalized: {patch_stats['regular_patch_face_count']} Bridge Faces, {patch_stats['junction_patch_face_count']} Fill Faces",
-                )
-                return {"FINISHED"}
-            except Exception:
-                if "output" in locals() and bpy.data.objects.get(output.name) == output:
-                    output_mesh = output.data
-                    bpy.data.objects.remove(output, do_unlink=True)
-                    if bpy.data.meshes.get(output_mesh.name) == output_mesh:
-                        bpy.data.meshes.remove(output_mesh)
-                _restore_finalize_context(
-                    context, source_object, preview_modifier, source_was_hidden,
-                    preview_show_viewport, preview_show_render,
-                    active_object_before, selected_objects_before,
-                )
-                _restore_id_properties(source_object, source_property_snapshot)
-                _restore_id_properties(preview_modifier, preview_property_snapshot)
-                raise
-        if actual_action != "PREVIEW":
-            self.report({"ERROR"}, f"Unsupported Feature Chamfer action: {actual_action}")
-            return {"CANCELLED"}
-
-        preview_modifier = owned_preview_modifier(source_object)
-        if preview_modifier is not None and preview_state(source_object) != PREVIEW_VALID:
-            live_parameters = live_preview_parameters(preview_modifier)
-            self.radius = live_parameters["radius"]
-            self.show_cutter = live_parameters["show_cutter"]
-        try:
-            ensure_gn_feature_chamfer_preview(
-                source_object=source_object,
-                radius=self.radius,
-                show_cutter=self.show_cutter,
+            for selected_object in tuple(context.selected_objects):
+                selected_object.select_set(False)
+            output.select_set(True)
+            context.view_layer.objects.active = output
+            self.report(
+                {"INFO"},
+                f"Feature Chamfer finished in {patch_stats['total_seconds']:.2f}s",
             )
+            return {"FINISHED"}
+        except FeatureChamferDirectBridgeError as error:
+            _discard_transaction_outputs(transaction)
+            cancel_gn_feature_chamfer_preview(source_object)
+            diagnostic = show_feature_chamfer_failure_diagnostic(
+                source_object,
+                error.error_code,
+                error.stats,
+                self.radius,
+            )
+            error.stats.update(
+                requested_radius=float(self.radius),
+                final_state="SOURCE_UNCHANGED",
+                diagnostic=diagnostic,
+            )
+            context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+                error.stats,
+                ensure_ascii=False,
+                default=str,
+            )
+            if error.error_code in RADIUS_LIMIT_ERROR_CODES and diagnostic["exists"]:
+                self.report(
+                    {"WARNING"},
+                    f"Feature Chamfer cannot fill the marked area at Radius {self.radius:.4f}",
+                )
+            else:
+                self.report({"WARNING"}, f"Feature Chamfer failed [{error.error_code}]: {error}")
+            return {"FINISHED"} if diagnostic["exists"] else {"CANCELLED"}
         except FeatureChamferPreviewError as error:
+            _discard_transaction_outputs(transaction)
+            cancel_gn_feature_chamfer_preview(source_object)
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
-        clear_feature_chamfer_diagnostics(source_object)
-        self.report({"INFO"}, "Feature Chamfer GN Preview ready")
-        return {"FINISHED"}
+        except Exception:
+            _discard_transaction_outputs(transaction)
+            cancel_gn_feature_chamfer_preview(source_object)
+            raise
 
     def draw(self, context):
         del context

@@ -1838,16 +1838,14 @@ def _cyclic_common_cut_vertices(
         return min(difference, 1.0 - difference)
 
     local_side_plateaus = []
-    nearest_side_contract_distances = []
-    contract_slack = max(1.0e-6, station_neighborhood * 0.01)
     for plateaus in side_plateaus:
-        plateau_distances = [
-            (circular_distance(plateau["station"], target_station), plateau)
+        local_plateaus = [
+            plateau
             for plateau in plateaus
             if circular_distance(plateau["station"], target_station)
             <= station_neighborhood
         ]
-        if not plateau_distances:
+        if not local_plateaus:
             raise FeatureChamferDirectBridgeError(
                 "cyclic_bridge_station_missing",
                 f"Segment {segment_id} cyclic side lacks a local contract cut station",
@@ -1857,15 +1855,7 @@ def _cyclic_common_cut_vertices(
                     "station_neighborhood": station_neighborhood,
                 },
             )
-        nearest_distance = min(item[0] for item in plateau_distances)
-        nearest_side_contract_distances.append(nearest_distance)
-        local_side_plateaus.append(
-            [
-                plateau
-                for distance, plateau in plateau_distances
-                if distance <= nearest_distance + contract_slack
-            ]
-        )
+        local_side_plateaus.append(local_plateaus)
 
     candidates = []
     for first_plateau in local_side_plateaus[0]:
@@ -1884,8 +1874,8 @@ def _cyclic_common_cut_vertices(
             candidates.append(
                 (
                     contract_distance,
-                    boundary_distance,
                     station_delta,
+                    boundary_distance,
                     first_plateau,
                     second_plateau,
                 )
@@ -1898,10 +1888,15 @@ def _cyclic_common_cut_vertices(
                 "segment_id": segment_id,
                 "contract_station": target_station,
                 "station_neighborhood": station_neighborhood,
-                "nearest_side_contract_distances": nearest_side_contract_distances,
             },
         )
-    candidates.sort(
+    best_contract_distance = min(item[0] for item in candidates)
+    local_candidates = [
+        item
+        for item in candidates
+        if item[0] <= max(1.0e-6, best_contract_distance + 1.0e-4)
+    ]
+    local_candidates.sort(
         key=lambda item: (
             item[1],
             item[2],
@@ -1912,7 +1907,7 @@ def _cyclic_common_cut_vertices(
             item[4]["vertex"].index,
         )
     )
-    _, _, _, first_plateau, second_plateau = candidates[0]
+    _, _, _, first_plateau, second_plateau = local_candidates[0]
     return [
         (first_plateau["vertex"], first_plateau["station"]),
         (second_plateau["vertex"], second_plateau["station"]),

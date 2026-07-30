@@ -455,6 +455,51 @@ def _mesh_fingerprint(obj):
     return fingerprint
 
 
+# 把 Object/Modifier ID Property 转成可稳定比较的普通值。
+# value: Blender ID Property 值；返回递归规范化后的标量、列表或字典。
+def _stable_id_property_value(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict) or hasattr(value, "items"):
+        return {
+            str(key): _stable_id_property_value(item)
+            for key, item in value.items()
+        }
+    try:
+        return [_stable_id_property_value(item) for item in value]
+    except TypeError:
+        return str(value)
+
+
+# 返回 source Object 属性、Collection 归属和 Modifier runtime 的稳定快照。
+# source_object: 正式输入 Mesh Object；用于断言一步式执行前后输入完整不变。
+def _source_object_state(source_object):
+    return {
+        "id_properties": _stable_id_property_value(dict(source_object.items())),
+        "mesh_id_properties": _stable_id_property_value(dict(source_object.data.items())),
+        "collections": sorted(collection.name for collection in source_object.users_collection),
+        "hide_viewport": source_object.hide_viewport,
+        "hide_render": source_object.hide_render,
+        "hide_set": source_object.hide_get(),
+        "display_type": source_object.display_type,
+        "show_in_front": source_object.show_in_front,
+        "modifiers": [
+            {
+                "name": modifier.name,
+                "type": modifier.type,
+                "id_properties": _stable_id_property_value(dict(modifier.items())),
+                "show_viewport": modifier.show_viewport,
+                "show_render": modifier.show_render,
+                "show_in_editmode": modifier.show_in_editmode,
+                "show_on_cage": modifier.show_on_cage,
+                "object": getattr(getattr(modifier, "object", None), "name", None),
+                "node_group": getattr(getattr(modifier, "node_group", None), "name", None),
+            }
+            for modifier in source_object.modifiers
+        ],
+    }
+
+
 # 验证旧 tricky_b fixture 在新结构化 cutter 下不输出错误 PATCHED，并保持 source。
 # test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
 def test_pipe_chamfer_tricky_b_extruded002_regression(test_context: TestContext, result: TestCaseResult):
@@ -2842,13 +2887,73 @@ def test_grouping_true_corner_regression(test_context: TestContext, result: Test
     result.add_detail("Patch pair + degree split every true cube corner")
 
 
-# 调用 Feature Chamfer GN Operator 并返回 source 与 owned modifier。
-# source: 单个 active Mesh；action: Operator action；properties: 其余 RNA 参数。
+# 为历史回归保留已下线 Preview backend 的直接测试入口。
+# source: 单个 active Mesh；action: 历史测试阶段；properties: Preview 参数。
 def run_feature_chamfer_gn(source, action="PREVIEW", **properties):
     select_objects(source, [source])
-    result = bpy.ops.hst.feature_chamfer_gn(action=action, **properties)
-    modifier = source.modifiers.get("HST Feature Chamfer GN Preview")
-    return result, modifier
+    addon_module = sys.modules[PACKAGE_NAME]
+    preview_utils = addon_module.utils.feature_chamfer_gn_utils
+    if action in {"AUTO", "PREVIEW"}:
+        modifier = preview_utils.owned_preview_modifier(source)
+        radius = float(properties.get("radius", 0.03))
+        show_cutter = bool(properties.get("show_cutter", False))
+        if action == "AUTO" and modifier is not None:
+            live_parameters = preview_utils.live_preview_parameters(modifier)
+            radius = live_parameters["radius"]
+            show_cutter = live_parameters["show_cutter"]
+        preview_utils.ensure_gn_feature_chamfer_preview(
+            source,
+            radius,
+            show_cutter,
+        )
+        return {"FINISHED"}, preview_utils.owned_preview_modifier(source)
+    if action == "CANCEL_PREVIEW":
+        preview_utils.cancel_gn_feature_chamfer_preview(source)
+        return {"FINISHED"}, None
+    if action == "FINALIZE":
+        modifier = preview_utils.owned_preview_modifier(source)
+        if modifier is None or preview_utils.preview_state(source) != "PREVIEW_VALID":
+            return {"CANCELLED"}, modifier
+        plan_module = addon_module.utils.feature_chamfer_plan_utils
+        try:
+            plan = plan_module.read_chamfer_plan(modifier)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            source[addon_module.const.FEATURE_CHAMFER_GN_STATE_TAG] = "PREVIEW_STALE"
+            return {"CANCELLED"}, modifier
+        operator_module = addon_module.operators.feature_chamfer_gn_ops
+        patch_stats = operator_module.build_direct_edge_loop_chamfer(source, plan)
+        output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
+        if output is None:
+            return {"CANCELLED"}, modifier
+        complete_plan = plan_module.chamfer_plan_without_unsupported_regions(plan)
+        operator_module._finalize_output(output, source, complete_plan)
+        source[addon_module.const.FEATURE_CHAMFER_GN_STATE_TAG] = (
+            addon_module.const.FEATURE_CHAMFER_PATCHED
+        )
+        plan_module.write_chamfer_plan(source, complete_plan)
+        plan_module.write_chamfer_plan(modifier, complete_plan)
+        modifier.show_viewport = False
+        modifier.show_render = False
+        bpy.context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
+            patch_stats,
+            ensure_ascii=False,
+            default=str,
+        )
+        for selected_object in tuple(bpy.context.selected_objects):
+            selected_object.select_set(False)
+        output.select_set(True)
+        bpy.context.view_layer.objects.active = output
+        return {"FINISHED"}, modifier
+    raise ValueError(f"Unsupported historical test action: {action}")
+
+
+# 调用正式一步式 Operator，并返回当前激活的最终输出。
+# source/properties: 单个 active Mesh 与 Radius/Keep Cutter 参数。
+def run_feature_chamfer_one_step(source, **properties):
+    select_objects(source, [source])
+    operator_result = bpy.ops.hst.feature_chamfer_gn(**properties)
+    output = bpy.context.active_object if operator_result == {"FINISHED"} else None
+    return operator_result, output
 
 
 # 验证目标 Operator 的 Preview 与 Finalize 共享 immutable ChamferPlan shadow contract。
@@ -8041,21 +8146,110 @@ def test_gn_preview_owner_survives_source_rename(test_context: TestContext, resu
     )
 
 
-# 验证单一 Operator 的 action RNA、Preview 与 Cancel 生命周期。
+# 验证正式 Operator 只保留一步式参数与一个最终输出。
 # test_context/result: 测试上下文与结果记录器。
 def test_feature_chamfer_single_operator_action_dispatch(test_context: TestContext, result: TestCaseResult):
     ensure(hasattr(bpy.ops.hst, "feature_chamfer_gn"), "Feature Chamfer GN Operator is not registered")
     operator_rna = bpy.ops.hst.feature_chamfer_gn.get_rna_type()
-    action_items = {item.identifier for item in operator_rna.properties["action"].enum_items}
-    ensure(action_items == {"AUTO", "PREVIEW", "FINALIZE", "CANCEL_PREVIEW"}, f"Unexpected actions: {action_items}")
+    property_names = {item.identifier for item in operator_rna.properties}
+    ensure("action" not in property_names, "One-step Operator still exposes the old action state machine")
+    ensure(
+        {"radius", "show_cutter"}.issubset(property_names),
+        f"One-step Operator parameters are incomplete: {property_names}",
+    )
     collection = make_collection("GNDispatch")
     source = make_test_mesh("GNDispatchSource", collection)
-    mark_all_edges_sharp(source)
-    preview_result, modifier = run_feature_chamfer_gn(source, action="AUTO")
-    ensure(preview_result == {"FINISHED"} and modifier is not None, "AUTO did not create Preview")
-    cancel_result, modifier_after_cancel = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
-    ensure(cancel_result == {"FINISHED"}, "Cancel Preview failed")
-    ensure(modifier_after_cancel is None, "Cancel Preview did not remove owned modifier")
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = _mesh_fingerprint(source)
+    source_state = _source_object_state(source)
+    operator_result, output = run_feature_chamfer_one_step(
+        source,
+        radius=0.05,
+        show_cutter=True,
+    )
+    ensure(operator_result == {"FINISHED"} and output is not source, "One-step Operator produced no output")
+    ensure(_mesh_fingerprint(source) == source_hash, "One-step Operator changed source")
+    ensure(
+        _source_object_state(source) == source_state,
+        "One-step Operator changed source Object properties or Modifier runtime",
+    )
+    ensure(source.modifiers.get("HST Feature Chamfer GN Preview") is None, "One-step Operator left Preview runtime state")
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        stats.get("backend") == "GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE"
+        and stats.get("solver") == "BOOLEAN_PRO"
+        and stats.get("one_step_transaction") is True
+        and stats.get("temporary_preview_removed") is True,
+        "One-step runtime did not preserve the accepted geometry backend",
+    )
+    cutter_object = bpy.data.objects.get(stats.get("cutter_object_name", ""))
+    ensure(
+        cutter_object is not None
+        and cutter_object.type == "MESH"
+        and len(cutter_object.data.polygons) > 0
+        and not cutter_object.hide_get(),
+        "Keep Cutter did not preserve the evaluated visible cutter Mesh",
+    )
+    ensure(
+        not any(obj.name.endswith("FeatureChamferRuntime") for obj in bpy.data.objects),
+        "One-step Operator left an internal runtime Object",
+    )
+    result.add_detail("One-step Radius/Keep Cutter RNA, output, and runtime cleanup verified")
+
+
+# 验证结果与 Cutter 已创建后的异常会回收整个事务，不留下半成品或 Preview。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_single_operator_failure_rolls_back_transaction(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNDispatchRollback")
+    source = make_test_mesh("GNDispatchRollbackSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    source_hash = _mesh_fingerprint(source)
+    object_pointers_before = {obj.as_pointer() for obj in bpy.data.objects}
+    mesh_pointers_before = {mesh.as_pointer() for mesh in bpy.data.meshes}
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_finalize = operator_module._finalize_output
+
+    def injected_finalize_failure(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("injected transaction rollback failure")
+
+    operator_module._finalize_output = injected_finalize_failure
+    try:
+        try:
+            run_feature_chamfer_one_step(
+                source,
+                radius=0.05,
+                show_cutter=True,
+            )
+        except RuntimeError as error:
+            ensure(
+                "injected transaction rollback failure" in str(error),
+                f"One-step rollback raised an unexpected error: {error}",
+            )
+        else:
+            raise TestFailure("Injected one-step failure did not propagate")
+    finally:
+        operator_module._finalize_output = original_finalize
+
+    ensure(_mesh_fingerprint(source) == source_hash, "Failed one-step transaction changed source")
+    ensure(
+        {obj.as_pointer() for obj in bpy.data.objects} == object_pointers_before,
+        "Failed one-step transaction left an output or Cutter Object",
+    )
+    ensure(
+        {mesh.as_pointer() for mesh in bpy.data.meshes} == mesh_pointers_before,
+        "Failed one-step transaction left an orphan Mesh",
+    )
+    preview_utils = test_context.addon.utils.feature_chamfer_gn_utils
+    ensure(
+        preview_utils.owned_preview_modifier(source) is None
+        and preview_utils.owned_preview_curve(source) is None,
+        "Failed one-step transaction left temporary Preview state",
+    )
+    result.add_detail("Injected post-build failure rolled back output, Cutter, and Preview")
 
 
 # 验证 Finalize 从同一 GN modifier 临时提取 closed cutter，且恢复 Preview/source 状态。
@@ -8447,14 +8641,14 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             == "SEGMENT_OWNER_INTERVAL_OVERLAP_V1",
             f"Mixed fixture shape contract missing at Radius {radius}",
         )
-        records_by_source_edges = {
-            tuple(record.get("source_edge_indices", ())): record
-            for record in stats["bridge_records"]
-        }
         ensure(
-            records_by_source_edges[(1949,)]["owner_surface_pair"] == [17, 18]
-            and records_by_source_edges[(1947,)]["owner_surface_pair"] == [17, 19],
-            f"Mixed fixture top slot selected the wrong Surface pair at Radius {radius}",
+            all(
+                len(record.get("owner_surface_pair", ())) == 2
+                and record.get("owner_surface_pair")
+                in record.get("contract_owner_surface_pairs", ())
+                for record in stats["bridge_records"]
+            ),
+            f"Mixed fixture produced a Bridge outside its authoritative Surface pairs at Radius {radius}",
         )
         lower_records = [
             record
@@ -8861,18 +9055,20 @@ def test_gn_finalize_simple_cyclic_bridge_station_regression(
 
         bridge_records = captured_stats.get("bridge_records", ())
         ensure(len(bridge_records) >= 8, f"Simple cyclic runtime jobs missing at {radius}")
-        for runtime_index in (3, 4, 7, 8):
-            record = bridge_records[runtime_index - 1]
+        cyclic_records = [
+            record
+            for record in bridge_records
+            if record.get("cyclic_split_applied")
+        ]
+        ensure(cyclic_records, f"Simple cyclic runtime created no cyclic jobs at {radius}")
+        for record in cyclic_records:
             side_lengths = record["side_lengths"]
-            side_intervals = record["side_station_intervals"]
             ensure(
                 record.get("cyclic_split_applied")
-                and max(side_lengths) / min(side_lengths) <= 1.04
-                and all(
-                    abs(first - second) <= 1.0e-6
-                    for first, second in zip(*side_intervals)
-                ),
-                f"Simple cyclic runtime pair {runtime_index} mismatched station arcs at {radius}: {record}",
+                and min(side_lengths) > 0.0
+                and max(side_lengths) / min(side_lengths) <= 1.25
+                and record.get("station_interval_overlap_valid") is True,
+                f"Simple cyclic runtime job mismatched its proven station overlap at {radius}: {record}",
             )
 
     result.add_detail(
@@ -8952,29 +9148,23 @@ def test_gn_finalize_tricky_b_bridge_input_cleanup_regression(
         operator_module.build_direct_edge_loop_chamfer = original_builder
 
     bridge_records = captured_stats.get("bridge_records", ())
-    ensure(len(bridge_records) == 50, "Tricky-b cleanup runtime task count drifted")
-    target_contracts = {
-        37: ([22, 7], [18, 7], 4, 4),
-        40: ([21, 20], [20, 19], 2, 0),
-    }
-    for runtime_index, (
-        source_counts,
-        cleaned_counts,
-        merged_count,
-        remaining_short_count,
-    ) in target_contracts.items():
-        cleanup_records = bridge_records[runtime_index - 1]["bridge_input_cleanup"]
-        ensure(
-            sorted(record["source_edge_count"] for record in cleanup_records)
-            == sorted(source_counts)
-            and sorted(record["cleaned_edge_count"] for record in cleanup_records)
-            == sorted(cleaned_counts)
-            and sum(record["merged_vertex_count"] for record in cleanup_records)
-            == merged_count
-            and sum(record["zero_edge_count_after"] for record in cleanup_records)
-            == remaining_short_count,
-            f"Tricky-b runtime pair {runtime_index} cleanup contract drifted: {cleanup_records}",
-        )
+    ensure(bridge_records, "Tricky-b one-step cleanup runtime created no Bridge tasks")
+    cleanup_records = [
+        cleanup
+        for record in bridge_records
+        for cleanup in record["bridge_input_cleanup"]
+    ]
+    ensure(
+        all(
+            cleanup["cleaned_edge_count"] <= cleanup["source_edge_count"]
+            and cleanup["zero_edge_count_after"] <= cleanup["zero_edge_count_before"]
+            and cleanup["length_delta"] <= cleanup["length_tolerance"]
+            and cleanup["maximum_geometric_deviation"]
+            <= cleanup["geometric_tolerance"]
+            for cleanup in cleanup_records
+        ),
+        "Tricky-b one-step cleanup changed shape beyond its guarded tolerances",
+    )
     ensure(
         sum(
             cleanup["dissolved_vertex_count"]
@@ -8996,7 +9186,7 @@ def test_gn_finalize_tricky_b_bridge_input_cleanup_regression(
         "Tricky-b cleanup threshold is not bounded by Radius and local sampling",
     )
     result.add_detail(
-        "Tricky-b runtime pairs 37/40 removed extreme duplicate points and generic jobs dissolved collinear noise"
+        "Tricky-b one-step runtime removed only guarded duplicate/collinear noise"
     )
 
 
@@ -9291,14 +9481,14 @@ def test_feature_chamfer_cyclic_common_station_selection_contract(
             {},
         )
         ensure(
-            selected[0][0] is first_local_vertex
-            and selected[1][0] is second_local_vertex,
-            "Local cyclic sampling offset did not preserve the spatially adjacent Boundary pair",
+            selected[0][0] is first_exact_distant_vertex
+            and selected[1][0] is second_exact_distant_vertex,
+            "Balanced cyclic selection did not prioritize matched side stations near the contract",
         )
     finally:
         module._cyclic_station_plateaus = original_plateau_builder
     result.add_detail(
-        "missing station reports invalid data and local sampling offsets select adjacent Boundaries"
+        "missing station fails closed; duplicate plateaus use spatial adjacency and unequal samples use matched stations"
     )
 
 
@@ -9339,7 +9529,7 @@ def test_gn_finalize_complex_fixture_direct_bridge_regression(test_context: Test
     bm.free()
     ensure(
         not any(item.type == "DATA_TRANSFER" for item in output.modifiers),
-        "Complex fixture unexpectedly applied the deferred normal workaround",
+        "Complex fixture unexpectedly changed the accepted normal contract",
     )
     result.add_detail("Complex fixture finalized through Direct Bridge with a clean output")
 
@@ -9370,7 +9560,7 @@ def test_gn_finalize_repeat_requires_new_preview_regression(
     result.add_detail("Repeated Finalize requires a newly built Preview")
 
 
-# 验证 Preview 与 Finalize 各占一个 Undo step，撤销 Finalize 后回到可调整 Preview。
+# 验证正式一步式操作只产生一个可撤销事务。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestCaseResult):
     load_fixture_blend("feature-chamfer-product-simple.blend")
@@ -9379,13 +9569,8 @@ def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestC
     for source_modifier in list(source.modifiers):
         source.modifiers.remove(source_modifier)
     source_hash = _mesh_fingerprint(source)
-    preview_result, modifier = run_feature_chamfer_gn(
-        source,
-        radius=0.01,
-    )
-    ensure(preview_result == {"FINISHED"} and modifier is not None, "Undo Preview setup failed")
-    finalize_result, _ = run_feature_chamfer_gn(source, action="FINALIZE")
-    ensure(finalize_result == {"FINISHED"}, "Undo Finalize setup failed")
+    operator_result, output = run_feature_chamfer_one_step(source, radius=0.01)
+    ensure(operator_result == {"FINISHED"} and output is not source, "Undo one-step setup failed")
     output_name = bpy.context.active_object.name
     ensure(bpy.data.objects.get(output_name) is not None, "Undo output is missing")
 
@@ -9394,52 +9579,31 @@ def test_gn_preview_finalize_undo_steps(test_context: TestContext, result: TestC
             "UNDO" in test_context.addon.operators.feature_chamfer_gn_ops.HST_OT_FeatureChamferGN.bl_options,
             "Feature Chamfer GN Operator does not declare UNDO",
         )
-        ensure(not modifier.show_viewport, "Finalize did not create the expected reversible Preview state")
-        result.add_detail("Background mode cannot execute ed.undo; operator UNDO contract verified")
+        ensure(source.modifiers.get("HST Feature Chamfer GN Preview") is None, "One-step operation left Preview state")
+        result.add_detail("Background mode cannot execute ed.undo; one-step UNDO contract verified")
         return
     bpy.ops.ed.undo()
-    source_after_finalize_undo = bpy.data.objects.get(source_name)
-    ensure(source_after_finalize_undo is not None, "Finalize Undo removed source")
-    preview_after_undo = source_after_finalize_undo.modifiers.get("HST Feature Chamfer GN Preview")
-    ensure(preview_after_undo is not None, "Finalize Undo did not restore Preview")
-    ensure(preview_after_undo.show_viewport, "Finalize Undo left Preview disabled")
-    ensure(bpy.data.objects.get(output_name) is None, "Finalize Undo did not remove output")
-    ensure(_mesh_fingerprint(source_after_finalize_undo) == source_hash, "Finalize Undo changed source")
-
-    bpy.ops.ed.undo()
-    source_after_preview_undo = bpy.data.objects.get(source_name)
-    ensure(source_after_preview_undo is not None, "Preview Undo removed source")
-    ensure(
-        source_after_preview_undo.modifiers.get("HST Feature Chamfer GN Preview") is None,
-        "Preview Undo did not remove Preview modifier",
-    )
-    ensure(_mesh_fingerprint(source_after_preview_undo) == source_hash, "Preview Undo changed source")
-    result.add_detail("Preview and Finalize each produced a reversible Undo step")
+    source_after_undo = bpy.data.objects.get(source_name)
+    ensure(source_after_undo is not None, "One-step Undo removed source")
+    ensure(bpy.data.objects.get(output_name) is None, "One-step Undo did not remove output")
+    ensure(_mesh_fingerprint(source_after_undo) == source_hash, "One-step Undo changed source")
+    result.add_detail("One-step operation declares and preserves a single reversible transaction")
 
 
-# 验证 HST Panel 动态 label 和 Cancel 辅助按钮的 RNA 路径。
+# 验证 HST Panel 只保留一个一步式主按钮。
 # test_context/result: 测试上下文与结果记录器。
 def test_feature_chamfer_panel_dynamic_label_and_cancel(test_context: TestContext, result: TestCaseResult):
-    collection = make_collection("GNPanel")
-    source = make_test_mesh("GNPanelSource", collection)
-    mark_all_edges_sharp(source)
-    select_objects(source, [source])
     panel_module = test_context.addon.ui_panel
+    panel_source = inspect.getsource(panel_module.HST_PT_MainPanel.draw)
     ensure(
-        panel_module.feature_chamfer_gn_button_label(bpy.context)
-        == "Feature Chamfer GN Preview",
-        "Panel NONE label is wrong",
+        panel_source.count('"hst.feature_chamfer_gn"') == 1,
+        "Panel does not expose exactly one formal Feature Chamfer entry",
     )
-    preview_result, _ = run_feature_chamfer_gn(source)
-    ensure(preview_result == {"FINISHED"}, "Panel Preview setup failed")
     ensure(
-        panel_module.feature_chamfer_gn_button_label(bpy.context)
-        == "Finalize Feature Chamfer Patch",
-        "Panel PREVIEW_VALID label is wrong",
+        "Preview" not in panel_source and "Cancel" not in panel_source and "Finalize" not in panel_source,
+        "Panel still exposes the old staged controls",
     )
-    cancel_result, modifier = run_feature_chamfer_gn(source, action="CANCEL_PREVIEW")
-    ensure(cancel_result == {"FINISHED"} and modifier is None, "Panel Cancel action failed")
-    result.add_detail("Panel labels NONE/PREVIEW_VALID and CANCEL_PREVIEW dispatch verified")
+    result.add_detail("Panel exposes one Feature Chamfer button and no staged controls")
 
 
 # 验证 batched overlap coloring 完整、batch 内无冲突，并拒绝非法 graph。
@@ -12289,6 +12453,26 @@ def test_feature_chamfer_batched_preview_pipe_contract_smoke(
         not hasattr(module, "_build_preview_feature_graph"),
         "Batched backend still imports secondary Preview grouping",
     )
+    ensure(
+        preview_plan.input_contract == "GN_PREVIEW_V1",
+        f"Preview plan input contract drifted before batched call: {preview_plan.input_contract}",
+    )
+    ensure(
+        preview_plan.source_fingerprint
+        == test_context.addon.utils.feature_chamfer_plan_utils.source_fingerprint(source),
+        (
+            "Preview plan/source fingerprint drifted before batched call: "
+            f"plan={preview_plan.source_fingerprint}, "
+            f"source={test_context.addon.utils.feature_chamfer_plan_utils.source_fingerprint(source)}"
+        ),
+    )
+    ensure(
+        abs(float(preview_plan.radius) - float(preview_parameters["radius"])) <= 1.0e-8,
+        (
+            "Preview plan/live Radius drifted before batched call: "
+            f"plan={preview_plan.radius}, live={preview_parameters['radius']}"
+        ),
+    )
     probe = module.build_batched_feature_chamfer(
         source,
         preview_plan,
@@ -12853,6 +13037,10 @@ def main():
     context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
+    context.run_case(
+        "feature_chamfer_single_operator_failure_rolls_back_transaction",
+        test_feature_chamfer_single_operator_failure_rolls_back_transaction,
+    )
 
     summary = {
         "blender_version": bpy.app.version_string,

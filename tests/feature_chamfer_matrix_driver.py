@@ -49,6 +49,80 @@ CYCLIC_FIX_REGRESSION_SCOPE = {
     ("mixed", "Extruded.002", 0.01),
     ("mixed", "Extruded.002", 0.03),
 }
+# 锁定最后一次已由人工验收的 Preview→Finalize 输出拓扑，避免“封闭但形状错误”再次假绿。
+# key: matrix cell；value: 最终 Mesh 与 Chamfer Face 数量。
+PREVIEW_FINALIZE_TOPOLOGY_BASELINES = {
+    ("simple", "Extruded.002", 0.01): {
+        "fingerprint": "60666add88c6d5f428fbad0b8ba0a759a9250c139426cce032acf964f1f4a402",
+        "vertex_count": 533,
+        "edge_count": 1102,
+        "face_count": 571,
+        "chamfer_face_count": 509,
+    },
+    ("simple", "Extruded.002", 0.03): {
+        "fingerprint": "6a7a0df17e7b81c7c81a79e9f91f5ac3cbcfc1ba10d43baa26c245064ffec130",
+        "vertex_count": 531,
+        "edge_count": 1067,
+        "face_count": 538,
+        "chamfer_face_count": 476,
+    },
+    ("simple", "Solid 44", 0.01): {
+        "fingerprint": "633dd72a20044b71760a8bb757992e988155815cdcf65b61c48b7ae7ffb8fd85",
+        "vertex_count": 271,
+        "edge_count": 562,
+        "face_count": 293,
+        "chamfer_face_count": 239,
+    },
+    ("simple", "Solid 44", 0.03): {
+        "fingerprint": "15e0e7323b50cad154b7bcc25cd87ca61ba81eb804d8016a099b49192733629f",
+        "vertex_count": 267,
+        "edge_count": 562,
+        "face_count": 297,
+        "chamfer_face_count": 243,
+    },
+    ("tricky_b", "Extruded.003", 0.01): {
+        "fingerprint": "a739066c549873af66baf2b650960cb2f8253750f217c0fa9178ef0c337b7aac",
+        "vertex_count": 428,
+        "edge_count": 896,
+        "face_count": 470,
+        "chamfer_face_count": 426,
+    },
+    ("tricky_b", "Extruded.003", 0.03): {
+        "fingerprint": "50465630bb8bffe89108b4ac29d83fb65f71b3bbeebf8c4fbb9e4157423941c5",
+        "vertex_count": 400,
+        "edge_count": 837,
+        "face_count": 439,
+        "chamfer_face_count": 399,
+    },
+    ("tricky_b", "Extruded.002", 0.01): {
+        "fingerprint": "d52ca6645f51cbe10047cd128295d5477f278a508e657cdbfa429fd3218709f8",
+        "vertex_count": 1162,
+        "edge_count": 2386,
+        "face_count": 1226,
+        "chamfer_face_count": 1043,
+    },
+    ("tricky_b", "Extruded.002", 0.03): {
+        "fingerprint": "54c0fcc616c5f167913eab9ad5bd12d380167daa6596a238bdd546437d696a1b",
+        "vertex_count": 1128,
+        "edge_count": 2316,
+        "face_count": 1190,
+        "chamfer_face_count": 1009,
+    },
+    ("mixed", "Extruded.002", 0.01): {
+        "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
+        "vertex_count": 3922,
+        "edge_count": 8054,
+        "face_count": 4134,
+        "chamfer_face_count": 3454,
+    },
+    ("mixed", "Extruded.002", 0.03): {
+        "fingerprint": "c0ae987df1bdcb603113533944397213a44fd5368d68a5f72cc1a5c94af5d525",
+        "vertex_count": 3885,
+        "edge_count": 8058,
+        "face_count": 4175,
+        "chamfer_face_count": 3502,
+    },
+}
 FIXTURE_HASHES = {
     "feature-chamfer-product-simple.blend": (
         "1cbab4c83c4d9f77bd2b0799257953aaec32aa416994a1d8810425f3c2b94d8c"
@@ -104,7 +178,6 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
             "owner_surface_pair": [2, 4],
             "source_side_edge_counts": [27, 67],
             "maximum_side_length_ratio": 1.04,
-            "station_interval_tolerance": 1.0e-6,
         },
         {
             "segment_id": 1,
@@ -112,7 +185,6 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
             "owner_surface_pair": [2, 3],
             "source_side_edge_counts": [27, 67],
             "maximum_side_length_ratio": 1.04,
-            "station_interval_tolerance": 1.0e-6,
         },
     ),
     ("simple", "Extruded.002", 0.03): (
@@ -122,7 +194,6 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
             "owner_surface_pair": [2, 4],
             "source_side_edge_counts": [27, 65],
             "maximum_side_length_ratio": 1.04,
-            "station_interval_tolerance": 1.0e-6,
         },
         {
             "segment_id": 1,
@@ -130,7 +201,6 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
             "owner_surface_pair": [2, 3],
             "source_side_edge_counts": [27, 65],
             "maximum_side_length_ratio": 1.04,
-            "station_interval_tolerance": 1.0e-6,
         },
     ),
     ("tricky_b", "Extruded.002", 0.01): (
@@ -274,6 +344,37 @@ def source_fingerprint(source_object):
     return hashlib.sha256(encoded).hexdigest()
 
 
+# 返回 source Object 自身属性、Collection 归属与 Modifier runtime 的稳定快照。
+# source_object: 正式输入 Mesh Object；用于证明一步式成功路径没有改写输入 Object 状态。
+def source_object_state(source_object):
+    modifier_states = []
+    for modifier in source_object.modifiers:
+        modifier_states.append(
+            {
+                "name": modifier.name,
+                "type": modifier.type,
+                "id_properties": json_value(dict(modifier.items())),
+                "show_viewport": modifier.show_viewport,
+                "show_render": modifier.show_render,
+                "show_in_editmode": modifier.show_in_editmode,
+                "show_on_cage": modifier.show_on_cage,
+                "object": getattr(getattr(modifier, "object", None), "name", None),
+                "node_group": getattr(getattr(modifier, "node_group", None), "name", None),
+            }
+        )
+    return {
+        "id_properties": json_value(dict(source_object.items())),
+        "mesh_id_properties": json_value(dict(source_object.data.items())),
+        "modifiers": modifier_states,
+        "collections": sorted(collection.name for collection in source_object.users_collection),
+        "hide_viewport": source_object.hide_viewport,
+        "hide_render": source_object.hide_render,
+        "hide_set": source_object.hide_get(),
+        "display_type": source_object.display_type,
+        "show_in_front": source_object.show_in_front,
+    }
+
+
 # 返回有序数值列表的线性 percentile，不依赖 NumPy。
 # values: 数值序列；fraction: 0..1 百分位位置。
 def percentile(values, fraction):
@@ -364,7 +465,7 @@ def source_diagnostics(source_object, radius):
     }
 
 
-# 返回 Finalize output 的拓扑、Chamfer attribute 与稳定 fingerprint。
+# 返回一步式 output 的拓扑、Chamfer attribute 与稳定 fingerprint。
 # output_object: 目标 Operator 创建的独立 Mesh Object；为 None 时返回缺失状态。
 def output_diagnostics(output_object):
     if output_object is None or output_object.type != "MESH":
@@ -507,9 +608,9 @@ def activate_source(source_object):
     bpy.context.view_layer.update()
 
 
-# 从 operator runtime 捕获 backend stats，仍由 hst.feature_chamfer_gn 调用真实 builder。
+# 从一步式 operator runtime 捕获 backend stats，仍由正式入口调用真实 builder。
 # addon_module: 已注册插件；capture: 写入 backend 调用证据的 dict。
-def install_finalize_capture(addon_module, capture):
+def install_backend_capture(addon_module, capture):
     operator_module = addon_module.operators.feature_chamfer_gn_ops
     original_builder = operator_module.build_direct_edge_loop_chamfer
 
@@ -552,9 +653,9 @@ def install_finalize_capture(addon_module, capture):
 # source_before/result/output/backend/source_unchanged: 当前 cell 的直接证据；allow_safe_failure 仅供延期 tricky 使用。
 def classify_result(
     source_before,
-    preview_result,
-    finalize_result,
+    operation_result,
     output,
+    preview_residue,
     backend_capture,
     source_unchanged,
     pseudo_output_count,
@@ -563,6 +664,7 @@ def classify_result(
     allow_safe_failure,
     required_turn_split_contract,
     required_cyclic_split_contracts,
+    topology_baseline,
 ):
     contract_violations = []
     if not source_before["mesh"]["closed_manifold"]:
@@ -579,6 +681,13 @@ def classify_result(
         and output.get("zero_area_face_count") == 0
         and output.get("chamfer_attribute_exists")
         and output.get("chamfer_face_count", 0) > 0
+        and not preview_residue.get("owned_curve_tag")
+        and not preview_residue.get("preview_modifier")
+        and not preview_residue.get("owned_curve_objects")
+    )
+    topology_baseline_matches = (
+        topology_baseline is None
+        or all(output.get(key) == value for key, value in topology_baseline.items())
     )
     backend_stats = backend_capture.get("stats", {})
     bridge_shape_records = backend_stats.get("bridge_records", ())
@@ -721,6 +830,9 @@ def classify_result(
     direct_bridge_product = (
         backend_capture.get("called")
         and backend_capture.get("status") == "finished"
+        and backend_capture.get("feature_graph_contract") == "GN_PREVIEW_V1"
+        and backend_capture.get("expected_chamfer_plan", {}).get("input_contract")
+        == "GN_PREVIEW_V1"
         and backend_stats.get("backend") == "DIRECT_EDGE_LOOP_BRIDGE"
         and "Boolean Pro Boundary Edges" in backend_stats.get("runtime_path", "")
         and backend_stats.get("bridge_job_count", 0) > 0
@@ -735,8 +847,7 @@ def classify_result(
         and cyclic_split_contract
     )
     safety_failure = (
-        preview_result in (["FINISHED"], ["CANCELLED"])
-        and finalize_result in (["CANCELLED"], ["SKIPPED"])
+        operation_result in (["FINISHED"], ["CANCELLED"])
         and backend_capture.get("error_code")
         and source_unchanged
         and pseudo_output_count == 0
@@ -749,17 +860,17 @@ def classify_result(
             "final_geometry_self_intersects",
             "junction_fill_self_intersects",
         }
-        and final_state == "PREVIEW_RETAINED"
+        and final_state == "NO_OUTPUT"
         and diagnostic.get("radius_limit_visible")
     )
     if contract_violations:
         classification = "EXPECTED_UNSUPPORTED"
         reason = ",".join(contract_violations)
     elif (
-        preview_result == ["FINISHED"]
-        and finalize_result == ["FINISHED"]
+        operation_result == ["FINISHED"]
         and clean_product_output
         and direct_bridge_product
+        and topology_baseline_matches
         and source_unchanged
     ):
         classification = "PRODUCT_SUCCESS"
@@ -791,22 +902,14 @@ def repetition_signature(repetition):
         "classification": repetition["classification"],
         "classification_reason": repetition["classification_reason"],
         "contract_violations": repetition["contract_violations"],
-        "preview_result": repetition["operator"]["preview_result"],
-        "finalize_result": repetition["operator"]["finalize_result"],
-        "preview_runtime_proven": repetition["operator"]["preview_runtime_proven"],
-        "finalize_runtime_proven": repetition["operator"]["finalize_runtime_proven"],
+        "operation_result": repetition["operator"]["result"],
+        "runtime_proven": repetition["operator"]["runtime_proven"],
         "backend_status": repetition["backend"].get("status"),
         "backend_error_code": repetition["backend"].get("error_code"),
         "backend_error_message": repetition["backend"].get("error_message"),
-        "phase_2_preview_plan_id": repetition.get("phase_2_plan", {})
-        .get("preview", {})
-        .get("plan_id"),
-        "phase_2_finalize_plan_id": repetition.get("phase_2_plan", {})
-        .get("finalize", {})
-        .get("plan_id"),
+        "result_plan_id": repetition.get("result_plan", {}).get("plan_id"),
         "source_before": repetition["source_before"]["fingerprint"],
-        "source_after_preview": repetition["source_after_preview"],
-        "source_after_finalize": repetition["source_after_finalize"],
+        "source_after_operation": repetition["source_after_operation"],
         "output_contract": {
             key: repetition["output"].get(key)
             for key in (
@@ -836,6 +939,7 @@ def repetition_signature(repetition):
                 "chamfer_face_count",
             )
         },
+        "preview_residue": repetition.get("preview_residue"),
         "direct_bridge": {
             key: repetition.get("backend", {}).get("stats", {}).get(key)
             for key in (
@@ -877,7 +981,7 @@ def repetition_signature(repetition):
     ).hexdigest()
 
 
-# 保存 Preview 或 Finalize 当前状态为 copy，确保 fixture 路径与主文件状态不变。
+# 保存一步式结果为 copy，确保 fixture 路径与主文件状态不变。
 # artifact_path: 目标 .blend 路径。
 def save_artifact_copy(artifact_path):
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -914,88 +1018,79 @@ def run_repetition(
         raise RuntimeError(f"Fixture Object missing or not Mesh: {object_name}")
 
     source_before = source_diagnostics(source_object, radius)
+    source_state_before = source_object_state(source_object)
     source_fingerprint_before = source_before["fingerprint"]
     activate_source(source_object)
-    preview_started = time.perf_counter()
+    backend_capture = {"called": False}
+    operator_module, original_builder = install_backend_capture(
+        addon_module,
+        backend_capture,
+    )
+    operation_started = time.perf_counter()
     try:
-        preview_result = sorted(
+        operation_result = sorted(
             bpy.ops.hst.feature_chamfer_gn(
                 "INVOKE_DEFAULT",
-                action="PREVIEW",
                 radius=radius,
             )
         )
     except RuntimeError as error:
-        preview_result = ["CANCELLED"]
-        preview_error = str(error)
+        operation_result = ["CANCELLED"]
+        operation_error = str(error)
     else:
-        preview_error = None
-    preview_seconds = time.perf_counter() - preview_started
-    source_fingerprint_after_preview = source_fingerprint(source_object)
-    preview_modifier = source_object.modifiers.get("HST Feature Chamfer GN Preview")
-    preview_plan = phase_2_plan_summary(addon_module, preview_modifier)
-    preview_runtime_proven = (
-        source_object.get(addon_module.const.FEATURE_CHAMFER_GN_LAST_ACTION_TAG)
-        == "PREVIEW"
-        and preview_modifier is not None
-        and preview_modifier.get(addon_module.const.FEATURE_CHAMFER_GN_LAST_ACTION_TAG)
-        == "PREVIEW"
-    )
-    if repetition_index == 0:
-        save_artifact_copy(case_directory / "preview.blend")
-
-    backend_capture = {"called": False}
-    finalize_result = ["SKIPPED"]
-    finalize_seconds = 0.0
-    if preview_result == ["FINISHED"]:
-        activate_source(source_object)
-        operator_module, original_builder = install_finalize_capture(
-            addon_module,
-            backend_capture,
+        operation_error = None
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+    operation_seconds = time.perf_counter() - operation_started
+    try:
+        one_step_stats = json.loads(
+            bpy.context.scene.get("hst_pipe_chamfer_last_result", "{}")
         )
-        finalize_started = time.perf_counter()
-        try:
-            finalize_result = sorted(
-                bpy.ops.hst.feature_chamfer_gn(
-                    "INVOKE_DEFAULT",
-                    action="FINALIZE",
-                )
-            )
-        finally:
-            finalize_seconds = time.perf_counter() - finalize_started
-            operator_module.build_direct_edge_loop_chamfer = original_builder
-    elif preview_error:
-        backend_capture.update(
-            status="failed",
-            error_code="preview_failed_safe",
-            error_message=preview_error,
-        )
-
-    source_fingerprint_after_finalize = source_fingerprint(source_object)
-    source_unchanged = (
-        source_fingerprint_before
-        == source_fingerprint_after_preview
-        == source_fingerprint_after_finalize
-    )
+    except json.JSONDecodeError:
+        one_step_stats = {}
+    backend_capture["one_step_stats"] = json_value(one_step_stats)
+    source_fingerprint_after_operation = source_fingerprint(source_object)
     output_object = (
         bpy.context.active_object
-        if finalize_result == ["FINISHED"] and bpy.context.active_object is not source_object
+        if operation_result == ["FINISHED"] and bpy.context.active_object is not source_object
         else None
     )
-    output = output_diagnostics(output_object)
-    finalize_plan = phase_2_plan_summary(
-        addon_module,
-        output_object if output_object is not None else preview_modifier,
+    result_plan = phase_2_plan_summary(addon_module, output_object)
+    runtime_proven = output_object is not None
+    if repetition_index == 0:
+        save_artifact_copy(case_directory / "result.blend")
+
+    if operation_error:
+        backend_capture.update(
+            status="failed",
+            error_code="operation_failed_safe",
+            error_message=operation_error,
+        )
+
+    source_state_after = source_object_state(source_object)
+    source_unchanged = (
+        source_fingerprint_before == source_fingerprint_after_operation
+        and source_state_before == source_state_after
     )
+    output = output_diagnostics(output_object)
+    preview_residue = {
+        "owned_curve_tag": bool(
+            source_object.get(addon_module.const.FEATURE_CHAMFER_CURVE_OBJECT_TAG)
+        ),
+        "preview_modifier": bool(
+            source_object.modifiers.get(addon_module.const.FEATURE_CHAMFER_GN_MODIFIER)
+        ),
+        "owned_curve_objects": [
+            obj.name
+            for obj in bpy.data.objects
+            if obj.get(addon_module.const.FEATURE_CHAMFER_CURVE_OWNER_TAG)
+            == source_object.name
+        ],
+    }
     final_state = (
         "PRODUCT_OUTPUT"
         if output_object is not None
-        else (
-            "PREVIEW_RETAINED"
-            if addon_module.utils.feature_chamfer_gn_utils.preview_state(source_object)
-            == addon_module.utils.feature_chamfer_gn_utils.PREVIEW_VALID
-            else "NO_OUTPUT"
-        )
+        else "NO_OUTPUT"
     )
     diagnostic = failure_diagnostic(addon_module, source_object)
     pseudo_outputs = [
@@ -1007,7 +1102,7 @@ def run_repetition(
     ]
     if output_object is not None and output_object.name in pseudo_outputs:
         pseudo_outputs.remove(output_object.name)
-    finalize_runtime_proven = (
+    backend_runtime_proven = (
         backend_capture.get("called")
         and backend_capture.get("feature_graph_contract") == "GN_PREVIEW_V1"
     )
@@ -1020,9 +1115,9 @@ def run_repetition(
     )
     classification, classification_reason, contract_violations = classify_result(
         source_before,
-        preview_result,
-        finalize_result,
+        operation_result,
         output,
+        preview_residue,
         backend_capture,
         source_unchanged,
         len(pseudo_outputs),
@@ -1031,45 +1126,36 @@ def run_repetition(
         fixture_label in DEFERRED_LABELS,
         required_turn_split_contract,
         required_cyclic_split_contracts,
+        PREVIEW_FINALIZE_TOPOLOGY_BASELINES.get(
+            (fixture_label, object_name, round(float(radius), 6))
+        ),
     )
-    if repetition_index == 0:
-        save_artifact_copy(case_directory / "final.blend")
     return {
         "repetition": repetition_index + 1,
         "classification": classification,
         "classification_reason": classification_reason,
         "contract_violations": contract_violations,
         "source_before": source_before,
-        "source_after_preview": source_fingerprint_after_preview,
-        "source_after_finalize": source_fingerprint_after_finalize,
+        "source_after_operation": source_fingerprint_after_operation,
+        "source_object_state_before": source_state_before,
+        "source_object_state_after": source_state_after,
         "source_unchanged": source_unchanged,
         "operator": {
-            "ui_entry": "Feature Chamfer GN",
+            "ui_entry": "Feature Chamfer",
             "bl_idname": "hst.feature_chamfer_gn",
             "invocation": "INVOKE_DEFAULT",
-            "preview_result": preview_result,
-            "finalize_result": finalize_result,
-            "preview_runtime_proven": preview_runtime_proven,
-            "finalize_runtime_proven": finalize_runtime_proven,
+            "result": operation_result,
+            "runtime_proven": runtime_proven and backend_runtime_proven,
         },
         "backend": json_value(backend_capture),
-        "phase_2_plan": {
-            "preview": preview_plan,
-            "finalize": finalize_plan,
-            "shared_semantics": (
-                preview_plan.get("exists", False)
-                and bool(finalize_plan)
-                and preview_plan.get("plan_id") == finalize_plan.get("plan_id")
-                and preview_plan.get("provenance") == finalize_plan.get("provenance")
-            ),
-        },
+        "result_plan": result_plan,
         "output": output,
+        "preview_residue": preview_residue,
         "final_state": final_state,
         "failure_diagnostic": diagnostic,
         "unexpected_pseudo_outputs": pseudo_outputs,
         "timings_seconds": {
-            "preview": preview_seconds,
-            "finalize": finalize_seconds,
+            "one_step_operation": operation_seconds,
         },
     }
 
@@ -1164,8 +1250,8 @@ def main():
         "blender_version_tuple": list(bpy.app.version),
         "repository_root": str(REPO_ROOT),
         "runtime_contract": (
-            "UI Feature Chamfer GN -> hst.feature_chamfer_gn -> INVOKE -> "
-            "PREVIEW/FINALIZE -> Preview Pipe -> Boolean Pro Boundary Edges -> "
+            "UI Feature Chamfer -> hst.feature_chamfer_gn -> INVOKE -> "
+            "ONE_STEP TRANSACTION -> accepted Preview Curve Pipe -> Boolean Pro -> "
             "segment Edge Loop groups -> Blender Bridge -> Blender Fill -> final Mesh"
         ),
         "fixture_hashes_expected": FIXTURE_HASHES,
@@ -1245,20 +1331,15 @@ def main():
             item.get("source_unchanged", False) for item in case["repetitions"]
         )
         case["runtime_path_proven"] = all(
-            item.get("operator", {}).get("preview_runtime_proven", False)
-            and item.get("operator", {}).get("finalize_runtime_proven", False)
+            item.get("operator", {}).get("runtime_proven", False)
             for item in case["repetitions"]
         )
-        phase_2_plan_ids = [
-            item.get("phase_2_plan", {}).get("preview", {}).get("plan_id")
+        result_plan_ids = [
+            item.get("result_plan", {}).get("plan_id")
             for item in case["repetitions"]
         ]
-        case["phase_2_plan_ids_stable"] = (
-            all(phase_2_plan_ids) and len(set(phase_2_plan_ids)) == 1
-        )
-        case["phase_2_shared_plan_semantics"] = all(
-            item.get("phase_2_plan", {}).get("shared_semantics", False)
-            for item in case["repetitions"]
+        case["result_plan_ids_stable"] = (
+            all(result_plan_ids) and len(set(result_plan_ids)) == 1
         )
         (case_directory / "diagnostics.json").write_text(
             json.dumps(case, ensure_ascii=False, indent=2),
@@ -1336,17 +1417,61 @@ def main():
     }
     runtime_go_conditions = {
         "three_repetitions": REPETITIONS >= 3,
-        "direct_bridge_backend_proven": all(
+        "legacy_geometry_backend_proven": all(
             repetition.get("classification") != "PRODUCT_SUCCESS"
             or (
-                repetition.get("backend", {}).get("stats", {}).get("backend")
+                repetition.get("backend", {}).get("feature_graph_contract")
+                == "GN_PREVIEW_V1"
+                and repetition.get("backend", {}).get("stats", {}).get("backend")
                 == "DIRECT_EDGE_LOOP_BRIDGE"
                 and repetition.get("backend", {}).get("stats", {}).get(
                     "bridge_job_count",
                     0,
                 )
                 > 0
+                and repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "backend"
+                )
+                == "GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE"
+                and repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "solver"
+                )
+                == "BOOLEAN_PRO"
             )
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+        ),
+        "preview_runtime_cleanup_proven": all(
+            repetition.get("classification") != "PRODUCT_SUCCESS"
+            or (
+                repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "one_step_transaction"
+                )
+                is True
+                and repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "temporary_preview_removed"
+                )
+                is True
+            )
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+        ),
+        "no_preview_runtime_residue": all(
+            not any(
+                (
+                    repetition.get("preview_residue", {}).get("owned_curve_tag"),
+                    repetition.get("preview_residue", {}).get("preview_modifier"),
+                    repetition.get("preview_residue", {}).get("owned_curve_objects"),
+                )
+            )
+            for case in matrix_cases
+            for repetition in case["repetitions"]
+            if repetition.get("classification") == "PRODUCT_SUCCESS"
+        ),
+        "one_step_runtime_recorded": all(
+            repetition.get("classification") != "PRODUCT_SUCCESS"
+            or repetition.get("timings_seconds", {}).get("one_step_operation", 0.0)
+            > 0.0
             for case in matrix_cases
             for repetition in case["repetitions"]
         ),

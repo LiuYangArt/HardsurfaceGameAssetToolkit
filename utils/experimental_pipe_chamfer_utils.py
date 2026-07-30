@@ -1502,6 +1502,132 @@ def _strand_endpoint_containment_score(strand_records, source_bvh, clearance):
     return exposed_endpoint_count, containment_margin
 
 
+# 由一组 junction 选项构造完整 strands，并返回全局评分所需的冻结统计。
+# option_combination/metadata/edge_by_id/fixed_strand_pairs/forbidden_reconnections/source_bvh/endpoint_clearance:
+# 当前组合、Feature Edge metadata、Edge lookup、固定/禁止配对和 containment 参数；无效组合返回 None。
+def _score_global_strand_option_combination(
+    option_combination,
+    metadata,
+    edge_by_id,
+    fixed_strand_pairs,
+    forbidden_reconnections,
+    source_bvh,
+    endpoint_clearance,
+    edge_start_records,
+):
+    pair_links = {
+        (vertex, edge): paired_edge
+        for vertex, pairs in fixed_strand_pairs.items()
+        for edge, paired_edge in pairs.items()
+    }
+    selected_candidates = []
+    for option in option_combination:
+        for candidate in option["selected"]:
+            edge_a, edge_b = _candidate_edge_pair(candidate, edge_by_id)
+            vertex = candidate["vertex"]
+            pair_links[(vertex, edge_a)] = edge_b
+            pair_links[(vertex, edge_b)] = edge_a
+            selected_candidates.append(candidate)
+
+    remaining = set(metadata)
+    strand_records = []
+    endpoint_half_edges = [
+        (vertex, edge)
+        for _sort_key, vertex, edge in edge_start_records["half_edges"]
+        if (vertex, edge) not in pair_links
+    ]
+    pending_starts = endpoint_half_edges + list(edge_start_records["edge_starts"])
+    for start, seed in pending_starts:
+        if seed not in remaining:
+            continue
+        current_vertex = start
+        current_edge = seed
+        ordered_edges = []
+        while current_edge is not None and current_edge in remaining:
+            ordered_edges.append(current_edge)
+            remaining.remove(current_edge)
+            current_vertex = current_edge.other_vert(current_vertex)
+            current_edge = pair_links.get((current_vertex, current_edge))
+        cyclic = (
+            current_vertex is start
+            and pair_links.get((current_vertex, ordered_edges[-1])) is seed
+        )
+        strand_endpoint_half_edges = (
+            () if cyclic else ((start, seed), (current_vertex, ordered_edges[-1]))
+        )
+        common_patch_ids = set(metadata[ordered_edges[0]]["patch_pair"])
+        for edge in ordered_edges[1:]:
+            common_patch_ids &= set(metadata[edge]["patch_pair"])
+        record = {
+            "edge_count": len(ordered_edges),
+            "common_patch_ids": tuple(sorted(common_patch_ids)),
+            "cyclic": cyclic,
+            "endpoint_half_edges": strand_endpoint_half_edges,
+            "endpoint_samples": [],
+        }
+        if not cyclic and endpoint_clearance > 0.0:
+            start_neighbor = seed.other_vert(start)
+            end_edge = ordered_edges[-1]
+            end_neighbor = end_edge.other_vert(current_vertex)
+            record["endpoint_samples"] = [
+                tuple(
+                    start.co
+                    + (start.co - start_neighbor.co).normalized()
+                    * endpoint_clearance
+                ),
+                tuple(
+                    current_vertex.co
+                    + (current_vertex.co - end_neighbor.co).normalized()
+                    * endpoint_clearance
+                ),
+            ]
+        strand_records.append(record)
+
+    if any(
+        any(
+            (vertex, edge_a) in record["endpoint_half_edges"]
+            and (vertex, edge_b) in record["endpoint_half_edges"]
+            for record in strand_records
+        )
+        for vertex, edge_a, edge_b in forbidden_reconnections
+    ):
+        return None
+
+    unsupported_turn_count = sum(
+        max(0, record["edge_count"] - 1)
+        for record in strand_records
+        if not record["common_patch_ids"]
+    )
+    supported_turn_count = sum(
+        max(0, record["edge_count"] - 1)
+        for record in strand_records
+        if record["common_patch_ids"]
+    )
+    exposed_endpoint_count, endpoint_containment_margin = (
+        _strand_endpoint_containment_score(
+            strand_records,
+            source_bvh,
+            endpoint_clearance,
+        )
+    )
+    score = (
+        -unsupported_turn_count,
+        supported_turn_count,
+        len(selected_candidates),
+        round(sum(candidate["weight"] for candidate in selected_candidates), 7),
+        -exposed_endpoint_count,
+        round(endpoint_containment_margin, 7),
+        tuple(
+            sorted(
+                pair
+                for option in option_combination
+                for pair in option["geometry_signature"]
+            )
+        ),
+    )
+    return score, pair_links
+
+
 # 枚举所有 junction matching 组合，并在评分时保留已确定的 degree-2 拓扑连续关系。
 # vertex_edges/metadata/miter_scale_limit: junction 邻接、逐 Edge metadata 与 miter 上限。
 # fixed_strand_pairs/forbidden_reconnections: 固定 pairing 与禁止从网络另一端回连的急角半边。
@@ -1519,6 +1645,38 @@ def _global_surface_patch_strand_pairs(
     vertex_options = []
     vertex_diagnostics = {}
     edge_by_id = {edge.index: edge for edge in metadata}
+    half_edges = [
+        (
+            (
+                tuple(round(value, 7) for value in vertex.co),
+                tuple(
+                    sorted(
+                        tuple(round(value, 7) for value in edge_vertex.co)
+                        for edge_vertex in edge.verts
+                    )
+                ),
+            ),
+            vertex,
+            edge,
+        )
+        for edge in metadata
+        for vertex in edge.verts
+    ]
+    half_edges.sort(key=lambda record: record[0])
+    edge_starts = [
+        (
+            min(
+                edge.verts,
+                key=lambda vertex: tuple(round(value, 7) for value in vertex.co),
+            ),
+            edge,
+        )
+        for edge in sorted(metadata, key=lambda item: item.index)
+    ]
+    edge_start_records = {
+        "half_edges": tuple(half_edges),
+        "edge_starts": tuple(edge_starts),
+    }
 
     strand_pairs = {}
     vertex_matching_records = []
@@ -1579,137 +1737,19 @@ def _global_surface_patch_strand_pairs(
         )
     best = None
     for option_combination in itertools.product(*vertex_options):
-        pair_links = {
-            (vertex, edge): paired_edge
-            for vertex, pairs in fixed_strand_pairs.items()
-            for edge, paired_edge in pairs.items()
-        }
-        selected_candidates = []
-        for option in option_combination:
-            for candidate in option["selected"]:
-                edge_a, edge_b = _candidate_edge_pair(candidate, edge_by_id)
-                vertex = candidate["vertex"]
-                pair_links[(vertex, edge_a)] = edge_b
-                pair_links[(vertex, edge_b)] = edge_a
-                selected_candidates.append(candidate)
-
-        remaining = set(metadata)
-        strand_records = []
-        endpoint_half_edges = sorted(
-            (
-                (vertex, edge)
-                for edge in metadata
-                for vertex in edge.verts
-                if (vertex, edge) not in pair_links
-            ),
-            key=lambda item: (
-                tuple(round(value, 7) for value in item[0].co),
-                tuple(
-                    sorted(
-                        tuple(round(value, 7) for value in vertex.co)
-                        for vertex in item[1].verts
-                    )
-                ),
-            ),
+        scored = _score_global_strand_option_combination(
+            option_combination,
+            metadata,
+            edge_by_id,
+            fixed_strand_pairs,
+            forbidden_reconnections,
+            source_bvh,
+            endpoint_clearance,
+            edge_start_records,
         )
-        pending_starts = endpoint_half_edges + [
-            (
-                min(edge.verts, key=lambda vertex: tuple(round(value, 7) for value in vertex.co)),
-                edge,
-            )
-            for edge in sorted(metadata, key=lambda item: item.index)
-        ]
-        for start, seed in pending_starts:
-            if seed not in remaining:
-                continue
-            current_vertex = start
-            current_edge = seed
-            ordered_edges = []
-            while current_edge is not None and current_edge in remaining:
-                ordered_edges.append(current_edge)
-                remaining.remove(current_edge)
-                current_vertex = current_edge.other_vert(current_vertex)
-                current_edge = pair_links.get((current_vertex, current_edge))
-            cyclic = (
-                current_vertex is start
-                and pair_links.get((current_vertex, ordered_edges[-1])) is seed
-            )
-            strand_endpoint_half_edges = (
-                ()
-                if cyclic
-                else ((start, seed), (current_vertex, ordered_edges[-1]))
-            )
-            common_patch_ids = set(metadata[ordered_edges[0]]["patch_pair"])
-            for edge in ordered_edges[1:]:
-                common_patch_ids &= set(metadata[edge]["patch_pair"])
-            record = {
-                "edge_count": len(ordered_edges),
-                "common_patch_ids": tuple(sorted(common_patch_ids)),
-                "cyclic": cyclic,
-                "endpoint_half_edges": strand_endpoint_half_edges,
-                "endpoint_samples": [],
-            }
-            if not cyclic and endpoint_clearance > 0.0:
-                start_neighbor = seed.other_vert(start)
-                end_edge = ordered_edges[-1]
-                end_neighbor = end_edge.other_vert(current_vertex)
-                record["endpoint_samples"] = [
-                    tuple(
-                        start.co
-                        + (start.co - start_neighbor.co).normalized()
-                        * endpoint_clearance
-                    ),
-                    tuple(
-                        current_vertex.co
-                        + (current_vertex.co - end_neighbor.co).normalized()
-                        * endpoint_clearance
-                    ),
-                ]
-            strand_records.append(record)
-
-        # 急角已经判定断开后，两侧 Edge 也不能从网络另一端重新归入同一条 Curve。
-        if any(
-            any(
-                (vertex, edge_a) in record["endpoint_half_edges"]
-                and (vertex, edge_b) in record["endpoint_half_edges"]
-                for record in strand_records
-            )
-            for vertex, edge_a, edge_b in forbidden_reconnections
-        ):
+        if scored is None:
             continue
-
-        unsupported_turn_count = sum(
-            max(0, record["edge_count"] - 1)
-            for record in strand_records
-            if not record["common_patch_ids"]
-        )
-        supported_turn_count = sum(
-            max(0, record["edge_count"] - 1)
-            for record in strand_records
-            if record["common_patch_ids"]
-        )
-        exposed_endpoint_count, endpoint_containment_margin = (
-            _strand_endpoint_containment_score(
-                strand_records,
-                source_bvh,
-                endpoint_clearance,
-            )
-        )
-        score = (
-            -unsupported_turn_count,
-            supported_turn_count,
-            len(selected_candidates),
-            round(sum(candidate["weight"] for candidate in selected_candidates), 7),
-            -exposed_endpoint_count,
-            round(endpoint_containment_margin, 7),
-            tuple(
-                sorted(
-                    pair
-                    for option in option_combination
-                    for pair in option["geometry_signature"]
-                )
-            ),
-        )
+        score, pair_links = scored
         if best is None or score[:6] > best["score"][:6] or (score[:6] == best["score"][:6] and score[6] < best["score"][6]):
             best = {
                 "score": score,

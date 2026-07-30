@@ -102,6 +102,36 @@ def _point_key(point):
     return ",".join(f"{float(component):.8f}" for component in point)
 
 
+# 一次建立 plan identity 所需的 Mesh 邻接和稳定 key，避免每个 Vertex 重扫全部 Edge。
+# mesh: source Mesh；返回 edge/vertex key、Vertex incident Edge 与反向 Edge lookup。
+def _mesh_identity_tables(mesh):
+    point_keys = tuple(_point_key(vertex.co) for vertex in mesh.vertices)
+    edge_keys = []
+    incident_edge_indices = [[] for _vertex in mesh.vertices]
+    for edge in mesh.edges:
+        edge_key = "|".join(sorted(point_keys[index] for index in edge.vertices))
+        edge_keys.append(edge_key)
+        for vertex_index in edge.vertices:
+            incident_edge_indices[vertex_index].append(edge.index)
+    vertex_keys = []
+    for vertex_index, incident_indices in enumerate(incident_edge_indices):
+        incident_keys = sorted(edge_keys[index] for index in incident_indices)
+        topology_hash = hashlib.sha256(
+            json.dumps(incident_keys, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        vertex_keys.append(f"{point_keys[vertex_index]}#{topology_hash}")
+    return {
+        "edge_keys": tuple(edge_keys),
+        "vertex_keys": tuple(vertex_keys),
+        "incident_edge_indices": tuple(
+            tuple(indices) for indices in incident_edge_indices
+        ),
+        "edge_indices_by_key": {
+            edge_key: edge_index for edge_index, edge_key in enumerate(edge_keys)
+        },
+    }
+
+
 # 计算 source Edge 的方向无关坐标 key。
 # mesh/edge_index: source Mesh 与 Edge index；返回稳定字符串。
 def _edge_key(mesh, edge_index):
@@ -127,7 +157,8 @@ def _vertex_key(mesh, vertex_index):
 
 # 返回每个 Sharp vertex 的实际 Feature degree，供 terminal 与内部 junction port 共用。
 # mesh: source Mesh；返回 point key 到 incident Sharp Edge 数量的映射。
-def _sharp_feature_degrees(mesh):
+def _sharp_feature_degrees(mesh, identity_tables=None):
+    identity_tables = identity_tables or _mesh_identity_tables(mesh)
     sharp_attribute = mesh.attributes.get("sharp_edge")
     feature_degrees = {}
     if sharp_attribute is None:
@@ -136,19 +167,20 @@ def _sharp_feature_degrees(mesh):
         if not sharp_attribute.data[edge.index].value:
             continue
         for vertex_index in edge.vertices:
-            vertex_key = _vertex_key(mesh, vertex_index)
+            vertex_key = identity_tables["vertex_keys"][vertex_index]
             feature_degrees[vertex_key] = feature_degrees.get(vertex_key, 0) + 1
     return feature_degrees
 
 
 # 返回 source Vertex 邻接 Face 的 Surface Patch ID，不使用坐标、BVH 或最近距离推断。
 # mesh/patch_ids_by_face: source Mesh 与按 polygon index 排列的 Patch ID；返回 Vertex key 到 Patch IDs 的映射。
-def _source_vertex_patch_incidence(mesh, patch_ids_by_face):
+def _source_vertex_patch_incidence(mesh, patch_ids_by_face, identity_tables=None):
+    identity_tables = identity_tables or _mesh_identity_tables(mesh)
     patch_ids_by_vertex_key = {}
     for polygon in mesh.polygons:
         patch_id = int(patch_ids_by_face[polygon.index])
         for vertex_index in polygon.vertices:
-            vertex_key = _vertex_key(mesh, vertex_index)
+            vertex_key = identity_tables["vertex_keys"][vertex_index]
             patch_ids_by_vertex_key.setdefault(vertex_key, set()).add(patch_id)
     return {
         vertex_key: tuple(sorted(patch_ids))
@@ -201,11 +233,9 @@ def _canonical_strand(
 
 # 验证 canonical strand 的每条 Edge/owner/convexity 仍对应同一 Vertex segment。
 # mesh/strand: source Mesh 与 FeatureStrand；不满足时抛出 ValueError。
-def _validate_feature_strand_alignment(mesh, strand):
-    edge_owner_records = {
-        _edge_key(mesh, edge.index): edge.index
-        for edge in mesh.edges
-    }
+def _validate_feature_strand_alignment(mesh, strand, identity_tables=None):
+    identity_tables = identity_tables or _mesh_identity_tables(mesh)
+    edge_owner_records = identity_tables["edge_indices_by_key"]
     segment_count = len(strand.ordered_vertex_keys) if strand.cyclic else len(strand.ordered_vertex_keys) - 1
     if len(strand.ordered_edge_keys) != segment_count:
         raise ValueError("FeatureStrand Edge/Vertex coverage is inconsistent")
@@ -214,7 +244,7 @@ def _validate_feature_strand_alignment(mesh, strand):
         if edge_index is None:
             raise ValueError("FeatureStrand references an unknown source Edge")
         actual_vertices = {
-            _vertex_key(mesh, vertex_index)
+            identity_tables["vertex_keys"][vertex_index]
             for vertex_index in mesh.edges[edge_index].vertices
         }
         expected_vertices = {
@@ -250,11 +280,16 @@ def build_chamfer_plan(
     source_patch_ids=None,
 ):
     mesh = source_object.data
+    identity_tables = _mesh_identity_tables(mesh)
+    edge_keys_by_index = identity_tables["edge_keys"]
+    vertex_keys_by_index = identity_tables["vertex_keys"]
     strands = []
     for group in groups:
-        edge_keys = tuple(_edge_key(mesh, index) for index in group["edge_indices"])
+        edge_keys = tuple(
+            edge_keys_by_index[index] for index in group["edge_indices"]
+        )
         vertex_keys = tuple(
-            _vertex_key(mesh, index) for index in group["vertex_indices"]
+            vertex_keys_by_index[index] for index in group["vertex_indices"]
         )
         owner_surface_pairs = tuple(
             tuple(int(item) for item in pair)
@@ -294,7 +329,7 @@ def build_chamfer_plan(
                 convexity_by_edge=convexity_by_edge,
                 selected_pair_vertex_keys=tuple(
                     sorted(
-                        _vertex_key(mesh, index)
+                        vertex_keys_by_index[index]
                         for index in group["selected_pair_vertex_ids"]
                     )
                 ),
@@ -303,10 +338,14 @@ def build_chamfer_plan(
                 start_port_id=start_port_id,
                 end_port_id=end_port_id,
             )
-        _validate_feature_strand_alignment(mesh, feature_strand)
+        _validate_feature_strand_alignment(
+            mesh,
+            feature_strand,
+            identity_tables,
+        )
         strands.append(feature_strand)
     strands = tuple(sorted(strands, key=lambda strand: strand.strand_id))
-    feature_degrees = _sharp_feature_degrees(mesh)
+    feature_degrees = _sharp_feature_degrees(mesh, identity_tables)
     port_incidence = {}
     for strand in strands:
         port_vertex_keys = {
@@ -336,6 +375,7 @@ def build_chamfer_plan(
         patch_ids_by_vertex_key = _source_vertex_patch_incidence(
             mesh,
             source_patch_ids,
+            identity_tables,
         )
         junction_port_patch_incidences = tuple(
             JunctionPortPatchIncidence(
