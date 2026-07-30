@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
 
 
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
@@ -28,12 +27,6 @@ BLEND_OUTPUT_PATH = Path(
     os.environ.get(
         "HST_FEATURE_CHAMFER_BLEND_OUTPUT",
         REPO_ROOT / "tests" / "artifacts" / "feature_chamfer_gn_finalize_fixture.blend",
-    )
-)
-IMAGE_OUTPUT_PATH = Path(
-    os.environ.get(
-        "HST_FEATURE_CHAMFER_IMAGE_OUTPUT",
-        REPO_ROOT / "tests" / "artifacts" / "feature_chamfer_gn_finalize_fixture.png",
     )
 )
 PACKAGE_NAME = "hst_feature_chamfer_finalize_probe"
@@ -90,32 +83,8 @@ try:
         source.hide_set(True)
         output_object.select_set(True)
         bpy.context.view_layer.objects.active = output_object
-        center = sum(
-            (output_object.matrix_world @ vertex.co for vertex in output_object.data.vertices),
-            output_object.location.copy() * 0.0,
-        ) / len(output_object.data.vertices)
-        size = max(output_object.dimensions)
-        bpy.ops.object.camera_add(location=center + size * Vector((1.4, -1.4, 1.1)))
-        camera = bpy.context.active_object
-        camera.data.lens = 55.0
-        camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
-        bpy.context.scene.camera = camera
-        bpy.ops.object.light_add(type="AREA", location=center + size * Vector((0.8, -0.6, 1.8)))
-        key_light = bpy.context.active_object
-        key_light.data.energy = 1800.0
-        key_light.data.shape = "DISK"
-        key_light.data.size = size * 1.5
-        key_light.rotation_euler = (center - key_light.location).to_track_quat("-Z", "Y").to_euler()
-        bpy.context.scene.render.engine = "BLENDER_EEVEE"
-        bpy.context.scene.render.resolution_x = 960
-        bpy.context.scene.render.resolution_y = 720
-        bpy.context.scene.render.resolution_percentage = 100
-        bpy.context.scene.render.image_settings.file_format = "PNG"
-        bpy.context.scene.render.filepath = str(IMAGE_OUTPUT_PATH)
-        bpy.ops.render.render(write_still=True)
         bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_OUTPUT_PATH), copy=True)
         report["patch"]["blend_artifact"] = str(BLEND_OUTPUT_PATH)
-        report["patch"]["image_artifact"] = str(IMAGE_OUTPUT_PATH)
     except patch_utils.FeatureChamferPatchError as error:
         report["patch"] = error.diagnostics
     finally:

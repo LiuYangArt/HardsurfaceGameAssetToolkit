@@ -1,4 +1,4 @@
 interface:
   display_name: "HST Edge Visualizer"
   short_description: "Create reusable colored Blender edge diagnostic artifacts"
-  default_prompt: "Use $hst-edge-visualizer to turn diagnostic edges into a colored Blender artifact and close-up render."
+  default_prompt: "Use $hst-edge-visualizer to turn diagnostic edges into a colored Blender artifact for user inspection."

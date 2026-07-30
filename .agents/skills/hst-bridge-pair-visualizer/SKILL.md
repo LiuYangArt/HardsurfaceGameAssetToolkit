@@ -41,7 +41,7 @@ python3 .agents/skills/hst-bridge-pair-visualizer/scripts/create_bridge_pair_vis
   --output-dir /private/tmp/hst-bridge-pairs-run
 ```
 
-The orchestrator runs the formal UI Operator Preview and Finalize. A temporary hook records each native Bridge call after production job segmentation. The render script creates one collection per pair and only the Curve objects named `1a`, `1b`, `2a`, `2b`, and so on; it does not create separate label objects. Cyclic sides remain cyclic in the visualization.
+The orchestrator runs the formal UI Operator Preview and Finalize. A temporary hook records each native Bridge call after production job segmentation. The artifact script creates one collection per pair and only the Curve objects named `1a`, `1b`, `2a`, `2b`, and so on; it does not create separate label objects. Cyclic sides remain cyclic in the visualization.
 
 ## Validate
 
@@ -52,19 +52,18 @@ Require all of the following:
 - `pair_count` is greater than zero;
 - every pair contains exactly two sides;
 - runtime indices are continuous from `1` through `pair_count`;
-- the `.blend`, PNG, JSON capture, and manifest exist and are non-empty;
+- the `.blend`, JSON capture, and manifest exist and are non-empty;
 - each manifest side has the expected numbered object name.
 
-Do not claim that visual proximity proves correct ownership. This artifact shows the exact production Bridge inputs so the user can identify a suspicious group. Wait for the user's group number before changing pairing rules.
+Do not claim that visual proximity proves correct ownership. This artifact shows the exact production Bridge inputs so the user can identify suspicious groups. Never render or inspect an image. If several fixtures or Radius values need inspection, generate all `.blend` files first, deliver them together, and wait for the user's consolidated group-number feedback before changing pairing rules.
 
 ## Outputs
 
 Return absolute paths for:
 
 - `bridge-pairs.blend` — primary inspectable artifact;
-- `bridge-pairs.png` — overview render;
 - `pair-manifest.json` — group number, edge count, length, and cyclic state;
 - `runtime-pairs.json` — captured coordinates and formal runtime result;
 - `run-summary.json` — validation status and Blender version.
 
-Also report the Radius, object name, pair count, and whether every manifest check passed.
+Also report the Radius, object name, pair count, whether every manifest check passed, and a single checklist covering the whole delivered batch.

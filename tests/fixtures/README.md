@@ -69,7 +69,7 @@ cyclic Bridge 预处理现已在正式 Operator runtime 中完成并达到 `VERI
 零长度输入归零且 source 不变。新目标矩阵位于
 `/private/tmp/hst-bridge-cleanup-target2-20260729/results.json`，其余 8-cell 回归位于
 `/private/tmp/hst-bridge-cleanup-other8-20260729/results.json`，固定近景位于目标目录的
-`evidence/runtime_37_wire.png` 与 `evidence/runtime_40_wire.png`。清理安全合同覆盖跨侧极近点、
+对应位置由批量交付的 `.blend` 在 Blender 中手工检查。清理安全合同覆盖跨侧极近点、
 open 端点、第三条 Edge、轻微折角和偏线超阈值；完整回归 `152 / 152` 位于
 `/private/tmp/hst-bridge-cleanup-full-regression-final-20260729/results.json`，延期 tricky
 4 cells × 3 的稳定安全失败位于 `/private/tmp/hst-bridge-cleanup-tricky-safe-20260729/results.json`。

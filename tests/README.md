@@ -96,6 +96,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。
 > Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
+> 测试和诊断禁止生成或读取渲染图。需要视觉验收时，批量保存包含最终结果与诊断标记的 `.blend`，由用户在 Blender 中集中检查并反馈；图片存在或 Agent 看图均不得计入 PASS。
 > 2026-07-28 全部正式 Bridge 输入经 `1a/1b ...` 人工复核后，Mixed `26a/26b` 与 Tricky-b `32a/32b` 都证明：已配对正确的 open U 形长链若整组交给原生 Bridge，可能在转角处产生扭曲。共同转折分段必须逐处独立生效，不设置累计 360° 或至少四处转折门槛。Cutter Curve 与 Boolean cyclic 槽仍必须保持完整；Boolean 后、Bridge 前的一对完整 cyclic Boundary Loop 可按冻结合同的共同环绕 station 逻辑划分局部 Bridge jobs。两类分段均禁止 fixture 特判、逐点对应或重采样。
 > 2026-07-29 Tricky-b `Extruded.002` Radius `0.01` 的正式 runtime 进一步确认：`26a/26b` 与 `31a/31b` 均为正确、完整的 cyclic 双环，但整环原生 Bridge 会因两侧采样差异产生累计错位。本轮只验收该 Radius；cyclic 分段必须完整覆盖原 Edge、只共享已有端点。simple 后续证明同一 station 邻域可能存在非连续重复 plateau；有效冻结合同必须在局部候选内用两侧 Boundary 邻接关系消歧，不能取消、跳过或回退整环。
 > 2026-07-29 后续真实 Bridge 输入 `37a/37b` 与 `40a/40b` 配对正确，但分别含极近重复点。这里记录的是随后被真实 UI 推翻的历史清理结果：旧规则曾报告 `22/7 → 21/7` 与 `21/20 → 20/20`；它不能证明当前视觉修复。
@@ -143,7 +144,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 - 入口：`tools/probe_feature_chamfer_finalize.py`。
 - 结果：`tests/artifacts/feature_chamfer_gn_finalize_fixture_probe.json`。
 - 可打开的最终 Mesh：`tests/artifacts/feature_chamfer_gn_finalize_fixture.blend`。
-- Finalize 渲染预览：`tests/artifacts/feature_chamfer_gn_finalize_fixture.png`。
+- Finalize 手工检查文件：`tests/artifacts/feature_chamfer_gn_finalize_fixture.blend`。
 - 覆盖 cutter extension、tracked Boolean、Boundary region、junction/end-cap filler 与 final manifold 风险。
 
 ## 运行方式

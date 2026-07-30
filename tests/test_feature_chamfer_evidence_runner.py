@@ -60,7 +60,7 @@ def make_valid_summary():
                 "case_id": case_id,
                 "status": "PASS",
                 "stable": True,
-                "phase_c_artifacts_present": True,
+                "phase_c_inspection_artifacts_present": True,
                 "repetitions": repetitions,
             }
         )

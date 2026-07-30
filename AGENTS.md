@@ -14,6 +14,9 @@
 - 修改前先查找并复用项目内已有模式；不要凭空发明新结构。
 - 优先做最小充分修改；非当前任务不要顺手重构。
 - 禁止修改auto_load.py
+- 禁止在测试、诊断和验收流程中生成、渲染、读取或判断 PNG、JPEG、截图等图片；图片不得作为 PASS、Stop / Go 或完成证据。
+- 需要视觉验证时，只输出包含最终结果和必要诊断标记的 `.blend`，明确请求用户在 Blender 中手动检查并反馈；Agent 不得代替用户看图并判定通过。
+- 同一轮有多个待视觉验证项时，必须一次性批量生成并集中交付全部 `.blend` 和检查清单，不得逐项生成、逐项请求反馈。
 
 
 ## 代码实现 (Implementation)
@@ -51,7 +54,7 @@
 - 统一入口命令：`python .\tools\run_blender_tests.py`
 - 若需要读取最近一次结果，查看：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/artifacts/results.json`
 - 项目内置 Edge 可视化 skill：`.agents/skills/hst-edge-visualizer/SKILL.md`。
-- 当用户要求把 residual、unconsumed 或难以观察的 Edge 做成红/绿/蓝粗线、近景 PNG 和可检查 `.blend` 时，优先使用该 skill，不要重写 Blender 可视化脚本。
+- 当用户要求把 residual、unconsumed 或难以观察的 Edge 做成红/绿/蓝粗线时，优先使用该 skill 输出可检查 `.blend`；禁止生成近景图。
 
 ## 测试规范
 - 测试规范文档：`F:/CodeProjects/BlenderAddons/HardsurfaceGameAssetToolkit/tests/TESTING_POLICY.md`
@@ -71,3 +74,4 @@
 - 分阶段计划中的 Stop / Go 是硬门槛；前一阶段未通过时，不得跨阶段接入或声明完成。
 - 阶段状态使用 `PROTOTYPE`、`INTEGRATED`、`VERIFIED`、`ACCEPTED`，不得跨级声明。
 - 核心工作流在完成前做独立规格审计，确认正式 runtime、测试入口、文档状态和用户可见行为一致。
+- 最终视觉/产品层只能由用户打开批量交付的 `.blend` 后手动验收；收到用户反馈前，最高只能声明 `VERIFIED`，不得声明 `ACCEPTED`。

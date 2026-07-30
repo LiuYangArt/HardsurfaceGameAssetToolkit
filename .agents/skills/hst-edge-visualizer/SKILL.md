@@ -1,6 +1,6 @@
 ---
 name: hst-edge-visualizer
-description: Create reusable Blender diagnostic artifacts that overlay selected HardsurfaceGameAssetToolkit edges as thick red, green, and blue markers with numbered labels, a close-up camera, a rendered PNG, and an inspectable .blend. Use when users ask to make problematic, residual, unconsumed, or otherwise hard-to-see HST edges visible from a diagnostics JSON containing edge_endpoints.
+description: Create reusable Blender diagnostic artifacts that overlay selected HardsurfaceGameAssetToolkit edges as thick red, green, and blue markers with numbered labels in an inspectable .blend. Use when users ask to make problematic, residual, unconsumed, or otherwise hard-to-see HST edges visible from a diagnostics JSON containing edge_endpoints.
 ---
 
 # HST Edge Visualizer
@@ -33,28 +33,19 @@ Then run:
 /Applications/Blender.app/Contents/MacOS/Blender \
   --background --factory-startup \
   --python .agents/skills/hst-edge-visualizer/scripts/create_edge_visualization.py \
-  -- SOURCE.blend DIAGNOSTICS.json OUTPUT.blend OUTPUT.png
+  -- SOURCE.blend DIAGNOSTICS.json OUTPUT.blend
 ```
 
-The script sorts selected edges by length, applies red/green/blue in that order, adds numbered labels, darkens the source Mesh, frames the markers, renders a close-up PNG, and saves an inspectable `.blend`.
+The script sorts selected edges by length, applies red/green/blue in that order, adds numbered labels, darkens the source Mesh, and saves an inspectable `.blend`.
 
 The current palette contains three colors. For more than three edges, filter the diagnostics to the exact three edges needed before running; do not silently omit ambiguous targets.
 
 ## Validate
 
-Require Blender exit code `0`, both output files to exist and be non-empty, and the log to contain `Saved` plus a completed render. Open or inspect the PNG only when visual verification is requested.
-
-Before model-side visual inspection, create a lightweight JPEG preview and inspect that preview only. Never pass the rendered PNG to `view_image` with `detail: "original"`.
-
-```bash
-/usr/bin/sips -s format jpeg -s formatOptions 72 -Z 1400 \
-  OUTPUT.png --out OUTPUT-preview.jpg
-```
-
-Require each preview to be at most 350 KB. If it is larger, retry with a 1000 px longest edge and JPEG quality 58. View no more than three previews in one Codex task; crop the region of interest or reuse an existing observation before viewing more images. This prevents diagnostic renders from being embedded into task history at full PNG size and triggering a provider payload limit.
+Require Blender exit code `0`, the output `.blend` to exist and be non-empty, and the log to contain `Saved`. Never render or inspect an image. Visual correctness is decided only by the user opening the `.blend` in Blender.
 
 Keep outputs in a run-specific artifact directory, preferably under `/private/tmp`. Never overwrite the source `.blend` or diagnostics.
 
 ## Report
 
-Return absolute paths for the generated `.blend` and PNG, the Blender version used, and any missing-input or render error. Do not claim that colored continuity proves ownership; this artifact supports human diagnosis only.
+Return the absolute path for the generated `.blend`, the Blender version used, and any missing-input or save error. When several cases need inspection, generate all `.blend` files first and return them together with one checklist. Ask the user for consolidated feedback. Do not claim that colored continuity proves ownership; this artifact supports human diagnosis only.

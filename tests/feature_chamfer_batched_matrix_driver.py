@@ -11,7 +11,6 @@ import traceback
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
 
 
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
@@ -176,63 +175,7 @@ def create_phase_c_debug_objects(source_object, diagnostics, collection):
     return regular_object, port_object
 
 
-# 创建固定正交相机并渲染 Phase C overview 或 setback closeup。
-# source_object/debug_objects/output_path/focus_points/radius: artifact 几何、输出路径、可选近景点与半径；返回 Camera/Light。
-def render_phase_c_artifact(
-    source_object,
-    debug_objects,
-    output_path,
-    focus_points=None,
-    radius=0.01,
-):
-    scene = bpy.context.scene
-    if focus_points:
-        world_points = [source_object.matrix_world @ Vector(point) for point in focus_points]
-    else:
-        world_points = [
-            obj.matrix_world @ Vector(corner)
-            for obj in (source_object, *debug_objects)
-            for corner in obj.bound_box
-        ]
-    minimum = Vector(tuple(min(point[axis] for point in world_points) for axis in range(3)))
-    maximum = Vector(tuple(max(point[axis] for point in world_points) for axis in range(3)))
-    center = (minimum + maximum) * 0.5
-    extent = maximum - minimum
-    scale = max(max(extent), radius * 8.0, 0.01)
-    camera_data = bpy.data.cameras.new("HST_PhaseC_ArtifactCamera")
-    camera = bpy.data.objects.new("HST_PhaseC_ArtifactCamera", camera_data)
-    scene.collection.objects.link(camera)
-    camera_data.type = "ORTHO"
-    camera_data.ortho_scale = scale * 1.35
-    direction = Vector((1.0, -1.0, 0.8)).normalized()
-    camera.location = center + direction * scale * 2.5
-    camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
-    scene.camera = camera
-    light_data = bpy.data.lights.new("HST_PhaseC_ArtifactLight", type="AREA")
-    light_data.energy = 1200.0
-    light_data.shape = "DISK"
-    light_data.size = scale * 2.0
-    light = bpy.data.objects.new("HST_PhaseC_ArtifactLight", light_data)
-    scene.collection.objects.link(light)
-    light.location = camera.location
-    light.rotation_euler = camera.rotation_euler
-    scene.render.engine = "BLENDER_EEVEE"
-    source_hide_render = source_object.hide_render
-    source_object.hide_render = True
-    scene.render.resolution_x = 640
-    scene.render.resolution_y = 640
-    scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.filepath = str(output_path)
-    scene.world.color = (0.035, 0.035, 0.035)
-    try:
-        bpy.ops.render.render(write_still=True)
-    finally:
-        source_object.hide_render = source_hide_render
-    return camera, light
-
-
-# 删除 Phase C artifact 临时 Objects、Mesh、Material、Camera 与 Light，避免污染 repetition 检查。
+# 删除 Phase C artifact 临时 Objects、Mesh 与 Material，避免污染 repetition 检查。
 # objects: create/render helpers 创建的 ID Objects；无返回值。
 def cleanup_phase_c_debug_objects(objects):
     for obj in objects:
@@ -244,10 +187,6 @@ def cleanup_phase_c_debug_objects(objects):
             continue
         if object_type == "MESH":
             bpy.data.meshes.remove(data)
-        elif object_type == "CAMERA":
-            bpy.data.cameras.remove(data)
-        elif object_type == "LIGHT":
-            bpy.data.lights.remove(data)
 
 
 # 生成稳定 case ID，供目录与汇总引用。
@@ -378,8 +317,6 @@ def run_repetition(
             diagnostics,
             debug_collection,
         )
-        camera = None
-        light = None
         debug_materials = [
             material
             for obj in debug_objects
@@ -415,22 +352,6 @@ def run_repetition(
                 json.dumps(ledger_artifact, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            camera, light = render_phase_c_artifact(
-                source_object,
-                debug_objects,
-                case_directory / "phase_c_regular_core_overview.png",
-                radius=radius,
-            )
-            camera_data = camera.data
-            light_data = light.data
-            bpy.data.objects.remove(camera, do_unlink=True)
-            if camera_data.users == 0:
-                bpy.data.cameras.remove(camera_data)
-            bpy.data.objects.remove(light, do_unlink=True)
-            if light_data.users == 0:
-                bpy.data.lights.remove(light_data)
-            camera = None
-            light = None
             setback_ports = diagnostics.get("junction_regions", [])
             if setback_ports:
                 focus_port = sorted(
@@ -440,28 +361,12 @@ def run_repetition(
                         item.get("port_id", ""),
                     ),
                 )[0]
-                camera, light = render_phase_c_artifact(
-                    source_object,
-                    debug_objects,
-                    case_directory / "phase_c_setback_closeup.png",
-                    focus_points=focus_port["ordered_coordinates"],
-                    radius=radius,
-                )
                 diagnostics.setdefault("topology_diagnostics", {})[
-                    "artifact_closeup_port_id"
+                    "inspection_port_id"
                 ] = focus_port["port_id"]
-            else:
-                camera, light = render_phase_c_artifact(
-                    source_object,
-                    debug_objects,
-                    case_directory / "phase_c_setback_closeup.png",
-                    radius=radius,
-                )
             save_artifact_copy(case_directory / "phase_c_regular_core.blend")
         finally:
-            cleanup_phase_c_debug_objects(
-                (*debug_objects, *(obj for obj in (camera, light) if obj is not None))
-            )
+            cleanup_phase_c_debug_objects(debug_objects)
             for material in debug_materials:
                 if (
                     material.users == 0
@@ -876,10 +781,8 @@ def main():
         expected_phase_c_artifacts = (
             "phase_c_regular_core.blend",
             "ledger.json",
-            "phase_c_regular_core_overview.png",
-            "phase_c_setback_closeup.png",
         )
-        case["phase_c_artifacts_present"] = (
+        case["phase_c_inspection_artifacts_present"] = (
             DEBUG_STAGE != "PHASE_C_REGULAR_CORE"
             or all(
                 (case_directory / artifact_name).is_file()
@@ -895,7 +798,7 @@ def main():
             and all(item.get("status") == "PASS" for item in case["repetitions"])
             and all(not item.get("debug_object_names") for item in case["repetitions"])
             and all(not item.get("debug_datablock_names") for item in case["repetitions"])
-            and case["phase_c_artifacts_present"]
+            and case["phase_c_inspection_artifacts_present"]
             else "FAIL"
         )
         (case_directory / "diagnostics.json").write_text(
@@ -930,7 +833,7 @@ def main():
             and all(
                 case["stable"]
                 and case["status"] == "PASS"
-                and case["phase_c_artifacts_present"]
+                and case["phase_c_inspection_artifacts_present"]
                 and all(item.get("phase_c_pass") is True for item in case["repetitions"])
                 for case in cases
             )

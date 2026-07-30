@@ -9,14 +9,12 @@ import bpy
 from mathutils import Vector
 
 
-# 从 argv 读取源 blend、diagnostics、输出 blend 与输出图片路径。
-# 无参数；返回四个 Path。
+# 从 argv 读取源 blend、diagnostics 与输出 blend 路径。
+# 无参数；返回三个 Path。
 def parse_arguments():
     arguments = sys.argv[sys.argv.index("--") + 1 :]
-    if len(arguments) != 4:
-        raise RuntimeError(
-            "Expected: source.blend diagnostics.json output.blend output.png"
-        )
+    if len(arguments) != 3:
+        raise RuntimeError("Expected: source.blend diagnostics.json output.blend")
     return tuple(Path(argument).resolve() for argument in arguments)
 
 
@@ -68,41 +66,10 @@ def create_label(label, location, color, size):
     return label_object
 
 
-# 根据三段边的包围盒创建近景相机和柔和灯光。
-# world_points/radius: 世界坐标点与倒角半径；返回 Camera 与 Light。
-def create_camera_and_light(world_points, radius):
-    minimum = Vector(
-        tuple(min(point[axis] for point in world_points) for axis in range(3))
-    )
-    maximum = Vector(
-        tuple(max(point[axis] for point in world_points) for axis in range(3))
-    )
-    center = (minimum + maximum) * 0.5
-    scale = max(maximum - minimum) * 3.0
-    scale = max(scale, radius * 14.0, 0.12)
-    direction = Vector((0.35, -0.25, 1.0)).normalized()
-    camera_data = bpy.data.cameras.new("HST_Residual_ArtifactCamera")
-    camera = bpy.data.objects.new("HST_Residual_ArtifactCamera", camera_data)
-    bpy.context.scene.collection.objects.link(camera)
-    camera_data.type = "ORTHO"
-    camera_data.ortho_scale = scale
-    camera.location = center + direction * scale * 2.5
-    camera.rotation_euler = (center - camera.location).to_track_quat("-Z", "Y").to_euler()
-    light_data = bpy.data.lights.new("HST_Residual_ArtifactLight", type="AREA")
-    light_data.energy = 500.0
-    light_data.shape = "DISK"
-    light_data.size = scale * 1.5
-    light = bpy.data.objects.new("HST_Residual_ArtifactLight", light_data)
-    bpy.context.scene.collection.objects.link(light)
-    light.location = camera.location
-    light.rotation_euler = camera.rotation_euler
-    return camera, light
-
-
-# 载入诊断结果并生成三色边、编号、近景图和可继续检查的 blend。
+# 载入诊断结果并生成三色边、编号和可继续检查的 blend。
 # 无参数；无返回值。
 def main():
-    source_blend, diagnostics_path, output_blend, output_image = parse_arguments()
+    source_blend, diagnostics_path, output_blend = parse_arguments()
     bpy.ops.wm.open_mainfile(filepath=str(source_blend), load_ui=False, use_scripts=False)
     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
     repetition = diagnostics["repetitions"][0]
@@ -121,7 +88,7 @@ def main():
     source_matrix = source_object.matrix_world.copy()
     for scene_object in bpy.context.scene.objects:
         if scene_object != source_object:
-            scene_object.hide_render = True
+            scene_object.hide_set(True)
     source_material = bpy.data.materials.new("HST_Residual_Source_Dark")
     source_material.diffuse_color = (0.055, 0.07, 0.09, 1.0)
     source_material.use_nodes = True
@@ -143,7 +110,6 @@ def main():
         reverse=True,
     )
     radius = float(diagnostics["radius"])
-    world_points = []
     for index, (entry, color) in enumerate(zip(ordered_entries, colors), start=1):
         surface_offset = Vector((0.0, 0.0, max(radius * 0.3, 0.008)))
         endpoints = [Vector(point) + surface_offset for point in entry["endpoints"]]
@@ -169,19 +135,7 @@ def main():
         )
         label.matrix_world = source_matrix
         collection.objects.link(label)
-        world_points.extend(source_matrix @ point for point in endpoints)
     bpy.context.view_layer.update()
-    camera, light = create_camera_and_light(world_points, radius)
-    bpy.context.scene.camera = camera
-    scene = bpy.context.scene
-    scene.render.engine = "BLENDER_EEVEE"
-    scene.render.resolution_x = 900
-    scene.render.resolution_y = 900
-    scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.filepath = str(output_image)
-    scene.world.color = (0.025, 0.025, 0.025)
-    bpy.ops.render.render(write_still=True)
     output_blend.parent.mkdir(parents=True, exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(output_blend), check_existing=False, compress=True)
 

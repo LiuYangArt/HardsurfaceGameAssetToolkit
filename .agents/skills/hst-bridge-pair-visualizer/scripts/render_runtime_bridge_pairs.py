@@ -7,15 +7,14 @@ import bpy
 from mathutils import Matrix, Vector
 
 
-# 把捕获的每组真实左右链生成为编号 Curve、总览图与可检查 Blend。
-# 命令行参数: fixture、捕获 JSON、输出 Blend、PNG 与 manifest 路径。
+# 把捕获的每组真实左右链生成为编号 Curve 与可检查 Blend。
+# 命令行参数: fixture、捕获 JSON、输出 Blend 与 manifest 路径。
 def main():
     arguments = sys.argv[sys.argv.index("--") + 1 :]
     source_blend = Path(arguments[0]).resolve()
     capture_path = Path(arguments[1]).resolve()
     output_blend = Path(arguments[2]).resolve()
-    output_image = Path(arguments[3]).resolve()
-    output_manifest = Path(arguments[4]).resolve()
+    output_manifest = Path(arguments[3]).resolve()
 
     bpy.ops.wm.open_mainfile(
         filepath=str(source_blend),
@@ -41,7 +40,6 @@ def main():
     root_collection = bpy.data.collections.new("HST_Actual_Bridge_Pairs")
     bpy.context.scene.collection.children.link(root_collection)
     source_matrix = Matrix(capture["source_matrix_world"])
-    world_points = []
     manifest_groups = []
 
     for pair_index, pair in enumerate(capture["pairs"], start=1):
@@ -86,9 +84,6 @@ def main():
             curve_data.materials.append(material)
             pair_collection.objects.link(marker)
 
-            world_points.extend(
-                source_matrix @ coordinate for coordinate in coordinates
-            )
             manifest_group["sides"].append(
                 {
                     "name": object_label,
@@ -99,41 +94,6 @@ def main():
             )
         manifest_groups.append(manifest_group)
 
-    if not world_points:
-        raise RuntimeError("No Bridge pair points were captured")
-    minimum = Vector(
-        tuple(min(point[axis] for point in world_points) for axis in range(3))
-    )
-    maximum = Vector(
-        tuple(max(point[axis] for point in world_points) for axis in range(3))
-    )
-    center = (minimum + maximum) * 0.5
-    span = max(maximum - minimum)
-    camera_data = bpy.data.cameras.new("HST_Runtime_Pairs_Camera")
-    camera = bpy.data.objects.new("HST_Runtime_Pairs_Camera", camera_data)
-    bpy.context.scene.collection.objects.link(camera)
-    camera_data.type = "ORTHO"
-    camera_data.ortho_scale = span * 1.25
-    camera.location = center + Vector((1.55, -2.1, -1.15)) * span
-    camera.rotation_euler = (center - camera.location).to_track_quat(
-        "-Z",
-        "Y",
-    ).to_euler()
-    bpy.context.scene.camera = camera
-
-    scene = bpy.context.scene
-    scene.render.engine = "BLENDER_WORKBENCH"
-    scene.display.shading.light = "STUDIO"
-    scene.display.shading.color_type = "MATERIAL"
-    scene.display.shading.show_shadows = True
-    scene.display.shading.show_cavity = True
-    scene.display.shading.cavity_type = "WORLD"
-    scene.render.resolution_x = 1800
-    scene.render.resolution_y = 1400
-    scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = "PNG"
-    scene.render.filepath = str(output_image)
-    bpy.ops.render.render(write_still=True)
     bpy.ops.wm.save_as_mainfile(
         filepath=str(output_blend),
         check_existing=False,

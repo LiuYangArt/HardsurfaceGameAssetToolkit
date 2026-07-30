@@ -107,7 +107,7 @@ def git_provenance(repo_root):
     }
 
 
-# 严格验证完整 Phase C summary，禁止 backend 单一布尔值造成 fake green。
+# 严格验证完整 Phase C summary；只验证结构化结果与可手工检查的 Blend，不生成或判断图片。
 # summary: Blender driver 生成的完整结果；返回 (valid, errors)。
 def validate_phase_c_gate_summary(summary, run_metadata=None):
     errors = []
@@ -173,7 +173,7 @@ def validate_phase_c_gate_summary(summary, run_metadata=None):
             errors.append(f"case repetitions mismatch: {case.get('case_id')}")
         if case.get("status") != "PASS" or not case.get("stable"):
             errors.append(f"case failed or unstable: {case.get('case_id')}")
-        if case.get("phase_c_artifacts_present") is not True:
+        if case.get("phase_c_inspection_artifacts_present") is not True:
             errors.append(f"case artifacts missing: {case.get('case_id')}")
         for repetition in case.get("repetitions", []):
             valid_repetition = (

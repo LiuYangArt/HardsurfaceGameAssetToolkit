@@ -62,7 +62,6 @@ def main():
     capture_path = output_directory / "runtime-pairs.json"
     manifest_path = output_directory / "pair-manifest.json"
     blend_path = output_directory / "bridge-pairs.blend"
-    image_path = output_directory / "bridge-pairs.png"
     summary_path = output_directory / "run-summary.json"
 
     version_output = run_command([str(blender), "--version"])
@@ -91,12 +90,11 @@ def main():
             str(fixture),
             str(capture_path),
             str(blend_path),
-            str(image_path),
             str(manifest_path),
         ]
     )
 
-    for path in (capture_path, manifest_path, blend_path, image_path):
+    for path in (capture_path, manifest_path, blend_path):
         require_nonempty(path)
     capture = json.loads(capture_path.read_text(encoding="utf-8"))
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -129,13 +127,12 @@ def main():
         "pair_count": pair_count,
         "artifacts": {
             "blend": str(blend_path),
-            "image": str(image_path),
             "manifest": str(manifest_path),
             "capture": str(capture_path),
         },
         "logs": {
             "capture_saved": "Feature Chamfer finalized" in capture_log,
-            "render_saved": "Saved" in render_log,
+            "artifact_saved": "Saved" in render_log,
         },
     }
     if not all(summary["logs"].values()):
