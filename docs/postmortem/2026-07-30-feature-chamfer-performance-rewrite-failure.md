@@ -2,8 +2,9 @@
 
 > 日期：2026-07-30  
 > 严重级别：高  
-> 当前状态：`RECOVERY ONLY / PERFORMANCE STOP`  
-> 结论：正确效果已恢复，但原计划要求的 Python 高性能路径没有交付。把恢复旧流程描述为任务进展，是本次最严重的判断和沟通错误。
+> 当前状态：`RESOLVED / HISTORICAL`
+>
+> 结论：本文记录的失败判断仍然有效；后续按本文门槛重新推进，最终交付了结果等价且满足性能预算的正式路径。把恢复旧流程描述为任务进展，仍是本次最严重的判断和沟通错误。
 
 ## 1. 用户影响
 
@@ -125,6 +126,30 @@
 
 ## 8. 未完成事项
 
-- Python 高性能后端仍未实现。
-- Mixed ≤ 2 秒和常见样本 ≤ 1 秒的目标仍未达到。
-- 在代表样本同时达到结果等价和性能门槛前，不得恢复原计划的完成声明。
+- 本节是事故结束时的历史状态：当时 Python 高性能路径尚未实现，Mixed ≤ 2 秒也未达到。
+- 这些事项已于 2026-07-31 关闭：Mixed 正式入口保持旧结果 fingerprint，三次冷运行约 1.22–1.25 秒；完整矩阵、回归与 GUI Undo/Redo 均通过。
+
+## 9. 后续解决路径与新增经验
+
+最终成功不是重写 Boolean，而是重新划清职责：保留 Blender 原生 Boolean 与已验收几何规则，逐层把
+Boolean 前后的动态身份整理改为 Python 批量数据处理。每替换一层都先在最复杂样本对照旧结果，确认
+身份、几何和耗时同时通过后才进入正式入口。
+
+本次后续又暴露了三个值得长期保留的经验：
+
+1. **先核对事实再判断能力边界。** Boolean 后所需的 Pipe、segment、station 和 Patch 身份不是
+   Blender 私有数据，也不是 Boolean Pro 封闭输出；它们由 Feature Chamfer 自己写入并在 Boolean 后整理。
+   早期把它误判为“Python 无法获得”，导致绕路和无意义的多次 Boolean 原型。
+2. **缓存必须证明依赖边界。** Radius 会参与复杂 junction 的端点配对，因此不能笼统复用整条 Curve。
+   正式实现只在没有多套配对候选时复用路径拓扑；缓存同时绑定 Object、Mesh 数据和几何指纹，避免
+   几何相同的不同对象串用身份数据；所有半径相关阶段仍重算。
+3. **产品收尾应删除旧入口，不只隐藏按钮。** 旧 Sharp/Seam Operator 与正式 Feature Chamfer 长期并列，
+   容易让用户和后续 Agent 误选过时路径。正式功能验收后，旧 Operator 已停止注册，UI 只保留一个入口；
+   仍被新实现复用的底层几何工具与回归合同继续保留。
+
+最终证据与当前状态见：
+
+- `docs/plan/2026-07-30-feature-chamfer-performance-optimization-replan.md`
+- `tests/artifacts/feature_chamfer_three_details_mixed_matrix/results.json`
+- `tests/artifacts/feature_chamfer_three_details_full_regression/results.json`
+- `tests/artifacts/feature_chamfer_gn_gui_undo.json`

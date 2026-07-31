@@ -851,10 +851,9 @@ def test_addon_registers(test_context: TestContext, result: TestCaseResult):
             missing.append(operator_idname)
 
     ensure(not missing, f"Missing registered operators: {missing}")
-    pipe_chamfer_operator = bpy.ops.hst.experimental_pipe_chamfer.get_rna_type()
     ensure(
-        pipe_chamfer_operator.properties["debug_stage"].default == "PATCHED",
-        "Experimental Pipe Chamfer must default to PATCHED",
+        "hst.experimental_pipe_chamfer" not in operator_idnames,
+        "Retired Sharp/Seam Feature Chamfer Operator is still registered",
     )
     ensure(hasattr(bpy.ops.hst, "hst_addtransvertcolorproxy"), "Proxy operator missing")
     ensure(hasattr(bpy.ops.hst, "hst_bakeproxyvertcolrao"), "AO bake operator missing")
@@ -9899,6 +9898,11 @@ def test_feature_chamfer_panel_dynamic_label_and_cancel(test_context: TestContex
         "Panel does not expose exactly one formal Feature Chamfer entry",
     )
     ensure(
+        "hst.experimental_pipe_chamfer" not in panel_source
+        and "Feature Chamfer (Sharp/Seam)" not in panel_source,
+        "Panel still exposes the retired Sharp/Seam Feature Chamfer entry",
+    )
+    ensure(
         "Preview" not in panel_source and "Cancel" not in panel_source and "Finalize" not in panel_source,
         "Panel still exposes the old staged controls",
     )
@@ -13031,8 +13035,6 @@ def main():
     context.run_case("scene_params_stale_pointer_recovery_regression", test_scene_params_stale_pointer_recovery_regression)
     context.run_case("pipe_chamfer_tricky_b_extruded002_regression", test_pipe_chamfer_tricky_b_extruded002_regression)
     context.run_case("pipe_chamfer_degree_four_strand_pairing_regression", test_pipe_chamfer_degree_four_strand_pairing_regression)
-    context.run_case("pipe_chamfer_failure_keeps_redo_panel_regression", test_pipe_chamfer_failure_keeps_redo_panel_regression)
-    context.run_case("pipe_chamfer_writes_diagnostic_regression", test_pipe_chamfer_writes_diagnostic_regression)
     context.run_case("transfer_proxy_reuse", test_transfer_proxy_reuse)
     context.run_case("bevel_transfer_normal_collection_reuse", test_bevel_transfer_normal_collection_reuse)
     context.run_case("project_decal_smoke", test_project_decal_smoke)
@@ -13062,13 +13064,11 @@ def main():
     context.run_case("staticmeshexport_glb_smoke", test_staticmeshexport_glb_smoke)
     context.run_case("rename_bones_smoke", test_rename_bones_smoke)
     context.run_case("cleanup_ue_skm_smoke", test_cleanup_ue_skm_smoke)
-    context.run_case("sharp_feature_graph_object_smoke", test_sharp_feature_graph_object_smoke)
+    # 旧 Sharp/Seam Operator 已下线；保留其底层几何合同测试，但不再执行旧入口测试。
     context.run_case(
         "pipe_chamfer_degree_three_strand_matching_regression",
         test_pipe_chamfer_degree_three_strand_matching_regression,
     )
-    context.run_case("experimental_pipe_chamfer_early_failure_keeps_source_visible_regression", test_experimental_pipe_chamfer_early_failure_keeps_source_visible_regression)
-    context.run_case("experimental_pipe_chamfer_pipes_no_blender_bevel_regression", test_experimental_pipe_chamfer_pipes_no_blender_bevel_regression)
     context.run_case("curve_pipe_asset_import_and_backend_smoke", test_curve_pipe_asset_import_and_backend_smoke)
     context.run_case("feature_chamfer_rail_oracle_contract_smoke", test_feature_chamfer_rail_oracle_contract_smoke)
     context.run_case(
@@ -13099,13 +13099,6 @@ def main():
         "feature_chamfer_regular_strip_hard_guard_path_regression",
         test_feature_chamfer_regular_strip_hard_guard_path_regression,
     )
-    context.run_case("experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression", test_experimental_pipe_chamfer_two_pipe_junction_regular_patched_regression)
-    context.run_case("experimental_pipe_chamfer_union_difference_smoke", test_experimental_pipe_chamfer_union_difference_smoke)
-    context.run_case("experimental_pipe_chamfer_open_boundary_preserves_original_faces", test_experimental_pipe_chamfer_open_boundary_preserves_original_faces)
-    context.run_case("experimental_pipe_chamfer_first_run_after_preview_regression", test_experimental_pipe_chamfer_first_run_after_preview_regression)
-    context.run_case("experimental_pipe_chamfer_bridge_then_fill_smoke", test_experimental_pipe_chamfer_bridge_then_fill_smoke)
-    context.run_case("experimental_pipe_chamfer_postprocess_smoke", test_experimental_pipe_chamfer_postprocess_smoke)
-    context.run_case("experimental_pipe_chamfer_endpoint_extension_regression", test_experimental_pipe_chamfer_endpoint_extension_regression)
     context.run_case("grouping_curved_chain_regression", test_grouping_curved_chain_regression)
     context.run_case("grouping_true_corner_regression", test_grouping_true_corner_regression)
     context.run_case("gn_preview_asset_import_exact_and_idempotent", test_gn_preview_asset_import_exact_and_idempotent)
@@ -13290,7 +13283,6 @@ def main():
         "gn_patch_complex_region_fails_closed",
         test_gn_patch_complex_region_fails_closed,
     )
-    context.run_case("legacy_feature_chamfer_uses_patch_adapter", test_legacy_feature_chamfer_uses_patch_adapter)
     context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
     context.run_case(
         "gn_finalize_mixed_fixture_terminal_topology_regression",

@@ -253,11 +253,6 @@ class HST_PT_MainPanel(bpy.types.Panel):
             icon="EDGESEL",
         )
         box_column.operator(
-            "hst.experimental_pipe_chamfer",
-            text="Feature Chamfer (Sharp/Seam)",
-            icon="MOD_BEVEL",
-        )
-        box_column.operator(
             "hst.feature_chamfer_gn",
             text="Feature Chamfer",
             icon="MOD_BEVEL",

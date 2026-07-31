@@ -6,7 +6,7 @@
 
 ## 当前覆盖
 
-- addon 注册 smoke test（包含全部 `hst.*` operator 注册检查）
+- addon 注册 smoke test（包含全部 `hst.*` operator 注册检查，并确认旧 Sharp/Seam Feature Chamfer 不再注册）
 - 遗留 `Scene.hst_params` PointerProperty 安全替换的 UI 崩溃回归
 - `_TransferProxy` collection 复用回归
 - bake collection low/high 标记 smoke test
@@ -21,7 +21,7 @@
 - Feature Chamfer open Rail 单调、scale-invariant correspondence / terminal constraint regression
 - Feature Chamfer mixed fixture 目标 Operator PREVIEW→FINALIZE terminal topology 回归
 - Feature Chamfer Tricky-b 标准 180° open U 形由两个同步局部转折拆成三个原生 Bridge 任务回归
-- Feature Chamfer 失败后保留 Adjust Last Operation 参数面板回归
+- 当前 Feature Chamfer 的 Adjust Last Operation 参数、失败事务与 Undo/Redo 回归
 - decal project smoke test
 - quickweight smoke test
 - AO bake operator headless smoke test
@@ -37,13 +37,8 @@
 - static mesh GLB export smoke test
 - rename bones smoke test
 - cleanup UE SKM smoke test
-- experimental Pipe Chamfer 的 Object-only Sharp FeatureGraph smoke test
-- 多条独立 manifold Pipe 生成与“禁止 Blender Bevel”回归
-- two-Pipe junction 的 redo-compatible 诊断与 source 不变回归
-- 未 Apply 的单 Object / 多 Object Cutter Boolean Preview smoke test
-- Boolean Apply 后通过 FACE provenance 只删除槽面、保留原面回归
-- 清理上一轮 Boolean Preview 后首次 OPEN_BOUNDARY 即成功的 dependency-graph 同步回归
-- Pipe 两侧边链执行 Bridge Edge Loops、剩余洞口执行 Fill 的 watertight smoke test
+- 旧 Sharp/Seam 产品 Operator 已停止注册；仅依赖该入口的历史测试不再执行
+- 正式实现仍复用的 Sharp FeatureGraph、manifold Pipe、Boolean provenance、Bridge/Fill 底层合同继续回归
 - 历史 PATCHED 后 dissolve、chamfer FACE attribute 与法线传递 smoke（非当前 Direct Bridge FINALIZE）
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归

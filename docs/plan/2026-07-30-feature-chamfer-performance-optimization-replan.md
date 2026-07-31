@@ -541,3 +541,13 @@ Adjust Last Operation、Keep Cutter、Undo/Redo 通过。详见历史计划第 8
 - `tests/artifacts/feature_chamfer_three_details_mixed_matrix/results.json`
 - `tests/artifacts/feature_chamfer_three_details_full_regression/results.json`
 - `tests/artifacts/feature_chamfer_gn_gui_undo.json`
+
+## 13. 功能收尾
+
+用户已确认当前 Feature Chamfer 状态可接受，功能进入收尾：
+
+- UI 只保留当前正式 Feature Chamfer；旧 Sharp/Seam 按钮已删除；
+- 旧 Sharp/Seam Operator 已停止注册，避免脚本或搜索菜单继续进入过时产品路径；
+- 新实现仍复用的底层 FeatureGraph、Cutter、Boundary 与历史诊断工具继续保留，不因下线旧入口而删除；
+- 回归门禁新增“旧入口未注册、面板只有一个正式入口”的检查；仅依赖已下线 Operator 的旧入口测试停止执行，底层几何合同测试继续运行；
+- 当前状态为 `ACCEPTED / CLOSED`；后续修改按新的独立任务重新建立门槛，不再延续本轮性能重构状态。
