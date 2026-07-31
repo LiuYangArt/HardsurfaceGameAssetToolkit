@@ -2,8 +2,8 @@
 
 日期：2026-07-30
 更新：2026-07-31
-状态：`PRE-BOOLEAN PRODUCER INTEGRATED / VERIFIED`；固定 Boolean 两阶段端到端结果等价，但完整性能仍为 `STOP`
-正确性基线：当前正式结果继续作为只读 oracle。2026-07-31 已把 Python Boolean 前属性生产接入一步式正式入口。最新完整旁路已经证明“固定 raw Boolean → Python 后置身份 → 固定 Surface → 未修改 Bridge/Fill”最终结果完全等价；三次总耗时中位约 3.424 秒，仍超过 2 秒门槛，因此没有接正式入口。正式 runtime 已恢复并继续保留旧动态后置整理。
+状态：`INTEGRATED / VERIFIED`；固定两阶段与批量安全检查已进入正式一步入口，完整性能门槛通过
+正确性基线：旧正式结果继续作为只读 oracle。2026-07-31 已把固定 raw Boolean、Python 后置身份、固定 Surface 与批量 Bridge/Fill 安全检查一次性接入正式入口。Mixed / Radius 0.01 三次冷运行保持完全相同的最终 fingerprint，中位约 1.23 秒、最大约 1.23 秒，已同时通过结果等价与 2 秒性能硬门槛。完整产品矩阵已通过；自动验证最高为 `VERIFIED`，仍等待用户在 Blender 中做最终视觉确认。
 
 历史计划：[`2026-07-30-feature-chamfer-preview-performance-plan.md`](2026-07-30-feature-chamfer-preview-performance-plan.md)  
 失败复盘：[`2026-07-30-feature-chamfer-performance-rewrite-failure.md`](../postmortem/2026-07-30-feature-chamfer-performance-rewrite-failure.md)
@@ -38,7 +38,12 @@ Python Cutter 与 Boolean 控制验证：
 固定两阶段端到端验证：
 [`../validation/2026-07-31-feature-chamfer-fixed-two-stage-end-to-end-validation-result.md`](../validation/2026-07-31-feature-chamfer-fixed-two-stage-end-to-end-validation-result.md)
 
+批量安全检查与正式集成结果：
+[`../validation/2026-07-31-feature-chamfer-fixed-two-stage-batched-validation-result.md`](../validation/2026-07-31-feature-chamfer-fixed-two-stage-batched-validation-result.md)
+
 ## 0. 2026-07-31 路线更新
+
+以下条目按时间顺序保留；前面的 `STOP` 与“未接入”记录是当时的门禁结论，已被本节末尾的新证据取代。
 
 - 外部压缩账本路线保留为历史 `STOP`，不再作为当前正式接入方案。
 - 新验证保留每个 Patch/Pipe/segment 各自独立的完整属性，但改由 Python 批量写入 Mesh，不再为这些属性动态展开 GN。
@@ -60,14 +65,18 @@ Python Cutter 与 Boolean 控制验证：
 - 随后的完整端到端旁路已补齐未修改 Bridge/Fill 证据：三次均命中冻结 fingerprint、3922/8054/4134/3454、80/3437 Bridge 和 12/28 Fill，结果等价门槛通过。
 - 但三次完整冷运行约3.406/3.424/3.440秒，超过2秒产品门槛；其中上游两阶段准备约0.62–0.65秒，Bridge/Fill约2.77秒。Boolean后Python身份只约0.014秒，新的主瓶颈已明确位于Bridge/Fill。
 - 按硬门槛，固定两阶段没有接正式入口；测量修改已撤回，正式runtime保持上一版已验证架构。后续须先独立优化Bridge/Fill并与固定两阶段上游组合达到2秒，再考虑一次性正式集成。
+- 随后的热点剖析纠正了“Bridge 几何操作本身慢”的判断：80 次 Bridge、12 次 Fill 与一次最终检查各自重复重建整份 Mesh 的三角化/BVH，自交检查共调用 94 次、约占 2.29 秒。
+- 新实现没有删除安全门禁，而是按几何阶段合并为最多三次：全部 Bridge 完成后一次、全部 Fill 完成后一次、最终清理后一次。结构检查、失败码、最终闭合/非流形/零面积/自交门禁仍保留。
+- 正式 Mixed / Radius 0.01 三次结果均为冻结 fingerprint `f991...` 与 3922/8054/4134/3454；耗时约 1.227/1.226/1.222 秒。自交检查从 94 次降为 3 次、约 0.086 秒。
+- 第一阶段与延期范围产品矩阵 `run_go=true`；正式入口已使用固定 Boolean、Python 身份物化和固定 Surface，不再建立随 segment 增长的 Boolean 后动态 Store。
 
 ## 1. 实际要改什么
 
 历史流程首先慢在“给几何贴身份标签”；现已验证可用固定两阶段把这部分降到约 0.65 秒以内。
-完整端到端测量进一步表明，新的最大成本是 Bridge/Fill 约 2.77 秒，因此下一轮优化对象已经改变。
+完整端到端测量当时表明 Bridge/Fill 阶段约 2.77 秒；随后剖析已把其中 2.29 秒定位为重复自交检查，并完成优化。
 
-已完成的第一步是：**保留当前正确的 GN Cutter 与 Boolean Pro，用 Python Mesh 属性替换 Boolean 前动态展开的
-one-hot 节点网络。** 尚未完成的是 Boolean 后的动态身份整理；它仍继续把身份送给当前正确的 Bridge/Fill。
+正式入口现在保留正确的 GN Cutter 与受控 Boolean 内核；Boolean 前身份、Boolean 后 236 层适配均由 Python
+批量写 Mesh attribute。Bridge/Fill 几何算法保持不变，只把逐 job 重复的全 Mesh 自交检查合并为阶段检查。
 
 正式目标不是纯 Python 重写 Cutter 或 Boolean。GN 可以继续承担固定规模的 Cutter、Boolean 和属性出口；
 禁止的是随 Face、Pipe、segment 或 Point 数量增长的运行时身份节点网络。
@@ -124,15 +133,15 @@ one-hot 节点网络。** 尚未完成的是 Boolean 后的动态身份整理；
    - 适配层不选择左右边、不切分环、不创建 Bridge job，也不 Fill；
    - 现有 Bridge/Fill 代码保持不变，用它来证明前面的替换没有改变几何语义。
 
-5. **先优化当前新的主瓶颈，再集成**
+5. **优化当前新的主瓶颈（已完成）**
    - 完整旁路已经证明步骤 1–4 正确，但总耗时仍为约 3.42 秒；
    - 现有 Bridge/Fill 占约 2.77 秒，必须先在独立原型中定位重复全 Mesh 扫描、重复自交检测和邻接重建；
-   - 只有固定两阶段上游与优化后的 Bridge/Fill 组合同时达到最终等价和 2 秒门槛，才允许接正式入口。
+   - 实测热点是重复自交检查，不是 Bridge/Fill 的几何生成；合并后完整正式入口达到约 1.23 秒。
 
-6. **接入一步式正式入口（Boolean 前部分已完成；完整组合仍因性能 STOP）**
+6. **接入一步式正式入口（已完成）**
    - 旁路原型先通过 Mixed / Radius 0.01 的结果与 producer 阶段预算，再接入；
    - 接入后正式 wrapper 的 Boolean 前输入固定为 3 个节点和 3 条连线；
-   - Boolean 后 materializer 仍是动态结构；在新执行边界方案通过前不得删除或替换；
+   - Boolean 后 materializer 已改为一次 Python 批量适配，动态节点数为零；
    - Radius、Keep Cutter、Redo/Undo、source 不变和失败清理行为保持现状。
 
 ### 1.4 已完成的首个技术实验

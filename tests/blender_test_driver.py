@@ -3065,7 +3065,7 @@ def test_gn_shared_chamfer_plan_shadow_contract_smoke(
         finalize_stats.get("plan_id") == preview_plan.plan_id
         and finalize_stats.get("runtime_path")
         == (
-            "Preview Pipe -> Boolean Pro Boundary Edges -> segment groups -> "
+            "Fixed Boolean Boundary Edges -> segment groups -> "
             "Blender Bridge Edge Loops -> Blender Fill"
         ),
         f"Finalize did not consume the shared Direct Bridge plan: {finalize_stats}",
@@ -7040,51 +7040,16 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         "Preview asset version mismatch",
     )
     ensure(
-        int(node_group.get("hst_feature_chamfer_pre_boolean_node_count", -1)) == 3
+        int(node_group.get("hst_feature_chamfer_pre_boolean_node_count", -1)) == 2
         and int(node_group.get("hst_feature_chamfer_pre_boolean_link_count", -1)) == 3,
-        "Python pre-Boolean input scale is not fixed",
-    )
-    boolean_pro_nodes = [
-        node
-        for node in node_group.nodes
-        if node.bl_idname == "GeometryNodeGroup"
-        and node.node_tree is not None
-        and node.node_tree.name.startswith("HST Feature Chamfer :: Boolean Pro")
-    ]
-    ensure(len(boolean_pro_nodes) == 1, "Preview wrapper does not preserve the controlled Boolean Pro node")
-    ensure(
-        not any(node.bl_idname == "GeometryNodeMeshBoolean" for node in node_group.nodes),
-        "Preview wrapper regressed to native Mesh Boolean",
+        "Fixed Boolean input scale is not fixed",
     )
     ensure(
-        any(group.name.startswith("HST Feature Chamfer :: Float Boolean Edges") for group in bpy.data.node_groups)
-        and any(group.name.startswith("HST Feature Chamfer :: Boolean Solver Select") for group in bpy.data.node_groups),
-        "Boolean Pro nested dependencies were not appended",
-    )
-    boolean_node = boolean_pro_nodes[0]
-    source_geometry_links = [
-        link
-        for link in node_group.links
-        if link.to_node == boolean_node
-        and link.to_socket.name == "Geometry"
-    ]
-    ensure(
-        len(source_geometry_links) == 1
-        and source_geometry_links[0].from_node.bl_idname
-        == "GeometryNodeObjectInfo",
-        "Source Geometry does not reach Boolean Pro through the Python Mesh input",
-    )
-    cutter_geometry_links = [
-        link
-        for link in node_group.links
-        if link.to_node == boolean_node
-        and link.to_socket.name == "Geometry B"
-    ]
-    ensure(
-        len(cutter_geometry_links) == 1
-        and cutter_geometry_links[0].from_node.bl_idname
-        == "GeometryNodeObjectInfo",
-        "Cutter does not reach Boolean Pro through the Python Mesh input",
+        node_group.get("hst_feature_chamfer_post_boolean_backend")
+        == "PYTHON_NUMPY_FIELD_ADAPTATION_V1"
+        and int(node_group.get("hst_feature_chamfer_post_boolean_dynamic_node_count", -1))
+        == 0,
+        "Preview wrapper did not preserve the fixed post-Boolean path",
     )
     ensure(
         bpy.data.node_groups.get(test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY)
@@ -7092,13 +7057,9 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         "Curve Pipe dependency was not appended",
     )
     ensure(
-        any(
-            node.bl_idname == "GeometryNodeObjectInfo"
-            and node.inputs["Object"].default_value is not None
-            and node.inputs["Object"].default_value.type == "CURVE"
-            for node in node_group.nodes
-        ),
-        "Preview wrapper does not consume its Python Curve source",
+        node_group.get("hst_feature_chamfer_curve_object")
+        == test_context.addon.utils.feature_chamfer_gn_utils.owned_preview_curve(source).name,
+        "Preview wrapper lost its owned Curve lifecycle reference",
     )
     ensure(
         not any(
@@ -7287,12 +7248,9 @@ def test_gn_preview_operator_curve_backend_acceptance(
         "Preview did not replace the old dynamic pre-Boolean producer",
     )
     ensure(
-        any(
-            node.bl_idname == "GeometryNodeObjectInfo"
-            and node.inputs["Object"].default_value == curve_source
-            for node in modifier.node_group.nodes
-        ),
-        "Preview modifier does not consume the owned Curve source",
+        modifier.node_group.get("hst_feature_chamfer_curve_object")
+        == curve_source.name,
+        "Preview modifier lost the owned Curve lifecycle reference",
     )
     redo_result, redo_modifier = run_feature_chamfer_gn(
         source,
@@ -8233,8 +8191,15 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
     ensure(source.modifiers.get("HST Feature Chamfer GN Preview") is None, "One-step Operator left Preview runtime state")
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
     ensure(
-        stats.get("backend") == "GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE"
-        and stats.get("solver") == "BOOLEAN_PRO"
+        stats.get("backend")
+        == "FIXED_BOOLEAN_PYTHON_IDENTITY_DIRECT_EDGE_LOOP_BRIDGE"
+        and stats.get("solver") == "FIXED_MANIFOLD_BOOLEAN"
+        and stats.get("post_boolean_backend")
+        == "PYTHON_NUMPY_FIELD_ADAPTATION_V1"
+        and stats.get("post_boolean_dynamic_node_count") == 0
+        and stats.get("self_intersection_validation_strategy")
+        == "BATCHED_BRIDGE_FILL_FINAL"
+        and 1 <= stats.get("self_intersection_validation_pass_count", 0) <= 3
         and stats.get("one_step_transaction") is True
         and stats.get("temporary_preview_removed") is True,
         "One-step runtime did not preserve the accepted geometry backend",
@@ -8305,7 +8270,7 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
     ensure(
         stats.get("pre_boolean_backend") == "PYTHON_MESH_ATTRIBUTES_V1"
-        and stats.get("pre_boolean_node_count") == 3
+        and stats.get("pre_boolean_node_count") == 2
         and stats.get("pre_boolean_link_count") == 3,
         f"Mixed formal runtime did not use the fixed Python producer: {stats}",
     )
@@ -8313,6 +8278,12 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         float(stats.get("pre_boolean_producer_seconds", 999.0)) <= 1.0,
         "Mixed formal Python producer exceeded its 1.0s stage budget: "
         f"{stats.get('pre_boolean_producer_seconds')}",
+    )
+    ensure(
+        stats.get("post_boolean_backend") == "PYTHON_NUMPY_FIELD_ADAPTATION_V1"
+        and stats.get("post_boolean_dynamic_node_count") == 0
+        and float(stats.get("post_boolean_materializer_seconds", 999.0)) <= 0.75,
+        f"Mixed formal runtime did not use the fixed Python identity path: {stats}",
     )
     ensure(
         not any(

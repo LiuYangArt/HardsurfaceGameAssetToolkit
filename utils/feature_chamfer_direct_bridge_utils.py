@@ -426,63 +426,6 @@ def _fill_junction_holes(
         fill_faces.update(triangulated_faces)
         for face in triangulated_faces:
             face[chamfer_face_layer] = 1
-        fill_intersections = _self_intersection_records(
-            bm,
-            triangulated_faces,
-        )
-        if fill_intersections:
-            raise FeatureChamferDirectBridgeError(
-                "junction_fill_self_intersects",
-                "Blender Fill created self-intersecting junction Faces",
-                {
-                    "edge_count": len(residual_component),
-                    "face_count": len(triangulated_faces),
-                    "self_intersection_count": len(fill_intersections),
-                    "self_intersections": fill_intersections[:16],
-                    "vertex_indices": [vertex.index for vertex in ordered_vertices],
-                    "coordinates": [
-                        [float(value) for value in vertex.co]
-                        for vertex in ordered_vertices
-                    ],
-                    "edge_provenance": [
-                        {
-                            "edge_index": edge.index,
-                            "is_boolean_boundary": bool(edge[boundary_layer]),
-                            "segment_ids": [
-                                segment_id
-                                for segment_id, layer in segment_layers.items()
-                                if float(edge[layer]) > 1.0e-6
-                            ],
-                            "patch_ids": [
-                                patch_id
-                                for patch_id, layer in patch_layers.items()
-                                if bool(edge[layer])
-                            ],
-                        }
-                        for edge in sorted(
-                            residual_component,
-                            key=lambda item: item.index,
-                        )
-                    ],
-                    "edge_face_provenance": [
-                        {
-                            "edge_index": edge.index,
-                            "linked_faces": [
-                                face.index for face in edge.link_faces
-                            ],
-                            "linked_chamfer_faces": [
-                                face.index
-                                for face in edge.link_faces
-                                if face in chamfer_faces
-                            ],
-                        }
-                        for edge in sorted(
-                            residual_component,
-                            key=lambda item: item.index,
-                        )
-                    ],
-                },
-            )
         bm.normal_update()
         bm.verts.index_update()
         bm.edges.index_update()
@@ -498,7 +441,7 @@ def _fill_junction_holes(
                 "internal_chord_edge_indices": sorted(
                     edge.index for edge in internal_chords
                 ),
-                "created_self_intersection_count": len(fill_intersections),
+                "created_self_intersection_count": 0,
             }
         )
     return fill_records, cleanup_records, fill_faces
@@ -3015,6 +2958,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
         bridge_records = []
         deferred_segments = []
         chamfer_faces = set()
+        bridge_faces_for_validation = set()
         for segment in segment_records:
             segment_id = int(segment["segment_id"])
             selected_edges = _exclusive_segment_edges(
@@ -3446,50 +3390,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     )
                 claimed_edges.update(selected_edges)
                 chamfer_faces.update(bridge_faces)
+                bridge_faces_for_validation.update(bridge_faces)
                 for face in bridge_faces:
                     face[chamfer_face_layer] = 1
-                bridge_intersections = _self_intersection_records(
-                    bm,
-                    bridge_faces,
-                )
-                bridge_self_intersection_count = len(bridge_intersections)
-                if bridge_intersections:
-                    diagnostic_vertices = _ordered_chain_vertices(components[0])
-                    diagnostic_coordinates = [
-                        [float(value) for value in vertex.co]
-                        for vertex in diagnostic_vertices
-                    ]
-                    diagnostic_cyclic = _component_shape(components[0])[0]
-                    raise FeatureChamferDirectBridgeError(
-                        "bridge_faces_self_intersect",
-                        f"Blender Bridge self-intersects for segment {segment_id}",
-                        {
-                            "segment_id": segment_id,
-                            "bridge_job_index": bridge_job_index,
-                            "side_edge_counts": sorted(
-                                len(component) for component in components
-                            ),
-                            "self_intersection_count": bridge_self_intersection_count,
-                            "self_intersections": bridge_intersections[:16],
-                            "side_junction_witnesses": [
-                                _component_junction_witnesses(
-                                    component,
-                                    segment_id,
-                                    segment_layers,
-                                    segment_point_layers,
-                                    station_point_layers,
-                                    station_squared_point_layers,
-                                )
-                                for component in components
-                            ],
-                            "side_cyclic": [
-                                _component_shape(component)[0]
-                                for component in components
-                            ],
-                            "coordinates": diagnostic_coordinates,
-                            "diagnostic_cyclic": diagnostic_cyclic,
-                        },
-                    )
+                bridge_self_intersection_count = 0
                 bridge_records.append(
                     {
                         "segment_id": segment_id,
@@ -3590,6 +3494,21 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                         "native_operator": "Blender Bridge Edge Loops",
                     }
                 )
+        bridge_intersections = (
+            _self_intersection_records(bm, bridge_faces_for_validation)
+            if bridge_faces_for_validation
+            else []
+        )
+        if bridge_intersections:
+            raise FeatureChamferDirectBridgeError(
+                "bridge_faces_self_intersect",
+                "Blender Bridge output contains self-intersecting Faces",
+                {
+                    "self_intersection_count": len(bridge_intersections),
+                    "self_intersections": bridge_intersections[:16],
+                    "bridge_records": bridge_records,
+                },
+            )
         if deferred_segments:
             raise FeatureChamferDirectBridgeError(
                 "unbridged_segment_remaining",
@@ -3626,9 +3545,22 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             chamfer_faces,
             chamfer_face_layer,
         )
+        fill_intersections = (
+            _self_intersection_records(bm, fill_faces)
+            if fill_faces
+            else []
+        )
+        if fill_intersections:
+            raise FeatureChamferDirectBridgeError(
+                "junction_fill_self_intersects",
+                "Blender Fill output contains self-intersecting Faces",
+                {
+                    "self_intersection_count": len(fill_intersections),
+                    "self_intersections": fill_intersections[:16],
+                    "junction_fill_records": fill_records,
+                },
+            )
         chamfer_faces.update(fill_faces)
-
-        self_intersection_count_after_fill = _self_intersection_count(bm)
 
         topology_before_zero_cleanup = {
             "boundary_count": sum(len(edge.link_faces) == 1 for edge in bm.edges),
@@ -3696,7 +3628,6 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     "non_manifold_count": non_manifold_count,
                     "zero_area_count": zero_area_count,
                     "self_intersection_count": self_intersection_count,
-                    "self_intersection_count_after_fill": self_intersection_count_after_fill,
                     "topology_before_zero_cleanup": topology_before_zero_cleanup,
                     "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
                     "zero_area_faces_removed": zero_area_faces_removed,
@@ -3715,7 +3646,6 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 "Direct Bridge/Fill Faces intersect the final Mesh",
                 {
                     "self_intersection_count": self_intersection_count,
-                    "self_intersection_count_after_fill": self_intersection_count_after_fill,
                     "self_intersections": final_intersections[:16],
                     "bridge_records": bridge_records,
                     "junction_fill_records": fill_records,
@@ -3757,7 +3687,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "status": "finished",
             "backend": "DIRECT_EDGE_LOOP_BRIDGE",
             "runtime_path": (
-                "Preview Pipe -> Boolean Pro Boundary Edges -> segment groups -> "
+                "Fixed Boolean Boundary Edges -> segment groups -> "
                 "Blender Bridge Edge Loops -> Blender Fill"
             ),
             "feature_graph_contract": "GN_PREVIEW_V1",
@@ -3786,6 +3716,12 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "non_manifold_edge_count": non_manifold_count,
             "zero_area_face_count": zero_area_count,
             "self_intersection_count": self_intersection_count,
+            "self_intersection_validation_strategy": "BATCHED_BRIDGE_FILL_FINAL",
+            "self_intersection_validation_pass_count": (
+                1
+                + int(bool(bridge_faces_for_validation))
+                + int(bool(fill_faces))
+            ),
             "chamfer_face_count": len(chamfer_face_indices),
             "output_object_name": output_object.name,
         }

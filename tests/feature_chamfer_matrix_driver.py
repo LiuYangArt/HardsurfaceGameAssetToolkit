@@ -834,7 +834,7 @@ def classify_result(
         and backend_capture.get("expected_chamfer_plan", {}).get("input_contract")
         == "GN_PREVIEW_V1"
         and backend_stats.get("backend") == "DIRECT_EDGE_LOOP_BRIDGE"
-        and "Boolean Pro Boundary Edges" in backend_stats.get("runtime_path", "")
+        and "Fixed Boolean Boundary Edges" in backend_stats.get("runtime_path", "")
         and backend_stats.get("bridge_job_count", 0) > 0
         and backend_stats.get("bridge_face_count", 0) > 0
         and backend_stats.get("deferred_segment_count") == 0
@@ -842,6 +842,11 @@ def classify_result(
         and backend_stats.get("non_manifold_edge_count") == 0
         and backend_stats.get("zero_area_face_count") == 0
         and backend_stats.get("self_intersection_count") == 0
+        and backend_stats.get("self_intersection_validation_strategy")
+        == "BATCHED_BRIDGE_FILL_FINAL"
+        and 1
+        <= backend_stats.get("self_intersection_validation_pass_count", 0)
+        <= 3
         and bridge_shape_contract
         and turn_split_contract
         and cyclic_split_contract
@@ -1432,11 +1437,19 @@ def main():
                 and repetition.get("backend", {}).get("one_step_stats", {}).get(
                     "backend"
                 )
-                == "GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE"
+                == "FIXED_BOOLEAN_PYTHON_IDENTITY_DIRECT_EDGE_LOOP_BRIDGE"
                 and repetition.get("backend", {}).get("one_step_stats", {}).get(
                     "solver"
                 )
-                == "BOOLEAN_PRO"
+                == "FIXED_MANIFOLD_BOOLEAN"
+                and repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "post_boolean_backend"
+                )
+                == "PYTHON_NUMPY_FIELD_ADAPTATION_V1"
+                and repetition.get("backend", {}).get("one_step_stats", {}).get(
+                    "post_boolean_dynamic_node_count"
+                )
+                == 0
             )
             for case in matrix_cases
             for repetition in case["repetitions"]

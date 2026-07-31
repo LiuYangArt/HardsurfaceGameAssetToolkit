@@ -3,6 +3,9 @@
 日期：2026-07-31
 状态：`PROTOTYPE / CORRECTNESS PASS / PERFORMANCE STOP / FORMAL ENTRY RECOVERED`
 
+> 2026-07-31 后续结果：本文的性能 `STOP` 已被批量安全检查优化解除。新的正式集成与验证证据见
+> [`2026-07-31-feature-chamfer-fixed-two-stage-batched-validation-result.md`](2026-07-31-feature-chamfer-fixed-two-stage-batched-validation-result.md)。本文保留为优化前基线，不再代表当前正式 runtime。
+
 ## 1. 验证范围
 
 - 固定样本：Mixed / `Extruded.002` / Radius `0.01` / Keep Cutter `false`，Blender 5.1.2。

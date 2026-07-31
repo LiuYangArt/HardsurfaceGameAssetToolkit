@@ -152,9 +152,20 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
         "hst_feature_chamfer_pre_boolean_producer_seconds",
         -1.0,
     ))
-    post_boolean_materializer_build_seconds = float(preview_node_group.get(
-        "hst_feature_chamfer_post_boolean_materializer_build_seconds",
+    boolean_seconds = float(preview_node_group.get(
+        "hst_feature_chamfer_boolean_seconds",
         -1.0,
+    ))
+    post_boolean_backend = preview_node_group.get(
+        "hst_feature_chamfer_post_boolean_backend"
+    )
+    post_boolean_materializer_seconds = float(preview_node_group.get(
+        "hst_feature_chamfer_post_boolean_materializer_seconds",
+        -1.0,
+    ))
+    post_boolean_dynamic_node_count = int(preview_node_group.get(
+        "hst_feature_chamfer_post_boolean_dynamic_node_count",
+        -1,
     ))
     bridge_fill_started_at = time.perf_counter()
     patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
@@ -172,21 +183,24 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
     _finalize_output(output, source_object, chamfer_plan)
     cancel_gn_feature_chamfer_preview(source_object)
     patch_stats.update(
-        backend="GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE",
+        backend="FIXED_BOOLEAN_PYTHON_IDENTITY_DIRECT_EDGE_LOOP_BRIDGE",
         runtime_path=(
-            "FeatureGraph -> Python Mesh Attributes -> Boolean Pro Boundary Edges -> "
-            "segment groups -> Blender Bridge/Fill"
+            "FeatureGraph -> Python Mesh Attributes -> Fixed Boolean Boundary -> "
+            "Python Identity -> Fixed Surface -> Blender Bridge/Fill"
         ),
         pre_boolean_backend=pre_boolean_backend,
         pre_boolean_node_count=pre_boolean_node_count,
         pre_boolean_link_count=pre_boolean_link_count,
         pre_boolean_producer_seconds=pre_boolean_producer_seconds,
-        post_boolean_materializer_build_seconds=post_boolean_materializer_build_seconds,
+        boolean_seconds=boolean_seconds,
+        post_boolean_backend=post_boolean_backend,
+        post_boolean_materializer_seconds=post_boolean_materializer_seconds,
+        post_boolean_dynamic_node_count=post_boolean_dynamic_node_count,
         preview_seconds=preview_seconds,
         bridge_fill_seconds=bridge_fill_seconds,
         one_step_transaction=True,
         temporary_preview_removed=True,
-        solver="BOOLEAN_PRO",
+        solver="FIXED_MANIFOLD_BOOLEAN",
         cutter_object_name=cutter_object.name if cutter_object is not None else None,
         keep_cutter_requested=bool(show_cutter),
         keep_cutter_supported=cutter_object is not None if show_cutter else True,
