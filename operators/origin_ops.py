@@ -7,6 +7,7 @@ Origin 和 Socket 管理 Operators
 """
 
 import bpy
+import json
 from mathutils import Vector
 from ..const import *
 from ..functions.common_functions import *
@@ -185,9 +186,10 @@ class HST_OT_AddAssetOrigin(bpy.types.Operator):
         origin_name = ORIGIN_PREFIX + collection.name
         origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
         origin_object.location = origin_location
-        origin_object.empty_display_type = "PLAIN_AXES"
+        origin_object.empty_display_type = "ARROWS"
         origin_object.empty_display_size = 0.4
         origin_object.show_name = True
+        origin_object.show_in_front = True
         collection.objects.link(origin_object)
         Object.mark_hst_type(origin_object, "ORIGIN")
 
@@ -233,123 +235,242 @@ class HST_OT_AddAssetOrigin(bpy.types.Operator):
 
 
 class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
-    """为所有 Prop Collection 批量添加 Asset Origin"""
+    """为 Prop Collection 批量添加 Asset Origin"""
     bl_idname = "hst.batch_add_asset_origin"
     bl_label = "Add All Prop Asset Origins"
-    bl_description = "为所有Prop Collection添加Asset Origin"
+    bl_description = "为 Prop Collection 添加 Asset Origin"
     bl_options = {"REGISTER", "UNDO"}
 
     origin_mode: bpy.props.EnumProperty(
         name="Origin Mode",
-        description="选择Origin的位置",
+        description="选择 Origin 的位置",
         items=[
-            ("WORLD_CENTER", "World Center", "使用世界中心作为Origin"),
-            ("COLLECTION_CENTER", "Collection Pivots Center", "使用Collection所有对象Pivots的中心"),
+            ("WORLD_CENTER", "World Center", "使用世界中心作为 Origin"),
+            ("COLLECTION_CENTER", "Collection Pivots Center", "使用 Collection 所有 Mesh Pivots 的中心"),
+            ("ACTIVE_BOUNDS_CENTER", "Active Object Bounds Center", "使用首次 Active Object 的 Bounding Box 世界中心"),
         ],
         default="COLLECTION_CENTER",
     )
+    parent_objects_to_origin: bpy.props.BoolProperty(
+        name="Parent Objects to Origin",
+        description="将 Prop Collection 中的 Mesh 设为 Origin 的 Child；关闭时仅添加 Origin",
+        default=True,
+    )
+    active_bounds_source_name: bpy.props.StringProperty(
+        name="Active Bounds Source",
+        description="首次调用时锁定的 Active Object",
+        default="",
+        options={"HIDDEN"},
+    )
+    active_bounds_collection_name: bpy.props.StringProperty(
+        name="Active Bounds Collection",
+        description="首次调用时锁定的 Prop Collection",
+        default="",
+        options={"HIDDEN"},
+    )
+    active_bounds_center: bpy.props.FloatVectorProperty(
+        name="Active Bounds Center",
+        description="首次调用时锁定的 Active Object Bounding Box 世界中心",
+        size=3,
+        default=(0.0, 0.0, 0.0),
+        options={"HIDDEN"},
+    )
+    active_bounds_snapshot_valid: bpy.props.BoolProperty(
+        name="Active Bounds Snapshot Valid",
+        description="Adjust Last Operation 是否已有可复用的 Active Object 快照",
+        default=False,
+        options={"HIDDEN"},
+    )
+    created_origin_collection_names: bpy.props.StringProperty(
+        name="Created Origin Collections",
+        description="本次 Operator 创建过 Origin 的 Collection，用于安全重做",
+        default="[]",
+        options={"HIDDEN"},
+    )
+
+    # 清空 Blender 从上一次独立调用恢复的隐藏状态；Adjust Last Operation 只调用 execute，不受影响。
+    # 参数:
+    #     无；仅重置当前 Operator 实例的新调用状态。
+    def _reset_run_state(self):
+        self.active_bounds_source_name = ""
+        self.active_bounds_collection_name = ""
+        self.active_bounds_center = (0.0, 0.0, 0.0)
+        self.active_bounds_snapshot_valid = False
+        self.created_origin_collection_names = "[]"
+    # 返回锁定源 Object 所直接归属的 Prop Collection。
+    # 参数:
+    #     active_object: 首次调用时锁定的 Blender Object。
+    def _get_active_object_prop_collections(self, active_object):
+        if active_object is None or active_object.type != "MESH":
+            return []
+        return [
+            collection
+            for collection in active_object.users_collection
+            if Collection.get_hst_type(collection) == "PROP"
+        ]
+
+    # 首次调用时保存 Active Mesh 的 Bounds 中心和唯一 Prop Collection。
+    # 参数:
+    #     context: 当前 Blender Context，只在首次调用时读取 Active Object。
+    def _capture_active_bounds_snapshot(self, context):
+        if self.active_bounds_snapshot_valid:
+            return
+
+        active_object = context.active_object
+        if active_object is None or active_object.type != "MESH":
+            return
+        prop_collections = self._get_active_object_prop_collections(active_object)
+        if len(prop_collections) != 1:
+            return
+
+        self.active_bounds_source_name = active_object.name
+        self.active_bounds_collection_name = prop_collections[0].name
+        self.active_bounds_center = find_objs_bb_center([active_object])
+        self.active_bounds_snapshot_valid = True
+
+    # 返回本次 Operator 已创建过 Origin 的 Collection 名称集合。
+    # 参数:
+    #     无；数据来自隐藏 Operator 参数。
+    def _get_created_origin_collection_names(self):
+        return set(json.loads(self.created_origin_collection_names))
+
+    # 记录本次 Operator 新创建 Origin 的 Collection。
+    # 参数:
+    #     collection: 新建 Origin 所属的 Blender Collection。
+    def _mark_origin_created(self, collection):
+        collection_names = self._get_created_origin_collection_names()
+        collection_names.add(collection.name)
+        self.created_origin_collection_names = json.dumps(sorted(collection_names))
+
+    # 判断已有 Origin 是否属于本次 Operator 的重做结果。
+    # 参数:
+    #     collection: 待判断的 Blender Collection。
+    def _was_origin_created_by_this_run(self, collection):
+        return collection.name in self._get_created_origin_collection_names()
+
+    # 返回本次需要处理的 Prop Collection。
+    # 参数:
+    #     context: 当前 Blender Context，仅在快照尚未建立时读取。
+    def _get_target_collections(self, context):
+        if self.origin_mode != "ACTIVE_BOUNDS_CENTER":
+            return Collection.filter_hst_type(
+                collections=bpy.data.collections, type="PROP", mode="INCLUDE"
+            ) or []
+
+        self._capture_active_bounds_snapshot(context)
+        if not self.active_bounds_snapshot_valid:
+            self.report({"ERROR"}, "Active Object must be a Mesh in exactly one Prop Collection")
+            return []
+
+        target_collection = bpy.data.collections.get(self.active_bounds_collection_name)
+        if target_collection is None or Collection.get_hst_type(target_collection) != "PROP":
+            self.report({"ERROR"}, "Saved Active Object Prop Collection is no longer available")
+            return []
+        return [target_collection]
+
+    # 根据选定模式计算新 Origin 的世界位置。
+    # 参数:
+    #     context: 当前 Blender Context，仅在快照尚未建立时读取。
+    #     mesh_objects: 当前 Prop Collection 内用于计算中心的 Mesh 列表。
+    def _get_origin_location(self, context, mesh_objects):
+        if self.origin_mode == "WORLD_CENTER":
+            return Vector((0.0, 0.0, 0.0))
+        if self.origin_mode == "ACTIVE_BOUNDS_CENTER":
+            self._capture_active_bounds_snapshot(context)
+            return Vector(self.active_bounds_center)
+
+        pivots = [obj.matrix_world.translation for obj in mesh_objects]
+        return (
+            sum(pivots, Vector((0.0, 0.0, 0.0))) / len(pivots)
+            if pivots
+            else Vector((0.0, 0.0, 0.0))
+        )
+
+    # 将尚未归属当前 Origin 的 Mesh 设为 Child，同时保持世界变换不变。
+    # 参数:
+    #     mesh_objects: 当前 Prop Collection 内的 Mesh 列表。
+    #     origin_object: 作为 Parent 的 Asset Origin。
+    def _parent_mesh_objects(self, mesh_objects, origin_object):
+        for obj in mesh_objects:
+            if obj.parent == origin_object:
+                continue
+            original_world_matrix = obj.matrix_world.copy()
+            obj.parent = origin_object
+            obj.matrix_world = original_world_matrix
 
     def execute(self, context):
+        self._capture_active_bounds_snapshot(context)
+        prop_collections = self._get_target_collections(context)
+        if not prop_collections:
+            return {"CANCELLED"}
+
         is_local_view = Viewport.is_local_view()
-        new_origins_count = 0
         store_mode = prep_select_mode()
         selected_objects = Object.get_selected()
+        new_origins_count = 0
+        skipped_origins_count = 0
 
         if selected_objects:
             for obj in selected_objects:
                 obj.select_set(False)
 
-        prop_collections = Collection.filter_hst_type(
-            collections=bpy.data.collections, type="PROP", mode="INCLUDE"
-        )
-        if not prop_collections:
-            self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
-            return {"CANCELLED"}
-
         for collection in prop_collections:
-            collection_objs = [obj for obj in collection.all_objects]
-            if not collection_objs:
+            direct_objects = list(collection.objects)
+            mesh_objects = [obj for obj in collection.objects if obj.type == "MESH"]
+            if not mesh_objects:
                 continue
 
             existing_origin_objects = Object.filter_hst_type(
-                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
-            )
-
-            asset_objs = []
-            if existing_origin_objects:  # 处理 None 和空列表
-                for obj in collection_objs:
-                    if obj not in existing_origin_objects:
-                        asset_objs.append(obj)
-            else:
-                asset_objs = collection_objs
-
-            pivots = [obj.matrix_world.translation for obj in asset_objs if obj.type == "MESH"]
-
-            if existing_origin_objects:  # 处理 None 和空列表
-                new_asset_objs = []
-                for obj in asset_objs:
-                    if obj.parent is None:
-                        new_asset_objs.append(obj)
-                    else:
-                        if obj.parent != existing_origin_objects[0]:
-                            new_asset_objs.append(obj)
-                asset_objs = new_asset_objs
-                existing_origin_objects[0].name = ORIGIN_PREFIX + collection.name
+                objects=direct_objects, type="ORIGIN", mode="INCLUDE"
+            ) or []
+            if existing_origin_objects:
                 origin_object = existing_origin_objects[0]
-                self.report({"INFO"}, f"{collection.name} has Asset Origin already")
-            else:
-                origin_name = ORIGIN_PREFIX + collection.name
-                origin_object = bpy.data.objects.new(name=origin_name, object_data=None)
+                origin_object.name = ORIGIN_PREFIX + collection.name
+                origin_object.empty_display_type = "ARROWS"
+                origin_object.show_in_front = True
+                if self._was_origin_created_by_this_run(collection):
+                    origin_object.location = self._get_origin_location(context, mesh_objects)
+                else:
+                    skipped_origins_count += 1
+                    self.report({"INFO"}, f"{collection.name} already has Asset Origin")
+                if self.parent_objects_to_origin:
+                    self._parent_mesh_objects(mesh_objects, origin_object)
+                continue
 
-                if self.origin_mode == "COLLECTION_CENTER":
-                    origin_location = (
-                        sum(pivots, Vector((0, 0, 0))) / len(pivots) if pivots else Vector((0, 0, 0))
-                    )
-                elif self.origin_mode == "WORLD_CENTER":
-                    origin_location = Vector((0, 0, 0))
+            origin_object = bpy.data.objects.new(
+                name=ORIGIN_PREFIX + collection.name,
+                object_data=None,
+            )
+            origin_object.location = self._get_origin_location(context, mesh_objects)
+            origin_object.empty_display_type = "ARROWS"
+            origin_object.empty_display_size = 0.4
+            origin_object.show_name = True
+            origin_object.show_in_front = True
+            collection.objects.link(origin_object)
+            Object.mark_hst_type(origin_object, "ORIGIN")
+            self._mark_origin_created(collection)
+            new_origins_count += 1
 
-                origin_object.location = origin_location
-                origin_object.empty_display_type = "PLAIN_AXES"
-                origin_object.empty_display_size = 0.4
-                origin_object.show_name = True
-                collection.objects.link(origin_object)
-                Object.mark_hst_type(origin_object, "ORIGIN")
-                new_origins_count += 1
-
-            for object in asset_objs:
+            if self.parent_objects_to_origin:
                 if is_local_view:
                     bpy.ops.view3d.localview(frame_selected=False)
-                if object.type == "MESH":
-                    obj_loc_raw = object.location.copy()
-                    obj_loc = obj_loc_raw - origin_object.location
-                    object.parent = origin_object
-                    object.location = obj_loc
+                    is_local_view = False
+                self._parent_mesh_objects(mesh_objects, origin_object)
 
         restore_select_mode(store_mode)
-        self.report({"INFO"}, f"Added {new_origins_count} Asset Origins")
-
+        self.report(
+            {"INFO"},
+            f"Added {new_origins_count} Asset Origins; skipped {skipped_origins_count} existing",
+        )
         return {"FINISHED"}
 
     def invoke(self, context, event):
-        prop_collections = Collection.filter_hst_type(
-            collections=bpy.data.collections, type="PROP", mode="INCLUDE"
-        )
+        self._reset_run_state()
+        self._capture_active_bounds_snapshot(context)
+        prop_collections = self._get_target_collections(context)
         if not prop_collections:
-            self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
-            return {"CANCELLED"}
-
-        all_has_origin = True
-        for collection in prop_collections:
-            collection_objs = [obj for obj in collection.objects]
-            existing_origin_objects = Object.filter_hst_type(
-                objects=collection_objs, type="ORIGIN", mode="INCLUDE"
-            )
-            if not existing_origin_objects:
-                all_has_origin = False
-                break
-
-        if all_has_origin:
-            self.report({"INFO"}, "All prop collections already have Asset Origin")
+            if self.origin_mode != "ACTIVE_BOUNDS_CENTER":
+                self.report({"ERROR"}, "No Prop Collections, mark prop collections with 'Mark Prop' first")
             return {"CANCELLED"}
 
         return self.execute(context)
@@ -360,3 +481,4 @@ class HST_OT_BatchAddAssetOrigin(bpy.types.Operator):
         box_column = box.column()
         box_column.label(text="Choose Origin Location")
         box_column.prop(self, "origin_mode", expand=True)
+        box_column.prop(self, "parent_objects_to_origin")

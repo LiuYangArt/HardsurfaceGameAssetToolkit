@@ -47,6 +47,7 @@ from ..utils.transform_utils import (
     rotate_quaternion,
     get_selected_rotation_quat,
     temporarily_move_objects_to_world_center,
+    temporarily_export_relative_to_origin,
     Transform,
 )
 from ..utils.import_utils import import_node_group, import_world, import_object, remove_node, make_transfer_proxy_mesh
@@ -196,7 +197,7 @@ class FBXExport:
                 target.matrix_world = obj_transform[target]
 
 
-    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False):
+    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False, relative_origin=None):
         """导出 StaticMesh FBX"""
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
@@ -246,10 +247,19 @@ class FBXExport:
                 obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
         try:
-            with temporarily_move_objects_to_world_center(
-                export_objects,
-                enabled=move_objects_to_world_center,
-            ):
+            transform_context = (
+                temporarily_export_relative_to_origin(
+                    export_objects,
+                    relative_origin,
+                    enabled=relative_origin is not None,
+                )
+                if relative_origin is not None
+                else temporarily_move_objects_to_world_center(
+                    export_objects,
+                    enabled=move_objects_to_world_center,
+                )
+            )
+            with transform_context:
                 bpy.ops.export_scene.fbx(
                     filepath=file_path,
                     use_selection=True,
@@ -404,7 +414,7 @@ class GLBExport:
             for obj in obj_transform:
                 obj.matrix_world = obj_transform[obj]
 
-    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False):
+    def staticmesh(target, file_path: str, reset_transform=False, move_objects_to_world_center=False, relative_origin=None):
         """导出 StaticMesh GLB"""
         bpy.ops.object.select_all(action="DESELECT")
         export_objects = []
@@ -451,10 +461,19 @@ class GLBExport:
                 obj.rotation_quaternion = Quaternion((1, 0, 0, 0))
 
         try:
-            with temporarily_move_objects_to_world_center(
-                export_objects,
-                enabled=move_objects_to_world_center,
-            ):
+            transform_context = (
+                temporarily_export_relative_to_origin(
+                    export_objects,
+                    relative_origin,
+                    enabled=relative_origin is not None,
+                )
+                if relative_origin is not None
+                else temporarily_move_objects_to_world_center(
+                    export_objects,
+                    enabled=move_objects_to_world_center,
+                )
+            )
+            with transform_context:
                 GLBExport._export_selected(file_path)
         finally:
             for obj in hidden_objects:

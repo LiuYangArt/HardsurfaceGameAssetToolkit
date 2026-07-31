@@ -139,9 +139,9 @@ class UIParams(PropertyGroup):
         default="ALL",
     )
 
-    move_objects_to_world_center: BoolProperty(
-        name="Move Objects to World Center",
-        description="导出时将每个 Object 的世界坐标临时设为 (0, 0, 0)，完成后恢复",
+    export_relative_to_prop_origin: BoolProperty(
+        name="Export Relative to Prop Origin",
+        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
         default=False,
     )
 

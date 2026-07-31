@@ -14,7 +14,7 @@ from pathlib import Path
 
 import bpy
 import bmesh
-from mathutils import Vector
+from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
 
@@ -1142,7 +1142,7 @@ def test_staticmeshexport_options_persist_in_blend_regression(
 
     op_result = bpy.ops.hst.staticmeshexport(
         export_collection_type="STATIC_MESH",
-        move_objects_to_world_center=True,
+        export_relative_to_prop_origin=True,
     )
     ensure("FINISHED" in op_result, "Persistent export options operator did not finish")
     ensure(
@@ -1150,8 +1150,8 @@ def test_staticmeshexport_options_persist_in_blend_regression(
         "Collection Type was not copied to Scene parameters",
     )
     ensure(
-        params.move_objects_to_world_center is True,
-        "World-center option was not copied to Scene parameters",
+        params.export_relative_to_prop_origin is True,
+        "Prop Origin export option was not copied to Scene parameters",
     )
 
     bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
@@ -1164,10 +1164,10 @@ def test_staticmeshexport_options_persist_in_blend_regression(
         "Collection Type did not persist after reopening .blend",
     )
     ensure(
-        reopened_params.move_objects_to_world_center is True,
-        "World-center option did not persist after reopening .blend",
+        reopened_params.export_relative_to_prop_origin is True,
+        "Prop Origin export option did not persist after reopening .blend",
     )
-    result.add_detail("Static Mesh and world-center options persisted after reopening the saved .blend")
+    result.add_detail("Static Mesh and Prop Origin export options persisted after reopening the saved .blend")
 
 
 
@@ -1222,39 +1222,54 @@ def test_staticmeshexport_collection_type_filter_regression(test_context: TestCo
     result.add_detail("Prop, Decal, Bake, Static Mesh and Skeletal each exported only their target type")
 
 
-def test_staticmeshexport_world_center_restores_each_object_regression(
+def test_staticmeshexport_prop_origin_relative_transform_regression(
     test_context: TestContext,
     result: TestCaseResult,
 ):
-    collection = make_collection("WorldCenterExportCase")
+    collection = make_collection("PropOriginRelativeCase")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(collection, "PROP")
     first_object = make_test_mesh(
-        "WorldCenterFirst",
+        "PropOriginRelativeFirst",
         collection,
-        location=(3.0, 4.0, 5.0),
+        location=(7.0, 4.0, 2.0),
     )
     second_object = make_test_mesh(
-        "WorldCenterSecond",
+        "PropOriginRelativeSecond",
         collection,
-        location=(-6.0, 2.0, 8.0),
+        location=(10.0, 8.0, 5.0),
     )
-    origin_object = bpy.data.objects.new("WorldCenterOrigin", None)
+    first_object.rotation_euler = (0.2, -0.1, 0.5)
+    first_object.scale = (1.2, 0.8, 1.4)
+    second_object.rotation_euler = (-0.3, 0.4, -0.2)
+    second_object.scale = (0.7, 1.5, 0.9)
+
+    origin_object = bpy.data.objects.new("PropOriginRelativeOrigin", None)
     collection.objects.link(origin_object)
-    origin_object.location = (12.0, -3.0, 7.0)
-    bpy.context.view_layer.update()
+    origin_object.location = (5.0, 3.0, 1.0)
+    origin_object.rotation_euler = (0.0, 0.0, math.radians(90.0))
+    origin_object.scale = (4.0, 2.0, 3.0)
     test_context.addon.utils.object_utils.Object.mark_hst_type(origin_object, "ORIGIN")
-    for obj in (first_object, second_object):
-        original_world_matrix = obj.matrix_world.copy()
-        obj.parent = origin_object
-        obj.matrix_world = original_world_matrix
+    bpy.context.view_layer.update()
+
+    source_objects = (first_object, second_object)
     original_matrices = {
-        origin_object: origin_object.matrix_world.copy(),
-        first_object: first_object.matrix_world.copy(),
-        second_object: second_object.matrix_world.copy(),
+        obj: obj.matrix_world.copy()
+        for obj in (origin_object, *source_objects)
+    }
+    origin_location, origin_rotation, _origin_scale = origin_object.matrix_world.decompose()
+    origin_rigid_matrix = Matrix.LocRotScale(
+        origin_location,
+        origin_rotation,
+        Vector((1.0, 1.0, 1.0)),
+    )
+    expected_matrices = {
+        obj.name: origin_rigid_matrix.inverted_safe() @ obj.matrix_world.copy()
+        for obj in source_objects
     }
 
-    export_dir = ARTIFACT_DIR / "exports" / "world_center"
+    export_dir = ARTIFACT_DIR / "exports" / "prop_origin_relative"
     export_dir.mkdir(parents=True, exist_ok=True)
-    export_file = export_dir / "SM_WorldCenterExportCase.fbx"
+    export_file = export_dir / "SM_PropOriginRelativeCase.fbx"
     export_file.unlink(missing_ok=True)
 
     params = bpy.context.scene.hst_params
@@ -1263,15 +1278,20 @@ def test_staticmeshexport_world_center_restores_each_object_regression(
     params.file_prefix = ""
 
     op_result = bpy.ops.hst.staticmeshexport(
-        export_collection_type="STATIC_MESH",
-        move_objects_to_world_center=True,
+        export_collection_type="PROP",
+        export_relative_to_prop_origin=True,
     )
-    ensure("FINISHED" in op_result, "World-center StaticMesh export did not finish")
-    ensure(export_file.exists(), "World-center export file was not created")
+    ensure("FINISHED" in op_result, "Prop Origin relative export did not finish")
+    ensure(export_file.exists(), "Prop Origin relative export file was not created")
     for obj, original_matrix in original_matrices.items():
+        matrix_error = max(
+            abs(obj.matrix_world[row][column] - original_matrix[row][column])
+            for row in range(4)
+            for column in range(4)
+        )
         ensure(
-            obj.matrix_world == original_matrix,
-            f"{obj.name} transform was not restored: {tuple(obj.matrix_world.translation)} != {tuple(original_matrix.translation)}",
+            matrix_error < 1e-5,
+            f"{obj.name} transform was not restored after Prop Origin export: {matrix_error}",
         )
 
     bpy.ops.object.select_all(action="SELECT")
@@ -1279,16 +1299,66 @@ def test_staticmeshexport_world_center_restores_each_object_regression(
     bpy.ops.wm.fbx_import(filepath=str(export_file))
     imported_meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
     ensure(len(imported_meshes) == 2, f"Expected two imported Meshes, got {len(imported_meshes)}")
-    imported_locations = sorted(
-        tuple(round(value, 6) for value in obj.matrix_world.translation)
-        for obj in imported_meshes
+
+    for imported_object in imported_meshes:
+        expected_matrix = expected_matrices[imported_object.name]
+        imported_location, _imported_rotation, imported_scale = imported_object.matrix_world.decompose()
+        expected_location, _expected_rotation, expected_scale = expected_matrix.decompose()
+        ensure(
+            (imported_location - expected_location).length < 1e-4,
+            f"{imported_object.name} relative location changed: imported={tuple(imported_location)} expected={tuple(expected_location)}",
+        )
+        imported_scale_components = sorted(round(value, 6) for value in imported_scale)
+        expected_scale_components = sorted(round(value * 0.01, 6) for value in expected_scale)
+        ensure(
+            imported_scale_components == expected_scale_components,
+            f"{imported_object.name} scale changed by Origin scale: imported={imported_scale_components} expected_fbx={expected_scale_components}",
+        )
+
+
+    result.add_detail("Prop Origin Location/Rotation were removed as one rigid transform; source matrices restored")
+
+# 验证 Prop Origin 缺失或重复时的目标 Operator 边界行为。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_staticmeshexport_prop_origin_validation_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    missing_origin_collection = make_collection("MissingPropOriginCase")
+    multiple_origin_collection = make_collection("MultiplePropOriginCase")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(missing_origin_collection, "PROP")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(multiple_origin_collection, "PROP")
+    make_test_mesh("MissingPropOriginMesh", missing_origin_collection, location=(2.0, 3.0, 4.0))
+    make_test_mesh("MultiplePropOriginMesh", multiple_origin_collection, location=(6.0, 7.0, 8.0))
+
+    for index in range(2):
+        origin_object = bpy.data.objects.new(f"MultiplePropOrigin{index}", None)
+        multiple_origin_collection.objects.link(origin_object)
+        test_context.addon.utils.object_utils.Object.mark_hst_type(origin_object, "ORIGIN")
+
+    export_dir = ARTIFACT_DIR / "exports" / "prop_origin_validation"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for stale_file in export_dir.glob("*.fbx"):
+        stale_file.unlink()
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+    op_result = bpy.ops.hst.staticmeshexport(
+        export_collection_type="PROP",
+        export_relative_to_prop_origin=True,
+    )
+    ensure("FINISHED" in op_result, "Prop Origin validation export did not finish")
+    ensure(
+        (export_dir / "SM_MissingPropOriginCase.fbx").exists(),
+        "Prop without Origin was not exported unchanged",
     )
     ensure(
-        imported_locations == [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
-        f"Exported Objects were not individually at world center: {imported_locations}",
+        not (export_dir / "SM_MultiplePropOriginCase.fbx").exists(),
+        "Prop with multiple Origins was exported instead of skipped",
     )
-    result.add_detail("Both exported Objects imported at world (0, 0, 0); source matrices restored")
-
+    result.add_detail("Missing Origin exported unchanged; multiple Origins skipped")
 def test_staticmeshexport_current_scene_only_fbx(test_context: TestContext, result: TestCaseResult):
     current_collection = make_collection("CurrentSceneExportCase")
     make_test_mesh("CurrentSceneExportMesh", current_collection)
@@ -1460,6 +1530,154 @@ def test_origin_and_transform_smoke(test_context: TestContext, result: TestCaseR
     result.add_detail(f"Snapped location: {tuple(round(v, 4) for v in mesh_a.location)}")
 
 
+
+# 验证批量 Origin Operator 可从 Active Object 的 Bounding Box 中心创建独立 Origin。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_batch_asset_origin_active_bounds_without_parent_smoke(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    target_collection = make_collection("ActiveBoundsOriginCase")
+    other_collection = make_collection("OtherPropOriginCase")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(target_collection, "PROP")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(other_collection, "PROP")
+
+    active_mesh = make_test_mesh(
+        "ActiveBoundsMesh",
+        target_collection,
+        location=(4.0, -2.0, 3.0),
+    )
+    other_mesh = make_test_mesh(
+        "OtherPropMesh",
+        other_collection,
+        location=(20.0, 0.0, 0.0),
+    )
+    active_mesh.dimensions = (2.0, 4.0, 6.0)
+    bpy.context.view_layer.update()
+    original_world_matrix = active_mesh.matrix_world.copy()
+
+    select_objects(active_mesh, [active_mesh])
+    op_result = bpy.ops.hst.batch_add_asset_origin(
+        origin_mode="ACTIVE_BOUNDS_CENTER",
+        parent_objects_to_origin=False,
+    )
+    ensure("FINISHED" in op_result, "Active bounds Asset Origin operator did not finish")
+
+    origin_objects = test_context.addon.utils.object_utils.Object.filter_hst_type(
+        target_collection.objects,
+        "ORIGIN",
+        mode="INCLUDE",
+    )
+    ensure(len(origin_objects) == 1, f"Expected one direct Origin, got {len(origin_objects)}")
+    origin_object = origin_objects[0]
+    ensure(
+        origin_object.empty_display_type == "ARROWS",
+        f"Prop Origin display type is {origin_object.empty_display_type}, expected ARROWS",
+    )
+    ensure(origin_object.show_in_front is True, "Prop Origin is not displayed In Front")
+    ensure(
+        (origin_object.matrix_world.translation - Vector((4.0, -2.0, 3.0))).length < 1e-6,
+        f"Origin was not created at Active Object bounds center: {tuple(origin_object.matrix_world.translation)}",
+    )
+    ensure(active_mesh.parent is None, "Active Object was parented when parenting was disabled")
+    ensure(active_mesh.matrix_world == original_world_matrix, "Active Object transform changed")
+    ensure(
+        not test_context.addon.utils.object_utils.Object.filter_hst_type(
+            other_collection.objects,
+            "ORIGIN",
+            mode="INCLUDE",
+        ),
+        "Active bounds mode modified another Prop Collection",
+    )
+
+    origin_object.location = (0.0, 0.0, 0.0)
+    select_objects(other_mesh, [other_mesh])
+    redo_result = bpy.ops.hst.batch_add_asset_origin(
+        origin_mode="ACTIVE_BOUNDS_CENTER",
+        parent_objects_to_origin=False,
+        active_bounds_source_name=active_mesh.name,
+        active_bounds_collection_name=target_collection.name,
+        active_bounds_center=(4.0, -2.0, 3.0),
+        active_bounds_snapshot_valid=True,
+        created_origin_collection_names=json.dumps([target_collection.name]),
+    )
+    ensure("FINISHED" in redo_result, "Active bounds redo did not finish")
+    redo_origins = test_context.addon.utils.object_utils.Object.filter_hst_type(
+        target_collection.objects,
+        "ORIGIN",
+        mode="INCLUDE",
+    )
+    ensure(len(redo_origins) == 1, "Redo no longer targeted the saved Prop Collection")
+    redo_origin = redo_origins[0]
+    redo_location = redo_origin.matrix_world.translation
+    ensure(
+        (redo_location - Vector((4.0, -2.0, 3.0))).length < 1e-6,
+        f"Redo recalculated from current Active Object: {tuple(redo_location)}",
+    )
+    ensure(redo_origin.show_in_front is True, "Redo disabled Prop Origin In Front")
+    ensure(
+        not test_context.addon.utils.object_utils.Object.filter_hst_type(
+            other_collection.objects,
+            "ORIGIN",
+            mode="INCLUDE",
+        ),
+        "Redo created the Origin in the current Active Object's Collection",
+    )
+    ensure(other_mesh.parent is None, "Unrelated Prop Object parenting changed")
+    result.add_detail("Adjust Last Operation kept ActiveBoundsMesh as the bounds source")
+
+
+# 验证两个同属父级 Collection 的 Prop 可连续按各自 Active Object 创建 Origin。
+# test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
+def test_batch_asset_origin_resets_active_snapshot_between_invocations_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    parent_collection = make_collection("NestedPropParentCase")
+    mon_a_collection = bpy.data.collections.new("NestedMonA")
+    mon_b_collection = bpy.data.collections.new("NestedMonB")
+    parent_collection.children.link(mon_a_collection)
+    parent_collection.children.link(mon_b_collection)
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(mon_a_collection, "PROP")
+    test_context.addon.utils.collection_utils.Collection.mark_hst_type(mon_b_collection, "PROP")
+
+    mon_a_mesh = make_test_mesh("NestedMonAMesh", mon_a_collection, location=(-6.0, 1.0, 2.0))
+    mon_b_mesh = make_test_mesh("NestedMonBMesh", mon_b_collection, location=(8.0, -3.0, 4.0))
+    mon_a_mesh.dimensions = (2.0, 2.0, 2.0)
+    mon_b_mesh.dimensions = (4.0, 6.0, 8.0)
+    bpy.context.view_layer.update()
+
+    select_objects(mon_a_mesh, [mon_a_mesh])
+    mon_a_result = bpy.ops.hst.batch_add_asset_origin(
+        "INVOKE_DEFAULT",
+        origin_mode="ACTIVE_BOUNDS_CENTER",
+        parent_objects_to_origin=False,
+    )
+    ensure("FINISHED" in mon_a_result, "MonA Origin invocation did not finish")
+
+    select_objects(mon_b_mesh, [mon_b_mesh])
+    mon_b_result = bpy.ops.hst.batch_add_asset_origin(
+        "INVOKE_DEFAULT",
+        origin_mode="ACTIVE_BOUNDS_CENTER",
+        parent_objects_to_origin=False,
+    )
+    ensure("FINISHED" in mon_b_result, "MonB Origin invocation reused MonA state or was cancelled")
+
+    mon_a_origins = test_context.addon.utils.object_utils.Object.filter_hst_type(
+        mon_a_collection.objects, "ORIGIN", mode="INCLUDE"
+    )
+    mon_b_origins = test_context.addon.utils.object_utils.Object.filter_hst_type(
+        mon_b_collection.objects, "ORIGIN", mode="INCLUDE"
+    )
+    ensure(len(mon_a_origins) == 1, f"MonA Origin count changed: {len(mon_a_origins)}")
+    ensure(len(mon_b_origins) == 1, f"MonB Origin was not created: {len(mon_b_origins)}")
+    ensure(
+        (mon_b_origins[0].matrix_world.translation - Vector((8.0, -3.0, 4.0))).length < 1e-6,
+        f"MonB Origin reused MonA bounds: {tuple(mon_b_origins[0].matrix_world.translation)}",
+    )
+    ensure(mon_b_origins[0].empty_display_type == "ARROWS", "MonB Origin is not displayed as Arrows")
+    ensure(mon_b_origins[0].show_in_front is True, "MonB Origin is not displayed In Front")
+    result.add_detail("Nested MonA and MonB received independent Active Object bounds Origins")
 
 def test_collection_markers_smoke(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
@@ -3344,7 +3562,7 @@ def test_gn_preview_junction_endpoint_containment_score_contract(
     result: TestCaseResult,
 ):
     utils = test_context.addon.utils.experimental_pipe_chamfer_utils
-    from mathutils import Vector
+    from mathutils import Matrix, Vector
 
     class HalfSpaceBVH:
         def find_nearest(self, point):
@@ -4216,13 +4434,16 @@ def main():
     context.run_case("ao_bake_operator_smoke", test_ao_bake_operator_smoke)
     context.run_case("wearmask_proxy_topology_matches_transfer_target", test_wearmask_proxy_topology_matches_transfer_target)
     context.run_case("origin_and_transform_smoke", test_origin_and_transform_smoke)
+    context.run_case("batch_asset_origin_active_bounds_without_parent_smoke", test_batch_asset_origin_active_bounds_without_parent_smoke)
+    context.run_case("batch_asset_origin_resets_active_snapshot_between_invocations_regression", test_batch_asset_origin_resets_active_snapshot_between_invocations_regression)
     context.run_case("collection_markers_smoke", test_collection_markers_smoke)
     context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
     context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_collection_type_filter_regression", test_staticmeshexport_collection_type_filter_regression)
     context.run_case("staticmeshexport_options_persist_in_blend_regression", test_staticmeshexport_options_persist_in_blend_regression)
-    context.run_case("staticmeshexport_world_center_restores_each_object_regression", test_staticmeshexport_world_center_restores_each_object_regression)
+    context.run_case("staticmeshexport_prop_origin_relative_transform_regression", test_staticmeshexport_prop_origin_relative_transform_regression)
+    context.run_case("staticmeshexport_prop_origin_validation_regression", test_staticmeshexport_prop_origin_validation_regression)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)
     context.run_case("staticmeshexport_cat_meshgroup_instance_fbx", test_staticmeshexport_cat_meshgroup_instance_fbx)
     context.run_case("prepare_cad_mesh_sets_ue_centimeter_units", test_prepare_cad_mesh_sets_ue_centimeter_units)

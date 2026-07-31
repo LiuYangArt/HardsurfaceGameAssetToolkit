@@ -399,9 +399,9 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         items=EXPORT_COLLECTION_TYPE_ITEMS,
         default="ALL",
     )
-    move_objects_to_world_center: bpy.props.BoolProperty(
-        name="Move Objects to World Center",
-        description="导出时将每个 Object 的世界坐标临时设为 (0, 0, 0)，完成后恢复",
+    export_relative_to_prop_origin: bpy.props.BoolProperty(
+        name="Export Relative to Prop Origin",
+        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
         default=False,
     )
 #TODO: 增加对GPro Instance的支持， 增加对MeshGroupInstance的支持
@@ -412,7 +412,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             return {"CANCELLED"}
         parameters = context.scene.hst_params
         self.export_collection_type = parameters.export_collection_type
-        self.move_objects_to_world_center = parameters.move_objects_to_world_center
+        self.export_relative_to_prop_origin = parameters.export_relative_to_prop_origin
         return self.execute(context)
 
     def draw(self, context):
@@ -420,14 +420,14 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         box = layout.box()
         box_column = box.column()
         box_column.prop(self, "export_collection_type")
-        box_column.prop(self, "move_objects_to_world_center")
+        box_column.prop(self, "export_relative_to_prop_origin")
 
     def execute(self, context):
         scene_objects = context.scene.objects #只导出当前 Scene 内的物体
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
         parameters.export_collection_type = self.export_collection_type
-        parameters.move_objects_to_world_center = self.move_objects_to_world_center
+        parameters.export_relative_to_prop_origin = self.export_relative_to_prop_origin
         file_prefix = parameters.file_prefix
         export_format = parameters.export_format
         export_ext, _, staticmesh_exporter, skeletal_exporter = resolve_export_targets(export_format)
@@ -533,20 +533,13 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
 
 
         if len(target_collections) > 0:
-            # save origin objects transform and move to world origin
-            origin_transform = {}
             invisible_origin_colls=[]
             for collection in target_collections:
-                origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+                origin_objects=Object.filter_hst_type(objects=collection.objects,type="ORIGIN",mode="INCLUDE")
 
-                if origin_objects:
+                if len(origin_objects) == 1:
                     origin_obj=origin_objects[0]
                     origin_visibility=origin_obj.visible_get()
-                    # print(f"{collection.name} origin {origin_obj} vis: {origin_visibility}")
-                    if not self.move_objects_to_world_center:
-                        origin_transform[origin_obj] = origin_obj.matrix_world.copy()
-                        origin_obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
-                    
                     if origin_visibility is False:
                         if collection.children:
                             for child_coll in collection.children:
@@ -563,17 +556,32 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                 new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                 file_path = export_path + new_name + export_ext
                 print(f"exporting {collection.name} to {file_path}")
+                relative_origin = None
+                if (
+                    self.export_relative_to_prop_origin
+                    and Collection.get_hst_type(collection) == "PROP"
+                ):
+                    origin_objects = Object.filter_hst_type(
+                        objects=collection.objects,
+                        type="ORIGIN",
+                        mode="INCLUDE",
+                    ) or []
+                    if len(origin_objects) == 1:
+                        relative_origin = origin_objects[0]
+                    elif len(origin_objects) == 0:
+                        self.report({"WARNING"}, f"{collection.name}: no Prop Origin, exported unchanged")
+                    else:
+                        self.report({"WARNING"}, f"{collection.name}: multiple Prop Origins, skipped")
+                        continue
+
                 staticmesh_exporter(
                     collection,
                     file_path,
-                    move_objects_to_world_center=self.move_objects_to_world_center,
+                    relative_origin=relative_origin,
                 )
                 export_count += 1
 
 
-            if len(origin_transform)>0: #reset origin transform
-                for origin_obj in origin_transform:
-                    origin_obj.matrix_world=origin_transform[origin_obj]
 
         for instance_object, modifier, source_collection in meshgroup_export_targets:
             export_cat_meshgroup_instance(
@@ -600,7 +608,7 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                         mesh,
                         file_path,
                         reset_transform=True,
-                        move_objects_to_world_center=self.move_objects_to_world_center,
+                        move_objects_to_world_center=False,
                     )
                     # mesh.select_set(True)
         if len(rig_collections) > 0:
