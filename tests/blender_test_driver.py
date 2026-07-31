@@ -455,6 +455,44 @@ def _mesh_fingerprint(obj):
     return fingerprint
 
 
+# 返回与产品矩阵相同的规范化输出几何指纹和统计。
+# obj: Feature Chamfer 最终 Mesh Object；用于对照冻结 oracle。
+def _output_geometry_contract(obj):
+    mesh = obj.data
+    vertex_coordinates = {
+        vertex.index: tuple(round(component, 9) for component in vertex.co)
+        for vertex in mesh.vertices
+    }
+    chamfer_attribute = mesh.attributes.get("hst_feature_chamfer_face")
+    chamfer_face_count = sum(
+        bool(item.value) for item in chamfer_attribute.data
+    ) if chamfer_attribute is not None else 0
+    payload = {
+        "vertices": sorted(
+            list(vertex_coordinates[vertex.index])
+            for vertex in mesh.vertices
+        ),
+        "edges": sorted(
+            sorted(vertex_coordinates[index] for index in edge.vertices)
+            for edge in mesh.edges
+        ),
+        "faces": sorted(
+            sorted(vertex_coordinates[index] for index in polygon.vertices)
+            for polygon in mesh.polygons
+        ),
+        "chamfer_face_count": chamfer_face_count,
+    }
+    return {
+        "fingerprint": hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "vertex_count": len(mesh.vertices),
+        "edge_count": len(mesh.edges),
+        "face_count": len(mesh.polygons),
+        "chamfer_face_count": chamfer_face_count,
+    }
+
+
 # 把 Object/Modifier ID Property 转成可稳定比较的普通值。
 # value: Blender ID Property 值；返回递归规范化后的标量、列表或字典。
 def _stable_id_property_value(value):
@@ -6988,6 +7026,11 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         node_group.get("hst_feature_chamfer_preview_backend") == "PYTHON_CURVE_PIPE",
         "Preview wrapper does not use the Python Curve Pipe backend",
     )
+    ensure(
+        node_group.get("hst_feature_chamfer_pre_boolean_backend")
+        == "PYTHON_MESH_ATTRIBUTES_V1",
+        "Preview wrapper does not use the Python pre-Boolean attribute backend",
+    )
 
 
     ensure(node_group.bl_idname == "GeometryNodeTree", "Preview asset has wrong node tree type")
@@ -6996,14 +7039,11 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         == test_context.const.FEATURE_CHAMFER_GN_ASSET_VERSION,
         "Preview asset version mismatch",
     )
-    curve_pipe_nodes = [
-        node
-        for node in node_group.nodes
-        if node.bl_idname == "GeometryNodeGroup"
-        and node.node_tree is not None
-        and node.node_tree.name == test_context.const.FEATURE_CHAMFER_CURVE_NODE
-    ]
-    ensure(len(curve_pipe_nodes) == 1, "Preview wrapper does not reference the controlled Curve Pipe asset")
+    ensure(
+        int(node_group.get("hst_feature_chamfer_pre_boolean_node_count", -1)) == 3
+        and int(node_group.get("hst_feature_chamfer_pre_boolean_link_count", -1)) == 3,
+        "Python pre-Boolean input scale is not fixed",
+    )
     boolean_pro_nodes = [
         node
         for node in node_group.nodes
@@ -7031,8 +7071,8 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
     ensure(
         len(source_geometry_links) == 1
         and source_geometry_links[0].from_node.bl_idname
-        == "GeometryNodeStoreNamedAttribute",
-        "Source Geometry does not reach Boolean Pro through the Patch attribute chain",
+        == "GeometryNodeObjectInfo",
+        "Source Geometry does not reach Boolean Pro through the Python Mesh input",
     )
     cutter_geometry_links = [
         link
@@ -7043,8 +7083,8 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
     ensure(
         len(cutter_geometry_links) == 1
         and cutter_geometry_links[0].from_node.bl_idname
-        == "GeometryNodeStoreNamedAttribute",
-        "Curve Pipe cutter does not reach Boolean Pro through the grouping attribute chain",
+        == "GeometryNodeObjectInfo",
+        "Cutter does not reach Boolean Pro through the Python Mesh input",
     )
     ensure(
         bpy.data.node_groups.get(test_context.const.FEATURE_CHAMFER_CURVE_DEPENDENCY)
@@ -7060,6 +7100,23 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
         ),
         "Preview wrapper does not consume its Python Curve source",
     )
+    ensure(
+        not any(
+            node.bl_idname == "GeometryNodeStoreNamedAttribute"
+            and node.inputs.get("Name") is not None
+            and str(node.inputs["Name"].default_value).startswith((
+                "hst_feature_chamfer_pipe_member_",
+                "hst_feature_chamfer_segment_point_",
+                "hst_feature_chamfer_segment_station_point_",
+                "hst_feature_chamfer_segment_face_",
+                "hst_feature_chamfer_segment_station_face_",
+                "hst_feature_chamfer_segment_station_squared_face_",
+                "hst_feature_chamfer_boundary_patch_",
+            ))
+            for node in node_group.nodes
+        ),
+        "Preview wrapper still contains dynamic pre-Boolean owner stores",
+    )
     second_result, second_modifier = run_feature_chamfer_gn(source, action="PREVIEW")
     ensure(second_result == {"FINISHED"}, f"Second Preview failed: {second_result}")
     ensure(first_modifier == second_modifier, "Repeated Preview stacked a modifier")
@@ -7072,17 +7129,17 @@ def test_gn_preview_asset_import_exact_and_idempotent(test_context: TestContext,
 # modifier: 目标 Operator 创建的 owned GN modifier；返回 profile 诊断字典。
 def preview_profile_contract(modifier):
     node_group = modifier.node_group
-    curve_circle = node_group.nodes.get("HST Four-sided Chamfer Profile")
-    ensure(curve_circle is not None, "Formal Preview wrapper has no owned profile node")
-    radius_linked = any(
-        link.to_node == curve_circle
-        and link.to_socket.name == "Radius"
-        and link.from_socket.name == "Radius"
-        for link in node_group.links
+    cutter_object = bpy.data.objects.get(
+        node_group.get("hst_feature_chamfer_cutter_input_object", "")
     )
+    ensure(cutter_object is not None, "Formal Preview wrapper has no Python cutter input")
     return {
-        "resolution": int(curve_circle.inputs["Resolution"].default_value),
-        "radius_linked_directly": radius_linked,
+        "resolution": int(node_group.get("hst_feature_chamfer_profile_resolution", -1)),
+        "radius_linked_directly": abs(
+            float(node_group.get("hst_feature_chamfer_profile_radius", -1.0))
+            - float(modifier[node_input_identifier(node_group, "Radius")])
+        ) <= 1.0e-8,
+        "python_mesh_input": cutter_object.type == "MESH",
     }
 
 
@@ -7225,13 +7282,9 @@ def test_gn_preview_operator_curve_backend_acceptance(
         "Preview modifier still uses the legacy SDF backend",
     )
     ensure(
-        any(
-            node.bl_idname == "GeometryNodeGroup"
-            and node.node_tree is not None
-            and node.node_tree.name == test_context.const.FEATURE_CHAMFER_CURVE_NODE
-            for node in modifier.node_group.nodes
-        ),
-        "Preview Node Group does not reference the controlled Even-Thickness asset",
+        modifier.node_group.get("hst_feature_chamfer_pre_boolean_backend")
+        == "PYTHON_MESH_ATTRIBUTES_V1",
+        "Preview did not replace the old dynamic pre-Boolean producer",
     )
     ensure(
         any(
@@ -7511,7 +7564,11 @@ def test_gn_preview_operator_uses_four_sided_profile(
     ensure(operator_result == {"FINISHED"} and modifier is not None, "Four-sided Preview failed")
     profile_contract = preview_profile_contract(modifier)
     ensure(
-        profile_contract == {"resolution": 4, "radius_linked_directly": True},
+        profile_contract == {
+            "resolution": 4,
+            "radius_linked_directly": True,
+            "python_mesh_input": True,
+        },
         f"Formal Preview profile is not a radius-calibrated four-sided cutter: {profile_contract}",
     )
     cutter_guard = evaluated_preview_mesh_guard(source)
@@ -8182,6 +8239,13 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
         and stats.get("temporary_preview_removed") is True,
         "One-step runtime did not preserve the accepted geometry backend",
     )
+    ensure(
+        not any(
+            obj.get("hst_feature_chamfer_python_pre_boolean_input")
+            for obj in bpy.data.objects
+        ),
+        "One-step operation left Python pre-Boolean input Objects",
+    )
     cutter_object = bpy.data.objects.get(stats.get("cutter_object_name", ""))
     ensure(
         cutter_object is not None
@@ -8195,6 +8259,75 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
         "One-step Operator left an internal runtime Object",
     )
     result.add_detail("One-step Radius/Keep Cutter RNA, output, and runtime cleanup verified")
+
+
+# 验证正式一步入口在最复杂代表样本上同时满足冻结结果与阶段预算。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    load_fixture_blend("feature-chamfer-topology-defect-mixed.blend")
+    source = bpy.data.objects.get("Extruded.002")
+    ensure(source is not None, "Mixed fixture source is missing")
+    source_hash = _mesh_fingerprint(source)
+    source_state = _source_object_state(source)
+    operator_result, output = run_feature_chamfer_one_step(
+        source,
+        radius=0.01,
+        show_cutter=False,
+    )
+    ensure(
+        operator_result == {"FINISHED"} and output is not None and output is not source,
+        f"Mixed formal one-step run failed: {operator_result}",
+    )
+    ensure(_mesh_fingerprint(source) == source_hash, "Mixed formal run changed source Mesh")
+    ensure(_source_object_state(source) == source_state, "Mixed formal run changed source Object state")
+    output_contract = _output_geometry_contract(output)
+    ensure(
+        output_contract == {
+            "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
+            "vertex_count": 3922,
+            "edge_count": 8054,
+            "face_count": 4134,
+            "chamfer_face_count": 3454,
+        },
+        f"Mixed formal output drifted from the frozen oracle: {output_contract}",
+    )
+    mesh_analysis = bmesh.new()
+    mesh_analysis.from_mesh(output.data)
+    ensure(
+        not any(len(edge.link_faces) != 2 for edge in mesh_analysis.edges)
+        and not any(face.calc_area() <= 1.0e-12 for face in mesh_analysis.faces),
+        "Mixed formal output is not a clean closed Mesh",
+    )
+    mesh_analysis.free()
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        stats.get("pre_boolean_backend") == "PYTHON_MESH_ATTRIBUTES_V1"
+        and stats.get("pre_boolean_node_count") == 3
+        and stats.get("pre_boolean_link_count") == 3,
+        f"Mixed formal runtime did not use the fixed Python producer: {stats}",
+    )
+    ensure(
+        float(stats.get("pre_boolean_producer_seconds", 999.0)) <= 1.0,
+        "Mixed formal Python producer exceeded its 1.0s stage budget: "
+        f"{stats.get('pre_boolean_producer_seconds')}",
+    )
+    ensure(
+        not any(
+            obj.get("hst_feature_chamfer_python_pre_boolean_input")
+            for obj in bpy.data.objects
+        ),
+        "Mixed formal run left Python pre-Boolean input Objects",
+    )
+    result.add_detail(
+        "Mixed formal oracle matched; "
+        f"total={stats['total_seconds']:.3f}s, "
+        f"producer={stats['pre_boolean_producer_seconds']:.3f}s, "
+        f"preview={stats['preview_seconds']:.3f}s, "
+        f"bridge/fill={stats['bridge_fill_seconds']:.3f}s"
+    )
 
 
 # 验证结果与 Cutter 已创建后的异常会回收整个事务，不留下半成品或 Preview。
@@ -13037,6 +13170,10 @@ def main():
     context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
+    context.run_case(
+        "feature_chamfer_python_pre_boolean_mixed_formal_regression",
+        test_feature_chamfer_python_pre_boolean_mixed_formal_regression,
+    )
     context.run_case(
         "feature_chamfer_single_operator_failure_rolls_back_transaction",
         test_feature_chamfer_single_operator_failure_rolls_back_transaction,

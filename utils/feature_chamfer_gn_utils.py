@@ -3,6 +3,8 @@
 
 import hashlib
 import json
+import struct
+import time
 
 import bpy
 
@@ -61,6 +63,7 @@ SEGMENT_STATION_SQUARED_BOUNDARY_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_b
 SEGMENT_STATION_BOUNDARY_POINT_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_station_point_"
 SOURCE_PATCH_ATTRIBUTE_PREFIX = "hst_feature_chamfer_boundary_patch_"
 OWNED_BOOLEAN_PRO_TAG = "hst_feature_chamfer_owned_boolean_pro"
+PYTHON_PRE_BOOLEAN_INPUT_TAG = "hst_feature_chamfer_python_pre_boolean_input"
 
 
 class FeatureChamferPreviewError(RuntimeError):
@@ -727,6 +730,307 @@ def _store_source_patch_attributes(node_group, source_socket, source_object):
     return current_geometry, tuple(sorted(patch_face_indices))
 
 
+# value: Python 数值；返回 float32 往返值，用于复刻 Geometry Nodes Math field 精度。
+def _float32(value):
+    return struct.unpack(">f", struct.pack(">f", float(value)))[0]
+
+
+# mesh/name/domain/data_type/values: 在 Mesh 上新建并批量写入标量 attribute；无返回值。
+def _write_scalar_attribute(mesh, name, domain, data_type, values):
+    existing = mesh.attributes.get(name)
+    if existing is not None:
+        mesh.attributes.remove(existing)
+    attribute = mesh.attributes.new(name=name, type=data_type, domain=domain)
+    attribute.data.foreach_set("value", values)
+
+
+# mesh: Cutter Mesh；返回按共享 Vertex 连通并按 Face index 排序的 component 记录。
+def _cutter_face_components(mesh):
+    faces_by_vertex = [[] for _ in mesh.vertices]
+    for polygon in mesh.polygons:
+        for vertex_index in polygon.vertices:
+            faces_by_vertex[vertex_index].append(polygon.index)
+    unseen = set(range(len(mesh.polygons)))
+    components = []
+    while unseen:
+        pending = [min(unseen)]
+        unseen.remove(pending[0])
+        face_indices = []
+        vertex_indices = set()
+        while pending:
+            face_index = pending.pop()
+            face_indices.append(face_index)
+            for vertex_index in mesh.polygons[face_index].vertices:
+                vertex_indices.add(vertex_index)
+                for neighbor_index in faces_by_vertex[vertex_index]:
+                    if neighbor_index in unseen:
+                        unseen.remove(neighbor_index)
+                        pending.append(neighbor_index)
+        components.append({
+            "face_indices": sorted(face_indices),
+            "vertex_indices": sorted(vertex_indices),
+        })
+    return sorted(components, key=lambda item: item["face_indices"][0])
+
+
+# factor/start/end/cyclic: 复刻旧 segment station field 的 float32 运算次序；返回局部 station。
+def _python_segment_station(factor, start, end, cyclic):
+    if cyclic:
+        return _float32(factor)
+    adjusted_factor = _float32(factor)
+    adjusted_end = _float32(end)
+    if adjusted_end < start:
+        if adjusted_factor < start:
+            adjusted_factor = _float32(adjusted_factor + 1.0)
+        adjusted_end = _float32(adjusted_end + 1.0)
+    span = _float32(adjusted_end - start)
+    if span <= 0.0:
+        raise FeatureChamferPreviewError("Python segment station span 无效")
+    return _float32(_float32(adjusted_factor - start) / span)
+
+
+# curve_object: 用固定规模 Spline Parameter field 读取每个 Curve Point 的权威 Factor；返回顺序值列表。
+def _evaluate_curve_point_factors(curve_object):
+    factor_group = bpy.data.node_groups.new(
+        "HST Feature Chamfer Python Factor Field",
+        "GeometryNodeTree",
+    )
+    object_group = bpy.data.node_groups.new(
+        "HST Feature Chamfer Python Factor Input",
+        "GeometryNodeTree",
+    )
+    host_mesh = bpy.data.meshes.new("HST Feature Chamfer Python Factor Host")
+    host_object = bpy.data.objects.new(host_mesh.name, host_mesh)
+    evaluated_mesh = None
+    try:
+        factor_group.interface.new_socket(
+            name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+        )
+        factor_group.interface.new_socket(
+            name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+        )
+        group_input = factor_group.nodes.new("NodeGroupInput")
+        group_output = factor_group.nodes.new("NodeGroupOutput")
+        spline_parameter = factor_group.nodes.new("GeometryNodeSplineParameter")
+        store = factor_group.nodes.new("GeometryNodeStoreNamedAttribute")
+        store.data_type = "FLOAT"
+        store.domain = "POINT"
+        store.inputs["Name"].default_value = "hst_feature_chamfer_python_factor"
+        factor_group.links.new(group_input.outputs["Geometry"], store.inputs["Geometry"])
+        factor_group.links.new(spline_parameter.outputs["Factor"], store.inputs["Value"])
+        factor_group.links.new(store.outputs["Geometry"], group_output.inputs["Geometry"])
+        object_group.interface.new_socket(
+            name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+        )
+        object_info = object_group.nodes.new("GeometryNodeObjectInfo")
+        object_info.inputs["Object"].default_value = curve_object
+        factor_node = object_group.nodes.new("GeometryNodeGroup")
+        factor_node.node_tree = factor_group
+        curve_to_mesh = object_group.nodes.new("GeometryNodeCurveToMesh")
+        object_output = object_group.nodes.new("NodeGroupOutput")
+        object_group.links.new(object_info.outputs["Geometry"], factor_node.inputs["Geometry"])
+        object_group.links.new(factor_node.outputs["Geometry"], curve_to_mesh.inputs["Curve"])
+        object_group.links.new(curve_to_mesh.outputs["Mesh"], object_output.inputs["Geometry"])
+        bpy.context.scene.collection.objects.link(host_object)
+        modifier = host_object.modifiers.new("HST Feature Chamfer Python Factor", "NODES")
+        modifier.node_group = object_group
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        depsgraph.update()
+        evaluated_mesh = bpy.data.meshes.new_from_object(
+            host_object.evaluated_get(depsgraph),
+            preserve_all_data_layers=True,
+            depsgraph=depsgraph,
+        )
+        attribute = evaluated_mesh.attributes.get("hst_feature_chamfer_python_factor")
+        if attribute is None:
+            raise FeatureChamferPreviewError("无法读取 Curve Spline Parameter")
+        return [float(item.value) for item in attribute.data]
+    finally:
+        if evaluated_mesh is not None and evaluated_mesh.users == 0:
+            bpy.data.meshes.remove(evaluated_mesh)
+        if bpy.data.objects.get(host_object.name) == host_object:
+            bpy.data.objects.remove(host_object, do_unlink=True)
+        if host_mesh.users == 0:
+            bpy.data.meshes.remove(host_mesh)
+        if object_group.users == 0:
+            bpy.data.node_groups.remove(object_group)
+        if factor_group.users == 0:
+            bpy.data.node_groups.remove(factor_group)
+
+
+# curve_object/curve_pipe_asset/radius: 用固定 4-node Curve-to-Mesh 路径生成无逐 segment GN 的 Cutter Mesh。
+def _evaluate_geometry_only_cutter(curve_object, curve_pipe_asset, radius):
+    node_group = bpy.data.node_groups.new(
+        "HST Feature Chamfer Geometry Only Cutter",
+        "GeometryNodeTree",
+    )
+    host_mesh = bpy.data.meshes.new("HST Feature Chamfer Cutter Host")
+    host_object = bpy.data.objects.new(host_mesh.name, host_mesh)
+    try:
+        node_group.interface.new_socket(
+            name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+        )
+        object_info = node_group.nodes.new("GeometryNodeObjectInfo")
+        object_info.inputs["Object"].default_value = curve_object
+        profile = node_group.nodes.new("GeometryNodeCurvePrimitiveCircle")
+        profile.inputs["Resolution"].default_value = 4
+        profile.inputs["Radius"].default_value = radius
+        curve_pipe = node_group.nodes.new("GeometryNodeGroup")
+        curve_pipe.node_tree = curve_pipe_asset
+        curve_pipe.inputs["Fill Caps"].default_value = True
+        curve_pipe.inputs["Even-Thickness"].default_value = True
+        output = node_group.nodes.new("NodeGroupOutput")
+        node_group.links.new(object_info.outputs["Geometry"], curve_pipe.inputs["Curve"])
+        node_group.links.new(profile.outputs["Curve"], curve_pipe.inputs["Profile Curve"])
+        node_group.links.new(curve_pipe.outputs["Geometry"], output.inputs["Geometry"])
+        bpy.context.scene.collection.objects.link(host_object)
+        modifier = host_object.modifiers.new("HST Feature Chamfer Cutter", "NODES")
+        modifier.node_group = node_group
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        depsgraph.update()
+        return bpy.data.meshes.new_from_object(
+            host_object.evaluated_get(depsgraph),
+            preserve_all_data_layers=True,
+            depsgraph=depsgraph,
+        )
+    finally:
+        if bpy.data.objects.get(host_object.name) == host_object:
+            bpy.data.objects.remove(host_object, do_unlink=True)
+        if host_mesh.users == 0:
+            bpy.data.meshes.remove(host_mesh)
+        if node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
+
+
+# mesh/source_object: 用 Python 在 source FACE 域批量写完整 Patch one-hot；返回 Patch ID tuple。
+def _write_source_patch_attributes_python(mesh, source_object):
+    patch_ids = _source_face_patch_ids(source_object)
+    unique_patch_ids = tuple(sorted(set(int(value) for value in patch_ids)))
+    for patch_id in unique_patch_ids:
+        _write_scalar_attribute(
+            mesh,
+            SOURCE_PATCH_ATTRIBUTE_PREFIX + str(patch_id),
+            "FACE",
+            "BOOLEAN",
+            [int(value) == patch_id for value in patch_ids],
+        )
+    mesh.update()
+    return unique_patch_ids
+
+
+# mesh/curve_object/pipe_contract/factors: 用 Python 批量写完整 Pipe/segment/station FACE 属性；无返回值。
+def _write_cutter_grouping_attributes_python(
+    mesh,
+    curve_object,
+    pipe_contract,
+    factors,
+):
+    pipes = sorted(pipe_contract["pipes"], key=lambda item: int(item["spline_index"]))
+    components = _cutter_face_components(mesh)
+    if len(components) != len(pipes):
+        raise FeatureChamferPreviewError("Python Cutter component 与 Pipe 数量不一致")
+    factor_offset = 0
+    factors_by_pipe = {}
+    for pipe in pipes:
+        point_count = len(curve_object.data.splines[int(pipe["spline_index"])].points)
+        factors_by_pipe[int(pipe["pipe_id"])] = factors[
+            factor_offset:factor_offset + point_count
+        ]
+        factor_offset += point_count
+    if factor_offset != len(factors):
+        raise FeatureChamferPreviewError("Curve Factor 数量与 Pipe Point 数量不一致")
+    segments_by_pipe = {}
+    for segment in pipe_contract["segments"]:
+        segments_by_pipe.setdefault(int(segment["pipe_id"]), []).append(segment)
+    face_count = len(mesh.polygons)
+    for pipe, component in zip(pipes, components):
+        pipe_id = int(pipe["pipe_id"])
+        component_vertices = component["vertex_indices"]
+        point_count = len(factors_by_pipe[pipe_id])
+        if len(component_vertices) != point_count * 4:
+            raise FeatureChamferPreviewError(
+                f"Python Cutter Pipe {pipe_id} 不满足四边 profile 拓扑合同"
+            )
+        vertex_min = min(component_vertices)
+        pipe_values = [False] * face_count
+        for face_index in component["face_indices"]:
+            pipe_values[face_index] = True
+        _write_scalar_attribute(
+            mesh,
+            PIPE_INPUT_ATTRIBUTE_PREFIX + str(pipe_id),
+            "FACE",
+            "BOOLEAN",
+            pipe_values,
+        )
+        for segment in segments_by_pipe.get(pipe_id, ()):
+            member_points = set(int(value) for value in segment["point_indices"])
+            start = _float32(segment["spline_start_station"])
+            end = _float32(segment["spline_end_station"])
+            stations = [
+                _python_segment_station(
+                    factor,
+                    start,
+                    end,
+                    bool(segment["is_cyclic"]),
+                )
+                for factor in factors_by_pipe[pipe_id]
+            ]
+            membership_values = [0.0] * face_count
+            station_values = [0.0] * face_count
+            station_squared_values = [0.0] * face_count
+            for face_index in component["face_indices"]:
+                point_indices = [
+                    (vertex_index - vertex_min) // 4
+                    for vertex_index in mesh.polygons[face_index].vertices
+                ]
+                membership = 1.0 if all(
+                    point_index in member_points for point_index in point_indices
+                ) else 0.0
+                accumulator = 0.0
+                for point_index in point_indices:
+                    accumulator = _float32(accumulator + stations[point_index])
+                station = _float32(accumulator / len(point_indices))
+                membership_values[face_index] = membership
+                station_values[face_index] = _float32(station * membership)
+                station_squared_values[face_index] = _float32(
+                    _float32(station * station) * membership
+                )
+            segment_id = int(segment["segment_id"])
+            _write_scalar_attribute(
+                mesh,
+                SEGMENT_FACE_ATTRIBUTE_PREFIX + str(segment_id),
+                "FACE",
+                "FLOAT",
+                membership_values,
+            )
+            _write_scalar_attribute(
+                mesh,
+                SEGMENT_STATION_FACE_ATTRIBUTE_PREFIX + str(segment_id),
+                "FACE",
+                "FLOAT",
+                station_values,
+            )
+            _write_scalar_attribute(
+                mesh,
+                SEGMENT_STATION_SQUARED_FACE_ATTRIBUTE_PREFIX + str(segment_id),
+                "FACE",
+                "FLOAT",
+                station_squared_values,
+            )
+    mesh.update()
+
+
+# source_object/mesh/name: 创建由 wrapper 固定 Object Info 消费的隐藏临时 Mesh Object；返回 Object。
+def _create_python_input_object(source_object, mesh, name):
+    input_object = bpy.data.objects.new(name, mesh)
+    source_object.users_collection[0].objects.link(input_object)
+    input_object.matrix_world = source_object.matrix_world.copy()
+    input_object.hide_set(True)
+    input_object.hide_render = True
+    input_object[PYTHON_PRE_BOOLEAN_INPUT_TAG] = True
+    return input_object
+
+
 # 在 Boolean Pro active Manifold Difference 输出上把输入 provenance 写成 EDGE 属性。
 # boolean_node/pipe_contract/patch_ids: wrapper 中的 Boolean Pro、冻结 Pipe 合同与 source Patch IDs；返回 owned nested Node Group。
 def _materialize_boolean_boundary_grouping(boolean_node, pipe_contract, patch_ids):
@@ -857,8 +1161,8 @@ def _materialize_boolean_boundary_grouping(boolean_node, pipe_contract, patch_id
     return boolean_tree
 
 
-# 构建正式 Preview wrapper：复制受控资产，仅把 cutter seam 改为 Python Curve Pipe。
-# curve_object/radius/show_cutter: owned Curve、倒角半径与 cutter 显示开关。
+# 构建正式 Preview wrapper：Python 批量生成 Boolean 前属性，GN 保留 Boolean 与后置身份整理。
+# curve_object/radius/show_cutter: owned Curve、倒角半径与 cutter 显示开关；返回固定输入 wrapper。
 def _build_curve_preview_node_group(curve_object, radius, show_cutter):
     base_group = ensure_feature_chamfer_preview_node_group()
     curve_pipe_asset = ensure_feature_chamfer_curve_pipe_asset()
@@ -874,78 +1178,122 @@ def _build_curve_preview_node_group(curve_object, radius, show_cutter):
     )
     if source_object is None or source_object.type != "MESH":
         raise FeatureChamferPreviewError("Preview Curve 对应的 source Object 不存在")
-    group_input = next(node for node in node_group.nodes if node.bl_idname == "NodeGroupInput")
     boolean_node = node_group.nodes.get("Boolean Pro")
     switch_node = node_group.nodes.get("HST Boolean Result or Cutter")
     old_cutter_node = node_group.nodes.get("HST Junction-safe Pipe")
     if boolean_node is None or switch_node is None or old_cutter_node is None:
         raise FeatureChamferPreviewError("受控 Preview 资产缺少 cutter seam nodes")
-    object_info = node_group.nodes.new("GeometryNodeObjectInfo")
-    object_info.name = "HST Python CutterStrands"
-    object_info.inputs["Object"].default_value = curve_object
-    curve_circle = node_group.nodes.new("GeometryNodeCurvePrimitiveCircle")
-    curve_circle.name = "HST Four-sided Chamfer Profile"
-    curve_circle.inputs["Resolution"].default_value = 4
-    curve_pipe = node_group.nodes.new("GeometryNodeGroup")
-    curve_pipe.name = "HST Even-Thickness Curve Pipe"
-    curve_pipe.node_tree = curve_pipe_asset
-    curve_pipe.inputs["Fill Caps"].default_value = True
-    curve_pipe.inputs["Even-Thickness"].default_value = True
-    for link in list(node_group.links):
-        if (
-            link.from_node == old_cutter_node
-            and (
-                (link.to_node == boolean_node and link.to_socket.name == "Geometry B")
-                or (link.to_node == switch_node and link.to_socket.name == "True")
-            )
-        ):
-            node_group.links.remove(link)
-    node_group.links.new(group_input.outputs["Radius"], curve_circle.inputs["Radius"])
-    curve_geometry = _store_preview_segment_points(
-        node_group,
-        object_info.outputs["Geometry"],
-        pipe_contract,
-    )
-    pipe_index = node_group.nodes.new("GeometryNodeInputIndex")
-    add_one = node_group.nodes.new("ShaderNodeMath")
-    add_one.operation = "ADD"
-    add_one.inputs[1].default_value = 1.0
-    node_group.links.new(pipe_index.outputs["Index"], add_one.inputs[0])
-    store_pipe_id = node_group.nodes.new("GeometryNodeStoreNamedAttribute")
-    store_pipe_id.data_type = "INT"
-    store_pipe_id.domain = "CURVE"
-    store_pipe_id.inputs["Name"].default_value = "hst_feature_chamfer_pipe_id"
-    node_group.links.new(curve_geometry, store_pipe_id.inputs["Geometry"])
-    node_group.links.new(add_one.outputs["Value"], store_pipe_id.inputs["Value"])
-    node_group.links.new(store_pipe_id.outputs["Geometry"], curve_pipe.inputs["Curve"])
-    node_group.links.new(curve_circle.outputs["Curve"], curve_pipe.inputs["Profile Curve"])
-    cutter_geometry = _store_cutter_grouping_attributes(
-        node_group,
-        curve_pipe.outputs["Geometry"],
-        pipe_contract,
-    )
-    source_geometry, patch_ids = _store_source_patch_attributes(
-        node_group,
-        group_input.outputs["Geometry"],
-        source_object,
-    )
-    for link in list(node_group.links):
-        if (
-            link.from_node == group_input
-            and link.from_socket.name == "Geometry"
-            and link.to_node == boolean_node
-            and link.to_socket.name == "Geometry"
-        ):
-            node_group.links.remove(link)
-    node_group.links.new(source_geometry, boolean_node.inputs["Geometry"])
-    node_group.links.new(cutter_geometry, boolean_node.inputs["Geometry B"])
-    node_group.links.new(cutter_geometry, switch_node.inputs["True"])
-    _materialize_boolean_boundary_grouping(
-        boolean_node,
-        pipe_contract,
-        patch_ids,
-    )
-    return node_group
+    source_input_object = None
+    cutter_input_object = None
+    source_mesh = None
+    cutter_mesh = None
+    try:
+        producer_started_at = time.perf_counter()
+        factors = _evaluate_curve_point_factors(curve_object)
+        cutter_mesh = _evaluate_geometry_only_cutter(
+            curve_object,
+            curve_pipe_asset,
+            radius,
+        )
+        source_mesh = source_object.data.copy()
+        patch_ids = _write_source_patch_attributes_python(source_mesh, source_object)
+        _write_cutter_grouping_attributes_python(
+            cutter_mesh,
+            curve_object,
+            pipe_contract,
+            factors,
+        )
+        source_input_object = _create_python_input_object(
+            source_object,
+            source_mesh,
+            f"{source_object.name}_FeatureChamferSourceInput",
+        )
+        cutter_input_object = _create_python_input_object(
+            source_object,
+            cutter_mesh,
+            f"{source_object.name}_FeatureChamferCutterInput",
+        )
+        producer_seconds = time.perf_counter() - producer_started_at
+        curve_reference = node_group.nodes.new("GeometryNodeObjectInfo")
+        curve_reference.name = "HST Python CutterStrands"
+        curve_reference.inputs["Object"].default_value = curve_object
+        source_input = node_group.nodes.new("GeometryNodeObjectInfo")
+        source_input.name = "HST Python Source Attributes"
+        source_input.inputs["Object"].default_value = source_input_object
+        source_input.transform_space = "ORIGINAL"
+        cutter_input = node_group.nodes.new("GeometryNodeObjectInfo")
+        cutter_input.name = "HST Python Cutter Attributes"
+        cutter_input.inputs["Object"].default_value = cutter_input_object
+        cutter_input.transform_space = "ORIGINAL"
+        for link in tuple(node_group.links):
+            if (
+                link.to_node == boolean_node
+                and link.to_socket.name in {"Geometry", "Geometry B"}
+            ) or (
+                link.to_node == switch_node
+                and link.to_socket.name == "True"
+            ):
+                node_group.links.remove(link)
+        node_group.links.new(source_input.outputs["Geometry"], boolean_node.inputs["Geometry"])
+        node_group.links.new(cutter_input.outputs["Geometry"], boolean_node.inputs["Geometry B"])
+        node_group.links.new(cutter_input.outputs["Geometry"], switch_node.inputs["True"])
+        materializer_started_at = time.perf_counter()
+        _materialize_boolean_boundary_grouping(boolean_node, pipe_contract, patch_ids)
+        materializer_build_seconds = time.perf_counter() - materializer_started_at
+        node_group["hst_feature_chamfer_source_input_object"] = source_input_object.name
+        node_group["hst_feature_chamfer_cutter_input_object"] = cutter_input_object.name
+        node_group["hst_feature_chamfer_pre_boolean_backend"] = "PYTHON_MESH_ATTRIBUTES_V1"
+        node_group["hst_feature_chamfer_pre_boolean_node_count"] = 3
+        node_group["hst_feature_chamfer_pre_boolean_link_count"] = 3
+        node_group["hst_feature_chamfer_profile_resolution"] = 4
+        node_group["hst_feature_chamfer_profile_radius"] = float(radius)
+        node_group["hst_feature_chamfer_pre_boolean_producer_seconds"] = producer_seconds
+        node_group[
+            "hst_feature_chamfer_post_boolean_materializer_build_seconds"
+        ] = materializer_build_seconds
+        return node_group
+    except Exception:
+        owned_boolean_groups = [
+            node.node_tree
+            for node in node_group.nodes
+            if node.bl_idname == "GeometryNodeGroup"
+            and node.node_tree is not None
+            and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
+        ]
+        for input_object in (source_input_object, cutter_input_object):
+            if input_object is not None:
+                input_mesh = input_object.data
+                if bpy.data.objects.get(input_object.name) == input_object:
+                    bpy.data.objects.remove(input_object, do_unlink=True)
+                if input_mesh.users == 0:
+                    bpy.data.meshes.remove(input_mesh)
+        for mesh in (source_mesh, cutter_mesh):
+            if mesh is not None and mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        if node_group.users == 0:
+            bpy.data.node_groups.remove(node_group)
+        for boolean_group in owned_boolean_groups:
+            if boolean_group.users == 0:
+                bpy.data.node_groups.remove(boolean_group)
+        raise
+
+
+# node_group: 删除 Python Boolean 前输入对象与独占 Mesh；无返回值。
+def _remove_python_pre_boolean_inputs(node_group):
+    if node_group is None:
+        return
+    for property_name in (
+        "hst_feature_chamfer_source_input_object",
+        "hst_feature_chamfer_cutter_input_object",
+    ):
+        object_name = node_group.get(property_name)
+        input_object = bpy.data.objects.get(object_name) if object_name else None
+        if input_object is None or not input_object.get(PYTHON_PRE_BOOLEAN_INPUT_TAG):
+            continue
+        input_mesh = input_object.data
+        bpy.data.objects.remove(input_object, do_unlink=True)
+        if input_mesh.users == 0:
+            bpy.data.meshes.remove(input_mesh)
 
 
 # 删除本工具创建的 per-preview wrapper Node Group。
@@ -964,6 +1312,7 @@ def _remove_owned_preview_node_group(modifier):
             and node.node_tree is not None
             and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
         ]
+        _remove_python_pre_boolean_inputs(node_group)
         modifier.node_group = None
         if node_group.users == 0:
             bpy.data.node_groups.remove(node_group)
@@ -1107,6 +1456,7 @@ def ensure_gn_feature_chamfer_preview(
                 and node.node_tree is not None
                 and node.node_tree.get(OWNED_BOOLEAN_PRO_TAG)
             ]
+            _remove_python_pre_boolean_inputs(node_group)
             bpy.data.node_groups.remove(node_group)
             for boolean_group in owned_boolean_groups:
                 if boolean_group.users == 0:
@@ -1133,6 +1483,7 @@ def ensure_gn_feature_chamfer_preview(
         and old_node_group.get("hst_feature_chamfer_preview_backend") == CURVE_PREVIEW_BACKEND
         and old_node_group.users == 0
     ):
+        _remove_python_pre_boolean_inputs(old_node_group)
         bpy.data.node_groups.remove(old_node_group)
         for boolean_group in old_owned_boolean_groups:
             if boolean_group.users == 0:

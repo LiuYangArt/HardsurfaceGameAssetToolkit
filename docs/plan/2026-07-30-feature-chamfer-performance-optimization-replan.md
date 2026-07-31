@@ -2,8 +2,8 @@
 
 日期：2026-07-30
 更新：2026-07-31
-状态：`PRE-BOOLEAN PRODUCER VERIFIED / INTEGRATION AUTHORIZED`
-正确性基线：当前正式结果已获用户确认，继续作为只读 oracle。2026-07-31 已进一步验证：Python 可以在不读取旧逐 segment POINT/FACE 属性的前提下生成完整 Boolean 前属性；同一 Boolean、完整身份、未修改 Bridge/Fill 和最终拓扑均等价。用户已授权下一步仅替换正式入口的 Boolean 前属性生产；Boolean 后 materializer 暂不替换。
+状态：`PRE-BOOLEAN PRODUCER INTEGRATED / VERIFIED`，完整性能任务仍为 `STOP`
+正确性基线：当前正式结果继续作为只读 oracle。2026-07-31 已把 Python Boolean 前属性生产接入一步式正式入口；同一 Boolean、未修改的 Boolean 后身份整理、Bridge/Fill 和最终拓扑保持一致。Boolean 后动态身份整理尚未替换，因此总耗时仍未达到 2 秒产品门槛。
 
 历史计划：[`2026-07-30-feature-chamfer-preview-performance-plan.md`](2026-07-30-feature-chamfer-preview-performance-plan.md)  
 失败复盘：[`2026-07-30-feature-chamfer-performance-rewrite-failure.md`](../postmortem/2026-07-30-feature-chamfer-performance-rewrite-failure.md)
@@ -17,6 +17,9 @@
 Python 完整逐 segment 属性验证：
 [`../validation/2026-07-31-feature-chamfer-python-segment-attributes-validation-result.md`](../validation/2026-07-31-feature-chamfer-python-segment-attributes-validation-result.md)
 
+正式入口集成结果：
+[`../validation/2026-07-31-feature-chamfer-python-pre-boolean-formal-integration-result.md`](../validation/2026-07-31-feature-chamfer-python-pre-boolean-formal-integration-result.md)
+
 ## 0. 2026-07-31 路线更新
 
 - 外部压缩账本路线保留为历史 `STOP`，不再作为当前正式接入方案。
@@ -25,6 +28,9 @@ Python 完整逐 segment 属性验证：
 - 同一 Boolean 后 81312 个身份标量中仅 464 个派生浮点逐位差异，最大 6 ULP / `8.94e-8`，零项超容差；Intersection 仍为 3872 raw / 3868 unique / 4 duplicate。
 - 未修改 Bridge/Fill 的工作项、顺序、区间判断和最终几何全部一致；三次完整 Boolean 前 producer 中位数约 0.53 秒，连同 Boolean 与完整读取约 0.81 秒。
 - 当前接入边界只到 Boolean 输入：替换旧 source Patch、Curve segment POINT 和 Cutter FACE 动态属性生产。Boolean Pro 与 Boolean 后 materializer 保持原样，后者另行验证和优化。
+- 正式入口现已使用固定 3 个输入节点和 3 条连线消费 Python 准备的 source/Cutter Mesh；旧的 Boolean 前逐 Patch/Pipe/segment 动态属性节点不再进入正式运行时。
+- Mixed / Radius 0.01 的正式一步式运行再次命中冻结 fingerprint 与 3922/8054/4134/3454 统计；本次整套运行中 Python producer 为 0.021 秒，但总耗时为 4.635 秒。剩余主要耗时已移到 Boolean 后动态身份整理和 Bridge/Fill，完整任务不得宣称达到 2 秒目标。
+- Blender 5.1.2 全量回归 156/156 通过；当前状态仅表示这次替换已集成并自动验证，不表示完整性能计划完成或用户视觉验收完成。
 
 ## 1. 实际要改什么
 
@@ -32,9 +38,8 @@ Python 完整逐 segment 属性验证：
 哪个 segment、哪两个 Surface Patch，以及它位于 Pipe 的什么位置，现有实现临时创建了数千个
 Geometry Nodes 和连线。几何分析、Cutter、Boolean、Bridge 本身都不慢。
 
-本轮实际改造只有一件事：**保留当前正确且很快的 GN Cutter 与 Boolean Pro，只删除为下游身份恢复
-动态展开的 one-hot 节点网络。Boolean Pro 直接导出真实相交边及最小基础事实，Python 恢复完整身份后，
-继续交给当前正确的 Bridge/Fill。**
+已完成的第一步是：**保留当前正确的 GN Cutter 与 Boolean Pro，用 Python Mesh 属性替换 Boolean 前动态展开的
+one-hot 节点网络。** 尚未完成的是 Boolean 后的动态身份整理；它仍继续把身份送给当前正确的 Bridge/Fill。
 
 正式目标不是纯 Python 重写 Cutter 或 Boolean。GN 可以继续承担固定规模的 Cutter、Boolean 和属性出口；
 禁止的是随 Face、Pipe、segment 或 Point 数量增长的运行时身份节点网络。
@@ -44,7 +49,7 @@ Geometry Nodes 和连线。几何分析、Cutter、Boolean、Bridge 本身都不
 ```text
 分析 Sharp Edge，得到 Pipe 与 segment
   → 生成与当前一致的 Cutter Curve
-  → 为每个 Face / Pipe / segment / station 动态创建节点和连线（约 80 秒）
+  → Boolean 前后都为每个 Face / Pipe / segment / station 动态创建节点和连线（历史约 80 秒）
   → Manifold Difference
   → 从 Boolean 结果读取 Boundary 与身份
   → 当前正确的 Bridge / Fill
@@ -55,9 +60,9 @@ Geometry Nodes 和连线。几何分析、Cutter、Boolean、Bridge 本身都不
 ```text
 分析 Sharp Edge，得到同一份 Pipe 与 segment
   → 现有 GN Curve Pipe 生成相同 Cutter
-  → 现有 Boolean Pro 执行同一次 Manifold Difference
-  → 固定规模出口写入原生 Intersecting Edges 与最小基础身份事实
-  → Python 一次扫描切口边，恢复每条边的完整多重归属
+  → Python 批量写入 source/Cutter 的完整 Boolean 前身份
+  → 固定规模输入执行同一 Boolean
+  → 后续阶段再替换 Boolean 后动态身份整理
   → 转换成当前 Bridge 已经读取的数据格式
   → 不修改当前 Bridge / Fill，直接生成最终结果
 ```
@@ -91,9 +96,10 @@ Geometry Nodes 和连线。几何分析、Cutter、Boolean、Bridge 本身都不
    - 适配层不选择左右边、不切分环、不创建 Bridge job，也不 Fill；
    - 现有 Bridge/Fill 代码保持不变，用它来证明前面的替换没有改变几何语义。
 
-5. **接入一步式正式入口**
-   - 只有旁路原型在 Mixed / Radius 0.01 上结果和耗时都达标后才接入；
-   - 接入后不再创建临时动态 Preview wrapper；
+5. **接入一步式正式入口（Boolean 前部分已完成）**
+   - 旁路原型先通过 Mixed / Radius 0.01 的结果与 producer 阶段预算，再接入；
+   - 接入后正式 wrapper 的 Boolean 前输入固定为 3 个节点和 3 条连线；
+   - Boolean 后 materializer 仍是动态结构，不能把本阶段状态解释为完整 wrapper 已固定；
    - Radius、Keep Cutter、Redo/Undo、source 不变和失败清理行为保持现状。
 
 ### 1.4 已完成的首个技术实验
@@ -135,8 +141,8 @@ Boundary 选择、Direct Bridge、junction Fill、法线和事务行为，只替
 | Cutter / Boolean 强制求值 | 约 0.10 秒 | 几何运算本身不是当前主瓶颈 |
 | Preview 已存在后的 Direct Bridge Finalize | 约 0.27 秒 | 可继续复用 |
 
-动态 wrapper 历史规模为 3863 nodes / 5747 links。当前正式一步入口仍会临时建立这套 Preview，
-所以只是把正确的两步包进一次事务，并没有消除性能问题。
+动态 wrapper 历史规模为 3863 nodes / 5747 links。本轮已消除其中 Boolean 前生产网络；正式一步入口
+仍会临时建立包含 Boolean 后动态 materializer 的 Preview，所以完整性能问题尚未消除。
 
 现有产品矩阵已冻结 Mixed / Radius 0.01 的第一层最终结果：
 
@@ -279,7 +285,7 @@ Stop：缺任一中间合同、只能得到最终健康性指标，或旧路径�
 
 ### Phase 1 — provenance producer 单层原型
 
-状态：`PROTOTYPE`。正式入口保持当前正确慢路径。
+历史阶段状态：`PROTOTYPE`，当时正式入口保持正确慢路径；该阶段现已通过并进入 Boolean 前正式集成。
 
 按以下顺序替换同一 producer 内部子阶段，每步仍只跑 Mixed / 0.01：
 

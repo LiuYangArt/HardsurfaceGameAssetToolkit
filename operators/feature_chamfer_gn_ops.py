@@ -128,13 +128,37 @@ def _keep_evaluated_cutter(source_object, transaction):
 # 在一次 Operator 事务内运行已验收的 Preview→Finalize 几何链，并移除临时 Preview 状态。
 # source_object/radius/show_cutter/transaction: 正式输入、参数与事务引用；返回 Direct Bridge 统计。
 def _build_preview_finalize_output(source_object, radius, show_cutter, transaction):
+    preview_started_at = time.perf_counter()
     preview = ensure_gn_feature_chamfer_preview(
         source_object=source_object,
         radius=radius,
         show_cutter=False,
     )
+    preview_seconds = time.perf_counter() - preview_started_at
     chamfer_plan = preview["plan"]
+    preview_node_group = preview["node_group"]
+    pre_boolean_backend = preview_node_group.get(
+        "hst_feature_chamfer_pre_boolean_backend"
+    )
+    pre_boolean_node_count = int(preview_node_group.get(
+        "hst_feature_chamfer_pre_boolean_node_count",
+        -1,
+    ))
+    pre_boolean_link_count = int(preview_node_group.get(
+        "hst_feature_chamfer_pre_boolean_link_count",
+        -1,
+    ))
+    pre_boolean_producer_seconds = float(preview_node_group.get(
+        "hst_feature_chamfer_pre_boolean_producer_seconds",
+        -1.0,
+    ))
+    post_boolean_materializer_build_seconds = float(preview_node_group.get(
+        "hst_feature_chamfer_post_boolean_materializer_build_seconds",
+        -1.0,
+    ))
+    bridge_fill_started_at = time.perf_counter()
     patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
+    bridge_fill_seconds = time.perf_counter() - bridge_fill_started_at
     output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
     if output is None:
         raise FeatureChamferDirectBridgeError(
@@ -150,9 +174,16 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
     patch_stats.update(
         backend="GN_PREVIEW_DIRECT_EDGE_LOOP_BRIDGE",
         runtime_path=(
-            "FeatureGraph -> Curve Pipe -> Boolean Pro Boundary Edges -> "
+            "FeatureGraph -> Python Mesh Attributes -> Boolean Pro Boundary Edges -> "
             "segment groups -> Blender Bridge/Fill"
         ),
+        pre_boolean_backend=pre_boolean_backend,
+        pre_boolean_node_count=pre_boolean_node_count,
+        pre_boolean_link_count=pre_boolean_link_count,
+        pre_boolean_producer_seconds=pre_boolean_producer_seconds,
+        post_boolean_materializer_build_seconds=post_boolean_materializer_build_seconds,
+        preview_seconds=preview_seconds,
+        bridge_fill_seconds=bridge_fill_seconds,
         one_step_transaction=True,
         temporary_preview_removed=True,
         solver="BOOLEAN_PRO",
