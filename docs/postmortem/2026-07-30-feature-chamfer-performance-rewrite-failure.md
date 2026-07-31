@@ -120,7 +120,7 @@
 ## 7. 已落实
 
 - 项目规则已加入性能重构双门槛、单样本先行、`RECOVERY` 隔离和每小时审计。
-- 当前计划已明确标为 `CORRECTNESS VERIFIED / PERFORMANCE STOP`，不再把旧路径恢复表述为性能完成。
+- 历史计划已标为 `SUPERSEDED`；当前重新规划保持 `PLANNED / PERFORMANCE STOP`，不再把旧路径恢复表述为性能完成。
 - 已停止遗留的 Blender 验证进程，避免继续为未通过代表样本的路线消耗时间。
 
 ## 8. 未完成事项

@@ -1,8 +1,10 @@
 # Feature Chamfer 一步式性能与架构评估
 
 日期：2026-07-30  
-状态：`CORRECTNESS VERIFIED / PERFORMANCE STOP / AWAITING USER ACCEPTANCE`
-（2026-07-30 已恢复旧 Preview → Finalize 的几何等价；待用户检查批量 `.blend`）
+状态：`SUPERSEDED / HISTORICAL EVIDENCE`
+
+> 本文保留第一次性能改写前后的历史证据，不再作为当前执行计划。新的执行方案见
+> [`2026-07-30-feature-chamfer-performance-optimization-replan.md`](2026-07-30-feature-chamfer-performance-optimization-replan.md)。
 
 失败复盘与后续强制门槛：[`2026-07-30-feature-chamfer-performance-rewrite-failure.md`](../postmortem/2026-07-30-feature-chamfer-performance-rewrite-failure.md)
 

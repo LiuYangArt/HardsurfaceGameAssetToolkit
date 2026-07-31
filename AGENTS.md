@@ -2,7 +2,7 @@
 
 这是一个Blender插件，适配blender 5.0+ 
 - 使用blender 5.0+ 的api
-- blender 位置： "C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"
+- blender 位置： win 系统下 "C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe"  mac 下自行查找，已安装可用版本。
 - 主要用途是处理从 cad 软件过来的hardsurface模型，变成game-ready资产。 
 
 ## 语言风格
