@@ -174,6 +174,54 @@ def parse_sorted_collections(sorted_collections):
     )
 
 
+# 按 Operator 选项筛选本次导出的 Collection 分组和 CAT MeshGroup 实例。
+# 参数:
+#     export_collection_type: Operator 中选择的导出类型。
+#     bake_collections: 可导出的 Bake Collection。
+#     decal_collections: 可导出的 Decal Collection。
+#     prop_collections: 可导出的 Prop Collection。
+#     staticmesh_collections: 可导出的未标记 Static Mesh Collection。
+#     skm_collections: 可导出的 SKM Collection。
+#     rig_collections: 可导出的 Rig Collection。
+#     meshgroup_export_targets: 可导出的 CAT MeshGroup 实例。
+def filter_export_targets_by_collection_type(
+    export_collection_type,
+    bake_collections,
+    decal_collections,
+    prop_collections,
+    staticmesh_collections,
+    skm_collections,
+    rig_collections,
+    meshgroup_export_targets,
+):
+    if export_collection_type == "ALL":
+        return (
+            bake_collections,
+            decal_collections,
+            prop_collections,
+            staticmesh_collections,
+            skm_collections,
+            rig_collections,
+            meshgroup_export_targets,
+        )
+
+    export_groups = {
+        "BAKE": (bake_collections, [], [], [], [], [], []),
+        "DECAL": ([], decal_collections, [], [], [], [], []),
+        "PROP": ([], [], prop_collections, [], [], [], []),
+        "STATIC_MESH": (
+            [],
+            [],
+            [],
+            staticmesh_collections,
+            [],
+            [],
+            meshgroup_export_targets,
+        ),
+        "SKELETAL": ([], [], [], [], skm_collections, rig_collections, []),
+    }
+    return export_groups[export_collection_type]
+
 def export_instance_collection(target, export_path, file_prefix, export_format="FBX"):
     """导出实例化的collection"""
     new_name = target.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
@@ -343,12 +391,43 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
         只导出已被标记且可见的Collection，不导出隐藏的Collection,不导出隐藏的物体，不导出“_”开头的Collection\
         在outliner中显示器符号作为是否导出的标记，与眼睛符号无关"
 
+    bl_options = {"REGISTER", "UNDO"}
+
+    export_collection_type: bpy.props.EnumProperty(
+        name="Collection Type",
+        description="选择本次导出的 Collection 类型",
+        items=EXPORT_COLLECTION_TYPE_ITEMS,
+        default="ALL",
+    )
+    export_relative_to_prop_origin: bpy.props.BoolProperty(
+        name="Export Relative to Prop Origin",
+        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
+        default=False,
+    )
 #TODO: 增加对GPro Instance的支持， 增加对MeshGroupInstance的支持
+
+    def invoke(self, context, event):
+        if context.scene is None:
+            self.report({"ERROR"}, "No active Scene | 没有可用的 Scene")
+            return {"CANCELLED"}
+        parameters = context.scene.hst_params
+        self.export_collection_type = parameters.export_collection_type
+        self.export_relative_to_prop_origin = parameters.export_relative_to_prop_origin
+        return self.execute(context)
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box_column = box.column()
+        box_column.prop(self, "export_collection_type")
+        box_column.prop(self, "export_relative_to_prop_origin")
 
     def execute(self, context):
         scene_objects = context.scene.objects #只导出当前 Scene 内的物体
         parameters = context.scene.hst_params
         export_path = parameters.export_path.replace("\\", "/")
+        parameters.export_collection_type = self.export_collection_type
+        parameters.export_relative_to_prop_origin = self.export_relative_to_prop_origin
         file_prefix = parameters.file_prefix
         export_format = parameters.export_format
         export_ext, _, staticmesh_exporter, skeletal_exporter = resolve_export_targets(export_format)
@@ -395,6 +474,24 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             rig_collections,
         ) = parse_sorted_collections(sorted_collections)
 
+        (
+            bake_collections,
+            decal_collections,
+            prop_collections,
+            sm_collections,
+            skm_collections,
+            rig_collections,
+            meshgroup_export_targets,
+        ) = filter_export_targets_by_collection_type(
+            self.export_collection_type,
+            bake_collections,
+            decal_collections,
+            prop_collections,
+            sm_collections,
+            skm_collections,
+            rig_collections,
+            meshgroup_export_targets,
+        )
         #筛查 bake collection， 只要最上层的
         bake_export_collections=[]
         for collection in bake_collections:
@@ -436,19 +533,13 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
 
 
         if len(target_collections) > 0:
-            # save origin objects transform and move to world origin
-            origin_transform = {}
             invisible_origin_colls=[]
             for collection in target_collections:
-                origin_objects=Object.filter_hst_type(objects=collection.all_objects,type="ORIGIN",mode="INCLUDE")
+                origin_objects=Object.filter_hst_type(objects=collection.objects,type="ORIGIN",mode="INCLUDE")
 
-                if origin_objects:
+                if len(origin_objects) == 1:
                     origin_obj=origin_objects[0]
                     origin_visibility=origin_obj.visible_get()
-                    # print(f"{collection.name} origin {origin_obj} vis: {origin_visibility}")
-                    origin_transform[origin_obj] = origin_obj.matrix_world.copy()
-                    origin_obj.matrix_world=Const.WORLD_ORIGIN_MATRIX
-                    
                     if origin_visibility is False:
                         if collection.children:
                             for child_coll in collection.children:
@@ -465,13 +556,32 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                 new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                 file_path = export_path + new_name + export_ext
                 print(f"exporting {collection.name} to {file_path}")
-                staticmesh_exporter(collection, file_path)
+                relative_origin = None
+                if (
+                    self.export_relative_to_prop_origin
+                    and Collection.get_hst_type(collection) == "PROP"
+                ):
+                    origin_objects = Object.filter_hst_type(
+                        objects=collection.objects,
+                        type="ORIGIN",
+                        mode="INCLUDE",
+                    ) or []
+                    if len(origin_objects) == 1:
+                        relative_origin = origin_objects[0]
+                    elif len(origin_objects) == 0:
+                        self.report({"WARNING"}, f"{collection.name}: no Prop Origin, exported unchanged")
+                    else:
+                        self.report({"WARNING"}, f"{collection.name}: multiple Prop Origins, skipped")
+                        continue
+
+                staticmesh_exporter(
+                    collection,
+                    file_path,
+                    relative_origin=relative_origin,
+                )
                 export_count += 1
 
 
-            if len(origin_transform)>0: #reset origin transform
-                for origin_obj in origin_transform:
-                    origin_obj.matrix_world=origin_transform[origin_obj]
 
         for instance_object, modifier, source_collection in meshgroup_export_targets:
             export_cat_meshgroup_instance(
@@ -494,7 +604,12 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                     new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                     file_path = export_path + new_name + export_ext
                     skm_count += 1
-                    staticmesh_exporter(mesh, file_path,reset_transform=True)
+                    staticmesh_exporter(
+                        mesh,
+                        file_path,
+                        reset_transform=True,
+                        move_objects_to_world_center=False,
+                    )
                     # mesh.select_set(True)
         if len(rig_collections) > 0:
             for collection in rig_collections:

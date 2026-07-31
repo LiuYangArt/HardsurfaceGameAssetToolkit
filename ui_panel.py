@@ -108,6 +108,19 @@ class UIParams(PropertyGroup):
         default="FBX",
     )
 
+    export_collection_type: EnumProperty(
+        name="Collection Type",
+        description="选择本次导出的 Collection 类型",
+        items=EXPORT_COLLECTION_TYPE_ITEMS,
+        default="ALL",
+    )
+
+    export_relative_to_prop_origin: BoolProperty(
+        name="Export Relative to Prop Origin",
+        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
+        default=False,
+    )
+
     file_prefix: StringProperty(
         name="File Prefix",
         description="文件名前缀，例如AAA，则导出的文件名是SM_AAACollectionName",

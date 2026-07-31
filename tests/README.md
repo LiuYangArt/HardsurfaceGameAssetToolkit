@@ -26,10 +26,13 @@
 - quickweight smoke test
 - AO bake operator headless smoke test
 - wearmask AO proxy 拓扑回归（确保 proxy 捕获 bevel 后几何，并被 Data Transfer 正确引用）
-- asset origin / snap transform / reset to origin smoke test
+- asset origin / Active Object Bounds Origin / 父级 Collection 下连续创建独立 Origin / snap transform / reset to origin smoke test
 - prop / decal collection 标记 smoke test
 - isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
+- static mesh Collection Type（All / Prop / Decal / Bake / Static Mesh / Skeletal）筛选回归
+- static mesh 导出选项随 .blend 保存与重新打开的持久化回归
+- static mesh 按 Prop Origin 的 Location/Rotation 整体相对导出、忽略 Origin Scale、恢复变换，以及缺失/重复 Origin 边界回归
 - current Scene only FBX export regression test
 - CAT MeshGroup instance FBX export regression test
 - bake collection FBX export smoke test

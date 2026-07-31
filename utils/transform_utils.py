@@ -8,6 +8,7 @@
 
 import bpy
 import math
+from contextlib import contextmanager
 from mathutils import Vector, Matrix, Quaternion
 
 
@@ -59,6 +60,85 @@ def get_selected_rotation_quat() -> Quaternion:
     return rotation
 
 
+# 计算 Object 在 parent 层级中的深度，用于按父级到子级的顺序设置世界变换。
+# 参数:
+#     obj: 需要计算层级深度的 Blender Object。
+def _object_parent_depth(obj):
+    depth = 0
+    parent = obj.parent
+    while parent is not None:
+        depth += 1
+        parent = parent.parent
+    return depth
+
+
+# 在代码块执行期间，将每个 Object 的世界坐标分别临时设为世界中心，并在结束或异常时恢复。
+# 参数:
+#     objects: 需要临时归零的 Blender Object 集合；重复项会被忽略。
+#     enabled: 是否执行临时归零；False 时保持原状。
+@contextmanager
+def temporarily_move_objects_to_world_center(objects, enabled=True):
+    if not enabled:
+        yield
+        return
+
+    unique_objects = list(dict.fromkeys(obj for obj in objects if obj is not None))
+    ordered_objects = sorted(unique_objects, key=_object_parent_depth)
+    original_world_matrices = {
+        obj: obj.matrix_world.copy() for obj in ordered_objects
+    }
+
+    for obj in ordered_objects:
+        centered_matrix = obj.matrix_world.copy()
+        centered_matrix.translation = Vector((0.0, 0.0, 0.0))
+        obj.matrix_world = centered_matrix
+    bpy.context.view_layer.update()
+
+    try:
+        yield
+    finally:
+        for obj in ordered_objects:
+            obj.matrix_world = original_world_matrices[obj]
+            bpy.context.view_layer.update()
+
+# 在代码块执行期间，让一组 Object 相对指定 Origin 导出，并在结束或异常时恢复。
+# 仅抵消 Origin 的 Location 与 Rotation；Origin Scale 被明确忽略。
+# 参数:
+#     objects: 需要统一转换的 Blender Object 集合；重复项会被忽略。
+#     origin_object: 作为导出坐标原点的 Blender Object。
+#     enabled: 是否执行临时转换；False 时保持原状。
+@contextmanager
+def temporarily_export_relative_to_origin(objects, origin_object, enabled=True):
+    if not enabled or origin_object is None:
+        yield
+        return
+
+    unique_objects = list(dict.fromkeys(obj for obj in objects if obj is not None))
+    ordered_objects = sorted(unique_objects, key=_object_parent_depth)
+    original_world_matrices = {
+        obj: obj.matrix_world.copy() for obj in ordered_objects
+    }
+    origin_location, origin_rotation, _origin_scale = origin_object.matrix_world.decompose()
+    origin_rigid_matrix = Matrix.LocRotScale(
+        origin_location,
+        origin_rotation,
+        Vector((1.0, 1.0, 1.0)),
+    )
+    relative_world_matrices = {
+        obj: origin_rigid_matrix.inverted_safe() @ original_world_matrices[obj]
+        for obj in ordered_objects
+    }
+
+    for obj in ordered_objects:
+        obj.matrix_world = relative_world_matrices[obj]
+    bpy.context.view_layer.update()
+
+    try:
+        yield
+    finally:
+        for obj in ordered_objects:
+            obj.matrix_world = original_world_matrices[obj]
+        bpy.context.view_layer.update()
 class Transform:
     """变换操作工具类"""
 
