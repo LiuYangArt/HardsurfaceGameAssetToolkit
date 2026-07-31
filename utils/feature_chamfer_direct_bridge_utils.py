@@ -2789,6 +2789,31 @@ def _remove_wire_edges(bm, chamfer_face_layer):
     return len(wire_edges)
 
 
+# 清理补面区域内部的共面 Edge，减少 Bridge/Fill 产生的冗余布线。
+# bm: 已完成 Bridge/Fill 的 BMesh；chamfer_face_layer: 标记补面 Faces 的整数层；返回实际减少的 Face 数量。
+def _dissolve_chamfer_patch_edges(bm, chamfer_face_layer):
+    dissolve_edges = [
+        edge
+        for edge in bm.edges
+        if len(edge.link_faces) == 2
+        and all(bool(face[chamfer_face_layer]) for face in edge.link_faces)
+    ]
+    if not dissolve_edges:
+        return 0
+    face_count_before = len(bm.faces)
+    bmesh.ops.dissolve_limit(
+        bm,
+        angle_limit=MAX_BRIDGE_DISSOLVE_DEVIATION_RADIANS,
+        use_dissolve_boundaries=False,
+        verts=list({vertex for edge in dissolve_edges for vertex in edge.verts}),
+        edges=dissolve_edges,
+        delimit={"NORMAL"},
+    )
+    for face in bm.faces:
+        if bool(face[chamfer_face_layer]):
+            face[chamfer_face_layer] = 1
+    return face_count_before - len(bm.faces)
+
 # 返回最终拓扑异常 Edge 的最小诊断，区分孤立边、开放边和多面共边。
 # bm: 已完成清理的 BMesh；返回最多 16 条异常 Edge 记录。
 def _non_manifold_edge_records(bm):
@@ -3561,6 +3586,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 },
             )
         chamfer_faces.update(fill_faces)
+        dissolved_chamfer_face_count = _dissolve_chamfer_patch_edges(
+            bm,
+            chamfer_face_layer,
+        )
 
         topology_before_zero_cleanup = {
             "boundary_count": sum(len(edge.link_faces) == 1 for edge in bm.edges),
@@ -3709,6 +3738,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "zero_area_faces_removed": zero_area_faces_removed,
             "duplicate_edges_welded": duplicate_edges_welded,
             "wire_edges_removed": wire_edges_removed,
+            "dissolved_chamfer_face_count": dissolved_chamfer_face_count,
             "topology_before_zero_cleanup": topology_before_zero_cleanup,
             "regular_patch_face_count": sum(record["face_count"] for record in bridge_records),
             "junction_patch_face_count": sum(record["face_count"] for record in fill_records),

@@ -124,6 +124,24 @@ def _finalize_output(output, source_object, chamfer_plan):
             backend_chamfer_attribute
             and backend_chamfer_attribute.data[polygon.index].value
         )
+    face_weight_attribute = output.data.attributes.get(
+        "__mod_weightednormals_faceweight"
+    )
+    if face_weight_attribute is not None:
+        output.data.attributes.remove(face_weight_attribute)
+    face_weight_attribute = output.data.attributes.new(
+        "__mod_weightednormals_faceweight",
+        type="INT",
+        domain="FACE",
+    )
+    face_weight_attribute.data.foreach_set(
+        "value",
+        [
+            0 if chamfer_attribute.data[polygon.index].value else 1
+            for polygon in output.data.polygons
+        ],
+    )
+    output.data.update()
     complete_plan = chamfer_plan_without_unsupported_regions(chamfer_plan)
     output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
     output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name

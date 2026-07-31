@@ -9391,12 +9391,46 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
         test_context.addon.utils.feature_chamfer_gn_utils.preview_state(source) == "PATCHED",
         "Finalize source state is not PATCHED",
     )
-    ensure(output.data.attributes.get("hst_feature_chamfer_face") is not None, "Chamfer Face attribute missing")
+    chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
+    ensure(chamfer_attribute is not None, "Chamfer Face attribute missing")
+    face_weight_attribute = output.data.attributes.get(
+        "__mod_weightednormals_faceweight"
+    )
+    ensure(face_weight_attribute is not None, "Weighted Normals Face Weight attribute missing")
+    ensure(
+        face_weight_attribute.domain == "FACE"
+        and face_weight_attribute.data_type == "INT",
+        "Weighted Normals Face Weight must be a FACE Integer attribute",
+    )
+    face_weight_values = [item.value for item in face_weight_attribute.data]
+    chamfer_values = [bool(item.value) for item in chamfer_attribute.data]
+    ensure(
+        all(
+            weight == (0 if is_chamfer else 1)
+            for weight, is_chamfer in zip(face_weight_values, chamfer_values)
+        ),
+        "Weighted Normals Face Weight must be 0 on chamfer Faces and 1 elsewhere",
+    )
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        stats.get("dissolved_chamfer_face_count", 0) > 0,
+        "Finalize did not dissolve any coplanar chamfer Faces",
+    )
+    ensure(
+        any(
+            chamfer_values[polygon.index] and len(polygon.vertices) > 4
+            for polygon in output.data.polygons
+        ),
+        "Finalize dissolve did not leave a cleaned chamfer n-gon",
+    )
     ensure(
         not any(modifier.type == "DATA_TRANSFER" for modifier in output.modifiers),
         "Finalize unexpectedly applied the deferred normal workaround",
     )
-    result.add_detail(f"output={output.name}, faces={len(output.data.polygons)}")
+    result.add_detail(
+        f"output={output.name}, faces={len(output.data.polygons)}, "
+        f"dissolved={stats['dissolved_chamfer_face_count']}"
+    )
 
 
 # 从真实 mixed fixture 的目标 Operator 复现并守住下方右侧 terminal connectivity。
