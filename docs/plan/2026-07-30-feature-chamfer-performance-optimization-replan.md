@@ -1,8 +1,8 @@
 # Feature Chamfer 性能优化重新规划
 
-日期：2026-07-30  
-更新：2026-07-31  
-状态：`PRE-BOOLEAN PRODUCER VERIFIED / INTEGRATION AUTHORIZED`  
+日期：2026-07-30
+更新：2026-07-31
+状态：`PRE-BOOLEAN PRODUCER VERIFIED / INTEGRATION AUTHORIZED`
 正确性基线：当前正式结果已获用户确认，继续作为只读 oracle。2026-07-31 已进一步验证：Python 可以在不读取旧逐 segment POINT/FACE 属性的前提下生成完整 Boolean 前属性；同一 Boolean、完整身份、未修改 Bridge/Fill 和最终拓扑均等价。用户已授权下一步仅替换正式入口的 Boolean 前属性生产；Boolean 后 materializer 暂不替换。
 
 历史计划：[`2026-07-30-feature-chamfer-preview-performance-plan.md`](2026-07-30-feature-chamfer-preview-performance-plan.md)  
