@@ -23,6 +23,9 @@ from .feature_chamfer_gn_utils import live_preview_parameters
 from .feature_chamfer_gn_utils import owned_preview_modifier
 from .feature_chamfer_gn_utils import preview_state
 from .feature_chamfer_gn_utils import source_fingerprint
+from .nodes_modifier_compat_utils import modifier_input_get
+from .nodes_modifier_compat_utils import modifier_input_set
+from .nodes_modifier_compat_utils import modifier_property_get
 
 
 ENDPOINT_CLASSES = {
@@ -218,7 +221,7 @@ def evaluate_feature_chamfer_cutter(
 
     source_before = source_fingerprint(source_object)
     parameters_before = live_preview_parameters(preview_modifier)
-    show_cutter_before = bool(preview_modifier[show_cutter_identifier])
+    show_cutter_before = bool(modifier_input_get(preview_modifier, show_cutter_identifier))
     cutter_mesh = None
     evaluation_object = None
     evaluation_mesh = None
@@ -230,7 +233,7 @@ def evaluate_feature_chamfer_cutter(
             endpoints,
         )
         evaluation_mesh = evaluation_object.data
-        evaluation_modifier[show_cutter_identifier] = True
+        modifier_input_set(evaluation_modifier, show_cutter_identifier, True)
         evaluation_object.update_tag(refresh={"DATA"})
         bpy.context.view_layer.update()
         depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -793,7 +796,10 @@ def extract_feature_chamfer_finalize_context(source_object):
         "phase": "2B",
         "source_object": source_object.name,
         "source_fingerprint": source_fingerprint(source_object),
-        "asset_version": modifier.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) if modifier else None,
+        "asset_version": modifier_property_get(
+            modifier,
+            FEATURE_CHAMFER_GN_ASSET_VERSION_TAG,
+        ) if modifier else None,
         "endpoint_extension_geometry_validated": False,
         "tracked_boolean_provenance_validated": False,
         "boundary_regions_validated": False,
@@ -805,19 +811,19 @@ def extract_feature_chamfer_finalize_context(source_object):
             "Owned Feature Chamfer Preview is missing",
             diagnostics,
         )
-    if modifier.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
+    if modifier_property_get(modifier, FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION:
         raise FeatureChamferFinalizeError(
             "asset_version_mismatch",
             "Feature Chamfer Preview asset version mismatch",
             diagnostics,
         )
-    if modifier.get(FEATURE_CHAMFER_GN_FINGERPRINT_TAG) != source_fingerprint(source_object):
+    if modifier_property_get(modifier, FEATURE_CHAMFER_GN_FINGERPRINT_TAG) != source_fingerprint(source_object):
         raise FeatureChamferFinalizeError(
             "source_fingerprint_mismatch",
             "Feature Chamfer source fingerprint changed",
             diagnostics,
         )
-    if modifier.get(FEATURE_CHAMFER_GN_PARAMETERS_TAG) != json.dumps(
+    if modifier_property_get(modifier, FEATURE_CHAMFER_GN_PARAMETERS_TAG) != json.dumps(
         live_preview_parameters(modifier), sort_keys=True
     ):
         raise FeatureChamferFinalizeError(

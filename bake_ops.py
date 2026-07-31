@@ -2,6 +2,7 @@ import bpy
 
 from .const import *
 from .functions.common_functions import *
+from .utils.nodes_modifier_compat_utils import modifier_input_set
 #TODO: 一键发送到marmoset 进行烘焙，  marmoset中给高模的材质自动开启bevel normal
 
 
@@ -203,7 +204,7 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
             if active_color:
                 geonode_mod=Modifier.add_geometrynode(mesh,modifier_name=BLUR_GNODE_MODIFIER,node=blur_node)
                 if geonode_mod is not None:
-                    geonode_mod["Socket_2"]=active_color.name
+                    modifier_input_set(geonode_mod, "Socket_2", active_color.name)
                     success_count += 1
                 # geonode_mod 为 None 时静默跳过（modifier 可能已存在）
             else: # 只有真正没有顶点色时才报告
@@ -215,5 +216,4 @@ class HST_OT_BlurVertexColor(bpy.types.Operator):
             self.report({"INFO"}, f"{success_count} Meshes got blur vertex color")
 
         return {"FINISHED"}
-
 

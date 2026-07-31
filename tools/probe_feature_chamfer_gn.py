@@ -9,6 +9,14 @@ import bpy
 import bmesh
 
 
+def modifier_input_set(modifier, identifier, value):
+    """按当前 Blender API 设置 Geometry Nodes modifier 输入。"""
+    if bpy.app.version >= (5, 2, 0):
+        modifier.properties.inputs[identifier]["value"] = value
+        return
+    modifier[identifier] = value
+
+
 REPO_ROOT = Path(os.environ["HST_ADDON_ROOT"])
 FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "feature-chamfer-gn-junction-safe.blend"
 PRESET_PATH = REPO_ROOT / "preset_files" / "Presets.blend"
@@ -43,7 +51,7 @@ def _evaluated_mesh(source):
 # 直接读取指定 Show Cutter 值对应的 evaluated Mesh，避免同一 depsgraph 的缓存干扰。
 # source/modifier/identifier/value: Preview Object、modifier、socket identifier 与模式值。
 def _evaluated_mesh_for_mode(source, modifier, identifier, value):
-    modifier[identifier] = value
+    modifier_input_set(modifier, identifier, value)
     source.update_tag(refresh={"DATA"})
     bpy.context.view_layer.update()
     depsgraph = bpy.context.evaluated_depsgraph_get()
@@ -73,10 +81,10 @@ inputs = {
     for item in node_group.interface.items_tree
     if item.item_type == "SOCKET" and item.in_out == "INPUT"
 }
-modifier[inputs["Radius"]] = 0.03
-modifier[inputs["Sample Length"]] = 0.01
-modifier[inputs["Voxel Size"]] = 0.0075
-modifier[inputs["Adaptivity"]] = 0.05
+modifier_input_set(modifier, inputs["Radius"], 0.03)
+modifier_input_set(modifier, inputs["Sample Length"], 0.01)
+modifier_input_set(modifier, inputs["Voxel Size"], 0.0075)
+modifier_input_set(modifier, inputs["Adaptivity"], 0.05)
 print("[HST_FEATURE_CHAMFER_GN_ASSET]" + json.dumps({
     "name": node_group.name,
     "version": node_group.get("hst_feature_chamfer_asset_version"),

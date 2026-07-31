@@ -92,6 +92,9 @@ def reset_scene():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE"
+    addon_module = sys.modules.get(PACKAGE_NAME)
+    if addon_module is not None:
+        addon_module.utils.feature_chamfer_gn_utils.clear_feature_chamfer_runtime_caches()
 
 
 def ensure(condition: bool, message: str):
@@ -1362,8 +1365,37 @@ def make_cat_meshgroup_instance(name: str, source_collection, location=(0.0, 0.0
     obj.name = name
     obj.data.name = name + "Mesh"
     modifier = obj.modifiers.new(name="CAT_MeshGroup", type="NODES")
-    modifier["Socket_2"] = source_collection
-    modifier["Socket_3"] = False
+    node_group = bpy.data.node_groups.new(name="MeshGroup", type="GeometryNodeTree")
+    geometry_output = node_group.interface.new_socket(
+        name="Geometry",
+        in_out="OUTPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    geometry_input = node_group.interface.new_socket(
+        name="Geometry",
+        in_out="INPUT",
+        socket_type="NodeSocketGeometry",
+    )
+    collection_input = node_group.interface.new_socket(
+        name="Instanced Collection",
+        in_out="INPUT",
+        socket_type="NodeSocketCollection",
+    )
+    realize_input = node_group.interface.new_socket(
+        name="Realize",
+        in_out="INPUT",
+        socket_type="NodeSocketBool",
+    )
+    input_node = node_group.nodes.new("NodeGroupInput")
+    output_node = node_group.nodes.new("NodeGroupOutput")
+    node_group.links.new(
+        input_node.outputs[geometry_input.identifier],
+        output_node.inputs[geometry_output.identifier],
+    )
+    modifier.node_group = node_group
+    compat_utils = importlib.import_module(f"{PACKAGE_NAME}.utils.nodes_modifier_compat_utils")
+    compat_utils.modifier_input_set(modifier, collection_input.identifier, source_collection)
+    compat_utils.modifier_input_set(modifier, realize_input.identifier, False)
     return obj
 
 
@@ -1684,7 +1716,16 @@ def test_staticmeshexport_cat_meshgroup_instance_fbx(test_context: TestContext, 
     ensure(not prefixed_file.exists(), "inst_ prefix was kept in exported filename")
     ensure(instance.matrix_world == original_matrix, "CAT MeshGroup instance transform was not restored")
     ensure(duplicate_instance.matrix_world == duplicate_matrix, "Duplicate CAT MeshGroup instance transform changed")
-    ensure(modifier["Socket_3"] == False, "CAT MeshGroup Realize socket was not restored")
+    compat_utils = importlib.import_module(f"{PACKAGE_NAME}.utils.nodes_modifier_compat_utils")
+    realize_identifier = next(
+        item.identifier
+        for item in modifier.node_group.interface.items_tree
+        if getattr(item, "name", None) == "Realize"
+    )
+    ensure(
+        compat_utils.modifier_input_get(modifier, realize_identifier) == False,
+        "CAT MeshGroup Realize socket was not restored",
+    )
     result.add_detail(f"CAT MeshGroup FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
@@ -7483,7 +7524,13 @@ def preview_profile_contract(modifier):
         "resolution": int(node_group.get("hst_feature_chamfer_profile_resolution", -1)),
         "radius_linked_directly": abs(
             float(node_group.get("hst_feature_chamfer_profile_radius", -1.0))
-            - float(modifier[node_input_identifier(node_group, "Radius")])
+            - float(
+                sys.modules[PACKAGE_NAME]
+                .utils.nodes_modifier_compat_utils.modifier_input_get(
+                    modifier,
+                    node_input_identifier(node_group, "Radius"),
+                )
+            )
         ) <= 1.0e-8,
         "python_mesh_input": cutter_object.type == "MESH",
     }
@@ -7561,7 +7608,12 @@ def test_gn_preview_modifier_parameter_and_cutter_smoke(test_context: TestContex
     }
     for name, expected_value in expected.items():
         identifier = node_input_identifier(modifier.node_group, name)
-        actual_value = modifier[identifier]
+        actual_value = (
+            test_context.addon.utils.nodes_modifier_compat_utils.modifier_input_get(
+                modifier,
+                identifier,
+            )
+        )
         ensure(abs(actual_value - expected_value) < 1.0e-6, f"{name} was not updated: {actual_value}")
     guard = evaluated_preview_mesh_guard(source)
     ensure(guard["face_count"] > 0, "Cutter Preview is empty")
@@ -8404,10 +8456,18 @@ def test_gn_finalize_rejects_invalid_plan_payload_regression(
         mark_all_edges_sharp(source)
         preview_result, modifier = run_feature_chamfer_gn(source)
         ensure(preview_result == {"FINISHED"}, f"{suffix} plan Preview failed")
+        compatibility_utils = test_context.addon.utils.nodes_modifier_compat_utils
         if corrupt_payload is None:
-            del modifier[plan_module.PLAN_PROPERTY]
+            compatibility_utils.modifier_property_delete(
+                modifier,
+                plan_module.PLAN_PROPERTY,
+            )
         else:
-            modifier[plan_module.PLAN_PROPERTY] = corrupt_payload
+            compatibility_utils.modifier_property_set(
+                modifier,
+                plan_module.PLAN_PROPERTY,
+                corrupt_payload,
+            )
         finalize_result, kept_modifier = run_feature_chamfer_gn(
             source,
             action="FINALIZE",
@@ -8431,12 +8491,23 @@ def test_gn_preview_modifier_parameter_change_marks_stale(test_context: TestCont
     preview_result, modifier = run_feature_chamfer_gn(source)
     ensure(preview_result == {"FINISHED"}, f"Preview failed: {preview_result}")
     radius_identifier = node_input_identifier(modifier.node_group, "Radius")
-    modifier[radius_identifier] = 0.09
+    compatibility_utils = test_context.addon.utils.nodes_modifier_compat_utils
+    compatibility_utils.modifier_input_set(modifier, radius_identifier, 0.09)
     utils = test_context.addon.utils.feature_chamfer_gn_utils
     ensure(utils.preview_state(source) == "PREVIEW_STALE", "Live Radius edit did not stale Preview")
     rebuild_result, rebuilt_modifier = run_feature_chamfer_gn(source, action="AUTO")
     ensure(rebuild_result == {"FINISHED"}, "AUTO did not rebuild stale Preview")
-    ensure(abs(rebuilt_modifier[radius_identifier] - 0.09) < 1.0e-6, "Rebuild reset live Radius")
+    ensure(
+        abs(
+            compatibility_utils.modifier_input_get(
+                rebuilt_modifier,
+                radius_identifier,
+            )
+            - 0.09
+        )
+        < 1.0e-6,
+        "Rebuild reset live Radius",
+    )
 
 
 # 验证重做 Preview 会重建 Curve source，Radius 使用新值且不留下 orphan。
@@ -8487,9 +8558,10 @@ def test_gn_preview_radius_rebuilds_owned_curve_without_orphans(
     )
     ensure(
         abs(
-            second_modifier[
-                node_input_identifier(second_modifier.node_group, "Radius")
-            ]
+            test_context.addon.utils.nodes_modifier_compat_utils.modifier_input_get(
+                second_modifier,
+                node_input_identifier(second_modifier.node_group, "Radius"),
+            )
             - 0.09
         )
         < 1.0e-6,
@@ -8685,6 +8757,84 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
     result.add_detail("One-step Radius/Keep Cutter RNA, output, and runtime cleanup verified")
 
 
+# 验证 Blender 5.2 的 Geometry Nodes modifier 新属性容器仍能读写参数与工具元数据。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_nodes_modifier_property_compatibility(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNModifierCompatibility")
+    source = make_test_mesh("GNModifierCompatibilitySource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    preview_utils = test_context.addon.utils.feature_chamfer_gn_utils
+    preview = preview_utils.ensure_gn_feature_chamfer_preview(
+        source_object=source,
+        radius=0.05,
+        show_cutter=False,
+    )
+    modifier = preview["modifier"]
+    compatibility_utils = test_context.addon.utils.nodes_modifier_compat_utils
+    ensure(
+        compatibility_utils.modifier_property_owner(modifier) is (
+            modifier.node_group if bpy.app.version >= (5, 2, 0) else modifier
+        ),
+        "Feature Chamfer metadata is stored on an unsafe Geometry Nodes container",
+    )
+    identifiers = preview_utils._input_identifiers(modifier.node_group)
+    compatibility_utils.modifier_input_set(modifier, identifiers["Radius"], 0.04)
+    ensure(
+        abs(compatibility_utils.modifier_input_get(
+            modifier,
+            identifiers["Radius"],
+        ) - 0.04) <= 1.0e-9,
+        "Current Blender Geometry Nodes socket value API is incompatible",
+    )
+    save_path = ARTIFACT_DIR / "feature_chamfer_nodes_modifier_compatibility.blend"
+    source_name = source.name
+    bpy.ops.wm.save_as_mainfile(filepath=str(save_path), copy=True)
+    ensure(save_path.is_file(), "Geometry Nodes compatibility save did not finish")
+    bpy.ops.wm.open_mainfile(filepath=str(save_path))
+    source = bpy.data.objects.get(source_name)
+    ensure(source is not None, "Saved Geometry Nodes compatibility source is missing")
+    if bpy.app.version >= (5, 2, 0):
+        modifier = preview_utils.owned_preview_modifier(source)
+        ensure(
+            modifier is not None
+            and test_context.addon.utils.feature_chamfer_plan_utils.read_chamfer_plan(
+                modifier
+            ) is not None,
+            "Feature Chamfer modifier metadata did not survive reopen",
+        )
+        ensure(
+            abs(preview_utils.live_preview_parameters(modifier)["radius"] - 0.04)
+            <= 1.0e-9,
+            "Blender 5.2 Geometry Nodes socket value did not survive reopen",
+        )
+    else:
+        modifier = preview_utils.owned_preview_modifier(source)
+        if modifier is None:
+            stale_modifier = source.modifiers.get(
+                test_context.const.FEATURE_CHAMFER_GN_MODIFIER
+            )
+            if stale_modifier is not None:
+                source.modifiers.remove(stale_modifier)
+    preview_utils.cancel_gn_feature_chamfer_preview(source)
+    operator_result, output = run_feature_chamfer_one_step(
+        source,
+        radius=0.05,
+        show_cutter=False,
+    )
+    ensure(
+        operator_result == {"FINISHED"} and output is not None,
+        "Current Blender Geometry Nodes modifier property API broke Feature Chamfer",
+    )
+    ensure(
+        output.get(test_context.const.FEATURE_CHAMFER_GN_STATE_TAG) == "PATCHED",
+        "Feature Chamfer output was not finalized through the formal runtime",
+    )
+    result.add_detail(f"Geometry Nodes modifier property API verified on Blender {bpy.app.version_string}")
+
+
 # 验证正式一步入口在最复杂代表样本上同时满足冻结结果与阶段预算。
 # test_context/result: 测试上下文与结果记录器。
 def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
@@ -8724,14 +8874,25 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         "Mixed formal run did not preserve source data while hiding the source",
     )
     output_contract = _output_geometry_contract(output)
-    ensure(
-        output_contract == {
+    expected_output_contract = (
+        {
+            "fingerprint": "058161226104472961189debc132c72d3fdf220fb9f424e2b5decd82f692da2c",
+            "vertex_count": 3917,
+            "edge_count": 8044,
+            "face_count": 4129,
+            "chamfer_face_count": 3449,
+        }
+        if bpy.app.version >= (5, 2, 0)
+        else {
             "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
             "vertex_count": 3922,
             "edge_count": 8054,
             "face_count": 4134,
             "chamfer_face_count": 3454,
-        },
+        }
+    )
+    ensure(
+        output_contract == expected_output_contract,
         f"Mixed formal output drifted from the frozen oracle: {output_contract}",
     )
     mesh_analysis = bmesh.new()
@@ -9011,7 +9172,13 @@ def test_gn_finalize_cutter_extraction_preserves_preview(test_context: TestConte
         finalize_utils.release_feature_chamfer_finalize_context(context)
     ensure(_mesh_fingerprint(source) == source_hash, "Finalize preflight changed source Mesh")
     show_cutter_identifier = node_input_identifier(modifier.node_group, "Show Cutter")
-    ensure(not modifier[show_cutter_identifier], "Finalize preflight left cutter visible")
+    ensure(
+        not test_context.addon.utils.nodes_modifier_compat_utils.modifier_input_get(
+            modifier,
+            show_cutter_identifier,
+        ),
+        "Finalize preflight left cutter visible",
+    )
     result.add_detail(f"artifact={artifact_path}")
 
 
@@ -9340,6 +9507,9 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
             if tuple(record.get("source_edge_indices", ()))
             == (295, 317, 321, 325, 329, 333, 337, 341, 345, 349, 354, 359, 691)
         ]
+        expected_lower_side_counts = (
+            [13, 47] if bpy.app.version >= (5, 2, 0) else [13, 46]
+        )
         ensure(
             lower_records
             and all(
@@ -9358,8 +9528,10 @@ def test_gn_finalize_mixed_fixture_terminal_topology_regression(
                 )
                 for side_index in range(2)
             ]
-            == [13, 46],
-            f"Mixed fixture lower slot did not keep both full Edge Loops at Radius {radius}",
+            == expected_lower_side_counts,
+            "Mixed fixture lower slot did not keep both full Edge Loops at "
+            f"Radius {radius}: expected={expected_lower_side_counts}, "
+            f"records={lower_records}",
         )
         mixed_u_turn_records = [
             record
@@ -9602,7 +9774,12 @@ def test_gn_finalize_tricky_b_cyclic_bridge_split_regression(
 
     target_contracts = (
         (16, 8, [5, 6], [27, 86]),
-        (19, 2, [2, 3], [31, 122]),
+        (
+            19,
+            2,
+            [2, 3],
+            [31, 121] if bpy.app.version >= (5, 2, 0) else [31, 122],
+        ),
     )
     for segment_id, pipe_id, owner_pair, expected_edge_counts in target_contracts:
         records = [
@@ -13724,6 +13901,10 @@ def main():
     context.run_case("gn_preview_finalize_undo_steps", test_gn_preview_finalize_undo_steps)
     context.run_case("feature_chamfer_panel_dynamic_label_and_cancel", test_feature_chamfer_panel_dynamic_label_and_cancel)
     context.run_case("feature_chamfer_single_operator_action_dispatch", test_feature_chamfer_single_operator_action_dispatch)
+    context.run_case(
+        "feature_chamfer_nodes_modifier_property_compatibility",
+        test_feature_chamfer_nodes_modifier_property_compatibility,
+    )
     context.run_case(
         "feature_chamfer_python_pre_boolean_mixed_formal_regression",
         test_feature_chamfer_python_pre_boolean_mixed_formal_regression,

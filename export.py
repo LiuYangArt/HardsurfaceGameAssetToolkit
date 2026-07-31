@@ -2,6 +2,7 @@ import bpy
 from .const import *
 from .functions.common_functions import *
 from .functions.asset_check_functions import *
+from .utils.nodes_modifier_compat_utils import modifier_input_get, modifier_input_set
 
 GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
 CAT_GROUP_MOD = "CAT_MeshGroup"
@@ -35,10 +36,12 @@ def find_gpro_insts(objs):
                             if hasattr(item, 'bl_socket_idname') and item.name == "Instanced Collection" and item.bl_socket_idname == 'NodeSocketCollection':
                                 # 通过修改器获取输入值
                                 socket_id = item.identifier
-                                if socket_id in mod:
-                                    collection = mod[socket_id]
-                                    if collection:
-                                        gpro_instances.extend(collection.all_objects)
+                                try:
+                                    collection = modifier_input_get(mod, socket_id)
+                                except (KeyError, TypeError):
+                                    continue
+                                if collection:
+                                    gpro_instances.extend(collection.all_objects)
     return gpro_instances
 
 
@@ -266,17 +269,15 @@ def get_cat_meshgroup_source_collection(instance_object):
         ):
             continue
 
-        socket_identifier = CAT_MESH_GROUP_SOURCE_SOCKET
-        if socket_identifier not in modifier:
-            socket_identifier = find_modifier_socket_identifier(
-                modifier,
-                "Instanced Collection",
-                "NodeSocketCollection",
-            )
-        if not socket_identifier or socket_identifier not in modifier:
+        socket_identifier = find_modifier_socket_identifier(
+            modifier,
+            "Instanced Collection",
+            "NodeSocketCollection",
+        ) or CAT_MESH_GROUP_SOURCE_SOCKET
+        try:
+            source_collection = modifier_input_get(modifier, socket_identifier)
+        except (KeyError, TypeError):
             continue
-
-        source_collection = modifier[socket_identifier]
         if isinstance(source_collection, bpy.types.Collection):
             return modifier, source_collection
 
@@ -337,14 +338,15 @@ def make_cat_meshgroup_export_name(instance_object, source_collection):
 # 参数:
 #     modifier: CAT Mesh Group Geometry Nodes modifier。
 def enable_cat_meshgroup_realize(modifier):
-    socket_identifier = CAT_MESH_GROUP_REALIZE_SOCKET
-    if socket_identifier not in modifier:
-        socket_identifier = find_modifier_socket_identifier(modifier, "Realize")
-    if not socket_identifier or socket_identifier not in modifier:
+    socket_identifier = (
+        find_modifier_socket_identifier(modifier, "Realize")
+        or CAT_MESH_GROUP_REALIZE_SOCKET
+    )
+    try:
+        original_value = modifier_input_get(modifier, socket_identifier)
+    except (KeyError, TypeError):
         return None, None
-
-    original_value = modifier[socket_identifier]
-    modifier[socket_identifier] = True
+    modifier_input_set(modifier, socket_identifier, True)
     return socket_identifier, original_value
 
 
@@ -380,7 +382,7 @@ def export_cat_meshgroup_instance(
     finally:
         instance_object.matrix_world = original_matrix
         if realize_identifier is not None:
-            modifier[realize_identifier] = original_realize
+            modifier_input_set(modifier, realize_identifier, original_realize)
         bpy.context.view_layer.update()
 
 

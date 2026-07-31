@@ -123,6 +123,66 @@ PREVIEW_FINALIZE_TOPOLOGY_BASELINES = {
         "chamfer_face_count": 3502,
     },
 }
+# Blender 5.2 的 Manifold Boolean 会稳定产生不同的等价闭合拓扑，冻结该版本的正式结果。
+if bpy.app.version >= (5, 2, 0):
+    PREVIEW_FINALIZE_TOPOLOGY_BASELINES.update({
+        ("simple", "Solid 44", 0.01): {
+            "fingerprint": "a46cb0484784f4ca45fe3d2957c869ad4c8d46dbe5c797c16450bd520ef8dd82",
+            "vertex_count": 270,
+            "edge_count": 559,
+            "face_count": 291,
+            "chamfer_face_count": 237,
+        },
+        ("simple", "Solid 44", 0.03): {
+            "fingerprint": "5e8eba40d13c0a9ebc60afb3d4760a3f08d526b4ad078c6526ac6d5ca18bb3bf",
+            "vertex_count": 265,
+            "edge_count": 550,
+            "face_count": 287,
+            "chamfer_face_count": 233,
+        },
+        ("tricky_b", "Extruded.003", 0.01): {
+            "fingerprint": "445f4e0fc25f21f63d7d6ccff95c737e1341ca809fe031026eb9d3718194dde0",
+            "vertex_count": 425,
+            "edge_count": 890,
+            "face_count": 467,
+            "chamfer_face_count": 423,
+        },
+        ("tricky_b", "Extruded.003", 0.03): {
+            "fingerprint": "5df8f942606f040065d50152bb74ef57cad55438f43211d1556098096147748a",
+            "vertex_count": 397,
+            "edge_count": 830,
+            "face_count": 435,
+            "chamfer_face_count": 395,
+        },
+        ("tricky_b", "Extruded.002", 0.01): {
+            "fingerprint": "d96b8b6fef236e9bb54aa23ba4c1d97b8359b7aba2849456b161268cdd72de0b",
+            "vertex_count": 1155,
+            "edge_count": 2364,
+            "face_count": 1211,
+            "chamfer_face_count": 1028,
+        },
+        ("tricky_b", "Extruded.002", 0.03): {
+            "fingerprint": "01ccda3a1209c9c6ac225eac798d47c4163e4a9739407b635bc659ad5225691f",
+            "vertex_count": 1133,
+            "edge_count": 2314,
+            "face_count": 1183,
+            "chamfer_face_count": 1002,
+        },
+        ("mixed", "Extruded.002", 0.01): {
+            "fingerprint": "058161226104472961189debc132c72d3fdf220fb9f424e2b5decd82f692da2c",
+            "vertex_count": 3917,
+            "edge_count": 8044,
+            "face_count": 4129,
+            "chamfer_face_count": 3449,
+        },
+        ("mixed", "Extruded.002", 0.03): {
+            "fingerprint": "085eb96cb450610c1edd599d76028429a17939930b64571bab8852fe86b465e4",
+            "vertex_count": 3889,
+            "edge_count": 8055,
+            "face_count": 4168,
+            "chamfer_face_count": 3495,
+        },
+    })
 FIXTURE_HASHES = {
     "feature-chamfer-product-simple.blend": (
         "1cbab4c83c4d9f77bd2b0799257953aaec32aa416994a1d8810425f3c2b94d8c"
@@ -238,6 +298,23 @@ CYCLIC_SPLIT_REGRESSION_CONTRACTS = {
         },
     ),
 }
+if bpy.app.version >= (5, 2, 0):
+    CYCLIC_SPLIT_REGRESSION_CONTRACTS[
+        ("tricky_b", "Extruded.002", 0.01)
+    ] = (
+        {
+            "segment_id": 16,
+            "pipe_id": 8,
+            "owner_surface_pair": [5, 6],
+            "source_side_edge_counts": [27, 86],
+        },
+        {
+            "segment_id": 19,
+            "pipe_id": 2,
+            "owner_surface_pair": [2, 3],
+            "source_side_edge_counts": [31, 121],
+        },
+    )
 RETRY_RADII = tuple(
     float(radius)
     for radius in json.loads(

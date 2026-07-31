@@ -626,10 +626,10 @@ def _probe_multi_input_exact_boundary_witnesses(
                         compare_token = node_group.nodes.new("FunctionNodeCompare")
                         compare_token.data_type = "INT"
                         compare_token.operation = "EQUAL"
-                        compare_token.inputs[3].default_value = token_id
+                        compare_token.inputs["B"].default_value = token_id
                         node_group.links.new(
                             named_token.outputs["Attribute"],
-                            compare_token.inputs[2],
+                            compare_token.inputs["A"],
                         )
                         compare_token_fields.append(compare_token.outputs["Result"])
                     token_union = node_group.nodes.new("FunctionNodeBooleanMath")

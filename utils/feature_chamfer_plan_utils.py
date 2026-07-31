@@ -11,6 +11,9 @@ from dataclasses import replace
 
 import bpy
 
+from .nodes_modifier_compat_utils import modifier_property_get
+from .nodes_modifier_compat_utils import modifier_property_set
+
 
 PLAN_SCHEMA_VERSION = 1
 PLAN_PROPERTY = "hst_feature_chamfer_plan"
@@ -640,6 +643,10 @@ def chamfer_plan_from_json(payload):
 # 把 plan 与独立 plan ID 写入 Blender ID custom properties。
 # id_block/plan: Object、Modifier 等 ID Property owner 与 ChamferPlan；无返回值。
 def write_chamfer_plan(id_block, plan):
+    if isinstance(id_block, bpy.types.NodesModifier):
+        modifier_property_set(id_block, PLAN_PROPERTY, chamfer_plan_json(plan))
+        modifier_property_set(id_block, PLAN_ID_PROPERTY, plan.plan_id)
+        return
     id_block[PLAN_PROPERTY] = chamfer_plan_json(plan)
     id_block[PLAN_ID_PROPERTY] = plan.plan_id
 
@@ -647,12 +654,19 @@ def write_chamfer_plan(id_block, plan):
 # 从 Blender ID custom properties 读取并验证 plan；缺失时返回 None，损坏时抛错。
 # id_block: Object、Modifier 等 ID Property owner；返回 ChamferPlan 或 None。
 def read_chamfer_plan(id_block):
-    payload = id_block.get(PLAN_PROPERTY) if id_block is not None else None
+    if id_block is None:
+        return None
+    property_get = (
+        modifier_property_get
+        if isinstance(id_block, bpy.types.NodesModifier)
+        else lambda owner, key, default=None: owner.get(key, default)
+    )
+    payload = property_get(id_block, PLAN_PROPERTY)
     if not payload:
         return None
     plan = chamfer_plan_from_json(payload)
     if plan.plan_id != chamfer_plan_fingerprint(plan):
         raise ValueError("Stored ChamferPlan fingerprint does not match immutable payload")
-    if id_block.get(PLAN_ID_PROPERTY) != plan.plan_id:
+    if property_get(id_block, PLAN_ID_PROPERTY) != plan.plan_id:
         raise ValueError("Stored ChamferPlan ID property does not match payload")
     return plan

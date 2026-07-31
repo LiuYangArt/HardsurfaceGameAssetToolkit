@@ -42,6 +42,12 @@ from .feature_chamfer_plan_utils import PLAN_ID_PROPERTY
 from .feature_chamfer_plan_utils import PLAN_PROPERTY
 from .feature_chamfer_plan_utils import read_chamfer_plan
 from .feature_chamfer_plan_utils import write_chamfer_plan
+from .nodes_modifier_compat_utils import modifier_input_get
+from .nodes_modifier_compat_utils import modifier_input_set
+from .nodes_modifier_compat_utils import modifier_property_contains
+from .nodes_modifier_compat_utils import modifier_property_delete
+from .nodes_modifier_compat_utils import modifier_property_get
+from .nodes_modifier_compat_utils import modifier_property_set
 
 
 PREVIEW_NONE = FEATURE_CHAMFER_PREVIEW_NONE
@@ -460,7 +466,7 @@ def owned_preview_modifier(source_object):
     modifier = source_object.modifiers.get(FEATURE_CHAMFER_GN_MODIFIER)
     if modifier is None or modifier.type != "NODES":
         return None
-    if modifier.get(FEATURE_CHAMFER_GN_OWNER_TAG) != OWNER_VALUE:
+    if modifier_property_get(modifier, FEATURE_CHAMFER_GN_OWNER_TAG) != OWNER_VALUE:
         return None
     return modifier
 
@@ -1273,9 +1279,9 @@ def _evaluate_preview_stage_mesh(source_object, node_group, radius):
         modifier.node_group = node_group
         identifiers = _input_identifiers(node_group)
         if "Radius" in identifiers:
-            modifier[identifiers["Radius"]] = radius
+            modifier_input_set(modifier, identifiers["Radius"], radius)
         if "Show Cutter" in identifiers:
-            modifier[identifiers["Show Cutter"]] = False
+            modifier_input_set(modifier, identifiers["Show Cutter"], False)
         depsgraph = bpy.context.evaluated_depsgraph_get()
         depsgraph.update()
         return bpy.data.meshes.new_from_object(
@@ -1736,9 +1742,9 @@ def live_preview_parameters(modifier):
     identifiers = _input_identifiers(modifier.node_group)
     return {
         "adaptivity": 0.0,
-        "radius": float(modifier[identifiers["Radius"]]),
+        "radius": float(modifier_input_get(modifier, identifiers["Radius"])),
         "sample_length": 0.0,
-        "show_cutter": bool(modifier[identifiers["Show Cutter"]]),
+        "show_cutter": bool(modifier_input_get(modifier, identifiers["Show Cutter"])),
         "voxel_size": 0.0,
     }
 
@@ -1762,9 +1768,9 @@ def preview_state(source_object):
         node_group is None
         or node_group.get("hst_feature_chamfer_preview_backend") != CURVE_PREVIEW_BACKEND
         or node_group.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION
-        or modifier.get(FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION
-        or modifier.get(FEATURE_CHAMFER_GN_FINGERPRINT_TAG) != source_fingerprint(source_object)
-        or modifier.get(FEATURE_CHAMFER_GN_PARAMETERS_TAG)
+        or modifier_property_get(modifier, FEATURE_CHAMFER_GN_ASSET_VERSION_TAG) != FEATURE_CHAMFER_GN_ASSET_VERSION
+        or modifier_property_get(modifier, FEATURE_CHAMFER_GN_FINGERPRINT_TAG) != source_fingerprint(source_object)
+        or modifier_property_get(modifier, FEATURE_CHAMFER_GN_PARAMETERS_TAG)
         != json.dumps(live_preview_parameters(modifier), sort_keys=True)
         or owned_preview_curve(source_object) is None
         or owned_preview_curve(source_object).get(FEATURE_CHAMFER_CURVE_FINGERPRINT_TAG)
@@ -1788,7 +1794,7 @@ def ensure_gn_feature_chamfer_preview(
     modifier = source_object.modifiers.get(FEATURE_CHAMFER_GN_MODIFIER)
     if modifier is not None and (
         modifier.type != "NODES"
-        or modifier.get(FEATURE_CHAMFER_GN_OWNER_TAG) != OWNER_VALUE
+        or modifier_property_get(modifier, FEATURE_CHAMFER_GN_OWNER_TAG) != OWNER_VALUE
     ):
         raise FeatureChamferPreviewError(
             f"Modifier 名称冲突：{FEATURE_CHAMFER_GN_MODIFIER}"
@@ -1812,9 +1818,9 @@ def ensure_gn_feature_chamfer_preview(
         if property_name in source_object
     }
     old_modifier_plan_properties = {
-        property_name: modifier.get(property_name)
+        property_name: modifier_property_get(modifier, property_name)
         for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY)
-        if modifier is not None and property_name in modifier
+        if modifier is not None and modifier_property_contains(modifier, property_name)
     }
     try:
         curve_object, graph_stats, chamfer_plan = _rebuild_owned_preview_curve(
@@ -1840,7 +1846,7 @@ def ensure_gn_feature_chamfer_preview(
         modifier.show_viewport = True
         modifier.show_render = True
         for name, value in values.items():
-            modifier[identifiers[name]] = value
+            modifier_input_set(modifier, identifiers[name], value)
         write_chamfer_plan(modifier, chamfer_plan)
     except Exception:
         if created_modifier and modifier is not None:
@@ -1872,10 +1878,10 @@ def ensure_gn_feature_chamfer_preview(
             source_object[property_name] = value
         if old_modifier_reference is not None:
             for property_name in (PLAN_PROPERTY, PLAN_ID_PROPERTY):
-                if property_name in old_modifier_reference:
-                    del old_modifier_reference[property_name]
+                if modifier_property_contains(old_modifier_reference, property_name):
+                    modifier_property_delete(old_modifier_reference, property_name)
             for property_name, value in old_modifier_plan_properties.items():
-                old_modifier_reference[property_name] = value
+                modifier_property_set(old_modifier_reference, property_name, value)
         raise
     if (
         old_node_group is not None
@@ -1891,12 +1897,24 @@ def ensure_gn_feature_chamfer_preview(
         _remove_preview_curve_object(old_curve_object)
     parameters = live_preview_parameters(modifier)
 
-    modifier[FEATURE_CHAMFER_GN_OWNER_TAG] = OWNER_VALUE
-    modifier[FEATURE_CHAMFER_GN_FINGERPRINT_TAG] = source_fingerprint(source_object)
-    modifier[FEATURE_CHAMFER_GN_ASSET_VERSION_TAG] = FEATURE_CHAMFER_GN_ASSET_VERSION
-    modifier[FEATURE_CHAMFER_GN_PARAMETERS_TAG] = json.dumps(parameters, sort_keys=True)
-    modifier[FEATURE_CHAMFER_GN_STATE_TAG] = PREVIEW_VALID
-    modifier[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = "PREVIEW"
+    modifier_property_set(modifier, FEATURE_CHAMFER_GN_OWNER_TAG, OWNER_VALUE)
+    modifier_property_set(
+        modifier,
+        FEATURE_CHAMFER_GN_FINGERPRINT_TAG,
+        source_fingerprint(source_object),
+    )
+    modifier_property_set(
+        modifier,
+        FEATURE_CHAMFER_GN_ASSET_VERSION_TAG,
+        FEATURE_CHAMFER_GN_ASSET_VERSION,
+    )
+    modifier_property_set(
+        modifier,
+        FEATURE_CHAMFER_GN_PARAMETERS_TAG,
+        json.dumps(parameters, sort_keys=True),
+    )
+    modifier_property_set(modifier, FEATURE_CHAMFER_GN_STATE_TAG, PREVIEW_VALID)
+    modifier_property_set(modifier, FEATURE_CHAMFER_GN_LAST_ACTION_TAG, "PREVIEW")
     source_object[FEATURE_CHAMFER_GN_STATE_TAG] = PREVIEW_VALID
     source_object[FEATURE_CHAMFER_GN_LAST_ACTION_TAG] = "PREVIEW"
     bpy.context.view_layer.update()

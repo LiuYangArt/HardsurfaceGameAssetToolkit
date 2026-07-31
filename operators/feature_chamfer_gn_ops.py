@@ -21,6 +21,7 @@ from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
 from ..utils.feature_chamfer_plan_utils import chamfer_plan_without_unsupported_regions
 from ..utils.feature_chamfer_plan_utils import write_chamfer_plan
+from ..utils.nodes_modifier_compat_utils import modifier_input_set
 
 
 # 返回 source 是否有至少一条显式 sharp_edge。
@@ -143,7 +144,7 @@ def _keep_evaluated_cutter(source_object, transaction):
     show_cutter_identifier = identifiers.get("Show Cutter")
     if show_cutter_identifier is None:
         raise FeatureChamferPreviewError("Feature Chamfer Preview has no Show Cutter input")
-    modifier[show_cutter_identifier] = True
+    modifier_input_set(modifier, show_cutter_identifier, True)
     source_object.update_tag(refresh={"DATA"})
     bpy.context.view_layer.update()
     depsgraph = bpy.context.evaluated_depsgraph_get()
