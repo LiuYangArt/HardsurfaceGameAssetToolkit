@@ -2,8 +2,8 @@
 
 日期：2026-07-30
 更新：2026-07-31
-状态：`PRE-BOOLEAN PRODUCER INTEGRATED / VERIFIED`，完整性能任务仍为 `STOP`
-正确性基线：当前正式结果继续作为只读 oracle。2026-07-31 已把 Python Boolean 前属性生产接入一步式正式入口；同一 Boolean、未修改的 Boolean 后身份整理、Bridge/Fill 和最终拓扑保持一致。Boolean 后动态身份整理尚未替换，因此总耗时仍未达到 2 秒产品门槛。
+状态：`PRE-BOOLEAN PRODUCER INTEGRATED / VERIFIED`；Boolean 后正确性路线已证明可行，固定规模与完整性能任务仍为 `STOP`
+正确性基线：当前正式结果继续作为只读 oracle。2026-07-31 已把 Python Boolean 前属性生产接入一步式正式入口；同一 Boolean、未修改的 Boolean 后身份整理、Bridge/Fill 和最终拓扑保持一致。后续旁路又证明 Boolean 后全部端点语义可以由 Python 恢复，但当前正确原型需要 32 次逐 segment Boolean，累计约 6.12 秒，尚不能替换正式动态整理，也未达到 2 秒产品门槛。
 
 历史计划：[`2026-07-30-feature-chamfer-preview-performance-plan.md`](2026-07-30-feature-chamfer-preview-performance-plan.md)  
 失败复盘：[`2026-07-30-feature-chamfer-performance-rewrite-failure.md`](../postmortem/2026-07-30-feature-chamfer-performance-rewrite-failure.md)
@@ -20,6 +20,15 @@ Python 完整逐 segment 属性验证：
 正式入口集成结果：
 [`../validation/2026-07-31-feature-chamfer-python-pre-boolean-formal-integration-result.md`](../validation/2026-07-31-feature-chamfer-python-pre-boolean-formal-integration-result.md)
 
+Boolean 后端点来源验证：
+[`../validation/2026-07-31-feature-chamfer-endpoint-provenance-carrier-validation-result.md`](../validation/2026-07-31-feature-chamfer-endpoint-provenance-carrier-validation-result.md)
+
+Boolean 后共享批次压缩验证：
+[`../validation/2026-07-31-feature-chamfer-overlap-batch-compression-validation-result.md`](../validation/2026-07-31-feature-chamfer-overlap-batch-compression-validation-result.md)
+
+Boolean Pro 内部身份传播审计：
+[`../validation/2026-07-31-feature-chamfer-boolean-pro-internal-provenance-validation-result.md`](../validation/2026-07-31-feature-chamfer-boolean-pro-internal-provenance-validation-result.md)
+
 ## 0. 2026-07-31 路线更新
 
 - 外部压缩账本路线保留为历史 `STOP`，不再作为当前正式接入方案。
@@ -31,6 +40,11 @@ Python 完整逐 segment 属性验证：
 - 正式入口现已使用固定 3 个输入节点和 3 条连线消费 Python 准备的 source/Cutter Mesh；旧的 Boolean 前逐 Patch/Pipe/segment 动态属性节点不再进入正式运行时。
 - Mixed / Radius 0.01 的正式一步式运行再次命中冻结 fingerprint 与 3922/8054/4134/3454 统计；本次整套运行中 Python producer 为 0.021 秒，但总耗时为 4.635 秒。剩余主要耗时已移到 Boolean 后动态身份整理和 Bridge/Fill，完整任务不得宣称达到 2 秒目标。
 - Blender 5.1.2 全量回归 156/156 通过；当前状态仅表示这次替换已集成并自动验证，不表示完整性能计划完成或用户视觉验收完成。
+- Boolean 后端点来源旁路已完成：逐 segment 动态 batch 在 3872 条 raw Boundary、7744 组 endpoint-segment 上恢复的 membership、station、station² 全部逐位一致，证明 Python 后整理并不存在语义不可行障碍。
+- 该正确性证据不能直接作为实现方案：Mixed 需要 32 次 Boolean，Boolean 求值累计约 6.12 秒；它现在只保留为诊断 oracle。当前下一步已被后续结构审计改为“保留完整 FACE 属性与单次 Boolean，Python 复刻后置 field adaptation”。
+- 后续共享批次验证已把 32 次压缩为当前保守冲突图下最少的 4 批，并保持 7744 组端点数据逐位零差；Boolean 累计中位约 0.50 秒。稳态完整恢复中位约 0.739 秒，仍略高于 0.70 秒阶段预算，因此暂不接正式入口。
+- Boolean Pro 原始资产与正式副本审计纠正了责任边界：原始资产为 184 nodes / 260 links；正式运行时副本为 592 / 808。逐 Pipe/segment 身份通道不是 Boolean Pro 自带，而是 Feature Chamfer 写入 Cutter FACE attribute 并在 Boolean 后向副本注入 EDGE/POINT Store。原生 Boolean 仍只有 Mesh 与 Intersecting Edges 两个输出。
+- 下一验证不再猜测 domain、不压缩 owner，也不再做 Face 邻接反推。它必须保留现有逐 segment FACE schema 与同一次 Boolean，只移除 Boolean 后动态 Store，验证 Python 能否读取 Boolean 已传播的同名 FACE attribute，并复刻现有 EDGE/POINT field adaptation；首差 Edge 133 通过后再比较全部 3872 raw Boundary / 7744 endpoint-segment。
 
 ## 1. 实际要改什么
 
@@ -78,17 +92,16 @@ one-hot 节点网络。** 尚未完成的是 Boolean 后的动态身份整理；
    - 继续使用受控 Boolean Pro 的实际 Difference 分支与原生相交边选择；
    - 不再验证纯 Python Cutter 或普通 Boolean Modifier，除非当前路线以后被独立证据否定。
 
-2. **建立固定规模的 Boolean 后出口**
-   - 已验证只增加一个属性写入节点和两条连线，即可把原生相交边写为 Edge 布尔属性；
-   - 下一步只增加 Python 无法从 plan、source/Cutter 拓扑和 Boolean 输出确定性恢复的基础事实；
-   - 出口节点和连线数量不得随 Face、Pipe、segment 或 Point 数量增长；
-   - 不允许把旧 one-hot 换名字后继续动态展开。
+2. **直接消费现有逐 segment FACE attribute**
+   - Boolean 前 schema 已由正式 Python producer 保留，不再搜索新的 domain 或压缩 carrier；
+   - 同一次 Boolean 后只增加固定 Intersection 出口，Python 读取结果 Mesh 上已经传播的同名 FACE attribute；
+   - Python 按现有 GN 的真实 domain adaptation 生成 EDGE/POINT 值，不重新猜 owner；
+   - 不允许调用旧 Boolean 后动态 Store，也不增加随 Pipe、segment 或 Point 数增长的节点和连线。
 
-3. **一次扫描恢复完整 Boundary 记录**
+3. **一次扫描复刻现有后置物化**
    - 只遍历 Boolean Pro 已标记的真实相交边；
-   - 从固定出口、当前 plan、source/Cutter 拓扑读取全部命中事实；
-   - 为一条边保存任意数量的 Pipe、segment、Patch 和 port 归属；
-   - 从传播后的 Point/Face 数据读取 station 和 station squared，不使用最近距离重新猜测；
+   - 逐项复刻现有 FACE → EDGE 与 FACE → POINT 的 field adaptation，而不是从最终 Face 邻接反推；
+   - 为一条边保存任意数量的 Pipe、segment、Patch 和 port 归属，并读取 station 与 station squared；
    - 任何标签缺失、冲突或传播不完整都直接报错，不补默认值。
 
 4. **增加一个薄适配层**
@@ -106,14 +119,32 @@ one-hot 节点网络。** 尚未完成的是 Boolean 后的动态身份整理；
 
 实验结论已经冻结：固定规模出口可在约 0.20 秒内导出完全相同的相交边集合；Python 读取和初步恢复
 约 0.27 秒。但只凭相交边和相邻 Face，第一条身份比较就丢失 Pipe 5，因此“Boundary-only”路线已
-明确失败。下一步不是重做 Cutter/Boolean，也不是继续调 Face 邻接，而是确定并导出最小基础身份事实。
+明确失败。该结论只否定最终 Face 邻接猜测；后续结构审计已把下一步收敛为复刻现有 FACE → EDGE/POINT
+field adaptation，不再重做 Cutter/Boolean，也不再搜索压缩身份事实。
 
 详细数字、旧身份生成链和禁止重复的实验见 2026-07-31 验证记录。
 
 后续完整验证纠正了 Face 整数的解释：raw INT 是被 membership 加权的一阶矩，不能直接当 record ID；
 归一化后可在全部 3872 条记录上恢复正确的 Edge 级 Pipe/segment/Patch/port 与 station 合同。真正首差
-位于 Boolean Point 的端点事实传播，共 89 条差异。因此下一步只研究 Point/endpoint 贡献者映射；
-不得重复 Boundary、Face record 或 Edge 级 ledger 试验。详细证据见外部账本完整验证结果。
+位于 Boolean Point 的端点事实传播，共 89 条差异。该阶段曾把下一步限定为 Point/endpoint 贡献者映射；
+后续原始资产与运行时注入结构审计已取代这一方向：直接保留现有完整 FACE schema，复刻它在 POINT
+context 的求值。不得重复 Boundary、Face record 或 Edge 级 ledger 试验。
+
+端点来源验证随后完成了这一缺口：32 次逐 segment Boolean 在全部 7744 组端点数据上逐位零差异，
+原先 89 条差异已全部消除。这证明端点语义能够恢复；同时也测明直接逐 segment 批处理不可用于性能方案，
+因为批次数随 segment 数增长且仅 Boolean 累计就约 6.12 秒。后续应以该正确实现作为诊断 oracle，
+该 32-pass 结果只作为完整语义 oracle；不得再把它或局部载体失败表述为 Python 路线失败。
+
+共享批次实验现已进一步证明：从输入 plan、Cutter 拓扑和 Edge ledger 独立建立冲突图，可把 32 个
+segment 压缩为 4 批且逐位等价；该 39-edge 冲突图经精确检查不可分为 3 批。剩余差距已缩小为约
+0.039 秒的稳态阶段预算，以及正式入口能否复用已经生成的 Cutter、静态预建固定出口而不重复准备。
+在这些正式边界得到实测前，状态保持性能 `STOP`，但不得再描述为算法或 Python 能力不可行。
+
+Boolean Pro 内部审计进一步明确：固定 carrier 不是下一步的必要前提。原始 Boolean Pro 本体没有逐
+segment 通道；Feature Chamfer 已经掌握完整身份并把它们写入 Cutter FACE。当前待验证问题缩小为：
+在保留同一输入 schema 与同一次 Boolean 的情况下，Python 是否可以直接消费 Boolean 传播后的同名
+FACE attribute，并逐项复刻当前 GN 后置 Store 在 EDGE/POINT context 中得到的值。此前“只凭最终
+FACE 邻接”失败不能否定这条路线，因为那次没有复刻 GN field adaptation。
 
 ## 2. 为什么选择这条实现路线
 
@@ -208,8 +239,9 @@ FeatureGraph / Plan / Curve
 首选旁路原型
 同一 FeatureGraph / Plan / Curve
   → 当前 GN Curve Pipe 与 Boolean Pro
-  → 固定规模出口写入原生相交边与最小基础事实
-  → Python 单次扫描，生成与旧路径相同的 Boundary 合同
+  → Python 写入现有完整逐 owner FACE attributes
+  → 固定规模出口写入原生相交边
+  → Python 复刻 EDGE/POINT field adaptation，生成相同 Boundary 合同
   → 原封不动的现有 Direct Bridge / Fill
 ```
 
@@ -217,29 +249,29 @@ FeatureGraph / Plan / Curve
 
 ### 5.1 身份数据模型
 
-禁止再次把 owner 压成“一个整数就是一个 owner”。当前固定出口只证明相交边集合等价；下一步先用
-信息消融确定每类身份中哪些必须穿过 Boolean，再决定最小基础事实的承载方式。外部 ledger 仅负责
-汇总、比较和向下游适配，不能取代 Boolean 内必须保留的事实。数据模型仍分为两层：
+禁止再次把 owner 压成“一个整数就是一个 owner”。当前固定出口只证明相交边集合等价；后续审计已确认
+不需要继续做信息消融或决定新承载方式：沿用正式 Python producer 已写入的完整逐 owner FACE schema。
+外部 ledger 仅负责汇总、比较和向下游适配，不能取代 Boolean 内必须保留的事实。数据模型仍分为两层：
 
 - Mesh 上保存 Boolean 真正需要传播的完整稀疏事实；批量写入，不逐元素调用 Blender RNA；
 - Python ledger 汇总任意长度的 owner set、Patch set、segment set、port role 和 station 记录。
   若使用稳定 record ID，它只能作为 Python 侧索引，不能假设标量 ID 经 Boolean 插值或合并后仍有语义。
 
-如果 Blender Boolean 对基础事实的传播不足以恢复旧路径的完整多 owner 集合，这条路线直接失败；
+如果 Python 无法复刻现有 GN 对传播后完整 FACE field 的 EDGE/POINT 求值，这条路线直接失败；
 不得用 nearest、BVH、centroid、主 owner、固定 bitmask 或“最像的一个”补齐。
 
 ### 5.2 固定 Boolean 出口层
 
-这一层保留现有 Boolean Pro，只允许增加固定规模的属性出口：
+这一层保留现有 Boolean Pro，只允许增加固定规模的诊断/Intersection 出口：
 
 - 直接物化实际 Manifold Difference 的 `Intersection Edges`；
-- 传播 Python 无法从 plan 与拓扑确定性恢复的最小基础事实；
+- 完整逐 owner FACE attribute 已由 Python 在 Boolean 前写入，不再另找压缩事实；
 - 新增节点和连接数量不随 Face、Pipe、segment 或 Point 数量增长；
 - 不实现本工具不需要的 Slice、Union、Intersect 或通用 UI 分支。
 
 已验证相交边出口三次中位数约 0.197 秒，Boundary universe 完全等价。正式采用前仍必须比较完整
-owner/station/Patch 合同、材质与法线。若固定数量的基础事实无法无损表达完整多 owner，首选路线
-直接 `STOP`；不会退回动态 one-hot 或空间猜测来掩盖问题。
+owner/station/Patch 合同、材质与法线。若 Python 无法从同一次 Boolean 后的完整 FACE fields 复刻当前
+EDGE/POINT field adaptation，首选路线直接 `STOP`；不会退回动态 Store 或空间猜测来掩盖问题。
 
 ### 5.3 Boundary 适配层
 
@@ -290,9 +322,9 @@ Stop：缺任一中间合同、只能得到最终健康性指标，或旧路径�
 按以下顺序替换同一 producer 内部子阶段，每步仍只跑 Mixed / 0.01：
 
 1. 复用已经通过的固定原生相交边出口，不再重测 Cutter/Boolean 等价性；
-2. 针对首个 Pipe 5 差异做输入 Face → Boolean 输出 Face → Boundary Edge 的逐层属性追踪；
-3. 对 Pipe、segment、Patch、station 与 station squared 做信息消融，确定必须穿过 Boolean 的最小集合；
-4. 只增加固定数量的基础属性，并由 Python 单次扫描生成旧 Direct Bridge 所需的 Edge/Point/Patch layers；
+2. 针对 Edge 133 / segment 24 做输入 FACE → Boolean 输出 FACE → EDGE/POINT Store 的逐层属性追踪；
+3. 沿用全部现有逐 Pipe/segment/Patch/station/station² FACE attributes，不做信息消融或压缩；
+4. Python 复刻现有 field adaptation，单次扫描生成旧 Direct Bridge 所需的 Edge/Point/Patch layers；
 5. prototype 不创建任何随输入规模增长的运行时 Geometry Nodes。
 
 每一步先比较 L1 Boolean 输出合同，再看耗时。L1 不等价时，不运行 Bridge/Fill，不讨论最终性能。
