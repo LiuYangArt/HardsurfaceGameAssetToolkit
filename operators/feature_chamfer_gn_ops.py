@@ -34,33 +34,75 @@ def _has_sharp_edge(source_object):
     )
 
 
-# 验证正式一步式 Feature Chamfer 上下文并返回 source Object。
-# operator/context: 当前 Blender Operator 与 Context。
-def _validated_source(operator, context):
-    source_object = context.active_object
+# 验证单个正式 Feature Chamfer source Object。
+# operator/source_object: 当前 Operator 与待处理 Mesh Object；返回合法 source 或 None。
+def _validated_source_object(operator, source_object):
     if source_object is None or source_object.type != "MESH":
-        operator.report({"ERROR"}, "Select one Mesh Object")
+        operator.report({"ERROR"}, "Select one or more Mesh Objects")
         return None
-    source_name = source_object.get(FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
-    if source_name:
-        linked_source = bpy.data.objects.get(source_name)
-        if linked_source is None or linked_source.type != "MESH":
-            operator.report({"ERROR"}, "Feature Chamfer source Object no longer exists")
-            return None
-        source_object = linked_source
     if source_object.mode != "OBJECT":
         operator.report({"ERROR"}, "Feature Chamfer requires Object Mode")
         return None
-    if len(context.selected_objects) != 1:
-        operator.report({"ERROR"}, "Select exactly one Mesh Object")
-        return None
     if any(abs(value - 1.0) > 1.0e-6 for value in source_object.scale):
-        operator.report({"ERROR"}, "Apply Object Scale before Feature Chamfer")
+        operator.report(
+            {"ERROR"},
+            f"Apply Object Scale before Feature Chamfer: {source_object.name}",
+        )
         return None
     if not _has_sharp_edge(source_object):
-        operator.report({"ERROR"}, "Mesh has no explicit sharp_edge selection")
+        operator.report(
+            {"ERROR"},
+            f"Mesh has no explicit sharp_edge selection: {source_object.name}",
+        )
         return None
     return source_object
+
+
+# 从当前选择解析一批唯一 source，并保持 active source 优先的稳定顺序。
+# operator/context: 当前 Blender Operator 与 Context；返回合法 source tuple 或 None。
+def _validated_sources(operator, context):
+    selected_meshes = [
+        selected_object
+        for selected_object in context.selected_objects
+        if selected_object.type == "MESH"
+    ]
+    if not selected_meshes:
+        operator.report({"ERROR"}, "Select one or more Mesh Objects")
+        return None
+    resolved_sources = []
+    for selected_object in selected_meshes:
+        source_name = selected_object.get(FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+        source_object = (
+            bpy.data.objects.get(source_name)
+            if source_name
+            else selected_object
+        )
+        if source_object is None or source_object.type != "MESH":
+            operator.report(
+                {"ERROR"},
+                f"Feature Chamfer source Object no longer exists: {selected_object.name}",
+            )
+            return None
+        if source_object not in resolved_sources:
+            resolved_sources.append(source_object)
+    active_object = context.active_object
+    active_source_name = (
+        active_object.get(FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+        if active_object is not None
+        else None
+    )
+    active_source = (
+        bpy.data.objects.get(active_source_name)
+        if active_source_name
+        else active_object
+    )
+    if active_source in resolved_sources:
+        resolved_sources.remove(active_source)
+        resolved_sources.insert(0, active_source)
+    for source_object in resolved_sources:
+        if _validated_source_object(operator, source_object) is None:
+            return None
+    return tuple(resolved_sources)
 
 
 # 从 Direct Bridge 输出建立正式 Chamfer 属性并写入 immutable plan。
@@ -136,6 +178,7 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
     )
     preview_seconds = time.perf_counter() - preview_started_at
     chamfer_plan = preview["plan"]
+    feature_graph_stats = preview["feature_graph"]
     preview_node_group = preview["node_group"]
     pre_boolean_backend = preview_node_group.get(
         "hst_feature_chamfer_pre_boolean_backend"
@@ -197,6 +240,15 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
         post_boolean_materializer_seconds=post_boolean_materializer_seconds,
         post_boolean_dynamic_node_count=post_boolean_dynamic_node_count,
         preview_seconds=preview_seconds,
+        feature_graph_seconds=float(
+            feature_graph_stats.get("feature_graph_seconds", -1.0)
+        ),
+        feature_graph_cache_hit=bool(
+            feature_graph_stats.get("feature_graph_cache_hit", False)
+        ),
+        feature_graph_radius_independent=bool(
+            feature_graph_stats.get("feature_graph_radius_independent", False)
+        ),
         bridge_fill_seconds=bridge_fill_seconds,
         one_step_transaction=True,
         temporary_preview_removed=True,
@@ -204,6 +256,7 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
         cutter_object_name=cutter_object.name if cutter_object is not None else None,
         keep_cutter_requested=bool(show_cutter),
         keep_cutter_supported=cutter_object is not None if show_cutter else True,
+        source_hidden=True,
     )
     return patch_stats
 
@@ -239,6 +292,39 @@ def _discard_transaction_outputs(transaction):
             transaction[data_key] = None
 
 
+# source_object: 返回 source 成功发布前的可见性快照。
+def _source_visibility_state(source_object):
+    return {
+        "hide_set": source_object.hide_get(),
+        "hide_viewport": source_object.hide_viewport,
+        "hide_render": source_object.hide_render,
+    }
+
+
+# source_object/state: 恢复 source 的 viewport/render 可见性；无返回值。
+def _restore_source_visibility(source_object, state):
+    source_object.hide_set(bool(state["hide_set"]))
+    source_object.hide_viewport = bool(state["hide_viewport"])
+    source_object.hide_render = bool(state["hide_render"])
+
+
+# source_object: 成功后从 viewport 与 render 中隐藏 source；无返回值。
+def _hide_source(source_object):
+    source_object.select_set(False)
+    source_object.hide_set(True)
+    source_object.hide_viewport = True
+    source_object.hide_render = True
+
+
+# transactions: 回滚整批未发布结果并恢复全部 source 可见性；无返回值。
+def _rollback_batch(transactions):
+    for transaction in reversed(transactions):
+        _discard_transaction_outputs(transaction)
+        source_object = transaction["source"]
+        cancel_gn_feature_chamfer_preview(source_object)
+        _restore_source_visibility(source_object, transaction["source_visibility"])
+
+
 class HST_OT_FeatureChamferGN(bpy.types.Operator):
     """一次执行并直接生成最终 Feature Chamfer Mesh"""
 
@@ -248,61 +334,101 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     source_object_name: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
+    source_object_names: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     radius: bpy.props.FloatProperty(name="Radius", default=0.03, min=1.0e-5)
     show_cutter: bpy.props.BoolProperty(name="Keep Cutter", default=False)
 
     def invoke(self, context, event):
         del event
-        source_object = _validated_source(self, context)
-        if source_object is None:
+        source_objects = _validated_sources(self, context)
+        if source_objects is None:
             return {"CANCELLED"}
-        self.source_object_name = source_object.name
+        self.source_object_name = source_objects[0].name
+        self.source_object_names = json.dumps(
+            [source_object.name for source_object in source_objects],
+            ensure_ascii=False,
+        )
         return self.execute(context)
 
     def execute(self, context):
-        source_object = bpy.data.objects.get(self.source_object_name) or _validated_source(
-            self,
-            context,
+        stored_names = []
+        if self.source_object_names:
+            try:
+                stored_names = json.loads(self.source_object_names)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                stored_names = []
+        if not stored_names and self.source_object_name:
+            stored_names = [self.source_object_name]
+        source_objects = tuple(
+            source_object
+            for source_name in stored_names
+            if (source_object := bpy.data.objects.get(source_name)) is not None
         )
-        if source_object is None:
+        if len(source_objects) != len(stored_names) or not source_objects:
+            source_objects = _validated_sources(self, context)
+        if source_objects is None:
             return {"CANCELLED"}
         started_at = time.perf_counter()
-        transaction = {
-            "output": None,
-            "cutter": None,
-            "cutter_data": None,
-        }
+        transactions = []
         try:
-            clear_feature_chamfer_diagnostics(source_object)
-            patch_stats = _build_preview_finalize_output(
-                source_object,
-                self.radius,
-                self.show_cutter,
-                transaction,
-            )
-            patch_stats.update(
-                total_seconds=time.perf_counter() - started_at,
-            )
-            output = transaction["output"]
+            results = []
+            for source_object in source_objects:
+                transaction = {
+                    "source": source_object,
+                    "source_visibility": _source_visibility_state(source_object),
+                    "output": None,
+                    "cutter": None,
+                    "cutter_data": None,
+                }
+                transactions.append(transaction)
+                clear_feature_chamfer_diagnostics(source_object)
+                patch_stats = _build_preview_finalize_output(
+                    source_object,
+                    self.radius,
+                    self.show_cutter,
+                    transaction,
+                )
+                results.append(patch_stats)
+            total_seconds = time.perf_counter() - started_at
+            outputs = [transaction["output"] for transaction in transactions]
+            for source_object in source_objects:
+                _hide_source(source_object)
+            batch_stats = {
+                "status": "finished",
+                "source_object_count": len(source_objects),
+                "output_object_names": [output.name for output in outputs],
+                "total_seconds": total_seconds,
+                "results": results,
+            }
+            if len(results) == 1:
+                batch_stats.update(results[0])
+                batch_stats["total_seconds"] = total_seconds
             context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
-                patch_stats,
+                batch_stats,
                 ensure_ascii=False,
                 default=str,
             )
             for selected_object in tuple(context.selected_objects):
                 selected_object.select_set(False)
-            output.select_set(True)
-            context.view_layer.objects.active = output
+            for output in outputs:
+                output.hide_set(False)
+                output.hide_viewport = False
+                output.hide_render = False
+                output.select_set(True)
+            context.view_layer.objects.active = outputs[0]
             self.report(
                 {"INFO"},
-                f"Feature Chamfer finished in {patch_stats['total_seconds']:.2f}s",
+                (
+                    f"Feature Chamfer finished {len(outputs)} object(s) "
+                    f"in {total_seconds:.2f}s"
+                ),
             )
             return {"FINISHED"}
         except FeatureChamferDirectBridgeError as error:
-            _discard_transaction_outputs(transaction)
-            cancel_gn_feature_chamfer_preview(source_object)
+            failed_source = transactions[-1]["source"]
+            _rollback_batch(transactions)
             diagnostic = show_feature_chamfer_failure_diagnostic(
-                source_object,
+                failed_source,
                 error.error_code,
                 error.stats,
                 self.radius,
@@ -326,13 +452,11 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 self.report({"WARNING"}, f"Feature Chamfer failed [{error.error_code}]: {error}")
             return {"FINISHED"} if diagnostic["exists"] else {"CANCELLED"}
         except FeatureChamferPreviewError as error:
-            _discard_transaction_outputs(transaction)
-            cancel_gn_feature_chamfer_preview(source_object)
+            _rollback_batch(transactions)
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         except Exception:
-            _discard_transaction_outputs(transaction)
-            cancel_gn_feature_chamfer_preview(source_object)
+            _rollback_batch(transactions)
             raise
 
     def draw(self, context):

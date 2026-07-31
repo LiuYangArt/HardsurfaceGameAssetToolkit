@@ -1,7 +1,7 @@
 # Feature Chamfer 一步式性能与架构评估
 
 日期：2026-07-30  
-状态：`SUPERSEDED / HISTORICAL EVIDENCE`
+状态：`SUPERSEDED / HISTORICAL EVIDENCE`（2026-07-31 附录记录后续已验证实现）
 
 > 本文保留第一次性能改写前后的历史证据，不再作为当前执行计划。新的执行方案见
 > [`2026-07-30-feature-chamfer-performance-optimization-replan.md`](2026-07-30-feature-chamfer-performance-optimization-replan.md)。
@@ -90,9 +90,9 @@ Bridge/Fill，不经过成千上万个临时 node attributes。
 
 ## 4. 目标产品行为
 
-1. 用户选中一个闭合 Mesh，执行一次 Feature Chamfer；
+1. 用户选中一个或多个闭合 Mesh，执行一次 Feature Chamfer；
 2. Operator 读取 Sharp Edge，完成分析、Cutter、Boolean、Bridge/Fill；
-3. 成功后保留原 Object 不变，选择独立结果 Object；
+3. 成功后保留原 Object 的几何与配置不变，但在视口和渲染中隐藏；选择并只显示独立结果 Object；
 4. `Adjust Last Operation` 提供 Radius，以及可选的“保留 Cutter”诊断开关；
 5. 修改参数时通过 Blender Redo 事务重建结果，不存在 Preview/Finalize/Cancel 按钮或状态；
 6. 失败时不留下伪成功 Mesh；几何错误保留明确诊断并允许用户在左下角修改 Radius 重试。
@@ -166,10 +166,60 @@ Boolean Pro 等价 Manifold Difference + 当前已验收 Direct Bridge 规则”
 - 一步入口：单次执行得到最终 Mesh，临时 Preview 状态在事务结束前清理；
 - `Keep Cutter`：保留可见 Cutter Object；
 - 正确性自动层级已到 `VERIFIED`；按项目规则，用户打开批量 `.blend` 确认前不声明 `ACCEPTED`。
-- 性能 Phase A/B 仍为 `STOP`：当前正确性恢复路径会临时建立旧 Preview 数据，不满足“不创建 Preview runtime”的目标；Mixed 目前约 97–176 秒，也未达到性能目标。任何后续提速都必须先通过上述旧版几何基线，不能再以不同几何换取速度。
+- 当时的性能 Phase A/B 状态为 `STOP`：正确性恢复路径仍会临时建立旧 Preview 数据，Mixed 当时约 97–176 秒。该历史结论已被 2026-07-31 附录中的正式提速结果取代；几何等价门槛继续有效。
 
 Artifacts：
 
 - `/private/tmp/hst-preview-finalize-parity-required10-authoritative-20260730/results.json`
 - `/private/tmp/hst-one-step-transaction-targeted-20260730/results.json`
 - `tests/artifacts/feature_chamfer_gn_gui_undo.json`
+
+## 8. 2026-07-31 参数复用、多物体与可见性
+
+### 8.1 Radius 重做的实际边界
+
+改动前，修改 Radius 会从 Sharp Edge 分析、FeatureGraph、Curve、Cutter、Boolean 到 Bridge/Fill
+完整重算。现在增加了进程内、以 source Object、Mesh 数据和几何指纹联合为键的有界缓存：
+
+- source 拓扑、顶点位置或 Sharp 标记变化时，指纹变化并自动失效；
+- 几何相同的不同 Object 不共享缓存，避免跨对象携带路径身份；
+- junction 没有多个可选全局配对时，FeatureGraph 与 Curve 路径拓扑与 Radius 无关，可以安全复用；
+- Radius 变化后仍重新计算 endpoint 分类、ChamferPlan、Curve 半径合同、Cutter、Boolean 与全部后处理；
+- junction 存在多个配对候选时，Radius 会参与端点 containment 评分。此时禁止跨 Radius 复用，继续完整构图，不能假设 Curve 身份不变；
+- 缓存最多保留 8 个 source 指纹，只保存 Python 数据，不持有 Blender Object，因此不会把已被 Undo 删除的临时 Object 带入 Redo。
+
+这不是“所有模型修改 Radius 都跳过前半段”。它是结果优先的保守优化：可证明 Radius 无关时复用；
+无法证明时重算。测试确认安全样本从 0.03 改到 0.09 时，FeatureGraph 只构建一次，而新的计划仍记录
+0.09，说明复用没有越过半径相关阶段。
+
+### 8.2 多物体正式入口
+
+- 正式入口接受一个或多个选中的 Mesh；活动对象对应的 source 先处理，其余保持稳定顺序；
+- 选中既有 Feature Chamfer 结果时，会解析回其原 source，避免把结果再次当成新 source；
+- 整批采用 all-or-nothing：全部对象成功后才发布结果和隐藏 source；
+- 任一对象失败会删除本批已经产生的全部结果、保留的 Cutter 与临时 Preview，并恢复所有 source 的原可见性；
+- 成功后全部结果保持选中，第一个 source 对应结果为活动对象；批次统计保留每个对象的独立结果。
+
+### 8.3 可见性与 Undo/Redo 合同
+
+- 成功：source 的 Mesh、属性、Modifier 与 Collection 归属不变；仅设置 viewport、Outliner 与 render 隐藏；
+- 输出：viewport 与 render 可见；启用 Keep Cutter 时，Cutter 也可见；
+- Undo：删除结果和 Cutter，恢复 source 原始可见性；
+- Redo：重新建立结果并再次隐藏 source；
+- 失败：不隐藏 source，不留下已成功对象的半成品。
+
+### 8.4 验证结果
+
+- Mixed 最复杂代表样本两半径各 3 次：几何 oracle 一致、来源隐藏合同通过，单次约 1.22–1.25 秒；
+- 完整 Blender regression：159/159 通过；
+- 真实界面 Adjust Last Operation、Keep Cutter、Undo、Redo：通过；
+- 新增专项覆盖：Radius 安全缓存命中、两物体成功批次、第二个对象失败时整批回滚。
+
+Artifacts：
+
+- `tests/artifacts/feature_chamfer_three_details_mixed_matrix/results.json`
+- `tests/artifacts/feature_chamfer_three_details_full_regression/results.json`
+- `tests/artifacts/feature_chamfer_three_details_targeted_r2/results.json`
+- `tests/artifacts/feature_chamfer_gn_gui_undo.json`
+
+当前状态为 `VERIFIED`，不是 `ACCEPTED`：自动层已验证；最终视觉仍由用户在 Blender 中验收。

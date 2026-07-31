@@ -8114,6 +8114,63 @@ def test_gn_preview_radius_rebuilds_owned_curve_without_orphans(
     result.add_detail(f"curve={second_curve.name}, radius=0.09")
 
 
+# 验证没有 Radius 二义性的 Curve 路径会复用 FeatureGraph，只重建半径相关阶段。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_gn_preview_radius_reuses_radius_independent_feature_graph(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNRadiusFeatureGraphCache")
+    source = make_test_mesh("GNRadiusFeatureGraphCacheSource", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    preview_utils = test_context.addon.utils.feature_chamfer_gn_utils
+    preview_utils.clear_feature_chamfer_runtime_caches()
+    original_builder = preview_utils._build_preview_feature_graph
+    build_radii = []
+
+    def counting_builder(source_object, radius, stats):
+        build_radii.append(float(radius))
+        return original_builder(source_object, radius, stats)
+
+    preview_utils._build_preview_feature_graph = counting_builder
+    try:
+        first_preview = preview_utils.ensure_gn_feature_chamfer_preview(
+            source,
+            0.03,
+        )
+        second_preview = preview_utils.ensure_gn_feature_chamfer_preview(
+            source,
+            0.09,
+        )
+        source.data.vertices[0].co.x -= 0.1
+        source.data.update()
+        third_preview = preview_utils.ensure_gn_feature_chamfer_preview(
+            source,
+            0.07,
+        )
+    finally:
+        preview_utils._build_preview_feature_graph = original_builder
+    ensure(
+        build_radii == [0.03, 0.07],
+        f"Radius redo rebuilt the reusable FeatureGraph: {build_radii}",
+    )
+    ensure(
+        not first_preview["feature_graph"]["feature_graph_cache_hit"]
+        and second_preview["feature_graph"]["feature_graph_cache_hit"]
+        and second_preview["feature_graph"]["feature_graph_radius_independent"],
+        "Radius redo did not report the safe FeatureGraph cache hit",
+    )
+    ensure(
+        not third_preview["feature_graph"]["feature_graph_cache_hit"],
+        "Source Mesh edit did not invalidate the FeatureGraph cache",
+    )
+    ensure(
+        abs(second_preview["plan"].radius - 0.09) < 1.0e-6,
+        "Radius redo reused the old radius-dependent plan",
+    )
+    result.add_detail("Radius redo reused Curve topology and rebuilt the 0.09 cutter path")
+
+
 # 验证 source Sharp 标记被移除后仍能取消本工具拥有的 Preview。
 # test_context/result: 测试上下文与结果记录器。
 def test_gn_cancel_stale_preview_without_sharp_edges(test_context: TestContext, result: TestCaseResult):
@@ -8184,9 +8241,26 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
     )
     ensure(operator_result == {"FINISHED"} and output is not source, "One-step Operator produced no output")
     ensure(_mesh_fingerprint(source) == source_hash, "One-step Operator changed source")
+    source_state_after = _source_object_state(source)
     ensure(
-        _source_object_state(source) == source_state,
-        "One-step Operator changed source Object properties or Modifier runtime",
+        {
+            key: value
+            for key, value in source_state_after.items()
+            if key not in {"hide_viewport", "hide_render", "hide_set"}
+        }
+        == {
+            key: value
+            for key, value in source_state.items()
+            if key not in {"hide_viewport", "hide_render", "hide_set"}
+        }
+        and source_state_after["hide_viewport"]
+        and source_state_after["hide_render"]
+        and source_state_after["hide_set"],
+        "One-step Operator did not preserve source data while hiding the source",
+    )
+    ensure(
+        not output.hide_get() and not output.hide_viewport and not output.hide_render,
+        "One-step output is not fully visible",
     )
     ensure(source.modifiers.get("HST Feature Chamfer GN Preview") is None, "One-step Operator left Preview runtime state")
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
@@ -8247,7 +8321,23 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         f"Mixed formal one-step run failed: {operator_result}",
     )
     ensure(_mesh_fingerprint(source) == source_hash, "Mixed formal run changed source Mesh")
-    ensure(_source_object_state(source) == source_state, "Mixed formal run changed source Object state")
+    source_state_after = _source_object_state(source)
+    ensure(
+        {
+            key: value
+            for key, value in source_state_after.items()
+            if key not in {"hide_viewport", "hide_render", "hide_set"}
+        }
+        == {
+            key: value
+            for key, value in source_state.items()
+            if key not in {"hide_viewport", "hide_render", "hide_set"}
+        }
+        and source_state_after["hide_viewport"]
+        and source_state_after["hide_render"]
+        and source_state_after["hide_set"],
+        "Mixed formal run did not preserve source data while hiding the source",
+    )
     output_contract = _output_geometry_contract(output)
     ensure(
         output_contract == {
@@ -8354,6 +8444,111 @@ def test_feature_chamfer_single_operator_failure_rolls_back_transaction(
         "Failed one-step transaction left temporary Preview state",
     )
     result.add_detail("Injected post-build failure rolled back output, Cutter, and Preview")
+
+
+# 验证正式一步入口可原子处理多个 source，并只显示全部最终结果。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_multi_object_batch_and_source_visibility(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNMultiObject")
+    first_source = make_test_mesh("GNMultiObjectA", collection)
+    second_source = make_test_mesh("GNMultiObjectB", collection)
+    second_source.location.x = 4.0
+    for source_object in (first_source, second_source):
+        mark_edge_indices_sharp(source_object, cube_top_loop_edge_indices(source_object))
+    select_objects(first_source, [first_source, second_source])
+    operator_result = bpy.ops.hst.feature_chamfer_gn(radius=0.05)
+    outputs = [
+        selected_object
+        for selected_object in bpy.context.selected_objects
+        if selected_object.get(test_context.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+    ]
+    ensure(operator_result == {"FINISHED"}, "Multi-object Feature Chamfer failed")
+    ensure(len(outputs) == 2, f"Multi-object run produced wrong output count: {len(outputs)}")
+    ensure(
+        bpy.context.active_object in outputs
+        and all(not output.hide_get() and not output.hide_render for output in outputs),
+        "Multi-object outputs are not selected, active, and visible",
+    )
+    ensure(
+        all(
+            source_object.hide_get()
+            and source_object.hide_viewport
+            and source_object.hide_render
+            for source_object in (first_source, second_source)
+        ),
+        "Multi-object run did not hide every source",
+    )
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        stats.get("source_object_count") == 2
+        and len(stats.get("output_object_names", ())) == 2
+        and len(stats.get("results", ())) == 2,
+        f"Multi-object runtime did not record the whole batch: {stats}",
+    )
+    ensure(
+        all(
+            not item.get("feature_graph_cache_hit", False)
+            for item in stats["results"]
+        ),
+        "Different source Objects incorrectly shared FeatureGraph cache data",
+    )
+    result.add_detail("Two selected Mesh sources produced two visible outputs atomically")
+
+
+# 验证多物体中后一个失败时，第一个结果也会回滚且所有 source 恢复可见。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_multi_object_failure_rolls_back_whole_batch(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection = make_collection("GNMultiObjectRollback")
+    first_source = make_test_mesh("GNMultiObjectRollbackA", collection)
+    second_source = make_test_mesh("GNMultiObjectRollbackB", collection)
+    second_source.location.x = 4.0
+    for source_object in (first_source, second_source):
+        mark_edge_indices_sharp(source_object, cube_top_loop_edge_indices(source_object))
+    object_pointers_before = {obj.as_pointer() for obj in bpy.data.objects}
+    mesh_pointers_before = {mesh.as_pointer() for mesh in bpy.data.meshes}
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    original_finalize = operator_module._finalize_output
+
+    def fail_second_output(output, source_object, chamfer_plan):
+        if source_object is second_source:
+            raise RuntimeError("injected second batch item failure")
+        return original_finalize(output, source_object, chamfer_plan)
+
+    operator_module._finalize_output = fail_second_output
+    select_objects(first_source, [first_source, second_source])
+    try:
+        try:
+            bpy.ops.hst.feature_chamfer_gn(radius=0.05, show_cutter=True)
+        except RuntimeError as error:
+            ensure(
+                "injected second batch item failure" in str(error),
+                f"Batch rollback raised an unexpected error: {error}",
+            )
+        else:
+            raise TestFailure("Injected batch failure did not propagate")
+    finally:
+        operator_module._finalize_output = original_finalize
+    ensure(
+        {obj.as_pointer() for obj in bpy.data.objects} == object_pointers_before
+        and {mesh.as_pointer() for mesh in bpy.data.meshes} == mesh_pointers_before,
+        "Failed batch left output, Cutter, or orphan Mesh data",
+    )
+    ensure(
+        all(
+            not source_object.hide_get()
+            and not source_object.hide_viewport
+            and not source_object.hide_render
+            for source_object in (first_source, second_source)
+        ),
+        "Failed batch did not restore every source visibility state",
+    )
+    result.add_detail("Second-item failure rolled back the complete two-object batch")
 
 
 # 验证 Finalize 从同一 GN modifier 临时提取 closed cutter，且恢复 Preview/source 状态。
@@ -13085,6 +13280,10 @@ def main():
         "gn_preview_radius_rebuilds_owned_curve_without_orphans",
         test_gn_preview_radius_rebuilds_owned_curve_without_orphans,
     )
+    context.run_case(
+        "gn_preview_radius_reuses_radius_independent_feature_graph",
+        test_gn_preview_radius_reuses_radius_independent_feature_graph,
+    )
     context.run_case("gn_cancel_stale_preview_without_sharp_edges", test_gn_cancel_stale_preview_without_sharp_edges)
     context.run_case("gn_preview_owner_survives_source_rename", test_gn_preview_owner_survives_source_rename)
     context.run_case(
@@ -13148,6 +13347,14 @@ def main():
     context.run_case(
         "feature_chamfer_single_operator_failure_rolls_back_transaction",
         test_feature_chamfer_single_operator_failure_rolls_back_transaction,
+    )
+    context.run_case(
+        "feature_chamfer_multi_object_batch_and_source_visibility",
+        test_feature_chamfer_multi_object_batch_and_source_visibility,
+    )
+    context.run_case(
+        "feature_chamfer_multi_object_failure_rolls_back_whole_batch",
+        test_feature_chamfer_multi_object_failure_rolls_back_whole_batch,
     )
 
     summary = {

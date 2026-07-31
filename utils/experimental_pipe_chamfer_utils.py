@@ -1793,6 +1793,8 @@ def _global_surface_patch_strand_pairs(
                 "global_surface_patch_matching": True,
                 "global_score": best["score"][:6],
                 "endpoint_containment_scoring": source_bvh is not None,
+                "global_pairing_candidate_count": search_space_size,
+                "global_radius_sensitive": search_space_size > 1,
             }
         )
     return strand_pairs, records

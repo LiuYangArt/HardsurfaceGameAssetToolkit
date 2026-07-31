@@ -105,6 +105,12 @@ def _one_step_result_valid(source, output):
         and output.type == "MESH"
         and source.modifiers.get("HST Feature Chamfer GN Preview") is None
         and not source.get("hst_feature_chamfer_curve_object")
+        and source.hide_get()
+        and source.hide_viewport
+        and source.hide_render
+        and not output.hide_get()
+        and not output.hide_viewport
+        and not output.hide_render
     )
 
 
@@ -310,6 +316,12 @@ def _check_undo():
             source is not None
             and _fingerprint(source) == GUI_STATE["source_fingerprint"]
         )
+        source_visible = (
+            source is not None
+            and not source.hide_get()
+            and not source.hide_viewport
+            and not source.hide_render
+        )
         GUI_STATE["report_data"].update(
             undo="FORMAL_TRANSACTION_GUI_UNDO",
             undo_observed={
@@ -317,12 +329,14 @@ def _check_undo():
                 "output_exists": output_exists,
                 "cutter_exists": cutter_exists,
                 "source_unchanged": source_unchanged,
+                "source_visible": source_visible,
             },
             undo_valid=(
                 source is not None
                 and not output_exists
                 and not cutter_exists
                 and source_unchanged
+                and source_visible
             ),
         )
         bpy.app.timers.register(_send_redo_shortcut, first_interval=0.3)

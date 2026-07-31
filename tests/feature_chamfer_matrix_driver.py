@@ -375,6 +375,16 @@ def source_object_state(source_object):
     }
 
 
+# 返回排除产品要求可见性变化后的 source 数据与 runtime 状态。
+# state: source_object_state 的结果；返回用于几何与配置不变性比较的字典。
+def source_content_state(state):
+    return {
+        key: value
+        for key, value in state.items()
+        if key not in {"hide_viewport", "hide_render", "hide_set"}
+    }
+
+
 # 返回有序数值列表的线性 percentile，不依赖 NumPy。
 # values: 数值序列；fraction: 0..1 百分位位置。
 def percentile(values, fraction):
@@ -1073,9 +1083,27 @@ def run_repetition(
         )
 
     source_state_after = source_object_state(source_object)
-    source_unchanged = (
+    source_hidden_after_success = all(
+        source_state_after[key]
+        for key in ("hide_viewport", "hide_render", "hide_set")
+    )
+    source_content_unchanged = (
         source_fingerprint_before == source_fingerprint_after_operation
-        and source_state_before == source_state_after
+        and source_content_state(source_state_before)
+        == source_content_state(source_state_after)
+    )
+    product_output_created = bool(
+        output_object is not None
+        and output_object.get(addon_module.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+        == source_object.name
+    )
+    source_unchanged = (
+        source_content_unchanged
+        and (
+            source_hidden_after_success
+            if product_output_created
+            else source_state_before == source_state_after
+        )
     )
     output = output_diagnostics(output_object)
     preview_residue = {
@@ -1144,6 +1172,8 @@ def run_repetition(
         "source_after_operation": source_fingerprint_after_operation,
         "source_object_state_before": source_state_before,
         "source_object_state_after": source_state_after,
+        "source_content_unchanged": source_content_unchanged,
+        "source_hidden_after_success": source_hidden_after_success,
         "source_unchanged": source_unchanged,
         "operator": {
             "ui_entry": "Feature Chamfer",
@@ -1405,6 +1435,15 @@ def main():
         ),
         "all_cells_stable": all(case["stable"] for case in matrix_cases),
         "all_sources_unchanged": all(case["source_unchanged"] for case in matrix_cases),
+        "all_success_sources_hidden": all(
+            all(
+                repetition.get("source_hidden_after_success", False)
+                for repetition in case["repetitions"]
+            )
+            for case in matrix_cases
+            if case["classification"]
+            in {"PRODUCT_SUCCESS", "PRODUCT_SUCCESS_WITH_RADIUS_RETRY"}
+        ),
         "all_required_runtime_paths_proven": all(
             case["runtime_path_proven"]
             for case in matrix_cases

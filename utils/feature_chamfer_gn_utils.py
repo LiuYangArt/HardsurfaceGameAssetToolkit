@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Feature Chamfer Geometry Nodes 预览资产、状态与生命周期。"""
 
+import copy
 import hashlib
 import json
 import struct
@@ -67,6 +68,21 @@ OWNED_BOOLEAN_PRO_TAG = "hst_feature_chamfer_owned_boolean_pro"
 PYTHON_PRE_BOOLEAN_INPUT_TAG = "hst_feature_chamfer_python_pre_boolean_input"
 PYTHON_BOOLEAN_RESULT_OBJECT_PROPERTY = "hst_feature_chamfer_boolean_result_object"
 ORIGINAL_SURFACE_ATTRIBUTE = "hst_feature_chamfer_original_surface"
+FEATURE_GRAPH_CACHE_LIMIT = 8
+FEATURE_GRAPH_CACHE_STATS_KEYS = (
+    "sharp_edge_count",
+    "surface_patch_count",
+    "pipe_group_count",
+    "open_pipe_count",
+    "closed_pipe_count",
+    "topology_junction_count",
+    "junction_vertex_indices",
+    "vertex_matching",
+    "cutter_strands",
+    "feature_groups",
+    "feature_graph_contract",
+)
+_FEATURE_GRAPH_CACHE = {}
 
 
 class FeatureChamferPreviewError(RuntimeError):
@@ -150,6 +166,50 @@ def source_fingerprint(source_object):
     return hashlib.sha256(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+# 清空进程内 FeatureGraph 缓存，供测试隔离与显式运行期重置使用。
+# 无参数；无返回值。
+def clear_feature_chamfer_runtime_caches():
+    _FEATURE_GRAPH_CACHE.clear()
+
+
+# 判断当前 FeatureGraph 是否可在修改 Radius 后安全复用。
+# stats: 本次构图诊断；返回所有 junction 都不存在 Radius 相关二义性。
+def _feature_graph_is_radius_independent(stats):
+    return not any(
+        record.get("global_radius_sensitive", False)
+        for record in stats.get("vertex_matching", ())
+    )
+
+
+# 读取或建立可跨 Radius 复用的 FeatureGraph，并保留完整诊断。
+# source_object/radius/stats: source、当前半径与本次统计；返回 groups 与是否命中缓存。
+def _preview_feature_graph_with_cache(source_object, radius, stats):
+    fingerprint = source_fingerprint(source_object)
+    cache_key = (
+        source_object.as_pointer(),
+        source_object.data.as_pointer(),
+        fingerprint,
+    )
+    cached = _FEATURE_GRAPH_CACHE.get(cache_key)
+    if cached is not None:
+        stats.update(copy.deepcopy(cached["stats"]))
+        return copy.deepcopy(cached["groups"]), True
+    groups = _build_preview_feature_graph(source_object, radius, stats)
+    if _feature_graph_is_radius_independent(stats):
+        if len(_FEATURE_GRAPH_CACHE) >= FEATURE_GRAPH_CACHE_LIMIT:
+            oldest_cache_key = next(iter(_FEATURE_GRAPH_CACHE))
+            del _FEATURE_GRAPH_CACHE[oldest_cache_key]
+        _FEATURE_GRAPH_CACHE[cache_key] = {
+            "groups": copy.deepcopy(groups),
+            "stats": {
+                key: copy.deepcopy(stats[key])
+                for key in FEATURE_GRAPH_CACHE_STATS_KEYS
+                if key in stats
+            },
+        }
+    return groups, False
 
 
 # 把 Preview 构图时唯一生成的 Pipe groups 冻结为可跨阶段读取的稳定 JSON 合同。
@@ -452,8 +512,16 @@ def _remove_preview_curve_object(curve_object):
 # 从 FeatureGraph 的有序 strands 重建一个由 Operator 管理的多 spline Curve。
 # source_object/radius: source Mesh 与 endpoint cap containment 的采样距离；返回 Curve 与 stats。
 def _rebuild_owned_preview_curve(source_object, radius):
-    stats = _base_stats(source_object, 0.0, 8, 35.0, 3.0, 1.5, "PREVIEW")
-    groups = _build_preview_feature_graph(source_object, radius, stats)
+    stats = _base_stats(source_object, radius, 8, 35.0, 3.0, 1.5, "PREVIEW")
+    graph_started_at = time.perf_counter()
+    groups, graph_cache_hit = _preview_feature_graph_with_cache(
+        source_object,
+        radius,
+        stats,
+    )
+    stats["feature_graph_seconds"] = time.perf_counter() - graph_started_at
+    stats["feature_graph_cache_hit"] = graph_cache_hit
+    stats["feature_graph_radius_independent"] = _feature_graph_is_radius_independent(stats)
     _classify_pipe_endpoints(source_object, groups, radius)
     chamfer_plan = build_chamfer_plan(
         source_object,

@@ -521,3 +521,23 @@ Route B 是新的旁路 prototype，不继承 Route A 的进度状态。
 6. 正式 runtime、测试入口、artifact 和文档指向同一架构。
 
 用户批量打开最终 `.blend` 并确认视觉结果后，状态才可从 `VERIFIED` 升为 `ACCEPTED`。
+
+## 12. 2026-07-31 产品细节补全
+
+正式入口在保持上述几何与性能门槛的基础上，补全三项产品行为：
+
+- Radius 重做：以 source Object、Mesh 数据及其几何与 Sharp 标记的稳定指纹联合缓存 Python FeatureGraph/Curve 路径拓扑。
+  只有所有 junction 都没有多套全局配对候选时才跨 Radius 复用；存在二义性时 Radius 会参与端点
+  containment 评分，因此保守地完整重算。无论是否命中缓存，endpoint 分类、计划、Cutter、Boolean
+  和全部下游都使用新 Radius 重新生成。缓存只保留 Python 数据、最多 8 份，不持有临时 Blender Object。
+- 多物体：选中的 Mesh 作为一个原子批次处理。全部成功后一次性发布；任一对象失败时回收整批结果、
+  Cutter 和临时状态，并恢复所有 source 的原可见性。
+- 显示结果：成功后 source 的 Mesh 与配置不变，但在 viewport、Outliner 和 render 中隐藏；只显示并
+  选择最终结果。Undo 恢复 source 可见并删除结果，Redo 再次生成结果并隐藏 source。
+
+新增证据：Mixed 两半径各三次继续命中旧结果且约 1.22–1.25 秒；完整回归 159/159；真实 GUI 的
+Adjust Last Operation、Keep Cutter、Undo/Redo 通过。详见历史计划第 8 节和以下 artifacts：
+
+- `tests/artifacts/feature_chamfer_three_details_mixed_matrix/results.json`
+- `tests/artifacts/feature_chamfer_three_details_full_regression/results.json`
+- `tests/artifacts/feature_chamfer_gn_gui_undo.json`
