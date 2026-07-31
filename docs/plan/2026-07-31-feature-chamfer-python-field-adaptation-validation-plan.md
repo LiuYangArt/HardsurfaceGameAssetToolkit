@@ -1,7 +1,13 @@
 # Feature Chamfer Python Boolean 后 field adaptation 验证计划
 
 日期：2026-07-31
-状态：`FROZEN / PROTOTYPE ONLY`
+状态：`EXECUTED / PHASE 0–2 PASS / NUMPY PERFORMANCE PASS / PHASE 3 INTEGRATION STOP`
+
+执行结果：[`../validation/2026-07-31-feature-chamfer-python-field-adaptation-validation-result.md`](../validation/2026-07-31-feature-chamfer-python-field-adaptation-validation-result.md)
+
+本计划已于 2026-07-31 执行完毕。Python 对同一次 Boolean 原始输出的 236 层转换在正确性与性能上均通过；
+但“只删除动态 Store、保持同一 GN wrapper 其余部分不变”受中间执行时序限制，无法接入。以下内容保留为
+冻结验证合同，不再代表当前待执行事项。
 
 ## 1. 要回答的问题
 
@@ -52,6 +58,8 @@ node/link 随其增长。也不重新实现 Boolean，不猜测 domain：输入�
 
 ## 4. Phase 0 — 冻结真实转换链
 
+执行状态：`PASS`。
+
 从正式运行时副本按真实连接导出每类属性的完整链：Boolean 前属性名/domain/type、Boolean 刚输出时的
 属性存在性与值、Named Attribute 求值位置、Store domain、Selection 输入和最终属性名。至少覆盖：
 
@@ -68,6 +76,8 @@ Stop：只能看到最终值，无法确定真实转换边界。后续 `NOT RUN`
 
 ## 5. Phase 1 — 首差规则复刻
 
+执行状态：`PASS`。
+
 先只处理 Edge 133 / segment 24 的两个端点。actual 必须从绕过动态 Store 的同一次 Boolean 输出独立生成。
 Python 复刻现有 field adaptation 后，逐项比较：
 
@@ -78,6 +88,8 @@ Python 复刻现有 field adaptation 后，逐项比较：
 不得使用 oracle 值反推规则。六项离散/浮点合同全部命中才为 `PASS`；明确首差为 `STOP`。
 
 ## 6. Phase 2 — 完整身份等价
+
+执行状态：`PASS`。3872 raw Boundary / 7744 endpoint-segment 全部通过，最大 2 ULP / `9.934107070286302e-8`。
 
 仅 Phase 1 通过后运行。对全部 3872 raw Boundary、7744 endpoint-segment 比较：
 
@@ -90,6 +102,12 @@ Python 复刻现有 field adaptation 后，逐项比较：
 完整通过为 `PASS`；任一离散差或超容差为 `STOP`。
 
 ## 7. Phase 3 — 未修改下游与性能
+
+执行状态：`INTEGRATION STOP / DOWNSTREAM NOT RUN / NUMPY PERFORMANCE PASS`。
+
+NumPy 物化中位约 0.0287 秒；但 Python 必须在 Boolean 原始中间 Geometry 上执行，而普通 GN modifier
+无法在该位置暂停、调用 Python 后再继续同一个 wrapper。最终 Mesh 已缺少 226/236 层所需来源信息，
+未达到运行下游的身份门槛。本阶段 STOP 只否定当前最小集成边界，不否定 Python 转换算法。
 
 仅 Phase 2 通过后，将 Python 生成的属性交给未修改 Bridge/Fill，比较冻结业务记录、最终 fingerprint
 `f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107`、3922/8054/4134/3454 和四项
