@@ -8876,11 +8876,11 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
     output_contract = _output_geometry_contract(output)
     expected_output_contract = (
         {
-            "fingerprint": "058161226104472961189debc132c72d3fdf220fb9f424e2b5decd82f692da2c",
-            "vertex_count": 3917,
-            "edge_count": 8044,
-            "face_count": 4129,
-            "chamfer_face_count": 3449,
+            "fingerprint": "a4cf20d263b5c2cc490323ab92f45ec2eaf1365321195dcacf3accabfd3784b2",
+            "vertex_count": 3910,
+            "edge_count": 7208,
+            "face_count": 3300,
+            "chamfer_face_count": 2620,
         }
         if bpy.app.version >= (5, 2, 0)
         else {
@@ -10209,6 +10209,98 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
     result.add_detail(
         "Bridge input cleanup preserves opposite sides, open endpoints, branches, turns, and off-line Vertices"
     )
+
+
+# 验证清理阶段遇到分叉 Bridge 输入时保留原边网，并让后续原生 Bridge 与最终清理继续执行。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_bridge_input_cleanup_continues_non_simple_component(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
+    bm = bmesh.new()
+    vertices = [
+        bm.verts.new(coordinate)
+        for coordinate in (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+        )
+    ]
+    boundary_layer = bm.edges.layers.int.new("test_boundary")
+    component = {
+        bm.edges.new((vertices[0], vertices[1])),
+        bm.edges.new((vertices[1], vertices[2])),
+        bm.edges.new((vertices[1], vertices[3])),
+    }
+    for edge in component:
+        edge[boundary_layer] = 1
+    try:
+        cleaned, stats = module._clean_bridge_component(
+            bm,
+            component,
+            0.05,
+            boundary_layer,
+        )
+        ensure(
+            cleaned == component
+            and stats["cleanup_status"] == "SKIPPED_NON_SIMPLE_COMPONENT"
+            and stats["source_edge_count"] == stats["cleaned_edge_count"] == 3
+            and stats["source_vertex_count"] == stats["cleaned_vertex_count"] == 4,
+            f"Non-simple Bridge input did not continue unchanged: {stats}",
+        )
+    finally:
+        bm.free()
+    result.add_detail("Non-simple Bridge input bypassed cleanup and remained available downstream")
+
+
+# 验证真实 Mixed 场景在大 Radius 产生分叉输入后仍完成正式 Operator，并交付最终 Mesh。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_mixed_large_radius_continues_non_simple_bridge(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    fixture_path = (
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "feature-chamfer-topology-defect-mixed.blend"
+    )
+    open_result = bpy.ops.wm.open_mainfile(
+        filepath=str(fixture_path),
+        load_ui=False,
+        use_scripts=False,
+    )
+    ensure(open_result == {"FINISHED"}, "Mixed fixture could not be opened")
+    source = bpy.data.objects.get("Extruded.002")
+    ensure(source is not None and source.type == "MESH", "Mixed fixture source is missing")
+    operator_result, output = run_feature_chamfer_one_step(source, radius=0.05)
+    ensure(
+        operator_result == {"FINISHED"} and output is not None and output is not source,
+        "Mixed Radius 0.05 stopped before publishing the final Mesh",
+    )
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    skipped_cleanup_records = [
+        cleanup
+        for bridge_record in stats.get("bridge_records", ())
+        for cleanup in bridge_record.get("bridge_input_cleanup", ())
+        if cleanup.get("cleanup_status") == "SKIPPED_NON_SIMPLE_COMPONENT"
+    ]
+    ensure(
+        skipped_cleanup_records
+        and stats.get("output_object_name") == output.name
+        and stats.get("status") == "finished",
+        f"Mixed Radius 0.05 did not preserve the malformed input through completion: {stats}",
+    )
+    if bpy.app.version >= (5, 2, 0):
+        ensure(
+            stats.get("output_quality") == "TOPOLOGY_ISSUES_PRESENT"
+            and stats.get("boundary_edge_count", 0) > 0
+            and stats.get("non_manifold_edge_count", 0) > 0,
+            f"Mixed Radius 0.05 did not publish its topology defects: {stats}",
+        )
+    result.add_detail("Mixed Radius 0.05 published the downstream result after malformed Bridge input")
 
 
 # 验证 cyclic 合同切点不依赖目标 fixture 身份，并对无效 seam 或重复切点安全失败。
@@ -13914,6 +14006,14 @@ def main():
     context.run_case(
         "feature_chamfer_bridge_input_cleanup_safety_contract",
         test_feature_chamfer_bridge_input_cleanup_safety_contract,
+    )
+    context.run_case(
+        "feature_chamfer_bridge_input_cleanup_continues_non_simple_component",
+        test_feature_chamfer_bridge_input_cleanup_continues_non_simple_component,
+    )
+    context.run_case(
+        "feature_chamfer_mixed_large_radius_continues_non_simple_bridge",
+        test_feature_chamfer_mixed_large_radius_continues_non_simple_bridge,
     )
     context.run_case(
         "feature_chamfer_cyclic_bridge_cut_contract",

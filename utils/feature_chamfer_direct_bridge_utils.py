@@ -456,7 +456,14 @@ def _split_junction_hole_components(
 ):
     junction_holes = []
     for residual_component in residual_components:
-        graph_cycles = _boundary_cycles_by_graph(residual_component)
+        cycle_budget_exceeded = False
+        try:
+            graph_cycles = _boundary_cycles_by_graph(residual_component)
+        except FeatureChamferDirectBridgeError as error:
+            if error.error_code != "junction_hole_cycle_budget_exceeded":
+                raise
+            cycle_budget_exceeded = True
+            graph_cycles = []
         if graph_cycles:
             junction_holes.extend(graph_cycles)
             continue
@@ -491,14 +498,22 @@ def _split_junction_hole_components(
             for owner_id, edges in owner_edges.items()
             for component in _edge_components(edges)
         ]
-        if len(owner_components) == 1 or len(owner_edges) == 1:
+        if (len(owner_components) == 1 or len(owner_edges) == 1) and not cycle_budget_exceeded:
             junction_holes.append(residual_component)
             continue
+        cyclic_owner_components = [
+            component
+            for _, component in owner_components
+            if _component_shape(component)[0]
+        ]
         if not all(
             _component_shape(component)[0]
             for _, component in owner_components
-        ):
+        ) and not cycle_budget_exceeded:
             junction_holes.append(residual_component)
+            continue
+        if cycle_budget_exceeded:
+            junction_holes.extend(cyclic_owner_components)
             continue
         for owner_id, component in owner_components:
             cyclic, endpoint_count = _component_shape(component)
@@ -2424,10 +2439,21 @@ def _clean_bridge_component(
     source_component = set(component)
     source_cyclic, source_endpoint_count = _component_shape(source_component)
     if source_endpoint_count not in {0, 2}:
-        raise FeatureChamferDirectBridgeError(
-            "bridge_cleanup_component_invalid",
-            "Bridge cleanup requires one simple open or cyclic chain",
-        )
+        source_vertices = {
+            vertex
+            for edge in source_component
+            for vertex in edge.verts
+        }
+        return source_component, {
+            "cleanup_status": "SKIPPED_NON_SIMPLE_COMPONENT",
+            "source_shape": [source_cyclic, source_endpoint_count],
+            "source_edge_count": len(source_component),
+            "cleaned_edge_count": len(source_component),
+            "source_vertex_count": len(source_vertices),
+            "cleaned_vertex_count": len(source_vertices),
+            "merged_vertex_count": 0,
+            "dissolved_vertex_count": 0,
+        }
     source_vertices = {
         vertex
         for edge in source_component
@@ -3306,12 +3332,11 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                     bridge_cleanup_records.append(cleanup_record)
                 selected_edges = set().union(*components)
                 shapes = [_component_shape(component) for component in components]
-                if any(endpoint_count not in {0, 2} for _, endpoint_count in shapes):
-                    raise FeatureChamferDirectBridgeError(
-                        "segment_chain_incomplete",
-                        f"Segment {segment_id} exposes incomplete side chains",
-                        {"segment_id": segment_id, "shapes": shapes},
-                    )
+                invalid_input_shapes = [
+                    [cyclic, endpoint_count]
+                    for cyclic, endpoint_count in shapes
+                    if endpoint_count not in {0, 2}
+                ]
                 if selected_edges & junction_fragments:
                     raise FeatureChamferDirectBridgeError(
                         "segment_junction_fragment_selected",
@@ -3478,6 +3503,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                             for component in components
                         ],
                         "bridge_input_cleanup": bridge_cleanup_records,
+                        "invalid_input_shapes": invalid_input_shapes,
                         "pipe_id": int(segment["pipe_id"]),
                         "port_indices": list(segment.get("port_indices", ())),
                         "source_edge_indices": list(
@@ -3648,38 +3674,17 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             final_chamfer_faces,
         )
         self_intersection_count = len(final_intersections)
-        if remaining_boundary_count or non_manifold_count or zero_area_count:
-            raise FeatureChamferDirectBridgeError(
-                "final_topology_invalid",
-                "Direct Bridge/Fill output is not a clean closed Mesh",
-                {
-                    "boundary_count": remaining_boundary_count,
-                    "non_manifold_count": non_manifold_count,
-                    "zero_area_count": zero_area_count,
-                    "self_intersection_count": self_intersection_count,
-                    "topology_before_zero_cleanup": topology_before_zero_cleanup,
-                    "zero_area_faces_welded_before_fill": zero_area_faces_welded_before_fill,
-                    "zero_area_faces_removed": zero_area_faces_removed,
-                    "duplicate_edges_welded": duplicate_edges_welded,
-                    "wire_edges_removed": wire_edges_removed,
-                    "non_manifold_edges": _non_manifold_edge_records(bm),
-                    "bridge_records": bridge_records,
-                    "deferred_segments": deferred_segments,
-                    "junction_fill_records": fill_records,
-                    "boolean_cleanup_records": cleanup_records,
-                },
+        topology_issue_records = _non_manifold_edge_records(bm)
+        output_quality = (
+            "TOPOLOGY_ISSUES_PRESENT"
+            if (
+                remaining_boundary_count
+                or non_manifold_count
+                or zero_area_count
+                or self_intersection_count
             )
-        if self_intersection_count:
-            raise FeatureChamferDirectBridgeError(
-                "final_geometry_self_intersects",
-                "Direct Bridge/Fill Faces intersect the final Mesh",
-                {
-                    "self_intersection_count": self_intersection_count,
-                    "self_intersections": final_intersections[:16],
-                    "bridge_records": bridge_records,
-                    "junction_fill_records": fill_records,
-                },
-            )
+            else "CLEAN"
+        )
 
         bm.faces.index_update()
         chamfer_face_indices = {
@@ -3723,6 +3728,9 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "bridge_shape_contract": "SEGMENT_OWNER_INTERVAL_OVERLAP_V1",
             "plan_id": expected_chamfer_plan.plan_id,
             "source_fingerprint_unchanged": True,
+            "output_quality": output_quality,
+            "topology_issue_records": topology_issue_records,
+            "self_intersection_records": final_intersections[:16],
             "initial_boundary_edge_count": initial_boundary_count,
             "bridge_job_count": len(bridge_records),
             "bridge_face_count": sum(record["face_count"] for record in bridge_records),
