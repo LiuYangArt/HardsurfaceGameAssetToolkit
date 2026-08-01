@@ -9,6 +9,7 @@ import bpy
 from ..const import FEATURE_CHAMFER_GN_STATE_TAG
 from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
+from ..const import NORMALTRANSFER_MODIFIER
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
 from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
 from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
@@ -104,6 +105,22 @@ def _validated_sources(operator, context):
     return tuple(resolved_sources)
 
 
+# 按项目既有规则从原始 Mesh 传递 Custom Normal，保留大面的原始 shading。
+# output/source_object: Feature Chamfer 输出与原始 Mesh Object；返回配置完成的 Data Transfer Modifier。
+def _add_source_normal_transfer(output, source_object):
+    modifier = output.modifiers.get(NORMALTRANSFER_MODIFIER)
+    if modifier is None:
+        modifier = output.modifiers.new(
+            name=NORMALTRANSFER_MODIFIER,
+            type="DATA_TRANSFER",
+        )
+    modifier.object = source_object
+    modifier.use_loop_data = True
+    modifier.data_types_loops = {"CUSTOM_NORMAL"}
+    modifier.loop_mapping = "POLYINTERP_LNORPROJ"
+    return modifier
+
+
 # 从 Direct Bridge 输出建立正式 Chamfer 属性并写入 immutable plan。
 # output/source_object/chamfer_plan: 输出 Object、原输入与本次计划；无返回值。
 def _finalize_output(output, source_object, chamfer_plan):
@@ -140,6 +157,7 @@ def _finalize_output(output, source_object, chamfer_plan):
         ],
     )
     output.data.update()
+    _add_source_normal_transfer(output, source_object)
     output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
     output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
     if chamfer_plan is not None:

@@ -553,8 +553,8 @@ def source_diagnostics(source_object, radius):
 
 
 # 返回一步式 output 的拓扑、Chamfer attribute 与稳定 fingerprint。
-# output_object: 目标 Operator 创建的独立 Mesh Object；为 None 时返回缺失状态。
-def output_diagnostics(output_object):
+# output_object/source_object: 目标 Operator 创建的独立 Mesh Object 与对应原输入；output 为 None 时返回缺失状态。
+def output_diagnostics(output_object, source_object):
     if output_object is None or output_object.type != "MESH":
         return {"exists": False}
     mesh = output_object.data
@@ -620,7 +620,7 @@ def output_diagnostics(output_object):
         "chamfer_face_count": sum(chamfer_values),
         "custom_normal_transfer": (
             len(normal_transfer_modifiers) == 1
-            and normal_transfer_modifiers[0].object is not None
+            and normal_transfer_modifiers[0].object is source_object
             and normal_transfer_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ"
             and normal_transfer_modifiers[0].show_viewport
             and normal_transfer_modifiers[0].show_render
@@ -768,6 +768,7 @@ def classify_result(
         and output.get("zero_area_face_count") == 0
         and output.get("chamfer_attribute_exists")
         and output.get("chamfer_face_count", 0) > 0
+        and output.get("custom_normal_transfer")
         and not preview_residue.get("owned_curve_tag")
         and not preview_residue.get("preview_modifier")
         and not preview_residue.get("owned_curve_objects")
@@ -1182,7 +1183,7 @@ def run_repetition(
             else source_state_before == source_state_after
         )
     )
-    output = output_diagnostics(output_object)
+    output = output_diagnostics(output_object, source_object)
     preview_residue = {
         "owned_curve_tag": bool(
             source_object.get(addon_module.const.FEATURE_CHAMFER_CURVE_OBJECT_TAG)

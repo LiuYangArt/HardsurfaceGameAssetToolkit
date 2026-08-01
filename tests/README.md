@@ -44,7 +44,8 @@
 - cleanup UE SKM smoke test
 - 旧 Sharp/Seam 产品 Operator 已停止注册；仅依赖该入口的历史测试不再执行
 - 正式实现仍复用的 Sharp FeatureGraph、manifold Pipe、Boolean provenance、Bridge/Fill 底层合同继续回归
-- 历史 PATCHED 后 dissolve、chamfer FACE attribute 与法线传递 smoke（非当前 Direct Bridge FINALIZE）
+- 历史 PATCHED 后 dissolve、chamfer FACE attribute 与法线传递 smoke
+- 当前 Direct Bridge FINALIZE 从原始 Mesh 传递 `CUSTOM_NORMAL` 的正式入口回归
 - tessellated curved chain 不被固定角度切碎的 grouping 回归
 - surface patch pair / degree junction 拆分真实 corner 的 grouping 回归
 - Feature Chamfer GN 发布资产 exact/version import、Preview modifier 幂等与 source fingerprint 回归
@@ -93,8 +94,8 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 > `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；内部结构化几何异常只降低输出质量并保留诊断，不得撤销或阻止可见 Mesh 发布。只有无法建立有效输入上下文或非几何类程序错误才会停止。
 > 历史 Object Boolean、槽面删除、rail pairing 与 canonicalization 路线仅保留回归证据，不是当前正式 Finalize runtime，也不得作为 Bridge 前置门槛。
 > 当前 Phase C 方向直接消费 Boolean Pro Boundary Edges。没有交叉且形态单一的 Pipe 以两条完整 Loop 一次 Bridge；在 junction 处按 Pipe owner 变化切成“交叉点之间的连续槽段”；已锁定配对但包含多个显著空间转折的长 open 槽段，允许按双方共同大转折继续同步切段。每段仍使用原生 Bridge，最后 Fill Bridge 后剩余的交叉孔洞。不得按距离重排边、使用 fixture 身份、自定义逐点对应、重采样或局部重建；两侧数量可以不同。越宽结果的门禁试验因会拦住 5/8 个对照场景而未接入正式实现。
-> 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。
-> Bridge/Fill 后尚未恢复 custom normals 的黑色三角只作为 shading 诊断，不作为孔洞失败。本阶段固定近景只用于检查 Mesh 轮廓、线框和补面位置，不作为法线验收；拓扑验收仍独立要求所有孔洞封闭、无开放边与多面共边。
+> 正式 FINALIZE 在最终 Mesh 与 Chamfer 属性发布后，按既有 Bevel & Transfer Normal 规则添加 Data Transfer：从原始 Mesh 传递 `CUSTOM_NORMAL`，使用 `POLYINTERP_LNORPROJ` 映射；不应用 Modifier，不接入 Set from Faces、试验性烘焙或 Corner 重写。
+> Bridge/Fill 后的 shading 与拓扑验收保持分离：Data Transfer 只负责从原始 Mesh 恢复 `CUSTOM_NORMAL`，黑色三角等显示问题不能作为孔洞判断；拓扑仍独立要求所有孔洞封闭、无开放边与多面共边。
 > 不得使用渲染图的极暗像素计数、黑色连通块或其他颜色阈值推断孔洞；这些只反映图像明暗，不能替代 Mesh 边界、non-manifold 与线框拓扑证据。
 > 测试和诊断禁止生成或读取渲染图。需要视觉验收时，批量保存包含最终结果与诊断标记的 `.blend`，由用户在 Blender 中集中检查并反馈；图片存在或 Agent 看图均不得计入 PASS。
 > 2026-07-28 全部正式 Bridge 输入经 `1a/1b ...` 人工复核后，Mixed `26a/26b` 与 Tricky-b `32a/32b` 都证明：已配对正确的 open U 形长链若整组交给原生 Bridge，可能在转角处产生扭曲。共同转折分段必须逐处独立生效，不设置累计 360° 或至少四处转折门槛。Cutter Curve 与 Boolean cyclic 槽仍必须保持完整；Boolean 后、Bridge 前的一对完整 cyclic Boundary Loop 可按冻结合同的共同环绕 station 逻辑划分局部 Bridge jobs。两类分段均禁止 fixture 特判、逐点对应或重采样。

@@ -9036,6 +9036,18 @@ def test_feature_chamfer_structured_geometry_errors_publish_output(
         finally:
             setattr(operator_module, target_name, original_target)
 
+        normal_modifiers = [
+            modifier
+            for modifier in output.modifiers
+            if modifier.type == "DATA_TRANSFER"
+        ]
+        ensure(
+            len(normal_modifiers) == 1
+            and normal_modifiers[0].object is source
+            and normal_modifiers[0].data_types_loops == {"CUSTOM_NORMAL"}
+            and normal_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ",
+            f"{case_name} published output without source Custom Normal transfer",
+        )
         stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
         ensure(
             operator_result == {"FINISHED"}
@@ -9180,6 +9192,25 @@ def test_feature_chamfer_multi_object_batch_and_source_visibility(
         ),
         "Multi-object run did not hide every source",
     )
+    source_by_name = {
+        source_object.name: source_object
+        for source_object in (first_source, second_source)
+    }
+    for output in outputs:
+        source_name = output.get(test_context.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
+        normal_modifiers = [
+            modifier
+            for modifier in output.modifiers
+            if modifier.type == "DATA_TRANSFER"
+        ]
+        ensure(
+            source_name in source_by_name
+            and len(normal_modifiers) == 1
+            and normal_modifiers[0].object is source_by_name[source_name]
+            and normal_modifiers[0].data_types_loops == {"CUSTOM_NORMAL"}
+            and normal_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ",
+            f"Multi-object output {output.name} has the wrong normal source",
+        )
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
     ensure(
         stats.get("source_object_count") == 2
@@ -9576,9 +9607,25 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
         ),
         "Finalize dissolve did not leave a cleaned chamfer n-gon",
     )
+    normal_modifiers = [
+        modifier
+        for modifier in output.modifiers
+        if modifier.type == "DATA_TRANSFER"
+    ]
     ensure(
-        not any(modifier.type == "DATA_TRANSFER" for modifier in output.modifiers),
-        "Finalize unexpectedly applied the deferred normal workaround",
+        len(normal_modifiers) == 1,
+        "Finalize output must have one normal Data Transfer modifier",
+    )
+    normal_modifier = normal_modifiers[0]
+    ensure(
+        normal_modifier.name == test_context.addon.const.NORMALTRANSFER_MODIFIER
+        and normal_modifier.object is source
+        and normal_modifier.use_loop_data
+        and normal_modifier.data_types_loops == {"CUSTOM_NORMAL"}
+        and normal_modifier.loop_mapping == "POLYINTERP_LNORPROJ"
+        and normal_modifier.show_viewport
+        and normal_modifier.show_render,
+        "Finalize normal transfer does not match the established source Custom Normal rule",
     )
     result.add_detail(
         f"output={output.name}, faces={len(output.data.polygons)}, "
@@ -10667,9 +10714,17 @@ def test_gn_finalize_complex_fixture_direct_bridge_regression(test_context: Test
         "Complex fixture output is not clean and closed",
     )
     bm.free()
+    normal_modifiers = [
+        modifier
+        for modifier in output.modifiers
+        if modifier.type == "DATA_TRANSFER"
+    ]
     ensure(
-        not any(item.type == "DATA_TRANSFER" for item in output.modifiers),
-        "Complex fixture unexpectedly changed the accepted normal contract",
+        len(normal_modifiers) == 1
+        and normal_modifiers[0].object is source
+        and normal_modifiers[0].data_types_loops == {"CUSTOM_NORMAL"}
+        and normal_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ",
+        "Complex fixture output is missing source Custom Normal transfer",
     )
     result.add_detail("Complex fixture finalized through Direct Bridge with a clean output")
 
