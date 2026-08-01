@@ -121,9 +121,9 @@ def _install_instrumentation(bridge):
         return result
 
     @functools.wraps(original_cleanup)
-    def profiled_cleanup(bm, component, boundary_layer):
+    def profiled_cleanup(bm, component, radius, boundary_layer):
         started_at = time.perf_counter()
-        result = original_cleanup(bm, component, boundary_layer)
+        result = original_cleanup(bm, component, radius, boundary_layer)
         elapsed = time.perf_counter() - started_at
         cleanup_calls.append((result[1], elapsed))
         return result

@@ -8955,16 +8955,26 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         f"Mixed formal undissolved run failed: {undissolved_result}",
     )
     undissolved_contract = _output_geometry_contract(undissolved_output)
-    expected_undissolved_contract = {
-        "fingerprint": "4971270bc5b832f1a7655c5b7eee8a8c08c7bc1f0997c70132ba1dd600e15db7",
-        "vertex_count": 2781,
-        "edge_count": 5842,
-        "face_count": 3063,
-        "chamfer_face_count": 2383,
-    }
+    expected_undissolved_contract = (
+        {
+            "fingerprint": "058161226104472961189debc132c72d3fdf220fb9f424e2b5decd82f692da2c",
+            "vertex_count": 3917,
+            "edge_count": 8044,
+            "face_count": 4129,
+            "chamfer_face_count": 3449,
+        }
+        if bpy.app.version >= (5, 2, 0)
+        else {
+            "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
+            "vertex_count": 3922,
+            "edge_count": 8054,
+            "face_count": 4134,
+            "chamfer_face_count": 3454,
+        }
+    )
     ensure(
         undissolved_contract == expected_undissolved_contract,
-        f"Mixed formal fixed-distance output drifted from its oracle: {undissolved_contract}",
+        f"Mixed formal undissolved output drifted from the frozen oracle: {undissolved_contract}",
     )
     undissolved_stats = json.loads(
         bpy.context.scene["hst_pipe_chamfer_last_result"]
@@ -9647,8 +9657,11 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
         "Finalize did not dissolve any coplanar chamfer Faces",
     )
     ensure(
-        any(chamfer_values),
-        "Finalize dissolve removed the complete chamfer patch marking",
+        any(
+            chamfer_values[polygon.index] and len(polygon.vertices) > 4
+            for polygon in output.data.polygons
+        ),
+        "Finalize dissolve did not leave a cleaned chamfer n-gon",
     )
     normal_modifiers = [
         modifier
@@ -10363,11 +10376,14 @@ def test_gn_finalize_tricky_b_bridge_input_cleanup_regression(
     )
     ensure(
         all(
-            abs(cleanup["merge_distance"] - 0.01) <= 1.0e-12
+            cleanup["merge_distance"]
+            <= cleanup["radius_merge_distance"] + 1.0e-12
+            and cleanup["merge_distance"]
+            <= cleanup["median_edge_merge_cap"] + 1.0e-12
             for record in bridge_records
             for cleanup in record["bridge_input_cleanup"]
         ),
-        "Tricky-b cleanup did not use the fixed 0.01 merge distance",
+        "Tricky-b cleanup threshold is not bounded by Radius and local sampling",
     )
     result.add_detail(
         "Tricky-b one-step runtime removed only guarded duplicate/collinear noise"
@@ -10383,8 +10399,8 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
     module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
 
     # 构造带 Boundary 属性的独立链并运行生产清理；返回剩余坐标、端点坐标和统计。
-    # coordinates/branch: 主链坐标与是否添加支路。
-    def run_cleanup(coordinates, *, branch=False):
+    # coordinates/branch/endpoint_gap/radius: 主链坐标、支路开关、端点微边长度与 Radius。
+    def run_cleanup(coordinates, *, branch=False, radius=1.0):
         bm = bmesh.new()
         vertices = [bm.verts.new(coordinate) for coordinate in coordinates]
         boundary_layer = bm.edges.layers.int.new("test_boundary")
@@ -10408,6 +10424,7 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
         cleaned, stats = module._clean_bridge_component(
             bm,
             set(edges),
+            radius,
             boundary_layer,
         )
         ordered = module._ordered_chain_vertices(cleaned)
@@ -10418,7 +10435,7 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
         }
         return bm, remaining, endpoint_coordinates, stats
 
-    merge_distance = 0.01
+    merge_distance = module.BRIDGE_MERGE_DISTANCE_FACTOR
     protected_chain_coordinates = [
         (0.0, 0.0, 0.0),
         (merge_distance * 0.25, 0.0, 0.0),
@@ -10459,10 +10476,6 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
                 f"remaining={remaining}, endpoints={sorted(endpoint_coordinates)}, "
                 f"stats={stats}"
             ),
-        )
-        ensure(
-            abs(stats["merge_distance"] - merge_distance) <= 1.0e-12,
-            f"Bridge cleanup did not keep the fixed merge distance: {stats}",
         )
     finally:
         bm.free()
@@ -10517,10 +10530,10 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
     second_edge[boundary_layer] = 1
     try:
         first_cleaned, first_stats = module._clean_bridge_component(
-            bm, {first_edge}, boundary_layer
+            bm, {first_edge}, 1.0, boundary_layer
         )
         second_cleaned, second_stats = module._clean_bridge_component(
-            bm, {second_edge}, boundary_layer
+            bm, {second_edge}, 1.0, boundary_layer
         )
         ensure(
             len(first_cleaned) == 1
@@ -10574,7 +10587,7 @@ def test_feature_chamfer_bridge_cleanup_deviation_fast_path_contract(
             edge[boundary_layer] = 1
         try:
             _, unchanged_stats = module._clean_bridge_component(
-                bm, component, boundary_layer
+                bm, component, 0.01, boundary_layer
             )
             ensure(
                 unchanged_stats["deviation_fast_path"] is True
@@ -10605,7 +10618,7 @@ def test_feature_chamfer_bridge_cleanup_deviation_fast_path_contract(
             edge[boundary_layer] = 1
         try:
             _, modified_stats = module._clean_bridge_component(
-                bm, component, boundary_layer
+                bm, component, 0.01, boundary_layer
             )
             ensure(
                 modified_stats["deviation_fast_path"] is False
@@ -10651,6 +10664,7 @@ def test_feature_chamfer_bridge_input_cleanup_continues_non_simple_component(
         cleaned, stats = module._clean_bridge_component(
             bm,
             component,
+            0.05,
             boundary_layer,
         )
         ensure(
