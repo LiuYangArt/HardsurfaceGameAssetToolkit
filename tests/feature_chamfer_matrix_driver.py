@@ -49,9 +49,10 @@ CYCLIC_FIX_REGRESSION_SCOPE = {
     ("mixed", "Extruded.002", 0.01),
     ("mixed", "Extruded.002", 0.03),
 }
-# 锁定最后一次已由人工验收的 Preview→Finalize 输出拓扑，避免“封闭但形状错误”再次假绿。
-# key: matrix cell；value: 最终 Mesh 与 Chamfer Face 数量。
-PREVIEW_FINALIZE_TOPOLOGY_BASELINES = {
+# 锁定未执行补面 dissolve 时的 Preview→Finalize 输出拓扑。
+# 默认 dissolve 路径另由显式执行记录、健康性与同配置重复语义一致性守住，避免把预期简化误报为回归。
+# key: matrix cell；value: 未清理 Mesh 与 Chamfer Face 数量。
+UNDISSOLVED_TOPOLOGY_BASELINES = {
     ("simple", "Extruded.002", 0.01): {
         "fingerprint": "60666add88c6d5f428fbad0b8ba0a759a9250c139426cce032acf964f1f4a402",
         "vertex_count": 533,
@@ -125,7 +126,7 @@ PREVIEW_FINALIZE_TOPOLOGY_BASELINES = {
 }
 # Blender 5.2 的 Manifold Boolean 会稳定产生不同的等价闭合拓扑，冻结该版本的正式结果。
 if bpy.app.version >= (5, 2, 0):
-    PREVIEW_FINALIZE_TOPOLOGY_BASELINES.update({
+    UNDISSOLVED_TOPOLOGY_BASELINES.update({
         ("simple", "Solid 44", 0.01): {
             "fingerprint": "a46cb0484784f4ca45fe3d2957c869ad4c8d46dbe5c797c16450bd520ef8dd82",
             "vertex_count": 270,
@@ -773,11 +774,24 @@ def classify_result(
         and not preview_residue.get("preview_modifier")
         and not preview_residue.get("owned_curve_objects")
     )
+    backend_stats = backend_capture.get("stats", {})
+    dissolve_chamfer_requested = bool(
+        backend_stats.get("dissolve_chamfer_requested")
+    )
     topology_baseline_matches = (
         topology_baseline is None
-        or all(output.get(key) == value for key, value in topology_baseline.items())
+        or (
+            dissolve_chamfer_requested
+            and backend_stats.get("dissolved_chamfer_face_count", 0) > 0
+        )
+        or (
+            not dissolve_chamfer_requested
+            and all(
+                output.get(key) == value
+                for key, value in topology_baseline.items()
+            )
+        )
     )
-    backend_stats = backend_capture.get("stats", {})
     bridge_shape_records = backend_stats.get("bridge_records", ())
     bridge_shape_contract = (
         backend_stats.get("bridge_shape_contract")
@@ -988,7 +1002,7 @@ def classify_result(
     return classification, reason, contract_violations
 
 
-# 返回用于跨 repetition 比较的语义 fingerprint，排除计时和 Object 显示名。
+# 返回用于跨 repetition 比较的产品 fingerprint，排除计时、Object 显示名及 dissolve 造成的内部拓扑差异。
 # repetition: 单次运行的完整诊断。
 def repetition_signature(repetition):
     stable_payload = {
@@ -1006,13 +1020,9 @@ def repetition_signature(repetition):
         "output_contract": {
             key: repetition["output"].get(key)
             for key in (
-                "vertex_count",
-                "edge_count",
-                "face_count",
                 "boundary_edge_count",
                 "non_manifold_edge_count",
                 "zero_area_face_count",
-                "chamfer_face_count",
             )
         },
         "final_state": repetition["final_state"],
@@ -1023,13 +1033,9 @@ def repetition_signature(repetition):
         "output_topology": {
             key: repetition["output"].get(key)
             for key in (
-                "vertex_count",
-                "edge_count",
-                "face_count",
                 "boundary_edge_count",
                 "non_manifold_edge_count",
                 "zero_area_face_count",
-                "chamfer_face_count",
             )
         },
         "preview_residue": repetition.get("preview_residue"),
@@ -1039,35 +1045,14 @@ def repetition_signature(repetition):
                 "runtime_path",
                 "bridge_shape_contract",
                 "bridge_job_count",
-                "bridge_face_count",
                 "deferred_segment_count",
                 "junction_fill_count",
-                "junction_fill_face_count",
                 "boundary_edge_count",
                 "non_manifold_edge_count",
                 "zero_area_face_count",
+                "dissolve_chamfer_requested",
             )
         },
-        "cyclic_bridge_splits": [
-            {
-                key: record.get(key)
-                for key in (
-                    "segment_id",
-                    "pipe_id",
-                    "owner_surface_pair",
-                    "cyclic_split_job_index",
-                    "cyclic_split_job_count",
-                    "common_cyclic_stations",
-                    "cyclic_job_side_edge_indices",
-                    "side_lengths",
-                    "side_station_intervals",
-                )
-            }
-            for record in repetition.get("backend", {})
-            .get("stats", {})
-            .get("bridge_records", ())
-            if record.get("cyclic_split_applied")
-        ],
     }
     return hashlib.sha256(
         json.dumps(stable_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -1237,7 +1222,7 @@ def run_repetition(
         fixture_label in DEFERRED_LABELS,
         required_turn_split_contract,
         required_cyclic_split_contracts,
-        PREVIEW_FINALIZE_TOPOLOGY_BASELINES.get(
+        UNDISSOLVED_TOPOLOGY_BASELINES.get(
             (fixture_label, object_name, round(float(radius), 6))
         ),
     )

@@ -189,6 +189,7 @@ python .\tools\run_feature_chamfer_matrix.py --blender "<path-to-blender>" --rep
 ```
 
 - 固定运行 `tests/fixtures/` 中 7 个对象 × radius `{0.01, 0.03}`。
+- 默认开启 `Dissolve Chamfer` 时，共面补面内线会按预期改变最终 Edge/Face 数和 fingerprint；矩阵不再拿 dissolve 前的冻结拓扑判失败，而是要求 dissolve 已实际执行、Mesh 健康、Bridge/Fill 合同与用户可见行为通过。关闭该选项时继续使用未清理路径的冻结拓扑回归。
 - 2026-07-29 Tricky-b cyclic 修复曾使用目标 Radius `0.01` 加其余 8 cells 的临时门禁；2026-07-30 Mixed cyclic 修复已恢复完整 10-cell 产品矩阵，并同时覆盖 Mixed 两档 Radius。
 - 每个 cell 从目标 `hst.feature_chamfer_gn` PREVIEW→FINALIZE 开始，并重复 3 次验证 shared plan determinism。
 - 分类至少区分 `PRODUCT_SUCCESS`、`RADIUS_LIMIT_DIAGNOSTIC`、`PRODUCT_SUCCESS_WITH_RADIUS_RETRY`、`EXPECTED_UNSUPPORTED`、`REGRESSION_FAILURE`、`SAFETY_PASS`。普通 fail-closed 不计产品成功。
