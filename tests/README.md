@@ -22,6 +22,7 @@
 - Feature Chamfer mixed fixture 目标 Operator PREVIEW→FINALIZE terminal topology 回归
 - Feature Chamfer Tricky-b 标准 180° open U 形由两个同步局部转折拆成三个原生 Bridge 任务回归
 - 当前 Feature Chamfer 的 Adjust Last Operation 参数、失败事务与 Undo/Redo 回归
+- 正式入口的所有结构化几何异常统一降级为可见 Mesh，不因新增保护检查再次撤销结果
 - Blender 5.2 Geometry Nodes modifier 输入与工具状态的新 API 兼容、保存并重新打开回归；5.1 旧 API 继续保留兼容覆盖
 - decal project smoke test
 - quickweight smoke test
@@ -89,7 +90,7 @@ python3 -m unittest tests.test_feature_chamfer_evidence_runner
 ```
 
 结果：`tests/artifacts/feature_chamfer_batched_matrix/results.json`。开发诊断可用重复 `--case <case_id>` 缩小运行范围；第一阶段 Stop/Go 以 `simple`、`tricky_b`、`mixed` 的 10 cells × 3 repetitions 为准，完整 14 cells 留作第二阶段最终门槛。
-> `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；失败必须 fail-closed：source 不变、无坏的最终 Mesh。Bridge、Fill 或最终几何检查能够给出真实问题边界时，同时保留 Preview 并显示红色诊断，供用户显式减小 Radius 后重试；较早的 Preview/身份合同失败只保留已有现场和明确错误提示，不得伪造位置。
+> `hst.feature_chamfer_gn PREVIEW` 已改为 Python FeatureGraph/CutterStrands → owned Curve → Even-Thickness Curve Pipe → 受控 Boolean Pro Preview。Cancel 与 redo 负责清理 owned Curve/wrapper。正式 FINALIZE 已接入 evaluated Preview 的 Boundary Edges → 槽段 Bridge → junction Fill；内部结构化几何异常只降低输出质量并保留诊断，不得撤销或阻止可见 Mesh 发布。只有无法建立有效输入上下文或非几何类程序错误才会停止。
 > 历史 Object Boolean、槽面删除、rail pairing 与 canonicalization 路线仅保留回归证据，不是当前正式 Finalize runtime，也不得作为 Bridge 前置门槛。
 > 当前 Phase C 方向直接消费 Boolean Pro Boundary Edges。没有交叉且形态单一的 Pipe 以两条完整 Loop 一次 Bridge；在 junction 处按 Pipe owner 变化切成“交叉点之间的连续槽段”；已锁定配对但包含多个显著空间转折的长 open 槽段，允许按双方共同大转折继续同步切段。每段仍使用原生 Bridge，最后 Fill Bridge 后剩余的交叉孔洞。不得按距离重排边、使用 fixture 身份、自定义逐点对应、重采样或局部重建；两侧数量可以不同。越宽结果的门禁试验因会拦住 5/8 个对照场景而未接入正式实现。
 > 法线问题按用户决定暂缓；正式 FINALIZE 不执行法线恢复，也不接入 Set from Faces、全对象 Data Transfer、试验性烘焙或 Corner 重写。

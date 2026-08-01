@@ -2929,6 +2929,71 @@ def _self_intersection_count(bm):
     return len(_self_intersection_records(bm))
 
 
+# 把 Direct Bridge 中断瞬间的 BMesh 发布为结果，保留已执行步骤产生的真实坏拓扑。
+# bm/source_object/output_object/output_mesh/error/source_fingerprint_before: 当前运行现场；返回结果与统计。
+def _publish_interrupted_direct_bridge_bmesh(
+    bm,
+    source_object,
+    output_object,
+    output_mesh,
+    error,
+    source_fingerprint_before,
+):
+    chamfer_face_layer = bm.faces.layers.int.get(CHAMFER_FACE_ATTRIBUTE)
+    bm.verts.index_update()
+    bm.edges.index_update()
+    bm.faces.index_update()
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.normal_update()
+    chamfer_face_indices = {
+        face.index
+        for face in bm.faces
+        if chamfer_face_layer is not None and bool(face[chamfer_face_layer])
+    }
+    if output_object is None:
+        output_mesh = bpy.data.meshes.new(
+            f"{source_object.data.name}_FeatureChamfer"
+        )
+        bm.to_mesh(output_mesh)
+        output_mesh.update()
+        output_object = bpy.data.objects.new(
+            f"{source_object.name}_FeatureChamfer",
+            output_mesh,
+        )
+        source_object.users_collection[0].objects.link(output_object)
+        output_object.matrix_world = source_object.matrix_world.copy()
+        chamfer_attribute = output_mesh.attributes.new(
+            CHAMFER_FACE_ATTRIBUTE,
+            type="BOOLEAN",
+            domain="FACE",
+        )
+        for polygon in output_mesh.polygons:
+            chamfer_attribute.data[polygon.index].value = (
+                polygon.index in chamfer_face_indices
+            )
+    error_stats = dict(error.stats)
+    error_stats.update(
+        status="finished",
+        backend="DIRECT_EDGE_LOOP_BRIDGE",
+        output_quality="PIPELINE_INTERRUPTED",
+        interrupted_stage="DIRECT_BRIDGE",
+        interrupted_error_code=error.error_code,
+        interrupted_error_message=str(error),
+        boundary_edge_count=sum(len(edge.link_faces) == 1 for edge in bm.edges),
+        non_manifold_edge_count=sum(len(edge.link_faces) != 2 for edge in bm.edges),
+        zero_area_face_count=sum(
+            face.calc_area() <= 1.0e-12
+            for face in bm.faces
+        ),
+        chamfer_face_count=len(chamfer_face_indices),
+        output_object_name=output_object.name,
+        source_fingerprint_unchanged=(
+            source_fingerprint(source_object) == source_fingerprint_before
+        ),
+    )
+    return error_stats
+
+
 # 从正式 evaluated Preview 直接 Bridge 普通槽段，再 Fill 自然剩余的 junction 孔洞。
 # source_object/expected_chamfer_plan: 正式 source 与 Preview immutable plan；返回 Operator 可记录的 stats。
 def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
@@ -3763,6 +3828,17 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "chamfer_face_count": len(chamfer_face_indices),
             "output_object_name": output_object.name,
         }
+    except FeatureChamferDirectBridgeError as error:
+        if bm is None:
+            raise
+        return _publish_interrupted_direct_bridge_bmesh(
+            bm,
+            source_object,
+            output_object,
+            output_mesh,
+            error,
+            source_fingerprint_before,
+        )
     except Exception:
         if output_object is not None and bpy.data.objects.get(output_object.name) == output_object:
             bpy.data.objects.remove(output_object, do_unlink=True)

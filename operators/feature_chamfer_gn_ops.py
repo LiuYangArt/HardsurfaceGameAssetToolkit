@@ -11,8 +11,6 @@ from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
 from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
-from ..utils.feature_chamfer_diagnostic_utils import RADIUS_LIMIT_ERROR_CODES
-from ..utils.feature_chamfer_diagnostic_utils import show_feature_chamfer_failure_diagnostic
 from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
 from ..utils.feature_chamfer_direct_bridge_utils import build_direct_edge_loop_chamfer
 from ..utils.feature_chamfer_gn_utils import FeatureChamferPreviewError
@@ -142,10 +140,59 @@ def _finalize_output(output, source_object, chamfer_plan):
         ],
     )
     output.data.update()
-    complete_plan = chamfer_plan_without_unsupported_regions(chamfer_plan)
     output[FEATURE_CHAMFER_GN_STATE_TAG] = FEATURE_CHAMFER_PATCHED
     output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
-    write_chamfer_plan(output, complete_plan)
+    if chamfer_plan is not None:
+        complete_plan = chamfer_plan_without_unsupported_regions(chamfer_plan)
+        write_chamfer_plan(output, complete_plan)
+
+
+# 把当前 evaluated 几何发布为可见结果，确保结构化几何异常不会撤销用户可检查的现场。
+# source_object/transaction: 当前 source 与事务；返回新建的最终输出 Object。
+def _materialize_interrupted_output(source_object, transaction):
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+    output_mesh = bpy.data.meshes.new_from_object(
+        source_object.evaluated_get(depsgraph),
+        depsgraph=depsgraph,
+        preserve_all_data_layers=True,
+    )
+    output = bpy.data.objects.new(
+        f"{source_object.name}_FeatureChamfer",
+        output_mesh,
+    )
+    source_object.users_collection[0].objects.link(output)
+    output.matrix_world = source_object.matrix_world.copy()
+    transaction["output"] = output
+    return output
+
+
+# 把所有结构化几何异常统一转为可见结果及诊断记录，不再由单个保护检查中止 Operator。
+# source_object/transaction/error/stage/chamfer_plan: 当前上下文；返回正式结果统计。
+def _publish_interrupted_output(
+    source_object,
+    transaction,
+    error,
+    stage,
+    chamfer_plan=None,
+):
+    output = _materialize_interrupted_output(source_object, transaction)
+    _finalize_output(output, source_object, chamfer_plan)
+    cancel_gn_feature_chamfer_preview(source_object)
+    error_code = getattr(error, "error_code", "preview_pipeline_interrupted")
+    error_stats = dict(getattr(error, "stats", {}) or {})
+    error_stats.update(
+        status="finished",
+        output_quality="PIPELINE_INTERRUPTED",
+        interrupted_stage=stage,
+        interrupted_error_code=error_code,
+        interrupted_error_message=str(error),
+        output_object_name=output.name,
+        source_fingerprint_unchanged=True,
+        one_step_transaction=True,
+        temporary_preview_removed=True,
+    )
+    return error_stats
 
 
 # 把临时 Preview 当前显示的实际 Cutter 评估为独立 Mesh，供用户按需保留。
@@ -190,11 +237,27 @@ def _keep_evaluated_cutter(source_object, transaction):
 # source_object/radius/show_cutter/transaction: 正式输入、参数与事务引用；返回 Direct Bridge 统计。
 def _build_preview_finalize_output(source_object, radius, show_cutter, transaction):
     preview_started_at = time.perf_counter()
-    preview = ensure_gn_feature_chamfer_preview(
-        source_object=source_object,
-        radius=radius,
-        show_cutter=False,
-    )
+    try:
+        preview = ensure_gn_feature_chamfer_preview(
+            source_object=source_object,
+            radius=radius,
+            show_cutter=False,
+        )
+    except FeatureChamferPreviewError as error:
+        patch_stats = _publish_interrupted_output(
+            source_object,
+            transaction,
+            error,
+            "PREVIEW",
+        )
+        patch_stats.update(
+            preview_seconds=time.perf_counter() - preview_started_at,
+            requested_radius=float(radius),
+            keep_cutter_requested=bool(show_cutter),
+            keep_cutter_supported=False,
+            source_hidden=True,
+        )
+        return patch_stats
     preview_seconds = time.perf_counter() - preview_started_at
     chamfer_plan = preview["plan"]
     feature_graph_stats = preview["feature_graph"]
@@ -230,18 +293,56 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
         -1,
     ))
     bridge_fill_started_at = time.perf_counter()
-    patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
+    try:
+        patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
+    except FeatureChamferDirectBridgeError as error:
+        patch_stats = _publish_interrupted_output(
+            source_object,
+            transaction,
+            error,
+            "DIRECT_BRIDGE",
+            chamfer_plan,
+        )
+        patch_stats.update(
+            preview_seconds=time.perf_counter() - preview_started_at,
+            bridge_fill_seconds=time.perf_counter() - bridge_fill_started_at,
+            requested_radius=float(radius),
+            keep_cutter_requested=bool(show_cutter),
+            keep_cutter_supported=False,
+            source_hidden=True,
+        )
+        return patch_stats
     bridge_fill_seconds = time.perf_counter() - bridge_fill_started_at
     output = bpy.data.objects.get(patch_stats.get("output_object_name", ""))
     if output is None:
-        raise FeatureChamferDirectBridgeError(
+        error = FeatureChamferDirectBridgeError(
             "one_step_output_missing",
             "Feature Chamfer produced no output Object",
         )
+        patch_stats = _publish_interrupted_output(
+            source_object,
+            transaction,
+            error,
+            "OUTPUT_PUBLICATION",
+            chamfer_plan,
+        )
+        patch_stats.update(
+            preview_seconds=preview_seconds,
+            bridge_fill_seconds=bridge_fill_seconds,
+            requested_radius=float(radius),
+            keep_cutter_requested=bool(show_cutter),
+            keep_cutter_supported=False,
+            source_hidden=True,
+        )
+        return patch_stats
     transaction["output"] = output
     cutter_object = None
+    cutter_error = None
     if show_cutter:
-        cutter_object = _keep_evaluated_cutter(source_object, transaction)
+        try:
+            cutter_object = _keep_evaluated_cutter(source_object, transaction)
+        except FeatureChamferPreviewError as error:
+            cutter_error = str(error)
     _finalize_output(output, source_object, chamfer_plan)
     cancel_gn_feature_chamfer_preview(source_object)
     patch_stats.update(
@@ -275,6 +376,7 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
         cutter_object_name=cutter_object.name if cutter_object is not None else None,
         keep_cutter_requested=bool(show_cutter),
         keep_cutter_supported=cutter_object is not None if show_cutter else True,
+        keep_cutter_error=cutter_error,
         source_hidden=True,
     )
     return patch_stats
@@ -443,37 +545,6 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 ),
             )
             return {"FINISHED"}
-        except FeatureChamferDirectBridgeError as error:
-            failed_source = transactions[-1]["source"]
-            _rollback_batch(transactions)
-            diagnostic = show_feature_chamfer_failure_diagnostic(
-                failed_source,
-                error.error_code,
-                error.stats,
-                self.radius,
-            )
-            error.stats.update(
-                requested_radius=float(self.radius),
-                final_state="SOURCE_UNCHANGED",
-                diagnostic=diagnostic,
-            )
-            context.scene["hst_pipe_chamfer_last_result"] = json.dumps(
-                error.stats,
-                ensure_ascii=False,
-                default=str,
-            )
-            if error.error_code in RADIUS_LIMIT_ERROR_CODES and diagnostic["exists"]:
-                self.report(
-                    {"WARNING"},
-                    f"Feature Chamfer cannot fill the marked area at Radius {self.radius:.4f}",
-                )
-            else:
-                self.report({"WARNING"}, f"Feature Chamfer failed [{error.error_code}]: {error}")
-            return {"FINISHED"} if diagnostic["exists"] else {"CANCELLED"}
-        except FeatureChamferPreviewError as error:
-            _rollback_batch(transactions)
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
         except Exception:
             _rollback_batch(transactions)
             raise

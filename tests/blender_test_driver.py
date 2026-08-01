@@ -8992,6 +8992,159 @@ def test_feature_chamfer_single_operator_failure_rolls_back_transaction(
     result.add_detail("Injected post-build failure rolled back output, Cutter, and Preview")
 
 
+# 验证任意结构化几何中断只能降级结果质量，不能阻止正式 Operator 发布可见 Mesh。
+# test_context/result: 测试上下文与结果记录器。
+def test_feature_chamfer_structured_geometry_errors_publish_output(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    operator_module = test_context.addon.operators.feature_chamfer_gn_ops
+    cases = (
+        (
+            "preview_guard_added_later",
+            "ensure_gn_feature_chamfer_preview",
+            operator_module.FeatureChamferPreviewError("synthetic preview guard"),
+            "PREVIEW",
+        ),
+        (
+            "bridge_guard_added_later",
+            "build_direct_edge_loop_chamfer",
+            operator_module.FeatureChamferDirectBridgeError(
+                "synthetic_future_safety_guard",
+                "synthetic bridge guard",
+            ),
+            "DIRECT_BRIDGE",
+        ),
+    )
+    for case_name, target_name, injected_error, expected_stage in cases:
+        collection = make_collection(case_name)
+        source = make_test_mesh(f"{case_name}_source", collection)
+        mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+        source_hash = _mesh_fingerprint(source)
+        original_target = getattr(operator_module, target_name)
+
+        def injected_guard(*args, **kwargs):
+            del args, kwargs
+            raise injected_error
+
+        setattr(operator_module, target_name, injected_guard)
+        try:
+            operator_result, output = run_feature_chamfer_one_step(
+                source,
+                radius=0.05,
+            )
+        finally:
+            setattr(operator_module, target_name, original_target)
+
+        stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+        ensure(
+            operator_result == {"FINISHED"}
+            and output is not None
+            and output is not source
+            and output.type == "MESH",
+            f"{case_name} blocked visible output publication",
+        )
+        ensure(
+            stats.get("status") == "finished"
+            and stats.get("output_quality") == "PIPELINE_INTERRUPTED"
+            and stats.get("interrupted_stage") == expected_stage,
+            f"{case_name} lost structured interruption diagnostics: {stats}",
+        )
+        ensure(
+            _mesh_fingerprint(source) == source_hash
+            and source.hide_get()
+            and not output.hide_get(),
+            f"{case_name} changed the source or hid the published result",
+        )
+
+    collection = make_collection("bridge_inner_guard_added_later")
+    source = make_test_mesh("bridge_inner_guard_source", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    direct_bridge_module = (
+        test_context.addon.utils.feature_chamfer_direct_bridge_utils
+    )
+    original_fill = direct_bridge_module._fill_junction_holes
+
+    def injected_inner_guard(*args, **kwargs):
+        del args, kwargs
+        raise operator_module.FeatureChamferDirectBridgeError(
+            "synthetic_future_inner_guard",
+            "synthetic inner guard",
+        )
+
+    direct_bridge_module._fill_junction_holes = injected_inner_guard
+    try:
+        operator_result, output = run_feature_chamfer_one_step(
+            source,
+            radius=0.05,
+        )
+    finally:
+        direct_bridge_module._fill_junction_holes = original_fill
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        operator_result == {"FINISHED"}
+        and output is not None
+        and stats.get("interrupted_error_code") == "synthetic_future_inner_guard"
+        and stats.get("chamfer_face_count", 0) > 0,
+        f"Inner Bridge guard did not publish its interrupted BMesh: {stats}",
+    )
+
+    collection = make_collection("missing_output_guard")
+    source = make_test_mesh("missing_output_guard_source", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    original_builder = operator_module.build_direct_edge_loop_chamfer
+    operator_module.build_direct_edge_loop_chamfer = lambda *args, **kwargs: {
+        "status": "finished"
+    }
+    try:
+        operator_result, output = run_feature_chamfer_one_step(
+            source,
+            radius=0.05,
+        )
+    finally:
+        operator_module.build_direct_edge_loop_chamfer = original_builder
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        operator_result == {"FINISHED"}
+        and output is not None
+        and stats.get("interrupted_error_code") == "one_step_output_missing",
+        f"Missing backend output blocked fallback publication: {stats}",
+    )
+
+    collection = make_collection("keep_cutter_guard")
+    source = make_test_mesh("keep_cutter_guard_source", collection)
+    mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
+    original_keep_cutter = operator_module._keep_evaluated_cutter
+
+    def injected_cutter_guard(*args, **kwargs):
+        del args, kwargs
+        raise operator_module.FeatureChamferPreviewError(
+            "synthetic Keep Cutter guard"
+        )
+
+    operator_module._keep_evaluated_cutter = injected_cutter_guard
+    try:
+        operator_result, output = run_feature_chamfer_one_step(
+            source,
+            radius=0.05,
+            show_cutter=True,
+        )
+    finally:
+        operator_module._keep_evaluated_cutter = original_keep_cutter
+    stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    ensure(
+        operator_result == {"FINISHED"}
+        and output is not None
+        and stats.get("keep_cutter_supported") is False
+        and "synthetic Keep Cutter guard" in stats.get("keep_cutter_error", ""),
+        f"Keep Cutter guard blocked the main output: {stats}",
+    )
+
+    result.add_detail(
+        "All structured guard families, missing output, and Keep Cutter failure published the main Mesh"
+    )
+
+
 # 验证正式一步入口可原子处理多个 source，并只显示全部最终结果。
 # test_context/result: 测试上下文与结果记录器。
 def test_feature_chamfer_multi_object_batch_and_source_visibility(
@@ -14046,6 +14199,10 @@ def main():
     context.run_case(
         "feature_chamfer_single_operator_failure_rolls_back_transaction",
         test_feature_chamfer_single_operator_failure_rolls_back_transaction,
+    )
+    context.run_case(
+        "feature_chamfer_structured_geometry_errors_publish_output",
+        test_feature_chamfer_structured_geometry_errors_publish_output,
     )
     context.run_case(
         "feature_chamfer_multi_object_batch_and_source_visibility",
