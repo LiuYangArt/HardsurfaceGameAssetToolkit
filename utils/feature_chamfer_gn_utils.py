@@ -35,6 +35,10 @@ from .experimental_pipe_chamfer_utils import _base_stats
 from .experimental_pipe_chamfer_utils import _build_preview_feature_graph
 from .experimental_pipe_chamfer_utils import _classify_pipe_endpoints
 from .experimental_pipe_chamfer_utils import _source_face_patch_ids
+from .feature_chamfer_feature_graph_adapter_utils import build_feature_graph_native_primitives
+from .feature_chamfer_feature_graph_adapter_utils import restore_feature_graph_native_result
+from .feature_chamfer_feature_graph_native_utils import resolve_feature_graph_backend
+from .feature_chamfer_feature_graph_native_utils import solve_feature_graph_native
 from .experimental_pipe_chamfer_utils import ensure_feature_chamfer_curve_pipe_asset
 from .feature_chamfer_plan_utils import build_chamfer_plan
 from .feature_chamfer_plan_utils import feature_strand_points
@@ -202,7 +206,23 @@ def _preview_feature_graph_with_cache(source_object, radius, stats):
     if cached is not None:
         stats.update(copy.deepcopy(cached["stats"]))
         return copy.deepcopy(cached["groups"]), True
-    groups = _build_preview_feature_graph(source_object, radius, stats)
+    feature_graph_backend = resolve_feature_graph_backend()
+    stats["feature_graph_backend"] = feature_graph_backend
+    if feature_graph_backend == "native":
+        native_adapter_started_at = time.perf_counter()
+        primitive = build_feature_graph_native_primitives(source_object, radius)
+        stats["feature_graph_native_adapter_seconds"] = (
+            time.perf_counter() - native_adapter_started_at
+        )
+        native_solver_started_at = time.perf_counter()
+        native_result = solve_feature_graph_native(primitive, 1.5)
+        stats["feature_graph_native_solver_seconds"] = (
+            time.perf_counter() - native_solver_started_at
+        )
+        groups = restore_feature_graph_native_result(native_result, stats)
+        stats["feature_graph_contract"] = "GN_PREVIEW_V1"
+    else:
+        groups = _build_preview_feature_graph(source_object, radius, stats)
     if _feature_graph_is_radius_independent(stats):
         if len(_FEATURE_GRAPH_CACHE) >= FEATURE_GRAPH_CACHE_LIMIT:
             oldest_cache_key = next(iter(_FEATURE_GRAPH_CACHE))

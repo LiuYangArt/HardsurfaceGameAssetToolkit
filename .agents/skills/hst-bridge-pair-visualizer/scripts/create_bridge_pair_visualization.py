@@ -131,7 +131,7 @@ def main():
             "capture": str(capture_path),
         },
         "logs": {
-            "capture_saved": "Feature Chamfer finalized" in capture_log,
+            "capture_saved": "Feature Chamfer finished" in capture_log,
             "artifact_saved": "Saved" in render_log,
         },
     }

@@ -1,13 +1,13 @@
 # Feature Chamfer Bridge 链清理分阶段优化方案
 
 日期：2026-08-01  
-状态：`PYTHON VERIFIED / RUST DEFERRED`
+状态：`PYTHON VERIFIED / RUST PHASE 2 PASS / PHASE 3 STOP`
 目标入口：UI `Feature Chamfer` → `hst.feature_chamfer_gn`  
 代表样本：`tests/fixtures/feature-chamfer-topology-defect-mixed.blend` / `Extruded.002` / Radius `0.01`
 
 ## 1. 结论
 
-Python 无修改路径已经完成并通过验证。剩余耗时达到 Rust 评估门槛，但按当前决定暂缓 Rust，留作以后独立任务；这不影响 Python 优化作为本轮已完成成果。无论以后是否进入 Rust 阶段，都不把 Blender `BMesh`、Bridge、Fill 或拓扑修改迁移到 Rust。
+Python 无修改路径与 Rust Phase 2 隔离旁路原型均已通过验证。Phase 3 Mixed 正式 Operator 的 Python/native A/B 已完成：结果等价，但 Bridge 清理仅下降 `18.005%`、Operator 仅下降 `4.486% / 0.082853s`，未达到冻结门槛，因此状态为 `STOP`，不进入 Phase 4 默认入口集成。无论后续结果如何，都不把 Blender `BMesh`、Bridge、Fill 或拓扑修改迁移到 Rust。
 
 第一目标是利用现有清理结果建立无修改快速路径：当一条 side chain 的 `merged_vertex_count == 0` 且 `dissolved_vertex_count == 0` 时，清理前后坐标和拓扑未改变，直接记录最大几何偏差为 `0.0`，跳过双向折线偏差计算。
 
@@ -20,7 +20,7 @@ Python 无修改路径已经完成并通过验证。剩余耗时达到 Rust 评�
 
 Python 路径永久保留：
 
-- 未来 Phase 4 通过后，Windows 才默认优先使用 Rust 原生模块；
+- 当前 Phase 3 已 `STOP`，Windows 不默认启用 Rust；只有未来新路线重新通过正式 Operator 门槛后，才可重新评估；
 - macOS / Linux：默认使用 Python；
 - Windows 原生模块缺失或 ABI 不兼容：使用 Python；
 - 原生模块已经成功加载、但执行时发生异常或返回非法结果：直接报错，不静默切回 Python。
@@ -48,7 +48,7 @@ Python 实现既是跨平台后端，也是 Rust 实现的正确性 oracle。
 | 自交检查 | 约 0.09 秒 | 本方案不改 |
 | Boolean | 约 0.32–0.34 秒 | 本方案不改 |
 
-160 条 side chain 中，121 条没有发生合并或 dissolve，现已由 Python 快速路径跳过无效偏差验证；39 条已修改 chain 仍执行原验证。Rust 启动条件在数值上已触发，但当前状态为 `DEFERRED`，以后有空再单独启动。
+160 条 side chain 中，121 条没有发生合并或 dissolve，现已由 Python 快速路径跳过无效偏差验证；39 条已修改 chain 仍执行原验证。Rust Phase 2 已在 39 条已修改 chain 上达到逐值等价与内核性能门槛；Phase 3 正式 Operator A/B 的结果等价，但总清理和 Operator 收益未达门槛，已 `STOP`。
 
 Mixed 当前 dissolve 后结果已由用户人工确认无可见问题。旧测试中的拓扑计数未同步，不作为本方案的阻塞条件；本方案仍要求 Python 与 Rust 在同一当前代码、同一输入下结果一致。
 
@@ -253,7 +253,7 @@ Rust 启动判断：
 
 ### Phase 2 — Rust 旁路原型
 
-状态：`DEFERRED / NOT RUN`
+状态：`PROTOTYPE / PASS`
 
 只处理 Phase 1 后仍需验证的已修改 chain，实现 Rust 批量内核，但不接正式入口。用 Phase 0/1 保存的数据离线比较：
 
@@ -281,7 +281,7 @@ Stop：
 
 ### Phase 3 — Bridge 清理 A/B 集成
 
-状态：`DEFERRED / NOT RUN`。
+状态：`PROTOTYPE / STOP`。
 
 在同一份当前代码中分别强制 `python` 与 `native`，只跑 Mixed / Radius 0.01。两条路径必须产生相同：
 
@@ -304,9 +304,11 @@ Stop：
 Go：正确性与性能同时通过。  
 Stop：只快但决策不同，或结果相同但总 Operator 没有实质下降。
 
+实际结果：3/3 正确性一致；偏差内核下降 `98.268%`，但 Bridge 清理仅下降 `18.005%`，Operator 仅下降 `4.486% / 0.082853s`。第一失败门槛为 Bridge 清理需下降至少 50%，因此 Phase 3 为真实 `STOP`。证据见 `docs/validation/2026-08-01-feature-chamfer-rust-bridge-cleanup-phase3-validation-result.md`。
+
 ### Phase 4 — 正式入口集成
 
-状态：`DEFERRED / NOT RUN`。只有未来 Phase 3 通过后，Rust 路径才可进入 `INTEGRATED`：
+状态：`DEFERRED / NOT RUN`（被 Phase 3 `STOP` 阻断）。只有未来新路线重新通过同等级门槛后，Rust 路径才可进入 `INTEGRATED`：
 
 1. 正式入口默认使用 `auto`；
 2. Windows 原生模块可用时必须有证据证明实际调用 native；
@@ -390,14 +392,22 @@ Python 异常可捕获，但 Rust panic、内存错误或非法指针可能终�
 
 ## 12. 后续候选，不属于本轮
 
-若本轮通过但总耗时仍不理想，再单独评估：
+Phase 3 已因总收益不足而 `STOP`。下一优先级改为 FeatureGraph 分段 profiling：此前 Mixed 阶段基准约 `0.591s / 29.2%`，可优化上限明显高于继续处理 Bridge cleanup；但旧文档中的 `0.453–0.493s` 来自更早架构，只作历史参考，不替代当前正式入口重测。
 
-1. 将短边簇、共线 dissolve 候选计算移入 Rust，Python 只执行 BMesh 修改；
-2. FeatureGraph 全局组合评分及独立 Rust BVH；
-3. 对折线距离使用空间索引、SIMD 或受控并行。
+FeatureGraph 新路线状态：`PROFILING VERIFIED / RUST COMPACT PROTOTYPE PASS / FORMAL INTEGRATION NOT AUTHORIZED`。首轮全量回传接口因跨语言传输开销为 `STOP`；随后紧凑接口仍在 Rust 中计算全部 729 项，只回传正式下游所需结果，端到端从 Python `1.026091s` 降至 `0.131558s`，快 `87.18%`、节省 `0.894533s`，全量审计 729/729 等价。下一步可另建正式 Operator A/B 计划，但尚未授权接入；证据见 `docs/validation/2026-08-01-feature-chamfer-feature-graph-rust-compact-interface-result.md`。
 
-每项都必须重新建立 Python oracle、旁路原型和单独性能门槛，禁止与第一版一次性混做。
+本次已按 Mixed / `Extruded.002` / Radius `0.01` 的正式 UI Operator 完成以下分解与冻结：
 
+1. Mesh/BMesh 复制、Sharp Edge 与 Surface Patch 建图；
+2. Edge metadata、degree-2 与局部 pairing；
+3. junction 候选生成及 search-space 规模；
+4. 全局组合评分与 endpoint containment / BVH 查询；
+5. group traversal、canonical 排序与 stats/结果序列化；
+6. ChamferPlan、endpoint token 等目前被外层 `feature_graph` stage 合并计时的下游工作。
+
+每一项记录调用次数、输入规模和三次同轮中位数，核对各子项之和与正式 `feature_graph` stage；profiling instrumentation 必须证明结果 fingerprint 与未插桩 oracle 一致。只有单个可隔离热点足以让 FeatureGraph 预计下降至少 `35%`、Operator 预计节省至少 `0.20s`，才允许提出实现阶段：重复扫描/排序优先 Python，纯全局评分或空间查询才建立 Rust oracle。不得修改正式算法、阈值、排序、FeatureGraph 合同或结果，也不得把 Bridge Rust 原型接入入口。
+
+若 FeatureGraph 没有足够集中的热点，再按独立计划评估短边簇/共线 dissolve 候选，或折线距离空间索引；每项都必须重新建立 Python oracle、旁路原型和单独性能门槛。
 ## 13. 完成定义
 
 Python 快速路径路线只有同时满足以下条件，才能声明 `VERIFIED`：

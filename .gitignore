@@ -22,6 +22,10 @@ notes.md
 # 测试产物
 tests/artifacts/**
 
+# Rust 构建缓存
+native/**/target/
+!native/**/*.pyd
+
 # macOS 元数据
 .DS_Store
 **/.DS_Store

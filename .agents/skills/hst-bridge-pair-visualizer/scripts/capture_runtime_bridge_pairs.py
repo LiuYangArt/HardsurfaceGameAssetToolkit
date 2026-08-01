@@ -43,20 +43,6 @@ def main():
     source.select_set(True)
     bpy.context.view_layer.objects.active = source
 
-    preview_result = bpy.ops.hst.feature_chamfer_gn(
-        "INVOKE_DEFAULT",
-        action="PREVIEW",
-        radius=radius,
-    )
-    if preview_result != {"FINISHED"}:
-        raise RuntimeError(f"Preview failed: {sorted(preview_result)}")
-
-    for selected in tuple(bpy.context.selected_objects):
-        selected.select_set(False)
-    source.hide_set(False)
-    source.select_set(True)
-    bpy.context.view_layer.objects.active = source
-
     bridge_utils = (
         HardsurfaceGameAssetToolkit.utils.feature_chamfer_direct_bridge_utils
     )
@@ -90,9 +76,9 @@ def main():
 
     bmesh.ops.bridge_loops = capture_bridge
     try:
-        finalize_result = bpy.ops.hst.feature_chamfer_gn(
+        operator_result = bpy.ops.hst.feature_chamfer_gn(
             "INVOKE_DEFAULT",
-            action="FINALIZE",
+            radius=radius,
         )
     finally:
         bmesh.ops.bridge_loops = original_bridge
@@ -103,8 +89,8 @@ def main():
         "object_name": object_name,
         "radius": radius,
         "source_matrix_world": source_matrix_world,
-        "preview_result": sorted(preview_result),
-        "finalize_result": sorted(finalize_result),
+        "preview_result": sorted(operator_result),
+        "finalize_result": sorted(operator_result),
         "pair_count": len(pairs),
         "pairs": pairs,
     }

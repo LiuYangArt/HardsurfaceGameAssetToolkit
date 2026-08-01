@@ -8582,14 +8582,16 @@ def test_gn_preview_radius_reuses_radius_independent_feature_graph(
     mark_edge_indices_sharp(source, cube_top_loop_edge_indices(source))
     preview_utils = test_context.addon.utils.feature_chamfer_gn_utils
     preview_utils.clear_feature_chamfer_runtime_caches()
-    original_builder = preview_utils._build_preview_feature_graph
+    original_cached_builder = preview_utils._preview_feature_graph_with_cache
     build_radii = []
 
-    def counting_builder(source_object, radius, stats):
-        build_radii.append(float(radius))
-        return original_builder(source_object, radius, stats)
+    def counting_cached_builder(source_object, radius, stats):
+        groups, cache_hit = original_cached_builder(source_object, radius, stats)
+        if not cache_hit:
+            build_radii.append(float(radius))
+        return groups, cache_hit
 
-    preview_utils._build_preview_feature_graph = counting_builder
+    preview_utils._preview_feature_graph_with_cache = counting_cached_builder
     try:
         first_preview = preview_utils.ensure_gn_feature_chamfer_preview(
             source,
@@ -8606,7 +8608,7 @@ def test_gn_preview_radius_reuses_radius_independent_feature_graph(
             0.07,
         )
     finally:
-        preview_utils._build_preview_feature_graph = original_builder
+        preview_utils._preview_feature_graph_with_cache = original_cached_builder
     ensure(
         build_radii == [0.03, 0.07],
         f"Radius redo rebuilt the reusable FeatureGraph: {build_radii}",
