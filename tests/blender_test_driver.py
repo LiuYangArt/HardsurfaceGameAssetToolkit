@@ -9223,6 +9223,9 @@ def test_feature_chamfer_multi_object_batch_and_source_visibility(
     first_source = make_test_mesh("GNMultiObjectA", collection)
     second_source = make_test_mesh("GNMultiObjectB", collection)
     second_source.location.x = 4.0
+    bpy.context.view_layer.update()
+    first_source_world_matrix = first_source.matrix_world.copy()
+    second_source_world_matrix = second_source.matrix_world.copy()
     for source_object in (first_source, second_source):
         mark_edge_indices_sharp(source_object, cube_top_loop_edge_indices(source_object))
     select_objects(first_source, [first_source, second_source])
@@ -9239,18 +9242,26 @@ def test_feature_chamfer_multi_object_batch_and_source_visibility(
         and all(not output.hide_get() and not output.hide_render for output in outputs),
         "Multi-object outputs are not selected, active, and visible",
     )
+    transfer_collection = bpy.data.collections.get(test_context.const.TRANSFER_COLLECTION)
     ensure(
-        all(
-            source_object.hide_get()
-            and source_object.hide_viewport
-            and source_object.hide_render
-            for source_object in (first_source, second_source)
-        ),
-        "Multi-object run did not hide every source",
+        transfer_collection is not None
+        and transfer_collection.get(test_context.const.HST_PROP) == "PROXY"
+        and transfer_collection.hide_viewport
+        and transfer_collection.hide_render,
+        "Multi-object run did not create and hide the shared Transfer Normal Collection",
+    )
+    expected_output_names = {"GNMultiObjectA", "GNMultiObjectB"}
+    ensure(
+        {output.name for output in outputs} == expected_output_names,
+        f"Multi-object outputs did not inherit the source names: {[output.name for output in outputs]}",
     )
     source_by_name = {
         source_object.name: source_object
         for source_object in (first_source, second_source)
+    }
+    source_world_matrix_by_object = {
+        first_source: first_source_world_matrix,
+        second_source: second_source_world_matrix,
     }
     for output in outputs:
         source_name = output.get(test_context.const.FEATURE_CHAMFER_SOURCE_OBJECT_TAG)
@@ -9259,13 +9270,41 @@ def test_feature_chamfer_multi_object_batch_and_source_visibility(
             for modifier in output.modifiers
             if modifier.type == "DATA_TRANSFER"
         ]
+        source_object = source_by_name.get(source_name)
+        ensure(source_object is not None, f"Output {output.name} lost its source reference")
         ensure(
-            source_name in source_by_name
-            and len(normal_modifiers) == 1
-            and normal_modifiers[0].object is source_by_name[source_name]
+            source_object.name == test_context.const.TRANSFER_MESH_PREFIX + output.name,
+            f"Output {output.name} has the wrong Raw_ source name: {source_object.name}",
+        )
+        ensure(
+            tuple(source_object.users_collection) == (transfer_collection,),
+            f"Output {output.name} source is linked to the wrong Collections: {[item.name for item in source_object.users_collection]}",
+        )
+        ensure(source_object.parent is output, f"Output {output.name} is not the source parent")
+        ensure(
+            all(
+                abs(current - expected) <= 1.0e-6
+                for current_row, expected_row in zip(
+                    source_object.matrix_world,
+                    source_world_matrix_by_object[source_object],
+                )
+                for current, expected in zip(current_row, expected_row)
+            ),
+            f"Output {output.name} source world transform changed after parenting",
+        )
+        ensure(
+            source_object.get(test_context.const.HST_PROP) == "PROXY"
+            and source_object.hide_get()
+            and source_object.hide_viewport
+            and source_object.hide_render,
+            f"Output {output.name} source is not a hidden PROXY",
+        )
+        ensure(
+            len(normal_modifiers) == 1
+            and normal_modifiers[0].object is source_object
             and normal_modifiers[0].data_types_loops == {"CUSTOM_NORMAL"}
             and normal_modifiers[0].loop_mapping == "POLYINTERP_LNORPROJ",
-            f"Multi-object output {output.name} has the wrong normal source",
+            f"Output {output.name} has the wrong Data Transfer setup",
         )
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
     ensure(
@@ -9281,7 +9320,7 @@ def test_feature_chamfer_multi_object_batch_and_source_visibility(
         ),
         "Different source Objects incorrectly shared FeatureGraph cache data",
     )
-    result.add_detail("Two selected Mesh sources produced two visible outputs atomically")
+    result.add_detail("Two outputs inherited source names; Raw_ proxies moved into the shared hidden Transfer Normal Collection")
 
 
 # 验证多物体中后一个失败时，第一个结果也会回滚且所有 source 恢复可见。
@@ -9298,43 +9337,55 @@ def test_feature_chamfer_multi_object_failure_rolls_back_whole_batch(
         mark_edge_indices_sharp(source_object, cube_top_loop_edge_indices(source_object))
     object_pointers_before = {obj.as_pointer() for obj in bpy.data.objects}
     mesh_pointers_before = {mesh.as_pointer() for mesh in bpy.data.meshes}
+    collection_pointers_before = {collection.as_pointer() for collection in bpy.data.collections}
     operator_module = test_context.addon.operators.feature_chamfer_gn_ops
-    original_finalize = operator_module._finalize_output
+    original_publish = operator_module._publish_source_proxy
 
-    def fail_second_output(output, source_object, chamfer_plan):
+    def fail_second_publish(source_object, output, transfer_collection, source_state):
         if source_object is second_source:
-            raise RuntimeError("injected second batch item failure")
-        return original_finalize(output, source_object, chamfer_plan)
+            raise RuntimeError("injected second batch item publication failure")
+        return original_publish(
+            source_object,
+            output,
+            transfer_collection,
+            source_state,
+        )
 
-    operator_module._finalize_output = fail_second_output
+    operator_module._publish_source_proxy = fail_second_publish
     select_objects(first_source, [first_source, second_source])
     try:
         try:
             bpy.ops.hst.feature_chamfer_gn(radius=0.05, show_cutter=True)
         except RuntimeError as error:
             ensure(
-                "injected second batch item failure" in str(error),
+                "injected second batch item publication failure" in str(error),
                 f"Batch rollback raised an unexpected error: {error}",
             )
         else:
-            raise TestFailure("Injected batch failure did not propagate")
+            raise TestFailure("Injected batch publication failure did not propagate")
     finally:
-        operator_module._finalize_output = original_finalize
+        operator_module._publish_source_proxy = original_publish
     ensure(
         {obj.as_pointer() for obj in bpy.data.objects} == object_pointers_before
-        and {mesh.as_pointer() for mesh in bpy.data.meshes} == mesh_pointers_before,
-        "Failed batch left output, Cutter, or orphan Mesh data",
+        and {mesh.as_pointer() for mesh in bpy.data.meshes} == mesh_pointers_before
+        and {collection.as_pointer() for collection in bpy.data.collections}
+        == collection_pointers_before,
+        "Failed batch publication left output, Collection, Cutter, or orphan Mesh data",
     )
     ensure(
         all(
             not source_object.hide_get()
             and not source_object.hide_viewport
             and not source_object.hide_render
+            and source_object.parent is None
+            and tuple(source_object.users_collection) == (collection,)
             for source_object in (first_source, second_source)
-        ),
-        "Failed batch did not restore every source visibility state",
+        )
+        and first_source.name == "GNMultiObjectRollbackA"
+        and second_source.name == "GNMultiObjectRollbackB",
+        "Failed batch publication did not restore every source state",
     )
-    result.add_detail("Second-item failure rolled back the complete two-object batch")
+    result.add_detail("Second-item publication failure restored names, Collections, parenting, and visibility for the complete batch")
 
 
 # 验证 Finalize 从同一 GN modifier 临时提取 closed cutter，且恢复 Preview/source 状态。

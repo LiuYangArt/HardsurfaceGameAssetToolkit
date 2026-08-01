@@ -21,7 +21,7 @@
 - Feature Chamfer open Rail 单调、scale-invariant correspondence / terminal constraint regression
 - Feature Chamfer mixed fixture 目标 Operator PREVIEW→FINALIZE terminal topology 回归
 - Feature Chamfer Tricky-b 标准 180° open U 形由两个同步局部转折拆成三个原生 Bridge 任务回归
-- 当前 Feature Chamfer 的 Adjust Last Operation 参数、失败事务与 Undo/Redo 回归
+- 当前 Feature Chamfer 的 Adjust Last Operation 参数、失败事务、Undo/Redo，以及原 Mesh 改为 `Raw_` 法线源并移入共享 `_TransferNormal` Collection 的回归
 - 正式入口的所有结构化几何异常统一降级为可见 Mesh，不因新增保护检查再次撤销结果
 - Blender 5.2 Geometry Nodes modifier 输入与工具状态的新 API 兼容、保存并重新打开回归；5.1 旧 API 继续保留兼容覆盖
 - decal project smoke test

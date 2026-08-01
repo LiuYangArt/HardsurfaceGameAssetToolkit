@@ -9,7 +9,10 @@ import bpy
 from ..const import FEATURE_CHAMFER_GN_STATE_TAG
 from ..const import FEATURE_CHAMFER_PATCHED
 from ..const import FEATURE_CHAMFER_SOURCE_OBJECT_TAG
+from ..const import HST_PROP
 from ..const import NORMALTRANSFER_MODIFIER
+from ..const import TRANSFER_COLLECTION
+from ..const import TRANSFER_MESH_PREFIX
 from ..utils.experimental_pipe_chamfer_utils import CHAMFER_FACE_ATTRIBUTE
 from ..utils.feature_chamfer_diagnostic_utils import clear_feature_chamfer_diagnostics
 from ..utils.feature_chamfer_direct_bridge_utils import FeatureChamferDirectBridgeError
@@ -20,7 +23,11 @@ from ..utils.feature_chamfer_gn_utils import ensure_gn_feature_chamfer_preview
 from ..utils.feature_chamfer_gn_utils import owned_preview_modifier
 from ..utils.feature_chamfer_plan_utils import chamfer_plan_without_unsupported_regions
 from ..utils.feature_chamfer_plan_utils import write_chamfer_plan
+from ..utils.collection_utils import Collection
+from ..utils.misc_utils import rename_alt
 from ..utils.nodes_modifier_compat_utils import modifier_input_set
+from ..utils.object_utils import Object
+from ..utils.object_utils import set_visibility
 
 
 # 返回 source 是否有至少一条显式 sharp_edge。
@@ -441,39 +448,95 @@ def _discard_transaction_outputs(transaction):
             transaction[data_key] = None
 
 
-# source_object: 返回 source 成功发布前的可见性快照。
-def _source_visibility_state(source_object):
+# source_object: 返回 source 成功发布前的名称、层级、Collection 与可见性快照。
+def _source_state(source_object):
     return {
+        "name": source_object.name,
+        "parent": source_object.parent,
+        "matrix_parent_inverse": source_object.matrix_parent_inverse.copy(),
+        "matrix_world": source_object.matrix_world.copy(),
+        "collections": tuple(source_object.users_collection),
+        "hst_type_present": HST_PROP in source_object,
+        "hst_type": source_object.get(HST_PROP),
+        "display_type": source_object.display_type,
         "hide_set": source_object.hide_get(),
         "hide_viewport": source_object.hide_viewport,
         "hide_render": source_object.hide_render,
     }
 
 
-# source_object/state: 恢复 source 的 viewport/render 可见性；无返回值。
-def _restore_source_visibility(source_object, state):
+# source_object/state: 回滚 source 的名称、层级、Collection、类型标记与可见性；无返回值。
+def _restore_source_state(source_object, state):
+    source_object.name = state["name"]
+    source_object.parent = state["parent"]
+    source_object.matrix_parent_inverse = state["matrix_parent_inverse"]
+    source_object.matrix_world = state["matrix_world"]
+    for collection in tuple(source_object.users_collection):
+        collection.objects.unlink(source_object)
+    for collection in state["collections"]:
+        collection.objects.link(source_object)
+    if state["hst_type_present"]:
+        source_object[HST_PROP] = state["hst_type"]
+    elif HST_PROP in source_object:
+        del source_object[HST_PROP]
+    source_object.display_type = state["display_type"]
     source_object.hide_set(bool(state["hide_set"]))
     source_object.hide_viewport = bool(state["hide_viewport"])
     source_object.hide_render = bool(state["hide_render"])
 
 
-# source_object: 成功后从 viewport 与 render 中隐藏 source；无返回值。
-def _hide_source(source_object):
+# source_object/output/transfer_collection/source_state: 用既有 Transfer Normal 规则发布原 Mesh 与正式结果。
+def _publish_source_proxy(source_object, output, transfer_collection, source_state):
+    final_name = source_state["name"]
+    source_world_matrix = source_state["matrix_world"]
+    rename_alt(source_object, TRANSFER_MESH_PREFIX + final_name)
+    output.name = final_name
+    source_object.parent = output
+    source_object.matrix_parent_inverse = output.matrix_world.inverted_safe()
+    source_object.matrix_world = source_world_matrix
+    if transfer_collection not in source_object.users_collection:
+        transfer_collection.objects.link(source_object)
+    for collection in tuple(source_object.users_collection):
+        if collection != transfer_collection:
+            collection.objects.unlink(source_object)
+    Object.mark_hst_type(source_object, "PROXY")
     source_object.select_set(False)
     source_object.hide_set(True)
     source_object.hide_viewport = True
     source_object.hide_render = True
+    output[FEATURE_CHAMFER_SOURCE_OBJECT_TAG] = source_object.name
 
 
-# transactions: 回滚整批未发布结果并恢复全部 source 可见性；无返回值。
+# transactions: 回滚整批未发布结果并恢复全部 source 状态；无返回值。
 def _rollback_batch(transactions):
     for transaction in reversed(transactions):
-        _discard_transaction_outputs(transaction)
         source_object = transaction["source"]
+        source_state = transaction.get("source_state")
+        _discard_transaction_outputs(transaction)
+        if source_state is not None:
+            _restore_source_state(source_object, source_state)
         cancel_gn_feature_chamfer_preview(source_object)
-        _restore_source_visibility(source_object, transaction["source_visibility"])
 
 
+# collection/state: 发布失败时恢复既有 Transfer Normal Collection，或清理本次新建的空 Collection。
+def _rollback_transfer_collection(collection, state):
+    if collection is None or bpy.data.collections.get(collection.name) != collection:
+        return
+    if state is None:
+        if len(collection.objects) == 0:
+            bpy.data.collections.remove(collection)
+        return
+    if state["hst_type_present"]:
+        collection[HST_PROP] = state["hst_type"]
+    elif HST_PROP in collection:
+        del collection[HST_PROP]
+    collection.color_tag = state["color_tag"]
+    collection.hide_viewport = state["hide_viewport"]
+    collection.hide_render = state["hide_render"]
+    if not state["linked_to_scene"]:
+        scene_children = bpy.context.scene.collection.children
+        if scene_children.get(collection.name) == collection:
+            scene_children.unlink(collection)
 class HST_OT_FeatureChamferGN(bpy.types.Operator):
     """一次执行并直接生成最终 Feature Chamfer Mesh"""
 
@@ -524,12 +587,29 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             return {"CANCELLED"}
         started_at = time.perf_counter()
         transactions = []
+        transfer_collection = None
+        existing_transfer_collection = bpy.data.collections.get(TRANSFER_COLLECTION)
+        transfer_collection_state = None
+        if existing_transfer_collection is not None:
+            transfer_collection_state = {
+                "hst_type_present": HST_PROP in existing_transfer_collection,
+                "hst_type": existing_transfer_collection.get(HST_PROP),
+                "color_tag": existing_transfer_collection.color_tag,
+                "hide_viewport": existing_transfer_collection.hide_viewport,
+                "hide_render": existing_transfer_collection.hide_render,
+                "linked_to_scene": (
+                    bpy.context.scene.collection.children.get(
+                        existing_transfer_collection.name
+                    )
+                    == existing_transfer_collection
+                ),
+            }
         try:
             results = []
             for source_object in source_objects:
                 transaction = {
                     "source": source_object,
-                    "source_visibility": _source_visibility_state(source_object),
+                    "source_state": None,
                     "output": None,
                     "cutter": None,
                     "cutter_data": None,
@@ -546,8 +626,27 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                 results.append(patch_stats)
             total_seconds = time.perf_counter() - started_at
             outputs = [transaction["output"] for transaction in transactions]
-            for source_object in source_objects:
-                _hide_source(source_object)
+            transfer_collection = Collection.create(
+                TRANSFER_COLLECTION,
+                type="PROXY",
+                reuse_existing=True,
+            )
+            set_visibility(transfer_collection, True)
+            for transaction_index, (transaction, output) in enumerate(
+                zip(transactions, outputs)
+            ):
+                source_object = transaction["source"]
+                source_state = _source_state(source_object)
+                transaction["source_state"] = source_state
+                _publish_source_proxy(
+                    source_object,
+                    output,
+                    transfer_collection,
+                    source_state,
+                )
+                results[transaction_index]["output_object_name"] = output.name
+                results[transaction_index]["source_object_name"] = source_object.name
+            set_visibility(transfer_collection, False)
             batch_stats = {
                 "status": "finished",
                 "source_object_count": len(source_objects),
@@ -581,6 +680,10 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
             return {"FINISHED"}
         except Exception:
             _rollback_batch(transactions)
+            _rollback_transfer_collection(
+                transfer_collection,
+                transfer_collection_state,
+            )
             raise
 
     def draw(self, context):
