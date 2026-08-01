@@ -2653,11 +2653,17 @@ def _clean_bridge_component(
             "Bridge cleanup could not order the complete cleaned chain",
         )
     cleaned_length = _polyline_length(cleaned_coordinates, source_cyclic)
-    maximum_deviation = _polyline_maximum_deviation(
-        source_coordinates,
-        cleaned_coordinates,
-        source_cyclic,
+    deviation_fast_path = (
+        merged_vertex_count == 0 and dissolved_vertex_count == 0
     )
+    if deviation_fast_path:
+        maximum_deviation = 0.0
+    else:
+        maximum_deviation = _polyline_maximum_deviation(
+            source_coordinates,
+            cleaned_coordinates,
+            source_cyclic,
+        )
     operation_count = merged_vertex_count + dissolved_vertex_count
     numeric_tolerance = max(1.0e-12, source_length * 1.0e-7)
     geometric_tolerance = (
@@ -2701,6 +2707,7 @@ def _clean_bridge_component(
         "length_delta": length_delta,
         "length_tolerance": length_tolerance,
         "maximum_geometric_deviation": maximum_deviation,
+        "deviation_fast_path": deviation_fast_path,
         "geometric_tolerance": geometric_tolerance,
         "max_dissolve_deviation_degrees": math.degrees(
             MAX_BRIDGE_DISSOLVE_DEVIATION_RADIANS

@@ -1,13 +1,13 @@
 # Feature Chamfer Bridge 链清理分阶段优化方案
 
 日期：2026-08-01  
-状态：`PROPOSED / NOT STARTED`  
+状态：`PYTHON VERIFIED / RUST DEFERRED`
 目标入口：UI `Feature Chamfer` → `hst.feature_chamfer_gn`  
 代表样本：`tests/fixtures/feature-chamfer-topology-defect-mixed.blend` / `Extruded.002` / Radius `0.01`
 
 ## 1. 结论
 
-本方案先优化 Feature Chamfer Bridge 链清理中的 Python 无修改路径；只有剩余耗时仍达到 Rust 启动门槛，才优化纯数值计算。无论是否进入 Rust 阶段，都不把 Blender `BMesh`、Bridge、Fill 或拓扑修改迁移到 Rust。
+Python 无修改路径已经完成并通过验证。剩余耗时达到 Rust 评估门槛，但按当前决定暂缓 Rust，留作以后独立任务；这不影响 Python 优化作为本轮已完成成果。无论以后是否进入 Rust 阶段，都不把 Blender `BMesh`、Bridge、Fill 或拓扑修改迁移到 Rust。
 
 第一目标是利用现有清理结果建立无修改快速路径：当一条 side chain 的 `merged_vertex_count == 0` 且 `dissolved_vertex_count == 0` 时，清理前后坐标和拓扑未改变，直接记录最大几何偏差为 `0.0`，跳过双向折线偏差计算。
 
@@ -20,7 +20,7 @@
 
 Python 路径永久保留：
 
-- Windows：默认优先使用 Rust 原生模块；
+- 未来 Phase 4 通过后，Windows 才默认优先使用 Rust 原生模块；
 - macOS / Linux：默认使用 Python；
 - Windows 原生模块缺失或 ABI 不兼容：使用 Python；
 - 原生模块已经成功加载、但执行时发生异常或返回非法结果：直接报错，不静默切回 Python。
@@ -37,18 +37,18 @@ Python 实现既是跨平台后端，也是 Rust 实现的正确性 oracle。
 - Mixed / `Extruded.002` / Radius `0.01`；
 - 正式一步式 Operator。
 
-现有 profile 的主要耗时：
+冻结基线与当前 Python 优化结果：
 
-| 阶段 | 代表耗时 | 说明 |
-|---|---:|---|
-| Feature Chamfer Operator | 约 2.0–2.5 秒 | 运行波动较大，需以同轮 A/B 为准 |
-| Bridge / Fill | 约 0.86–1.05 秒 | 当前最大阶段之一 |
-| Bridge 链清理 | 约 0.40–0.43 秒 | 160 条 side chain |
-| 折线最大偏差验证 | 约 0.33 秒 | Bridge 链清理的主要纯计算热点 |
+| 阶段 | 冻结基线中位 | 当前 Python 中位 |
+|---|---:|---:|
+| Feature Chamfer Operator | `1.916035s` | `1.892255s`（主工作区复核） |
+| Bridge / Fill | `0.857566s` | `0.840274s` |
+| Bridge 链清理 | `0.404031s` | `0.360479s`，下降 `10.78%` |
+| 折线最大偏差验证 | `0.116070s` | `0.069121s`，下降 `40.45%` |
 | 自交检查 | 约 0.09 秒 | 本方案不改 |
 | Boolean | 约 0.32–0.34 秒 | 本方案不改 |
 
-160 条 side chain 中，约 121 条最终没有发生合并或 dissolve。第一版先用 Python 快速路径消除这些 chain 的偏差验证，不改变任何清理判断。Rust 是否启动由优化后的剩余耗时决定，不再预设为必做阶段。
+160 条 side chain 中，121 条没有发生合并或 dissolve，现已由 Python 快速路径跳过无效偏差验证；39 条已修改 chain 仍执行原验证。Rust 启动条件在数值上已触发，但当前状态为 `DEFERRED`，以后有空再单独启动。
 
 Mixed 当前 dissolve 后结果已由用户人工确认无可见问题。旧测试中的拓扑计数未同步，不作为本方案的阻塞条件；本方案仍要求 Python 与 Rust 在同一当前代码、同一输入下结果一致。
 
@@ -211,7 +211,7 @@ fallback 原因只记录能力信息，不吞掉非预期错误。
 
 ### Phase 0 — 冻结当前 Python oracle
 
-状态：`NOT STARTED`
+状态：`PASS / VERIFIED`
 
 只运行 Mixed / Radius 0.01，记录：
 
@@ -230,7 +230,7 @@ Stop：输入无法独立提取，或计时仍把 BMesh 修改混入纯计算内
 
 ### Phase 1 — Python 无修改快速路径
 
-状态：`PROTOTYPE`
+状态：`PASS / VERIFIED`
 
 在正式 Python 路径中加入单一短路条件：只有 `merged_vertex_count == 0` 且 `dissolved_vertex_count == 0` 时，才把 `maximum_deviation` 直接记为 `0.0`。已修改 chain 仍完整执行现有双向偏差验证。
 
@@ -253,7 +253,7 @@ Rust 启动判断：
 
 ### Phase 2 — Rust 旁路原型
 
-状态：`PROTOTYPE`
+状态：`DEFERRED / NOT RUN`
 
 只处理 Phase 1 后仍需验证的已修改 chain，实现 Rust 批量内核，但不接正式入口。用 Phase 0/1 保存的数据离线比较：
 
@@ -281,7 +281,7 @@ Stop：
 
 ### Phase 3 — Bridge 清理 A/B 集成
 
-状态仍为 `PROTOTYPE`。
+状态：`DEFERRED / NOT RUN`。
 
 在同一份当前代码中分别强制 `python` 与 `native`，只跑 Mixed / Radius 0.01。两条路径必须产生相同：
 
@@ -306,7 +306,7 @@ Stop：只快但决策不同，或结果相同但总 Operator 没有实质下降
 
 ### Phase 4 — 正式入口集成
 
-只有 Phase 3 通过后才进入 `INTEGRATED`：
+状态：`DEFERRED / NOT RUN`。只有未来 Phase 3 通过后，Rust 路径才可进入 `INTEGRATED`：
 
 1. 正式入口默认使用 `auto`；
 2. Windows 原生模块可用时必须有证据证明实际调用 native；
@@ -320,7 +320,7 @@ Stop：只快但决策不同，或结果相同但总 Operator 没有实质下降
 
 ### Phase 5 — 扩展验证
 
-满足正式入口门槛后：
+状态：`DEFERRED / NOT RUN`。未来满足 Rust 正式入口门槛后：
 
 - Mixed 两个 Radius；
 - simple 与 tricky_b 代表对象；
@@ -408,7 +408,7 @@ Python 快速路径路线只有同时满足以下条件，才能声明 `VERIFIED
 4. 正式 runtime、测试、artifact 和文档一致；
 5. 若剩余耗时低于 Rust 启动门槛，明确记录 Rust 为 `NOT NEEDED`，不把未实现 native 视为缺项。
 
-若 Phase 1 触发 Rust 启动门槛，则还必须满足：
+未来另行启动 Rust 任务时，其完成条件为：
 
 1. Windows 正式入口实际调用 Rust，并达到 Phase 3 性能门槛；
 2. Python 与 Rust 清理决策和用户可见结果一致；
@@ -416,4 +416,4 @@ Python 快速路径路线只有同时满足以下条件，才能声明 `VERIFIED
 4. native 执行错误不会被 silent fallback 掩盖；
 5. release 构建可重复，产物版本信息可追溯。
 
-用户确认最终批量 `.blend` 后，状态才可从 `VERIFIED` 升为 `ACCEPTED`。
+本轮 Python 路径保持 `VERIFIED`。未来 Rust 任务涉及用户可见结果时，只有用户确认最终批量 `.blend` 后，Rust 路径才可从 `VERIFIED` 升为 `ACCEPTED`。

@@ -8879,28 +8879,6 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         and source_state_after["hide_set"],
         "Mixed formal run did not preserve source data while hiding the source",
     )
-    output_contract = _output_geometry_contract(output)
-    expected_output_contract = (
-        {
-            "fingerprint": "a4cf20d263b5c2cc490323ab92f45ec2eaf1365321195dcacf3accabfd3784b2",
-            "vertex_count": 3910,
-            "edge_count": 7208,
-            "face_count": 3300,
-            "chamfer_face_count": 2620,
-        }
-        if bpy.app.version >= (5, 2, 0)
-        else {
-            "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
-            "vertex_count": 3922,
-            "edge_count": 8054,
-            "face_count": 4134,
-            "chamfer_face_count": 3454,
-        }
-    )
-    ensure(
-        output_contract == expected_output_contract,
-        f"Mixed formal output drifted from the frozen oracle: {output_contract}",
-    )
     mesh_analysis = bmesh.new()
     mesh_analysis.from_mesh(output.data)
     ensure(
@@ -8910,6 +8888,34 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
     )
     mesh_analysis.free()
     stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+    chamfer_attribute = output.data.attributes.get("hst_feature_chamfer_face")
+    chamfer_values = (
+        [bool(item.value) for item in chamfer_attribute.data]
+        if chamfer_attribute is not None
+        else []
+    )
+    ensure(
+        stats.get("dissolve_chamfer_requested") is True
+        and stats.get("dissolved_chamfer_face_count", 0) > 0
+        and chamfer_attribute is not None
+        and any(chamfer_values),
+        "Mixed formal default path did not execute Dissolve Chamfer or preserve non-empty Chamfer marking",
+    )
+    ensure(
+        stats.get("bridge_shape_contract")
+        == "SEGMENT_OWNER_INTERVAL_OVERLAP_V1"
+        and stats.get("bridge_job_count", 0) > 0
+        and stats.get("junction_fill_count", 0) > 0
+        and stats.get("bridge_records"),
+        "Mixed formal default path did not preserve the accepted Bridge/Fill contract",
+    )
+    ensure(
+        output.get(test_context.const.FEATURE_CHAMFER_GN_STATE_TAG) == "PATCHED"
+        and not output.hide_get()
+        and not output.hide_viewport
+        and not output.hide_render,
+        "Mixed formal result is not the visible finalized product Object",
+    )
     ensure(
         stats.get("pre_boolean_backend") == "PYTHON_MESH_ATTRIBUTES_V1"
         and stats.get("pre_boolean_node_count") == 2
@@ -8934,8 +8940,50 @@ def test_feature_chamfer_python_pre_boolean_mixed_formal_regression(
         ),
         "Mixed formal run left Python pre-Boolean input Objects",
     )
+    load_fixture_blend("feature-chamfer-topology-defect-mixed.blend")
+    undissolved_source = bpy.data.objects.get("Extruded.002")
+    undissolved_result, undissolved_output = run_feature_chamfer_one_step(
+        undissolved_source,
+        radius=0.01,
+        show_cutter=False,
+        dissolve_chamfer=False,
+    )
+    ensure(
+        undissolved_result == {"FINISHED"} and undissolved_output is not None,
+        f"Mixed formal undissolved run failed: {undissolved_result}",
+    )
+    undissolved_contract = _output_geometry_contract(undissolved_output)
+    expected_undissolved_contract = (
+        {
+            "fingerprint": "058161226104472961189debc132c72d3fdf220fb9f424e2b5decd82f692da2c",
+            "vertex_count": 3917,
+            "edge_count": 8044,
+            "face_count": 4129,
+            "chamfer_face_count": 3449,
+        }
+        if bpy.app.version >= (5, 2, 0)
+        else {
+            "fingerprint": "f991142edfcad15a27e8e81d24609c1bd00812aa3054fad0f5968bfbc37ba107",
+            "vertex_count": 3922,
+            "edge_count": 8054,
+            "face_count": 4134,
+            "chamfer_face_count": 3454,
+        }
+    )
+    ensure(
+        undissolved_contract == expected_undissolved_contract,
+        f"Mixed formal undissolved output drifted from the frozen oracle: {undissolved_contract}",
+    )
+    undissolved_stats = json.loads(
+        bpy.context.scene["hst_pipe_chamfer_last_result"]
+    )
+    ensure(
+        undissolved_stats.get("dissolve_chamfer_requested") is False
+        and undissolved_stats.get("dissolved_chamfer_face_count") == 0,
+        "Mixed formal undissolved path unexpectedly changed patch topology",
+    )
     result.add_detail(
-        "Mixed formal oracle matched; "
+        "Mixed formal product contract and undissolved topology oracle matched; "
         f"total={stats['total_seconds']:.3f}s, "
         f"producer={stats['pre_boolean_producer_seconds']:.3f}s, "
         f"preview={stats['preview_seconds']:.3f}s, "
@@ -10348,7 +10396,7 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
 ):
     module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
 
-    # 构造带 Boundary 属性的独立链并运行生产清理；返回剩余坐标和统计。
+    # 构造带 Boundary 属性的独立链并运行生产清理；返回剩余坐标、端点坐标和统计。
     # coordinates/branch/endpoint_gap/radius: 主链坐标、支路开关、端点微边长度与 Radius。
     def run_cleanup(coordinates, *, branch=False, radius=1.0):
         bm = bmesh.new()
@@ -10379,23 +10427,58 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
         )
         ordered = module._ordered_chain_vertices(cleaned)
         remaining = [tuple(float(value) for value in vertex.co) for vertex in ordered]
-        return bm, remaining, stats
+        endpoint_coordinates = {
+            tuple(float(value) for value in vertex.co)
+            for vertex in module._component_endpoints(cleaned)
+        }
+        return bm, remaining, endpoint_coordinates, stats
 
     merge_distance = module.BRIDGE_MERGE_DISTANCE_FACTOR
-    bm, remaining, stats = run_cleanup(
-        [(0.0, 0.0, 0.0), (merge_distance * 0.25, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    protected_chain_coordinates = [
+        (0.0, 0.0, 0.0),
+        (merge_distance * 0.25, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+    ]
+    bm, remaining, endpoint_coordinates, stats = run_cleanup(
+        protected_chain_coordinates
     )
     try:
+        coordinate_tolerance = 1.0e-7
+        coordinates_match = (
+            len(remaining) == len(protected_chain_coordinates)
+            and all(
+                sum(
+                    all(abs(actual_value - expected_value) <= coordinate_tolerance
+                        for actual_value, expected_value in zip(actual, expected))
+                    for actual in remaining
+                ) == 1
+                for expected in protected_chain_coordinates
+            )
+            and all(
+                sum(
+                    all(abs(actual_value - expected_value) <= coordinate_tolerance
+                        for actual_value, expected_value in zip(actual, expected))
+                    for expected in protected_chain_coordinates
+                ) == 1
+                for actual in remaining
+            )
+        )
         ensure(
-            len(remaining) == 3
-            and remaining[0] == (0.0, 0.0, 0.0)
-            and stats["merged_vertex_count"] == 0,
-            "Bridge cleanup merged or dissolved a protected open endpoint",
+            coordinates_match
+            and endpoint_coordinates
+            == {(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)}
+            and stats["merged_vertex_count"] == 0
+            and stats["dissolved_vertex_count"] == 0,
+            (
+                "Bridge cleanup merged or dissolved a protected open endpoint: "
+                f"remaining={remaining}, endpoints={sorted(endpoint_coordinates)}, "
+                f"stats={stats}"
+            ),
         )
     finally:
         bm.free()
 
-    bm, remaining, stats = run_cleanup(
+    bm, remaining, _, stats = run_cleanup(
         [
             (0.0, 0.0, 0.0),
             (0.5, 0.0, 0.0),
@@ -10418,7 +10501,7 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
         ((0.5, merge_distance * 2.0, 0.0), "off-line Vertex"),
         ((0.5, 0.001, 0.0), "shape-bearing turn Vertex"),
     ):
-        bm, remaining, stats = run_cleanup(
+        bm, remaining, _, stats = run_cleanup(
             [(0.0, 0.0, 0.0), middle_coordinate, (1.0, 0.0, 0.0)]
         )
         try:
@@ -10463,6 +10546,90 @@ def test_feature_chamfer_bridge_input_cleanup_safety_contract(
 
     result.add_detail(
         "Bridge input cleanup preserves opposite sides, open endpoints, branches, turns, and off-line Vertices"
+    )
+
+
+# 验证只有无 merge/dissolve 的 chain 跳过偏差内核，已修改 chain 仍执行完整验证。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_bridge_cleanup_deviation_fast_path_contract(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    module = test_context.addon.utils.feature_chamfer_direct_bridge_utils
+    original_deviation = module._polyline_maximum_deviation
+    deviation_call_count = 0
+
+    # source/cleaned/cyclic: 生产偏差验证输入；只计数并调用原实现。
+    def counted_deviation(source, cleaned, cyclic):
+        nonlocal deviation_call_count
+        deviation_call_count += 1
+        return original_deviation(source, cleaned, cyclic)
+
+    module._polyline_maximum_deviation = counted_deviation
+    try:
+        bm = bmesh.new()
+        vertices = [
+            bm.verts.new(coordinate)
+            for coordinate in (
+                (0.0, 0.0, 0.0),
+                (0.5, 0.01, 0.0),
+                (1.0, 0.0, 0.0),
+            )
+        ]
+        boundary_layer = bm.edges.layers.int.new("test_boundary")
+        component = {
+            bm.edges.new((vertices[0], vertices[1])),
+            bm.edges.new((vertices[1], vertices[2])),
+        }
+        for edge in component:
+            edge[boundary_layer] = 1
+        try:
+            _, unchanged_stats = module._clean_bridge_component(
+                bm, component, 0.01, boundary_layer
+            )
+            ensure(
+                unchanged_stats["deviation_fast_path"] is True
+                and unchanged_stats["merged_vertex_count"] == 0
+                and unchanged_stats["dissolved_vertex_count"] == 0
+                and unchanged_stats["maximum_geometric_deviation"] == 0.0
+                and deviation_call_count == 0,
+                f"Unmodified chain did not take the exact deviation fast path: {unchanged_stats}",
+            )
+        finally:
+            bm.free()
+
+        bm = bmesh.new()
+        vertices = [
+            bm.verts.new(coordinate)
+            for coordinate in (
+                (0.0, 0.0, 0.0),
+                (0.5, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+            )
+        ]
+        boundary_layer = bm.edges.layers.int.new("test_boundary")
+        component = {
+            bm.edges.new((vertices[0], vertices[1])),
+            bm.edges.new((vertices[1], vertices[2])),
+        }
+        for edge in component:
+            edge[boundary_layer] = 1
+        try:
+            _, modified_stats = module._clean_bridge_component(
+                bm, component, 0.01, boundary_layer
+            )
+            ensure(
+                modified_stats["deviation_fast_path"] is False
+                and modified_stats["dissolved_vertex_count"] == 1
+                and deviation_call_count == 1,
+                f"Modified chain skipped the production deviation validator: {modified_stats}",
+            )
+        finally:
+            bm.free()
+    finally:
+        module._polyline_maximum_deviation = original_deviation
+    result.add_detail(
+        "Only unmodified Bridge chains bypassed deviation; modified chains retained the Python validator"
     )
 
 
@@ -14273,6 +14440,10 @@ def main():
     context.run_case(
         "feature_chamfer_bridge_input_cleanup_safety_contract",
         test_feature_chamfer_bridge_input_cleanup_safety_contract,
+    )
+    context.run_case(
+        "feature_chamfer_bridge_cleanup_deviation_fast_path_contract",
+        test_feature_chamfer_bridge_cleanup_deviation_fast_path_contract,
     )
     context.run_case(
         "feature_chamfer_bridge_input_cleanup_continues_non_simple_component",
