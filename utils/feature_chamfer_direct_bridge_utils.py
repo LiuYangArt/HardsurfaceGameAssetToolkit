@@ -44,10 +44,8 @@ MIN_TURN_SAMPLE_RADIANS = math.radians(1.0)
 MIN_MAJOR_TURN_RADIANS = math.radians(30.0)
 TARGET_CYCLIC_BRIDGE_TURN_RADIANS = math.radians(90.0)
 MIN_CYCLIC_BRIDGE_SIDE_EDGE_COUNT = 8
-BRIDGE_MERGE_DISTANCE_FACTOR = 1.0e-2
-MIN_BRIDGE_MERGE_DISTANCE = 1.0e-12
+BRIDGE_MERGE_DISTANCE = 0.01
 MAX_BRIDGE_DISSOLVE_DEVIATION_RADIANS = math.radians(0.1)
-MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO = 0.01
 
 
 # 返回 BMesh Edge 自然连通分量，不重排、不合并、也不要求两组长度一致。
@@ -2429,11 +2427,10 @@ def _split_interrupted_segment_jobs(
 
 
 # 在单侧 Bridge chain 内逐个处理极短 Edge 连通簇，并溶解无第三条 Edge 接入的严格共线中间点。
-# bm/component/radius/boundary_layer: 当前 BMesh、单侧真实 Bridge chain、Radius 与 Boundary layer；返回清理后的 chain 和统计。
+# bm/component/boundary_layer: 当前 BMesh、单侧真实 Bridge chain 与 Boundary layer；返回清理后的 chain 和统计。
 def _clean_bridge_component(
     bm,
     component,
-    radius,
     boundary_layer,
 ):
     source_component = set(component)
@@ -2470,15 +2467,7 @@ def _clean_bridge_component(
         )
     source_length = _polyline_length(source_coordinates, source_cyclic)
     protected_endpoints = set(_component_endpoints(source_component) or ())
-    source_edge_lengths = sorted(edge.calc_length() for edge in source_component)
-    median_edge_length = source_edge_lengths[len(source_edge_lengths) // 2]
-    merge_distance = max(
-        min(
-            float(radius) * BRIDGE_MERGE_DISTANCE_FACTOR,
-            median_edge_length * MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO,
-        ),
-        MIN_BRIDGE_MERGE_DISTANCE,
-    )
+    merge_distance = BRIDGE_MERGE_DISTANCE
     zero_edge_count_before = sum(
         edge.calc_length() <= merge_distance
         for edge in source_component
@@ -2495,7 +2484,6 @@ def _clean_bridge_component(
         and all(vertex in merge_vertices for vertex in edge.verts)
         and all(
             len(vertex.link_edges) == 2
-            or edge.calc_length() <= MIN_BRIDGE_MERGE_DISTANCE
             for vertex in edge.verts
         )
     }
@@ -2529,7 +2517,6 @@ def _clean_bridge_component(
             and all(vertex in merge_vertices for vertex in edge.verts)
             and all(
                 len(vertex.link_edges) == 2
-                or edge.calc_length() <= MIN_BRIDGE_MERGE_DISTANCE
                 for vertex in edge.verts
             )
         }
@@ -2689,11 +2676,6 @@ def _clean_bridge_component(
         )
     return cleaned_component, {
         "merge_distance": merge_distance,
-        "radius_merge_distance": float(radius) * BRIDGE_MERGE_DISTANCE_FACTOR,
-        "median_source_edge_length": median_edge_length,
-        "median_edge_merge_cap": (
-            median_edge_length * MAX_BRIDGE_MERGE_DISTANCE_TO_MEDIAN_EDGE_RATIO
-        ),
         "source_edge_count": len(source_component),
         "cleaned_edge_count": len(cleaned_component),
         "source_vertex_count": source_vertex_count,
@@ -3400,7 +3382,6 @@ def build_direct_edge_loop_chamfer(
                     cleaned_component, cleanup_record = _clean_bridge_component(
                         bm,
                         component,
-                        expected_chamfer_plan.radius,
                         boundary_layer,
                     )
                     cleanup_record["source_edge_indices"] = source_edge_indices
