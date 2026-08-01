@@ -2995,8 +2995,12 @@ def _publish_interrupted_direct_bridge_bmesh(
 
 
 # 从正式 evaluated Preview 直接 Bridge 普通槽段，再 Fill 自然剩余的 junction 孔洞。
-# source_object/expected_chamfer_plan: 正式 source 与 Preview immutable plan；返回 Operator 可记录的 stats。
-def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
+# source_object/expected_chamfer_plan/dissolve_chamfer: 正式 source、Preview immutable plan 与是否清理补面布线；返回 Operator 可记录的 stats。
+def build_direct_edge_loop_chamfer(
+    source_object,
+    expected_chamfer_plan,
+    dissolve_chamfer=True,
+):
     source_fingerprint_before = source_fingerprint(source_object)
     curve_object = owned_preview_curve(source_object)
     if curve_object is None:
@@ -3677,9 +3681,10 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
                 },
             )
         chamfer_faces.update(fill_faces)
-        dissolved_chamfer_face_count = _dissolve_chamfer_patch_edges(
-            bm,
-            chamfer_face_layer,
+        dissolved_chamfer_face_count = (
+            _dissolve_chamfer_patch_edges(bm, chamfer_face_layer)
+            if dissolve_chamfer
+            else 0
         )
 
         topology_before_zero_cleanup = {
@@ -3811,6 +3816,7 @@ def build_direct_edge_loop_chamfer(source_object, expected_chamfer_plan):
             "zero_area_faces_removed": zero_area_faces_removed,
             "duplicate_edges_welded": duplicate_edges_welded,
             "wire_edges_removed": wire_edges_removed,
+            "dissolve_chamfer_requested": bool(dissolve_chamfer),
             "dissolved_chamfer_face_count": dissolved_chamfer_face_count,
             "topology_before_zero_cleanup": topology_before_zero_cleanup,
             "regular_patch_face_count": sum(record["face_count"] for record in bridge_records),

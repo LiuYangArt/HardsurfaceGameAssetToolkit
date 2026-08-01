@@ -3412,7 +3412,7 @@ def run_feature_chamfer_gn(source, action="PREVIEW", **properties):
 
 
 # 调用正式一步式 Operator，并返回当前激活的最终输出。
-# source/properties: 单个 active Mesh 与 Radius/Keep Cutter 参数。
+# source/properties: 单个 active Mesh 与 Radius/Keep Cutter/Dissolve Chamfer 参数。
 def run_feature_chamfer_one_step(source, **properties):
     select_objects(source, [source])
     operator_result = bpy.ops.hst.feature_chamfer_gn(**properties)
@@ -8683,8 +8683,12 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
     property_names = {item.identifier for item in operator_rna.properties}
     ensure("action" not in property_names, "One-step Operator still exposes the old action state machine")
     ensure(
-        {"radius", "show_cutter"}.issubset(property_names),
+        {"radius", "show_cutter", "dissolve_chamfer"}.issubset(property_names),
         f"One-step Operator parameters are incomplete: {property_names}",
+    )
+    ensure(
+        operator_rna.properties["dissolve_chamfer"].default is True,
+        "Dissolve Chamfer must be enabled by default",
     )
     collection = make_collection("GNDispatch")
     source = make_test_mesh("GNDispatchSource", collection)
@@ -8754,7 +8758,9 @@ def test_feature_chamfer_single_operator_action_dispatch(test_context: TestConte
         not any(obj.name.endswith("FeatureChamferRuntime") for obj in bpy.data.objects),
         "One-step Operator left an internal runtime Object",
     )
-    result.add_detail("One-step Radius/Keep Cutter RNA, output, and runtime cleanup verified")
+    result.add_detail(
+        "One-step Radius/Keep Cutter/Dissolve Chamfer RNA, output, and runtime cleanup verified"
+    )
 
 
 # 验证 Blender 5.2 的 Geometry Nodes modifier 新属性容器仍能读写参数与工具元数据。
@@ -9632,6 +9638,55 @@ def test_gn_finalize_creates_closed_output(test_context: TestContext, result: Te
         f"dissolved={stats['dissolved_chamfer_face_count']}"
     )
 
+
+# 验证关闭 Dissolve Chamfer 后保留补面原始布线，同时默认开启路径仍执行清理。
+# test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
+def test_feature_chamfer_dissolve_toggle_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    outputs = {}
+    stats_by_mode = {}
+    for dissolve_chamfer in (False, True):
+        load_fixture_blend("feature-chamfer-product-simple.blend")
+        source = bpy.data.objects["Extruded.002"]
+        for source_modifier in list(source.modifiers):
+            source.modifiers.remove(source_modifier)
+        operator_result, output = run_feature_chamfer_one_step(
+            source,
+            radius=0.01,
+            dissolve_chamfer=dissolve_chamfer,
+        )
+        ensure(
+            operator_result == {"FINISHED"} and output is not None,
+            f"Dissolve Chamfer={dissolve_chamfer} produced no output",
+        )
+        stats = json.loads(bpy.context.scene["hst_pipe_chamfer_last_result"])
+        outputs[dissolve_chamfer] = {
+            "face_count": len(output.data.polygons),
+            "edge_count": len(output.data.edges),
+        }
+        stats_by_mode[dissolve_chamfer] = stats
+
+    ensure(
+        stats_by_mode[False].get("dissolve_chamfer_requested") is False
+        and stats_by_mode[False].get("dissolved_chamfer_face_count") == 0,
+        "Disabled Dissolve Chamfer still changed the patch topology",
+    )
+    ensure(
+        stats_by_mode[True].get("dissolve_chamfer_requested") is True
+        and stats_by_mode[True].get("dissolved_chamfer_face_count", 0) > 0,
+        "Enabled Dissolve Chamfer did not clean the patch topology",
+    )
+    ensure(
+        outputs[False]["face_count"] > outputs[True]["face_count"]
+        and outputs[False]["edge_count"] > outputs[True]["edge_count"],
+        f"Dissolve toggle did not preserve old topology when disabled: {outputs}",
+    )
+    result.add_detail(
+        f"disabled={outputs[False]}, enabled={outputs[True]}, "
+        f"dissolved={stats_by_mode[True]['dissolved_chamfer_face_count']}"
+    )
 
 # 从真实 mixed fixture 的目标 Operator 复现并守住下方右侧 terminal connectivity。
 # test_context/result: 已注册 add-on 的测试上下文与当前测试结果。
@@ -14187,6 +14242,10 @@ def main():
         test_gn_patch_complex_region_fails_closed,
     )
     context.run_case("gn_finalize_creates_closed_output", test_gn_finalize_creates_closed_output)
+    context.run_case(
+        "feature_chamfer_dissolve_toggle_regression",
+        test_feature_chamfer_dissolve_toggle_regression,
+    )
     context.run_case(
         "gn_finalize_mixed_fixture_terminal_topology_regression",
         test_gn_finalize_mixed_fixture_terminal_topology_regression,

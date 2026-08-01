@@ -252,8 +252,14 @@ def _keep_evaluated_cutter(source_object, transaction):
 
 
 # 在一次 Operator 事务内运行已验收的 Preview→Finalize 几何链，并移除临时 Preview 状态。
-# source_object/radius/show_cutter/transaction: 正式输入、参数与事务引用；返回 Direct Bridge 统计。
-def _build_preview_finalize_output(source_object, radius, show_cutter, transaction):
+# source_object/radius/show_cutter/dissolve_chamfer/transaction: 正式输入、参数与事务引用；返回 Direct Bridge 统计。
+def _build_preview_finalize_output(
+    source_object,
+    radius,
+    show_cutter,
+    dissolve_chamfer,
+    transaction,
+):
     preview_started_at = time.perf_counter()
     try:
         preview = ensure_gn_feature_chamfer_preview(
@@ -312,7 +318,11 @@ def _build_preview_finalize_output(source_object, radius, show_cutter, transacti
     ))
     bridge_fill_started_at = time.perf_counter()
     try:
-        patch_stats = build_direct_edge_loop_chamfer(source_object, chamfer_plan)
+        patch_stats = build_direct_edge_loop_chamfer(
+            source_object,
+            chamfer_plan,
+            dissolve_chamfer=dissolve_chamfer,
+        )
     except FeatureChamferDirectBridgeError as error:
         patch_stats = _publish_interrupted_output(
             source_object,
@@ -476,6 +486,11 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
     source_object_names: bpy.props.StringProperty(options={"HIDDEN", "SKIP_SAVE"})
     radius: bpy.props.FloatProperty(name="Radius", default=0.03, min=1.0e-5)
     show_cutter: bpy.props.BoolProperty(name="Keep Cutter", default=False)
+    dissolve_chamfer: bpy.props.BoolProperty(
+        name="Dissolve Chamfer",
+        description="Dissolve coplanar internal edges in the generated Chamfer patch",
+        default=True,
+    )
 
     def invoke(self, context, event):
         del event
@@ -525,6 +540,7 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
                     source_object,
                     self.radius,
                     self.show_cutter,
+                    self.dissolve_chamfer,
                     transaction,
                 )
                 results.append(patch_stats)
@@ -572,3 +588,4 @@ class HST_OT_FeatureChamferGN(bpy.types.Operator):
         layout = self.layout
         layout.prop(self, "radius")
         layout.prop(self, "show_cutter")
+        layout.prop(self, "dissolve_chamfer")
