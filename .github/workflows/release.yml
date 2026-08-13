@@ -32,15 +32,23 @@ jobs:
             --exclude '.gitignore' \
             --exclude '.github' \
             --exclude 'docs' \
-            --exclude '.agent' \
+            --exclude '.agents' \
+            --exclude 'agent-skills' \
             --exclude '.cursor' \
             --exclude '.clinerules' \
+            --exclude '.ruff_cache' \
             --exclude '__pycache__' \
             --exclude '*.pyc' \
             --exclude '*.blend1' \
+            --exclude '*.txt' \
+            --exclude '*.log' \
             --exclude '*_backup' \
             --exclude 'memory-bank' \
             --exclude 'build_staging' \
+            --exclude 'tests' \
+            --exclude 'tools' \
+            --exclude 'AGENTS.md' \
+            --exclude 'run_claude.bat' \
             --exclude 'versions.bat' \
             --exclude 'new_version.bat' \
             --exclude 'publish_release.bat' \
