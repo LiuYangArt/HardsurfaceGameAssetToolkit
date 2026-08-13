@@ -7,8 +7,49 @@ Collection 管理 Operators
 """
 
 import bpy
+from bpy.props import BoolProperty
 from ..const import *
 from ..functions.common_functions import *
+from ..utils.collection_utils import (
+    collect_direct_object_collections,
+    normalize_unreal_collection_name,
+    remove_collection_business_suffix,
+    rename_collection_for_unreal,
+    rename_collection_unique,
+)
+
+
+class HST_OT_RenameCollectionsForUnreal(bpy.types.Operator):
+    """将所选 Object 直接所属的 Collection 改为 Unreal 风格名称"""
+    bl_idname = "hst.rename_collections_for_unreal"
+    bl_label = "Rename Collections for Unreal"
+    bl_description = "规范所选 Object 直接所属 Collection 的名称，不处理父级或子级"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        if not context.selected_objects:
+            self.report({"WARNING"}, "No object selected | 没有选中 Object")
+            return {"CANCELLED"}
+        return self.execute(context)
+
+    def execute(self, context):
+        selected_collections = collect_direct_object_collections(context.selected_objects)
+        if not selected_collections:
+            self.report({"WARNING"}, "Selected objects have no Collection | 所选 Object 不属于可处理的 Collection")
+            return {"CANCELLED"}
+
+        changed_count = 0
+        for collection in selected_collections:
+            original_name = collection.name
+            rename_collection_for_unreal(collection)
+            if collection.name != original_name:
+                changed_count += 1
+
+        self.report(
+            {"INFO"},
+            f"Processed {len(selected_collections)} Collection(s), renamed {changed_count}",
+        )
+        return {"FINISHED"}
 
 
 class HST_OT_MarkDecalCollection(bpy.types.Operator):
@@ -16,6 +57,22 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
     bl_idname = "hst.markdecalcollection"
     bl_label = "Mark Decal Collection"
     bl_description = "设置所选为Decal Collection，对collection中的Mesh，如果材质名是decal类型，则标记Mesh为decal。"
+    bl_options = {"REGISTER", "UNDO"}
+
+    rename_for_unreal: BoolProperty(
+        name="Rename for Unreal",
+        description="同时将本次 Decal Collection 的基础名规范为 Unreal 风格",
+        default=False,
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "rename_for_unreal")
+
+    def invoke(self, context, event):
+        if not Collection.get_selected():
+            self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
         selected_collections = Collection.get_selected()
@@ -38,9 +95,20 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
                     + "collection内有UCX Mesh，请检查",
                 )
 
-            decal_collection_name = clean_collection_name(decal_collection.name)
+            if self.rename_for_unreal:
+                decal_collection_name = remove_collection_business_suffix(
+                    decal_collection.name,
+                    (DECAL_SUFFIX,),
+                )
+                decal_collection_name = clean_collection_name(decal_collection_name)
+                decal_collection_name = normalize_unreal_collection_name(decal_collection_name)
+            else:
+                decal_collection_name = clean_collection_name(decal_collection.name)
             new_name = decal_collection_name + DECAL_SUFFIX
-            decal_collection.name = new_name
+            if self.rename_for_unreal:
+                rename_collection_unique(decal_collection, new_name)
+            else:
+                decal_collection.name = new_name
 
             decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
@@ -64,6 +132,22 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
     bl_idname = "hst.markpropcollection"
     bl_label = "Mark Prop Collection"
     bl_description = "设置所选为Prop Collection"
+    bl_options = {"REGISTER", "UNDO"}
+
+    rename_for_unreal: BoolProperty(
+        name="Rename for Unreal",
+        description="同时将本次 Prop Collection 的名称规范为 Unreal 风格",
+        default=False,
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "rename_for_unreal")
+
+    def invoke(self, context, event):
+        if not Collection.get_selected():
+            self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
         selected_collections = Collection.get_selected()
@@ -78,9 +162,10 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
 
         for prop_collection in selected_collections:
             prop_collection_name = clean_collection_name(prop_collection.name)
-            new_name = prop_collection_name
-
-            prop_collection.name = new_name
+            if self.rename_for_unreal:
+                rename_collection_for_unreal(prop_collection, prop_collection_name)
+            else:
+                prop_collection.name = prop_collection_name
             Collection.mark_hst_type(prop_collection, "PROP")
             prop_collection.hide_render = True
 

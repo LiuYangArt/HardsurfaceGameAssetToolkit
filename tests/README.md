@@ -30,6 +30,7 @@
 - wearmask AO proxy 拓扑回归（确保 proxy 捕获 bevel 后几何，并被 Data Transfer 正确引用）
 - asset origin / Active Object Bounds Origin / 父级 Collection 下连续创建独立 Origin / snap transform / reset to origin smoke test
 - prop / decal collection 标记 smoke test
+- Collection Unreal 命名及 Prop / Decal / Bake 可选联动回归
 - isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
 - static mesh Collection Type（All / Prop / Decal / Bake / Static Mesh / Skeletal）筛选回归

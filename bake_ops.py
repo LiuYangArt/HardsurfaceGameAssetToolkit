@@ -1,20 +1,35 @@
 import bpy
+from bpy.props import BoolProperty
 
 from .const import *
 from .functions.common_functions import *
 from .utils.nodes_modifier_compat_utils import modifier_input_set
+from .utils.collection_utils import (
+    normalize_unreal_collection_name,
+    remove_collection_business_suffix,
+    rename_collection_unique,
+)
 #TODO: 一键发送到marmoset 进行烘焙，  marmoset中给高模的材质自动开启bevel normal
 
 
-def set_bake_collection(collection, type="LOW"):
+def set_bake_collection(collection, type="LOW", rename_for_unreal=False):
     """Set bake collection name and color tag, rename meshes in collection.
     
     Args:
         collection: Blender Collection 对象
         type: "LOW" 或 "HIGH"
+        rename_for_unreal: 是否先把基础名称规范为 Unreal 风格
     """
     objects = collection.all_objects
-    collection_name = clean_collection_name(collection.name)
+    if rename_for_unreal:
+        collection_name = remove_collection_business_suffix(
+            collection.name,
+            (LOW_SUFFIX, HIGH_SUFFIX, LOWB_SUFFIX, HIGHB_SUFFIX),
+        )
+        collection_name = clean_collection_name(collection_name)
+        collection_name = normalize_unreal_collection_name(collection_name)
+    else:
+        collection_name = clean_collection_name(collection.name)
 
     match type:
         case "LOW":
@@ -24,7 +39,10 @@ def set_bake_collection(collection, type="LOW"):
             new_name = collection_name + HIGH_SUFFIX
             Collection.mark_hst_type(collection, "BAKE_HIGH")
 
-    collection.name = new_name
+    if rename_for_unreal:
+        rename_collection_unique(collection, new_name)
+    else:
+        collection.name = new_name
     rename_prop_meshes(objects)
 
     if type == "HIGH":
@@ -57,6 +75,22 @@ class HST_OT_SetBakeCollectionLow(bpy.types.Operator):
     bl_description = (
         "设置选中模型的整个Collection为LowPoly组，根据Collection名字修改命名"
     )
+    bl_options = {"REGISTER", "UNDO"}
+
+    rename_for_unreal: BoolProperty(
+        name="Rename for Unreal",
+        description="同时将本次 LowPoly Collection 的基础名规范为 Unreal 风格",
+        default=False,
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "rename_for_unreal")
+
+    def invoke(self, context, event):
+        if not Collection.get_selected():
+            self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
 
@@ -69,7 +103,11 @@ class HST_OT_SetBakeCollectionLow(bpy.types.Operator):
             return {"CANCELLED"}
         
         for collection in bake_collections:
-            set_bake_collection(collection, type="LOW")
+            set_bake_collection(
+                collection,
+                type="LOW",
+                rename_for_unreal=self.rename_for_unreal,
+            )
 
             static_meshes,ucx_meshes = filter_static_meshes(collection)
             if len(ucx_meshes) > 0:
@@ -86,6 +124,22 @@ class HST_OT_SetBakeCollectionHigh(bpy.types.Operator):
     bl_description = (
         "设置选中模型的整个Collection为HighPoly组，根据Collection名字修改命名"
     )
+    bl_options = {"REGISTER", "UNDO"}
+
+    rename_for_unreal: BoolProperty(
+        name="Rename for Unreal",
+        description="同时将本次 HighPoly Collection 的基础名规范为 Unreal 风格",
+        default=False,
+    )
+
+    def draw(self, context):
+        self.layout.prop(self, "rename_for_unreal")
+
+    def invoke(self, context, event):
+        if not Collection.get_selected():
+            self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
 
@@ -98,7 +152,11 @@ class HST_OT_SetBakeCollectionHigh(bpy.types.Operator):
             return {"CANCELLED"}
         
         for collection in bake_collections:
-            set_bake_collection(collection, type="HIGH")
+            set_bake_collection(
+                collection,
+                type="HIGH",
+                rename_for_unreal=self.rename_for_unreal,
+            )
             static_meshes,ucx_meshes = filter_static_meshes(collection)
             if len(ucx_meshes) > 0:
                 self.report({"ERROR"}, collection.name + " has UCX mesh, please check | "

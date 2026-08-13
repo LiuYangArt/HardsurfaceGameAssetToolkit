@@ -2012,6 +2012,128 @@ def test_collection_markers_smoke(test_context: TestContext, result: TestCaseRes
     result.add_detail(f"Prop/decal collections: {prop_collection.name}, {decal_collection.name}")
 
 
+# 验证独立 Unreal Collection 命名入口的规则、冲突处理与直接归属范围。
+# test_context/result: 测试上下文与结果记录器；无返回值。
+def test_collection_unreal_rename_smoke(test_context: TestContext, result: TestCaseResult):
+    collection_utils = test_context.addon.utils.collection_utils
+    name_cases = {
+        "pipe-cap-a": "Pipe_Cap_A",
+        "pipe-01-a": "Pipe_01_A",
+        "uv-pipe": "Uv_Pipe",
+        "pipe-cap.001": "Pipe_Cap_001",
+        "already__spaced-name": "Already_Spaced_Name",
+    }
+    for source_name, expected_name in name_cases.items():
+        actual_name = collection_utils.normalize_unreal_collection_name(source_name)
+        ensure(actual_name == expected_name, f"Unreal name mismatch: {source_name} -> {actual_name}")
+
+    occupied_name = make_collection("Pipe_Cap_A")
+    occupied_suffix = make_collection("Pipe_Cap_A_001")
+    target_collection = make_collection("pipe-cap-a")
+    second_collection = make_collection("pipe-cap.001")
+    compliant_collection = make_collection("Already_Compliant")
+    parent_collection = make_collection("parent-untouched")
+    child_collection = bpy.data.collections.new("child-untouched")
+    parent_collection.children.link(child_collection)
+
+    first_object = make_test_mesh("RenameFirst", target_collection)
+    second_object = make_test_mesh("RenameSecond", second_collection)
+    compliant_object = make_test_mesh("RenameCompliant", compliant_collection)
+    child_object = make_test_mesh("RenameChild", child_collection)
+    second_collection.objects.link(first_object)
+    select_objects(first_object, [first_object, second_object, compliant_object])
+
+    rename_result = bpy.ops.hst.rename_collections_for_unreal()
+    ensure("FINISHED" in rename_result, "Rename Collections for Unreal did not finish")
+    ensure(target_collection.name == "Pipe_Cap_A_002", f"Conflict suffix mismatch: {target_collection.name}")
+    ensure(second_collection.name == "Pipe_Cap_001", f"Numeric suffix conversion failed: {second_collection.name}")
+    ensure(compliant_collection.name == "Already_Compliant", "Compliant Collection name changed")
+    ensure(parent_collection.name == "parent-untouched", "Parent Collection was renamed recursively")
+    ensure(child_collection.name == "child-untouched", "Unselected child Collection was renamed")
+    ensure(occupied_name.name == "Pipe_Cap_A", "Existing target Collection was changed")
+    ensure(occupied_suffix.name == "Pipe_Cap_A_001", "Existing numbered Collection was changed")
+
+    select_objects(child_object, [child_object])
+    child_result = bpy.ops.hst.rename_collections_for_unreal()
+    ensure("FINISHED" in child_result, "Direct child Collection rename did not finish")
+    ensure(child_collection.name == "Child_Untouched", "Direct child Collection was not renamed")
+    ensure(parent_collection.name == "parent-untouched", "Parent Collection changed with child selection")
+    result.add_detail("Unreal Collection naming handled direct membership and _002 conflict suffix")
+
+
+# 验证 Prop、Decal、Bake 标记入口的可选命名开关及默认旧行为。
+# test_context/result: 测试上下文与结果记录器；无返回值。
+def test_collection_marker_optional_rename_regression(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    operator_types = (
+        test_context.addon.operators.collection_ops.HST_OT_MarkPropCollection,
+        test_context.addon.operators.collection_ops.HST_OT_MarkDecalCollection,
+        test_context.addon.bake_ops.HST_OT_SetBakeCollectionLow,
+        test_context.addon.bake_ops.HST_OT_SetBakeCollectionHigh,
+    )
+    for operator_type in operator_types:
+        ensure("REGISTER" in operator_type.bl_options, f"{operator_type.bl_idname} is missing REGISTER")
+        ensure("UNDO" in operator_type.bl_options, f"{operator_type.bl_idname} is missing UNDO")
+
+    prop_old = make_collection("prop-old-name")
+    prop_old_object = make_test_mesh("PropOldMesh", prop_old)
+    select_objects(prop_old_object, [prop_old_object])
+    ensure("FINISHED" in bpy.ops.hst.markpropcollection(), "Default Prop marker did not finish")
+    ensure(prop_old.name == "prop-old-name", f"Default Prop marker changed old naming: {prop_old.name}")
+
+    prop_new = make_collection("pipe-cap-a")
+    prop_new_object = make_test_mesh("PropNewMesh", prop_new)
+    select_objects(prop_new_object, [prop_new_object])
+    ensure("FINISHED" in bpy.ops.hst.markpropcollection(rename_for_unreal=True), "Renaming Prop marker did not finish")
+    ensure(prop_new.name == "Pipe_Cap_A", f"Prop Unreal rename failed: {prop_new.name}")
+    ensure(prop_new.get(const.HST_PROP) == "PROP", "Prop type marker regressed")
+
+    decal_old = make_collection("decal-old-name")
+    decal_old_object = make_plane("DecalOldMesh", decal_old)
+    select_objects(decal_old_object, [decal_old_object])
+    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(), "Default Decal marker did not finish")
+    ensure(decal_old.name == "decal-old-name_Decal", f"Default Decal naming changed: {decal_old.name}")
+
+    make_collection("Wall_Sign_A_Decal")
+    decal_new = make_collection("wall-sign-a")
+    decal_object = make_plane("DecalRenameMesh", decal_new)
+    decal_material = bpy.data.materials.new(name="Decal_Rename")
+    decal_object.data.materials.append(decal_material)
+    select_objects(decal_object, [decal_object])
+    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(rename_for_unreal=True), "Renaming Decal marker did not finish")
+    ensure(decal_new.name == "Wall_Sign_A_Decal_001", f"Decal conflict rename failed: {decal_new.name}")
+    ensure(decal_new.get(const.HST_PROP) == "DECAL", "Decal type marker regressed")
+    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(rename_for_unreal=True), "Repeated Decal marker did not finish")
+    ensure(decal_new.name == "Wall_Sign_A_Decal_001", f"Repeated Decal rename drifted: {decal_new.name}")
+
+    bake_low_old = make_collection("bake-old-name")
+    bake_low_old_object = make_test_mesh("BakeLowOldMesh", bake_low_old)
+    select_objects(bake_low_old_object, [bake_low_old_object])
+    ensure("FINISHED" in bpy.ops.hst.setbakecollectionlow(), "Default Bake Low did not finish")
+    ensure(bake_low_old.name == "bake-old-name_Low", f"Default Bake Low naming changed: {bake_low_old.name}")
+
+    make_collection("Pipe_01_A_Low")
+    bake_low = make_collection("pipe-01-a")
+    bake_low_object = make_test_mesh("BakeLowRenameMesh", bake_low)
+    select_objects(bake_low_object, [bake_low_object])
+    ensure("FINISHED" in bpy.ops.hst.setbakecollectionlow(rename_for_unreal=True), "Renaming Bake Low did not finish")
+    ensure(bake_low.name == "Pipe_01_A_Low_001", f"Bake Low conflict rename failed: {bake_low.name}")
+    ensure(bake_low.get(const.HST_PROP) == "BAKE_LOW", "Bake Low type marker regressed")
+    ensure("FINISHED" in bpy.ops.hst.setbakecollectionlow(rename_for_unreal=True), "Repeated Bake Low did not finish")
+    ensure(bake_low.name == "Pipe_01_A_Low_001", f"Repeated Bake Low rename drifted: {bake_low.name}")
+
+    bake_high = make_collection("uv-pipe")
+    bake_high_object = make_test_mesh("BakeHighRenameMesh", bake_high)
+    select_objects(bake_high_object, [bake_high_object])
+    ensure("FINISHED" in bpy.ops.hst.setbakecollectionhigh(rename_for_unreal=True), "Renaming Bake High did not finish")
+    ensure(bake_high.name == "Uv_Pipe_High", f"Bake High Unreal rename failed: {bake_high.name}")
+    ensure(bake_high.get(const.HST_PROP) == "BAKE_HIGH", "Bake High type marker regressed")
+    ensure(test_context.addon.utils.object_utils.Object.get_hst_type(bake_high_object) == "HIGH", "Bake High object marker regressed")
+    ensure("FINISHED" in bpy.ops.hst.setbakecollectionhigh(rename_for_unreal=True), "Repeated Bake High did not finish")
+    ensure(bake_high.name == "Uv_Pipe_High", f"Repeated Bake High rename drifted: {bake_high.name}")
+    result.add_detail("Prop, Decal, Bake Low/High optional Unreal naming passed")
+
+
 
 def test_prepare_cad_mesh_sets_ue_centimeter_units(test_context: TestContext, result: TestCaseResult):
     collection = make_collection("PrepareCADUnitsCase")
@@ -14225,6 +14347,8 @@ def main():
     context.run_case("batch_asset_origin_active_bounds_without_parent_smoke", test_batch_asset_origin_active_bounds_without_parent_smoke)
     context.run_case("batch_asset_origin_resets_active_snapshot_between_invocations_regression", test_batch_asset_origin_resets_active_snapshot_between_invocations_regression)
     context.run_case("collection_markers_smoke", test_collection_markers_smoke)
+    context.run_case("collection_unreal_rename_smoke", test_collection_unreal_rename_smoke)
+    context.run_case("collection_marker_optional_rename_regression", test_collection_marker_optional_rename_regression)
     context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
     context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)

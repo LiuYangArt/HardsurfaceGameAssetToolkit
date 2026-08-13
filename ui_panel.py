@@ -383,6 +383,7 @@ class HST_PT_Tools(bpy.types.Panel):
         box.operator("hst.apply_mirror_modifier", icon="MOD_MIRROR")
         box.operator("hst.remove_empty_mesh", icon="OUTLINER_DATA_MESH")
         box.operator("hst.active_current_collection", icon="OUTLINER_COLLECTION")
+        box.operator("hst.rename_collections_for_unreal", icon="SORTALPHA")
         box.operator("hst.sort_collections", icon="SORTALPHA")
         box.operator("hst.isolate_collections_alt", icon="HIDE_OFF")
         box.operator("hst.break_link_from_library", icon="UNLINKED")

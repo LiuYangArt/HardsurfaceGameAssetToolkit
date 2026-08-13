@@ -6,9 +6,82 @@ Collection 操作工具函数
 包含 Collection 获取、创建、筛选等功能。
 """
 
+import re
+
 import bpy
 from ..const import HST_PROP, COLLECTION_COLORS
 from .outliner_utils import Outliner
+
+
+# 将 Collection 名称转换为 Unreal 常用的下划线分段格式。
+# collection_name: 原始 Collection 名称；返回规范名称，若名称不含有效片段则返回原值。
+def normalize_unreal_collection_name(collection_name: str) -> str:
+    name_parts = [part for part in re.split(r"[\s._-]+", collection_name.strip()) if part]
+    if not name_parts:
+        return collection_name
+    return "_".join(part[:1].upper() + part[1:].lower() for part in name_parts)
+
+
+# 移除业务后缀以及因同名冲突追加在业务后缀后的编号。
+# collection_name: 当前名称；business_suffixes: `_Decal`、`_Low` 等允许移除的业务后缀；返回基础名。
+def remove_collection_business_suffix(
+    collection_name: str,
+    business_suffixes,
+) -> str:
+    base_name = collection_name
+    numbered_match = re.fullmatch(r"(.+)_\d{3,}", base_name)
+    if numbered_match and any(
+        numbered_match.group(1).endswith(suffix) for suffix in business_suffixes
+    ):
+        base_name = numbered_match.group(1)
+
+    for suffix in business_suffixes:
+        if base_name.endswith(suffix):
+            return base_name[:-len(suffix)]
+    return base_name
+
+
+# 为 Collection 计算不会触发 Blender `.001` 后缀的唯一名称。
+# desired_name: 期望名称；target_collection: 正在改名的 Collection，自身同名不算冲突。
+def make_unique_collection_name(desired_name: str, target_collection=None) -> str:
+    existing_names = {
+        collection.name
+        for collection in bpy.data.collections
+        if collection != target_collection
+    }
+    if desired_name not in existing_names:
+        return desired_name
+
+    suffix_number = 1
+    while f"{desired_name}_{suffix_number:03d}" in existing_names:
+        suffix_number += 1
+    return f"{desired_name}_{suffix_number:03d}"
+
+
+# 将指定 Collection 改为唯一名称。
+# collection: 待改名 Collection；desired_name: 已完成业务后缀拼接的期望名称；返回最终名称。
+def rename_collection_unique(collection, desired_name: str) -> str:
+    final_name = make_unique_collection_name(desired_name, collection)
+    collection.name = final_name
+    return final_name
+
+
+# 按 Unreal 规则改名一个 Collection，并处理同名冲突。
+# collection: 待改名 Collection；source_name: 可选基础名，未提供时使用当前名称；返回最终名称。
+def rename_collection_for_unreal(collection, source_name: str | None = None) -> str:
+    normalized_name = normalize_unreal_collection_name(source_name or collection.name)
+    return rename_collection_unique(collection, normalized_name)
+
+
+# 从所选 Object 收集全部直接所属 Collection，不遍历层级。
+# objects: Blender Object 序列；返回按首次出现顺序去重后的 Collection 列表。
+def collect_direct_object_collections(objects) -> list[bpy.types.Collection]:
+    collections = []
+    for obj in objects:
+        for collection in obj.users_collection:
+            if collection.name != "Scene Collection" and collection not in collections:
+                collections.append(collection)
+    return collections
 
 
 def get_collection(target_object: bpy.types.Object) -> bpy.types.Collection:
