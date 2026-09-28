@@ -11,7 +11,6 @@ from bpy.props import (
 from bpy.types import PropertyGroup
 from .const import *
 
-
 def axis_check_toggle(self, context):
     """当在UI中点击按钮时，调用axischeck操作"""
     bpy.ops.hst.axischeck()
@@ -305,7 +304,7 @@ class HST_PT_MainPanel(bpy.types.Panel):
             "hst.mark_curvature_raw", text="Mark Curvature Raw", icon="MOD_SMOOTH"
         )
         uv_mode_row = box_column.row(align=True)
-        uv_mode_row.operator("hst.swatchmatsetup", text="Set Swatch", icon="MATERIAL")
+        uv_mode_row.operator("hst.pickswatch", text="Pick Swatch", icon="EYEDROPPER")
         uv_mode_row.operator("hst.baseuveditmode", text="BaseUV", icon="UV")
         box_column.operator("hst.patternmatsetup", icon="LIGHTPROBE_VOLUME")
         box_column.operator(

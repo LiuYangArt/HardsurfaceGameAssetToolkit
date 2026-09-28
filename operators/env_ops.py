@@ -9,6 +9,7 @@
 import bpy
 from ..const import *
 from ..functions.common_functions import *
+from ..utils.swatch_utils import get_swatch_material, prepare_swatch_object, setup_swatch_editor
 
 
 class HST_OT_SwatchMatSetup(bpy.types.Operator):
@@ -32,54 +33,11 @@ class HST_OT_SwatchMatSetup(bpy.types.Operator):
         for object in selected_objects:
             object.select_set(False)
 
-        uv_editor = check_screen_area("IMAGE_EDITOR")
-        if uv_editor is None:
-            uv_editor = new_screen_area("IMAGE_EDITOR", "VERTICAL", 0.35)
-            uv_editor.ui_type = "UV"
-        for space in uv_editor.spaces:
-            if space.type == "IMAGE_EDITOR":
-                uv_space = space
-        UV.show_uv_in_object_mode()
-        scene_swatch_mat = get_scene_material(SWATCH_MATERIAL)
-        if scene_swatch_mat is None:
-            scene_swatch_mat = import_material(PRESET_FILE_PATH, SWATCH_MATERIAL)
-
+        swatch_material = get_swatch_material()
         for mesh in selected_meshes:
             mesh.select_set(True)
-            pattern_uv = check_uv_layer(mesh, Const.UV_PATTERN)
-
-            if pattern_uv is not None:
-                pattern_uv.name = UV_SWATCH
-
-            swatch_uv = check_uv_layer(mesh, UV_SWATCH)
-            if swatch_uv is None:
-                swatch_uv = add_uv_layers(mesh, uv_name=UV_SWATCH)
-                scale_uv(
-                    mesh, uv_layer=swatch_uv, scale=(0.001, 0.001), pivot=(0.5, 0.5)
-                )
-            swatch_uv.active = True
-
-            swatch_mat = get_object_material(mesh, SWATCH_MATERIAL)
-            mat_slot = get_object_material_slots(mesh)
-            if swatch_mat is None:
-                if len(mat_slot) == 0:
-                    mesh.data.materials.append(scene_swatch_mat)
-                elif len(mat_slot) > 0:
-                    mat_slot[0].material = scene_swatch_mat
-
-        for subnode in scene_swatch_mat.node_tree.nodes:
-            if subnode.type == "GROUP" and subnode.label == "BaseMat_Swatch":
-                for nodegroup in subnode.node_tree.nodes:
-                    if nodegroup.type == "TEX_IMAGE":
-                        swatch_texture = nodegroup.image
-                        break
-
-        uv_space.image = swatch_texture
-        uv_space.display_channels = "COLOR"
-        uv_editor_fit_view(uv_editor)
-        bpy.context.scene.tool_settings.use_uv_select_sync = True
-        switch_to_eevee()
-        viewport_shading_mode("VIEW_3D", "RENDERED", mode="CONTEXT")
+            prepare_swatch_object(mesh, swatch_material)
+        setup_swatch_editor(swatch_material)
 
         restore_select_mode(store_mode)
         self.report({"INFO"}, "Swatch material initialized")

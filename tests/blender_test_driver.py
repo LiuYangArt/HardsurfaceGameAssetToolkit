@@ -1092,6 +1092,145 @@ def test_project_decal_smoke(test_context: TestContext, result: TestCaseResult):
     result.add_detail(f"Decal modifiers: {list(decal.modifiers.keys())}")
 
 
+def set_swatch_pick_params(cell: dict):
+    """把 Swatch 格子写入 Pick Swatch 面板参数。
+
+    Args:
+        cell: 包含 material_type、color_group、metal_group、color、roughness 的 dict。
+    """
+    params = bpy.context.window_manager.hst_swatch_pick
+    for key, value in cell.items():
+        setattr(params, key, value)
+
+
+def test_swatch_cell_mapping(test_context: TestContext, result: TestCaseResult):
+    swatch = test_context.addon.utils.swatch_utils
+    ensure(
+        swatch.swatch_cell_to_uv(
+            {"material_type": "PLASTIC", "color_group": "WARM_A", "metal_group": "COOL_SATURATED", "color": 1, "roughness": 1}
+        )
+        == (0.5 / 32, 1.0 - 0.5 / 24),
+        "Top-left cell center mismatch",
+    )
+    bottom_right = swatch.swatch_cell_to_uv(
+        {"material_type": "METAL", "color_group": "WARM_A", "metal_group": "WARM_MUTED", "color": 8, "roughness": 6}
+    )
+    ensure(
+        abs(bottom_right[0] - 31.5 / 32) < 1e-9 and abs(bottom_right[1] - 0.5 / 24) < 1e-9,
+        f"Bottom-right cell center mismatch: {bottom_right}",
+    )
+
+    cell_count = 0
+    for column in range(32):
+        for row_from_top in range(24):
+            u = (column + 0.5) / 32
+            v = 1.0 - (row_from_top + 0.5) / 24
+            cell = swatch.swatch_uv_to_cell(u, v)
+            ensure(cell is not None, f"Cell missing at column {column}, row {row_from_top}")
+            round_trip = swatch.swatch_cell_to_uv(cell)
+            ensure(
+                abs(round_trip[0] - u) < 1e-9 and abs(round_trip[1] - v) < 1e-9,
+                f"Round trip mismatch at column {column}, row {row_from_top}: {cell}",
+            )
+            cell_count += 1
+
+    for group_index, group in enumerate(swatch.SWATCH_COLOR_GROUPS):
+        base = {"color_group": group[0], "metal_group": "COOL_SATURATED", "color": 3, "roughness": 2}
+        plastic_u, plastic_v = swatch.swatch_cell_to_uv(dict(base, material_type="PLASTIC"))
+        paint_u, paint_v = swatch.swatch_cell_to_uv(dict(base, material_type="PAINT"))
+        ensure(abs(paint_u - plastic_u - 0.5) < 1e-9 and paint_v == plastic_v, f"Paint does not mirror plastic: {group[0]}")
+        ensure(plastic_v > 0.25, f"Plastic group reaches metal row: {group[0]}")
+
+    ensure(swatch.swatch_uv_to_cell(1.2, 0.5) is None, "Outside UV should not map to a cell")
+    default_u, default_v = swatch.swatch_cell_to_uv(swatch.DEFAULT_SWATCH_CELL)
+    ensure(
+        swatch.swatch_cell_label(swatch.swatch_uv_to_cell(default_u, default_v)) == "Plastic · Gray A · Color 1 · Roughness 1",
+        "Default swatch cell label mismatch",
+    )
+    result.add_detail(f"Checked {cell_count} swatch cells")
+
+
+def test_pick_swatch_object_mode_smoke(test_context: TestContext, result: TestCaseResult):
+    const = test_context.const
+    swatch = test_context.addon.utils.swatch_utils
+    collection = make_collection("PickSwatchCase")
+    first = make_test_mesh("PickSwatchA", collection)
+    second = make_test_mesh("PickSwatchB", collection, location=(3.0, 0.0, 0.0))
+    select_objects(first, [first, second])
+
+    cell = {"material_type": "PAINT", "color_group": "BLUE_A", "metal_group": "COOL_SATURATED", "color": 5, "roughness": 3}
+    set_swatch_pick_params(cell)
+    op_result = bpy.ops.hst.pickswatch("EXEC_DEFAULT")
+    ensure("FINISHED" in op_result, "Pick Swatch operator did not finish")
+    ensure(
+        first.select_get() and second.select_get() and bpy.context.view_layer.objects.active == first,
+        "Importing the swatch material lost the selection",
+    )
+
+    target_u, target_v = swatch.swatch_cell_to_uv(cell)
+    for obj in (first, second):
+        uv_layer = obj.data.uv_layers.get(const.UV_SWATCH)
+        ensure(uv_layer is not None, f"{obj.name} missing swatch UV")
+        ensure(uv_layer.active, f"{obj.name} swatch UV is not active")
+        ensure(obj.data.materials and obj.data.materials[0].name == const.SWATCH_MATERIAL, f"{obj.name} missing swatch material")
+        ensure(
+            all(abs(loop.uv[0] - target_u) < 1e-6 and abs(loop.uv[1] - target_v) < 1e-6 for loop in uv_layer.data),
+            f"{obj.name} swatch UV not collapsed to target cell",
+        )
+        ensure(swatch.read_swatch_cell(obj) == dict(swatch.swatch_uv_to_cell(target_u, target_v)), f"{obj.name} read cell mismatch")
+    ensure(swatch.swatch_cell_label(swatch.read_swatch_cell(first)) == "Paint · Blue A · Color 5 · Roughness 3", "Label mismatch")
+
+    snapshot = swatch.snapshot_swatch_uv(first)
+    swatch.apply_swatch_uv(first, swatch.swatch_cell_to_uv(swatch.DEFAULT_SWATCH_CELL))
+    swatch.restore_swatch_uv(first, snapshot)
+    ensure(swatch.snapshot_swatch_uv(first) == snapshot, "Swatch UV restore mismatch")
+
+    fresh = make_test_mesh("PickSwatchFresh", collection, location=(6.0, 0.0, 0.0))
+    swatch.prepare_swatch_object(fresh, swatch.get_swatch_material())
+    ensure(swatch.read_swatch_cell(fresh) == swatch.DEFAULT_SWATCH_CELL, "New swatch UV is not on the default cell")
+
+    fresh.data.uv_layers[const.UV_SWATCH].data[0].uv = (0.9, 0.1)
+    ensure(swatch.read_swatch_cell(fresh) is None, "Swatch UV spread over cells should read as mixed")
+    result.add_detail(f"Applied {swatch.swatch_cell_label(cell)} to {[first.name, second.name]}")
+
+
+def test_pick_swatch_edit_mode_selected_faces_regression(test_context: TestContext, result: TestCaseResult):
+    swatch = test_context.addon.utils.swatch_utils
+    collection = make_collection("PickSwatchEditCase")
+    obj = make_test_mesh("PickSwatchEdit", collection)
+    select_objects(obj, [obj])
+    swatch.prepare_swatch_object(obj, swatch.get_swatch_material())
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bm = bmesh.from_edit_mesh(obj.data)
+    for face in bm.faces:
+        face.select_set(False)
+    bm.faces.ensure_lookup_table()
+    bm.faces[0].select_set(True)
+    bmesh.update_edit_mesh(obj.data)
+
+    cell = {"material_type": "METAL", "color_group": "GRAY_A", "metal_group": "WARM_SATURATED", "color": 7, "roughness": 4}
+    set_swatch_pick_params(cell)
+    op_result = bpy.ops.hst.pickswatch("EXEC_DEFAULT")
+    ensure("FINISHED" in op_result, "Pick Swatch operator did not finish in Edit Mode")
+    edit_label = swatch.swatch_cell_label(swatch.read_swatch_cell(obj))
+    ensure(edit_label == "Metal · Warm Saturated · Color 7 · Roughness 4", f"Edit Mode read cell mismatch: {edit_label}")
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    target = swatch.swatch_cell_to_uv(cell)
+    default = swatch.swatch_cell_to_uv(swatch.DEFAULT_SWATCH_CELL)
+    uv_data = obj.data.uv_layers[test_context.const.UV_SWATCH].data
+    for polygon in obj.data.polygons:
+        expected = target if polygon.index == 0 else default
+        for loop_index in polygon.loop_indices:
+            uv = uv_data[loop_index].uv
+            ensure(
+                abs(uv[0] - expected[0]) < 1e-6 and abs(uv[1] - expected[1]) < 1e-6,
+                f"Face {polygon.index} has unexpected swatch UV {tuple(uv)}",
+            )
+    result.add_detail("Only the selected face moved to the picked cell")
+
+
 def test_quickweight_smoke(test_context: TestContext, result: TestCaseResult):
     collection = make_collection("QuickWeightCase")
     armature = make_armature("WeightRig", collection)
@@ -14094,6 +14233,9 @@ def main():
     context.run_case("transfer_proxy_reuse", test_transfer_proxy_reuse)
     context.run_case("bevel_transfer_normal_collection_reuse", test_bevel_transfer_normal_collection_reuse)
     context.run_case("project_decal_smoke", test_project_decal_smoke)
+    context.run_case("swatch_cell_mapping", test_swatch_cell_mapping)
+    context.run_case("pick_swatch_object_mode_smoke", test_pick_swatch_object_mode_smoke)
+    context.run_case("pick_swatch_edit_mode_selected_faces_regression", test_pick_swatch_edit_mode_selected_faces_regression)
     context.run_case("quickweight_smoke", test_quickweight_smoke)
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
     context.run_case("vertex_color_set_and_copy_smoke", test_vertex_color_set_and_copy_smoke)
