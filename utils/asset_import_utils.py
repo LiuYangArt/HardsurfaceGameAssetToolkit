@@ -71,7 +71,7 @@ def on_blend_import_post(import_context):
     """
     scene = bpy.context.scene
     params = getattr(scene, "hst_params", None) if scene else None
-    if params is None or not params.decal_reuse_imported_data:
+    if params is None or not params.decal_mode:
         return
     reuse_imported_data(import_context.import_items)
 

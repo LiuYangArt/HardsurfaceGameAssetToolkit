@@ -1364,15 +1364,14 @@ def test_set_bake_collection_smoke(test_context: TestContext, result: TestCaseRe
 
 
 
-def test_set_decal_mode_smoke(test_context: TestContext, result: TestCaseResult):
+def test_decal_mode_property_smoke(test_context: TestContext, result: TestCaseResult):
     scene = bpy.context.scene
     tool_settings = scene.tool_settings
     tool_settings.use_snap = False
     tool_settings.transform_pivot_point = "BOUNDING_BOX_CENTER"
     scene.transform_orientation_slots[0].type = "GLOBAL"
 
-    operator_result = bpy.ops.hst.set_decal_mode()
-    ensure("FINISHED" in operator_result, "Set decal mode did not finish")
+    scene.hst_params.decal_mode = True
     ensure(tool_settings.snap_elements_base == {"VERTEX", "EDGE", "FACE", "EDGE_MIDPOINT"}, f"Snap base elements: {tool_settings.snap_elements_base}")
     ensure(tool_settings.snap_elements_individual == {"FACE_PROJECT"}, f"Snap individual: {tool_settings.snap_elements_individual}")
     ensure(tool_settings.snap_target == "CENTER", f"Snap target: {tool_settings.snap_target}")
@@ -1381,10 +1380,10 @@ def test_set_decal_mode_smoke(test_context: TestContext, result: TestCaseResult)
     ensure(tool_settings.transform_pivot_point == "MEDIAN_POINT", "Pivot point not MEDIAN_POINT")
     ensure(scene.transform_orientation_slots[0].type == "LOCAL", "Orientation not LOCAL")
     ensure(not tool_settings.use_snap, "Snap toggle should stay unchanged")
-    ensure(scene.hst_params.decal_reuse_imported_data, "Decal mode did not enable import reuse")
 
-    ensure("FINISHED" in bpy.ops.hst.set_decal_mode(), "Second decal mode click did not finish")
-    ensure(not scene.hst_params.decal_reuse_imported_data, "Second click did not disable import reuse")
+    tool_settings.transform_pivot_point = "CURSOR"
+    scene.hst_params.decal_mode = False
+    ensure(tool_settings.transform_pivot_point == "CURSOR", "Turning Decal Mode off must not touch other settings")
 
 
 def make_decal_asset_library(library_path: Path):
@@ -1432,12 +1431,12 @@ def test_decal_mode_import_reuse_regression(test_context: TestContext, result: T
     params = bpy.context.scene.hst_params
     counted = lambda collection, name: len([data for data in collection if data.name.startswith(name)])
 
-    params.decal_reuse_imported_data = True
+    params.decal_mode = True
     try:
         for _ in range(3):
             append_decal_asset(library_path)
     finally:
-        params.decal_reuse_imported_data = False
+        params.decal_mode = False
 
     decal_objects = [obj for obj in bpy.data.objects if obj.name.startswith("DecalReuse")]
     ensure(len(decal_objects) == 3, f"Expected 3 decal objects, got {len(decal_objects)}")
@@ -14377,7 +14376,7 @@ def main():
     context.run_case("pick_swatch_edit_mode_selected_faces_regression", test_pick_swatch_edit_mode_selected_faces_regression)
     context.run_case("quickweight_smoke", test_quickweight_smoke)
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
-    context.run_case("set_decal_mode_smoke", test_set_decal_mode_smoke)
+    context.run_case("decal_mode_property_smoke", test_decal_mode_property_smoke)
     context.run_case("decal_mode_import_reuse_regression", test_decal_mode_import_reuse_regression)
     context.run_case("fix_duplicated_material_regression", test_fix_duplicated_material_regression)
     context.run_case("vertex_color_set_and_copy_smoke", test_vertex_color_set_and_copy_smoke)

@@ -10,6 +10,7 @@ from bpy.props import (
 )
 from bpy.types import PropertyGroup
 from .const import *
+from .utils.decal_mode_utils import on_decal_mode_changed
 
 def axis_check_toggle(self, context):
     """当在UI中点击按钮时，调用axischeck操作"""
@@ -45,9 +46,12 @@ class UIParams(PropertyGroup):
         description="设置 HSTBevel 段数", default=1, min=0, max=12
     )
 
-    decal_reuse_imported_data: BoolProperty(
-        description="Decal Mode 开启时，Append 导入的 Material / Node Group / Image 复用文件中已有的同名数据",
+    decal_mode: BoolProperty(
+        name="Decal Mode",
+        description="开启：应用 Decal 摆放的 Snap / Pivot / Orientation，Asset Browser 用 Append 导入，"
+        "并复用已有同名 Material / Node Group / Image；关闭：停止复用",
         default=False,
+        update=on_decal_mode_changed,
     )
 
     socket_name: StringProperty(
@@ -338,11 +342,7 @@ class HST_PT_MainPanel(bpy.types.Panel):
             "hst.markdecalcollection", text="Set Decal", icon="OUTLINER_COLLECTION"
         )
         box_column.operator("hst.make_decal_collection", icon="COLLECTION_NEW")
-        box_column.operator(
-            "hst.set_decal_mode",
-            icon="SNAP_ON",
-            depress=parameters.decal_reuse_imported_data,
-        )
+        box_column.prop(parameters, "decal_mode", icon="SNAP_ON", toggle=True)
         box_column.operator("hst.mark_tint_object", icon="COLOR")
 
         box_column.operator("hst.mark_normal_type", icon="NODE_TEXTURE")
