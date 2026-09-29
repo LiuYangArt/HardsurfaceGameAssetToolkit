@@ -234,22 +234,62 @@ def draw_pick_swatch_bar(header, context) -> None:
     header.layout.separator_spacer()
 
 
-def draw_pick_swatch_overlay() -> None:
+def read_active_swatch_cell(active_object, target_objects: list):
     """
-    在 Image Editor 主区域左上角绘制 Pick Swatch 操作提示，字号与 Blender 界面文字一致
+    读取活动物体可靠的 Swatch 格子；须在自动补 Swatch UV 之前调用，避免把新建的默认格子当作可靠值
+
+    Args:
+        active_object: context.active_object
+        target_objects: Pick Swatch 目标 Mesh 物体列表
+    Returns:
+        格子 dict；活动物体不在目标中、没有 Swatch UV 或跨多个格子时返回 None
     """
-    if get_pick_swatch_session() is None:
-        return
+    if active_object not in target_objects:
+        return None
+    return read_swatch_cell(active_object)
+
+
+def draw_pick_swatch_hint(x: float, y: float) -> None:
+    """
+    在当前 region 的指定像素位置绘制 Pick Swatch 操作提示，字号与 Blender 界面文字一致
+
+    Args:
+        x: 文字左下角横坐标（region 像素）
+        y: 文字左下角纵坐标（region 像素）
+    """
     preferences = bpy.context.preferences
-    ui_scale = preferences.system.ui_scale
     font_id = 0
-    blf.size(font_id, preferences.ui_styles[0].widget.points * ui_scale)
+    blf.size(font_id, preferences.ui_styles[0].widget.points * preferences.system.ui_scale)
     blf.enable(font_id, blf.SHADOW)
     blf.shadow(font_id, 3, 0.0, 0.0, 0.0, 1.0)
     blf.color(font_id, 1.0, 1.0, 1.0, 0.9)
-    blf.position(font_id, 10 * ui_scale, bpy.context.region.height - 20 * ui_scale, 0)
+    blf.position(font_id, x, y, 0)
     blf.draw(font_id, PICK_SWATCH_HINT)
     blf.disable(font_id, blf.SHADOW)
+
+
+def draw_pick_swatch_hint_image_editor() -> None:
+    """
+    SpaceImageEditor 绘制回调：在主区域左上角显示操作提示
+    """
+    if get_pick_swatch_session() is None:
+        return
+    ui_scale = bpy.context.preferences.system.ui_scale
+    draw_pick_swatch_hint(10 * ui_scale, bpy.context.region.height - 20 * ui_scale)
+
+
+def draw_pick_swatch_hint_view3d() -> None:
+    """
+    SpaceView3D 绘制回调：在主区域左下角、工具栏右侧显示操作提示
+    """
+    if get_pick_swatch_session() is None:
+        return
+    ui_scale = bpy.context.preferences.system.ui_scale
+    toolbar_width = 0
+    for region in bpy.context.area.regions:
+        if region.type == "TOOLS" and region.width > 1:
+            toolbar_width = region.width
+    draw_pick_swatch_hint(toolbar_width + 10 * ui_scale, 12 * ui_scale)
 
 
 class HST_OT_PickSwatch(bpy.types.Operator):
@@ -291,14 +331,15 @@ class HST_OT_PickSwatch(bpy.types.Operator):
             self.report({"WARNING"}, "Pick Swatch is already running")
             return {"CANCELLED"}
 
+        active_object = context.active_object
+        align_cell = read_active_swatch_cell(active_object, target_objects)
         prepare_pick_swatch_targets(context, target_objects)
         swatch_material = get_swatch_material()
         setup_swatch_editor(swatch_material)
         self.swatch_texture = get_swatch_texture(swatch_material)
 
         self.syncing = False
-        active_object = context.active_object
-        current_cell = read_swatch_cell(active_object) if active_object in target_objects else None
+        current_cell = read_active_swatch_cell(active_object, target_objects)
         if current_cell is not None:
             self.sync_params(context, current_cell)
         self.current_label = swatch_cell_label(current_cell)
@@ -307,8 +348,14 @@ class HST_OT_PickSwatch(bpy.types.Operator):
         _pick_swatch_session = self
         self.show_bottom_bars(context)
         self.draw_handle = bpy.types.SpaceImageEditor.draw_handler_add(
-            draw_pick_swatch_overlay, (), "WINDOW", "POST_PIXEL"
+            draw_pick_swatch_hint_image_editor, (), "WINDOW", "POST_PIXEL"
         )
+        self.view3d_draw_handle = bpy.types.SpaceView3D.draw_handler_add(
+            draw_pick_swatch_hint_view3d, (), "WINDOW", "POST_PIXEL"
+        )
+        if align_cell is not None and len(target_objects) > 1:
+            self.pick(context, align_cell)
+            self.report({"INFO"}, f"Aligned {len(target_objects)} objects to active: {swatch_cell_label(align_cell)}")
 
         context.window_manager.modal_handler_add(self)
         context.workspace.status_text_set(PICK_SWATCH_HINT)
@@ -455,6 +502,7 @@ class HST_OT_PickSwatch(bpy.types.Operator):
         global _pick_swatch_session
         _pick_swatch_session = None
         bpy.types.SpaceImageEditor.draw_handler_remove(self.draw_handle, "WINDOW")
+        bpy.types.SpaceView3D.draw_handler_remove(self.view3d_draw_handle, "WINDOW")
         self.restore_bottom_bars()
         context.workspace.status_text_set(None)
         self.redraw(context)

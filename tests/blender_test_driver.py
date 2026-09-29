@@ -1194,6 +1194,27 @@ def test_pick_swatch_object_mode_smoke(test_context: TestContext, result: TestCa
     result.add_detail(f"Applied {swatch.swatch_cell_label(cell)} to {[first.name, second.name]}")
 
 
+def test_pick_swatch_active_cell_reliability_regression(test_context: TestContext, result: TestCaseResult):
+    swatch = test_context.addon.utils.swatch_utils
+    uv_ops = test_context.addon.operators.uv_ops
+    collection = make_collection("PickSwatchActiveCase")
+    fresh = make_test_mesh("PickSwatchActiveFresh", collection)
+    placed = make_test_mesh("PickSwatchActivePlaced", collection, location=(3.0, 0.0, 0.0))
+    swatch.prepare_swatch_object(placed, swatch.get_swatch_material())
+    cell = {"material_type": "PAINT", "color_group": "GRAY_B", "metal_group": "COOL_SATURATED", "color": 6, "roughness": 2}
+    swatch.apply_swatch_uv(placed, swatch.swatch_cell_to_uv(cell))
+
+    ensure(uv_ops.read_active_swatch_cell(fresh, [fresh, placed]) is None, "Active without swatch UV must not be an align source")
+    ensure(uv_ops.read_active_swatch_cell(placed, [fresh]) is None, "Active outside the targets must not be an align source")
+    ensure(
+        swatch.swatch_cell_label(uv_ops.read_active_swatch_cell(placed, [fresh, placed])) == swatch.swatch_cell_label(cell),
+        "Active with a single cell should be the align source",
+    )
+    placed.data.uv_layers[test_context.const.UV_SWATCH].data[0].uv = (0.9, 0.1)
+    ensure(uv_ops.read_active_swatch_cell(placed, [fresh, placed]) is None, "Active spread over cells must not be an align source")
+    result.add_detail("Only an active object with one reliable cell is used for alignment")
+
+
 def test_pick_swatch_edit_mode_selected_faces_regression(test_context: TestContext, result: TestCaseResult):
     swatch = test_context.addon.utils.swatch_utils
     collection = make_collection("PickSwatchEditCase")
@@ -14235,6 +14256,7 @@ def main():
     context.run_case("project_decal_smoke", test_project_decal_smoke)
     context.run_case("swatch_cell_mapping", test_swatch_cell_mapping)
     context.run_case("pick_swatch_object_mode_smoke", test_pick_swatch_object_mode_smoke)
+    context.run_case("pick_swatch_active_cell_reliability_regression", test_pick_swatch_active_cell_reliability_regression)
     context.run_case("pick_swatch_edit_mode_selected_faces_regression", test_pick_swatch_edit_mode_selected_faces_regression)
     context.run_case("quickweight_smoke", test_quickweight_smoke)
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
