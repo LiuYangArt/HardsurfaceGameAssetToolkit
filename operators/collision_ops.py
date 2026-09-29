@@ -9,6 +9,7 @@
 import bpy
 from ..const import *
 from ..functions.common_functions import *
+from ..utils.material_utils import fix_duplicated_materials
 
 
 class HST_OT_SetUECollision(bpy.types.Operator):
@@ -110,73 +111,41 @@ class HST_OT_FixDuplicatedMaterial(bpy.types.Operator):
     """修复重复材质"""
     bl_idname = "hst.fixduplicatedmaterial"
     bl_label = "Fix Duplicated Material"
-    bl_description = "修复选中模型中的重复材质，例如 MI_Mat.001替换为MI_Mat"
+    bl_description = "修复选中模型中的重复材质，例如 MI_Mat.001替换为MI_Mat；可在参数中改为处理整个文件"
+    bl_options = {"REGISTER", "UNDO"}
 
-    def execute(self, context):
-        selected_objects = Object.get_selected()
-        selected_meshes = filter_type(selected_objects, "MESH")
-        if not selected_meshes:
+    process_all_materials: bpy.props.BoolProperty(
+        name="Whole File",
+        description="处理文件中所有重复材质，并删除被合并的副本；关闭时只处理选中 Mesh",
+        default=False,
+    )
+
+    def invoke(self, context, event):
+        if not filter_type(Object.get_selected(), "MESH"):
             self.report(
                 {"ERROR"},
                 "No selected mesh object, please select mesh objects and retry\n"
                 + "没有选中Mesh物体，请选中Mesh物体后重试",
             )
             return {"CANCELLED"}
-        bad_materials = []
-        bad_meshes = []
-        store_mode = prep_select_mode()
+        return self.execute(context)
 
-        for mesh in selected_meshes:
-            bpy.ops.object.material_slot_remove_unused()
-            bad_mat_index = []
+    def execute(self, context):
+        if self.process_all_materials:
+            fixed_count = fix_duplicated_materials()
+            self.report({"INFO"}, f"{fixed_count} duplicated materials merged in file")
+            return {"FINISHED"}
 
-            for i in range(len(mesh.material_slots)):
-                is_bad_mat = False
-                mat = mesh.material_slots[i].material
-                if mat in bad_materials:
-                    is_bad_mat = True
-                elif mat not in bad_materials:
-                    mat_name_split = mat.name.split(".00")
-                    if len(mat_name_split) > 1:
-                        mat_name = mat_name_split[0]
-                        mat_good = get_scene_material(mat_name)
-                        if mat_good is not None:
-                            is_bad_mat = True
-                        else:
-                            mat.name = mat_name
-                if is_bad_mat:
-                    bad_mat_index.append(i)
-                    bad_materials.append(mat)
-
-            if len(bad_mat_index) > 0:
-                bad_meshes.append(mesh)
-                for i in bad_mat_index:
-                    mat = mesh.material_slots[i].material
-                    mat_name_split = mat.name.split(".00")
-                    mat_name = mat_name_split[0]
-                    mat_good = get_scene_material(mat_name)
-                    mesh.material_slots[i].material = mat_good
-
-            has_duplicated_mats = False
-            mat_names = []
-            for i in range(len(mesh.material_slots)):
-                mat = mesh.material_slots[i].material
-                mat_name = mat.name
-                if mat_name not in mat_names:
-                    mat_names.append(mat_name)
-                else:
-                    has_duplicated_mats = True
-                    break
-
-            if has_duplicated_mats:
-                Material.remove_duplicated_mats_ops(mesh)
-
-        restore_select_mode(store_mode)
+        selected_meshes = filter_type(Object.get_selected(), "MESH")
+        if not selected_meshes:
+            self.report({"ERROR"}, "No selected mesh object | 没有选中Mesh物体")
+            return {"CANCELLED"}
+        fixed_count = fix_duplicated_materials(selected_meshes)
         self.report(
             {"INFO"},
-            str(len(bad_materials))
-            + " Materials in "
-            + str(len(bad_meshes))
-            + " Meshes fixed",
+            f"{fixed_count} materials in {len(selected_meshes)} meshes fixed",
         )
         return {"FINISHED"}
+
+    def draw(self, context):
+        self.layout.prop(self, "process_all_materials")

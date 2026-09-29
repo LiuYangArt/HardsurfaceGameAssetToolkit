@@ -285,7 +285,17 @@ class Object:
 
     @staticmethod
     def break_link_from_assetlib(object):
-        """断开与资产库的连接"""
+        """
+        断开与资产库的连接，使 Object 与其 Mesh 变为本地数据。
+
+        Args:
+            object: 目标 Object，可能自身或其 Mesh 来自 Asset Library。
+
+        Returns:
+            传入的 Object（已本地化）。
+        """
+        if object.library is not None:
+            object = object.make_local()
         if object.data.library is not None:
-            object.data = object.data.copy()
-            object.data.library = None
+            object.data = object.data.copy()  # copy() 产生的是本地 Mesh
+        return object

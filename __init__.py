@@ -16,6 +16,7 @@ from . import auto_load
 from bpy.props import PointerProperty
 from .ui_panel import UIParams
 from .operators.uv_ops import HST_SwatchPickParams
+from .utils.asset_import_utils import register_import_handler, unregister_import_handler
 
 
 auto_load.init()
@@ -41,10 +42,12 @@ def register():
     _unregister_scene_properties()
     auto_load.register()
     _register_scene_properties()
+    register_import_handler()
 
 
 
 def unregister():
+    unregister_import_handler()
     _unregister_scene_properties()
     auto_load.unregister()
 

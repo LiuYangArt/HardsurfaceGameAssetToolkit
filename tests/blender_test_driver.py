@@ -1364,6 +1364,123 @@ def test_set_bake_collection_smoke(test_context: TestContext, result: TestCaseRe
 
 
 
+def test_set_decal_mode_smoke(test_context: TestContext, result: TestCaseResult):
+    scene = bpy.context.scene
+    tool_settings = scene.tool_settings
+    tool_settings.use_snap = False
+    tool_settings.transform_pivot_point = "BOUNDING_BOX_CENTER"
+    scene.transform_orientation_slots[0].type = "GLOBAL"
+
+    operator_result = bpy.ops.hst.set_decal_mode()
+    ensure("FINISHED" in operator_result, "Set decal mode did not finish")
+    ensure(tool_settings.snap_elements_base == {"VERTEX", "EDGE", "FACE", "EDGE_MIDPOINT"}, f"Snap base elements: {tool_settings.snap_elements_base}")
+    ensure(tool_settings.snap_elements_individual == {"FACE_PROJECT"}, f"Snap individual: {tool_settings.snap_elements_individual}")
+    ensure(tool_settings.snap_target == "CENTER", f"Snap target: {tool_settings.snap_target}")
+    ensure(tool_settings.use_snap_align_rotation, "Align rotation to target not enabled")
+    ensure(not tool_settings.use_snap_backface_culling, "Backface culling should be off")
+    ensure(tool_settings.transform_pivot_point == "MEDIAN_POINT", "Pivot point not MEDIAN_POINT")
+    ensure(scene.transform_orientation_slots[0].type == "LOCAL", "Orientation not LOCAL")
+    ensure(not tool_settings.use_snap, "Snap toggle should stay unchanged")
+    ensure(scene.hst_params.decal_reuse_imported_data, "Decal mode did not enable import reuse")
+
+    ensure("FINISHED" in bpy.ops.hst.set_decal_mode(), "Second decal mode click did not finish")
+    ensure(not scene.hst_params.decal_reuse_imported_data, "Second click did not disable import reuse")
+
+
+def make_decal_asset_library(library_path: Path):
+    """保存一个含 Material -> Node Group -> Image 依赖链的 Decal 资产库文件。
+
+    Args:
+        library_path: 输出 .blend 路径；写入后当前会话数据保持不变。
+    """
+    image = bpy.data.images.new("T_DecalReuse", 4, 4)
+    node_group = bpy.data.node_groups.new("NG_DecalReuse", "ShaderNodeTree")
+    image_node = node_group.nodes.new("ShaderNodeTexImage")
+    image_node.image = image
+    material = bpy.data.materials.new("MI_DecalReuse")
+    group_node = material.node_tree.nodes.new("ShaderNodeGroup")
+    group_node.node_tree = node_group
+    mesh = bpy.data.meshes.new("DecalReuseMesh")
+    mesh.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [], [(0, 1, 2, 3)])
+    mesh.materials.append(material)
+    decal_object = bpy.data.objects.new("DecalReuse", mesh)
+    bpy.data.libraries.write(str(library_path), {decal_object}, fake_user=True)
+    bpy.data.objects.remove(decal_object)
+    bpy.data.meshes.remove(mesh)
+    bpy.data.materials.remove(material)
+    bpy.data.node_groups.remove(node_group)
+    bpy.data.images.remove(image)
+
+
+def append_decal_asset(library_path: Path):
+    """从资产库文件 Append 一次 DecalReuse Object。
+
+    Args:
+        library_path: make_decal_asset_library 生成的 .blend 路径。
+    """
+    bpy.ops.wm.append(
+        filepath=str(library_path / "Object" / "DecalReuse"),
+        directory=str(library_path / "Object") + os.sep,
+        filename="DecalReuse",
+        link=False,
+    )
+
+
+def test_decal_mode_import_reuse_regression(test_context: TestContext, result: TestCaseResult):
+    library_path = Path(tempfile.mkdtemp()) / "decal_reuse_lib.blend"
+    make_decal_asset_library(library_path)
+    params = bpy.context.scene.hst_params
+    counted = lambda collection, name: len([data for data in collection if data.name.startswith(name)])
+
+    params.decal_reuse_imported_data = True
+    try:
+        for _ in range(3):
+            append_decal_asset(library_path)
+    finally:
+        params.decal_reuse_imported_data = False
+
+    decal_objects = [obj for obj in bpy.data.objects if obj.name.startswith("DecalReuse")]
+    ensure(len(decal_objects) == 3, f"Expected 3 decal objects, got {len(decal_objects)}")
+    ensure(len({obj.data.as_pointer() for obj in decal_objects}) == 3, "Decal meshes must stay independent")
+    ensure(all(obj.library is None and obj.data.library is None for obj in decal_objects), "Decals must be local")
+    ensure(counted(bpy.data.materials, "MI_DecalReuse") == 1, "Material was duplicated")
+    ensure(counted(bpy.data.node_groups, "NG_DecalReuse") == 1, "Node Group was duplicated")
+    ensure(counted(bpy.data.images, "T_DecalReuse") == 1, "Image was duplicated")
+    shared_material = bpy.data.materials["MI_DecalReuse"]
+    ensure(all(obj.data.materials[0] == shared_material for obj in decal_objects), "Decals do not share the material")
+
+    append_decal_asset(library_path)
+    ensure(counted(bpy.data.materials, "MI_DecalReuse") == 2, "Reuse must be inactive when Decal Mode is off")
+    result.add_detail("3 appends with Decal Mode on kept 1 material / node group / image")
+
+
+def test_fix_duplicated_material_regression(test_context: TestContext, result: TestCaseResult):
+    collection = make_collection("DuplicatedMaterialCase")
+    original = bpy.data.materials.new("MI_DupCase")
+    duplicate_010 = bpy.data.materials.new("MI_DupCase.010")
+    duplicate_001 = bpy.data.materials.new("MI_DupCase.001")
+    orphan_only = bpy.data.materials.new("MI_OnlyDup.003")
+
+    selected_mesh = make_test_mesh("DupSelected", collection)
+    other_mesh = make_test_mesh("DupOther", collection)
+    only_dup_mesh = make_test_mesh("DupOnly", collection)
+    selected_mesh.data.materials.append(duplicate_010)
+    other_mesh.data.materials.append(duplicate_001)
+    only_dup_mesh.data.materials.append(orphan_only)
+
+    select_objects(selected_mesh, [selected_mesh])
+    ensure("FINISHED" in bpy.ops.hst.fixduplicatedmaterial(), "Selected-only fix did not finish")
+    ensure(selected_mesh.material_slots[0].material == original, "Selected mesh .010 material was not merged")
+    ensure(other_mesh.material_slots[0].material == duplicate_001, "Unselected mesh must not change in selected-only mode")
+
+    ensure("FINISHED" in bpy.ops.hst.fixduplicatedmaterial(process_all_materials=True), "Whole-file fix did not finish")
+    ensure(other_mesh.material_slots[0].material == original, "Whole-file mode did not merge .001")
+    ensure(bpy.data.materials.get("MI_DupCase.001") is None, "Duplicate .001 was not removed")
+    ensure(bpy.data.materials.get("MI_DupCase.010") is None or bpy.data.materials.get("MI_DupCase.010").users == 0, "Duplicate .010 left in use")
+    renamed = only_dup_mesh.material_slots[0].material
+    ensure(renamed.name == "MI_OnlyDup", f"Lone duplicate was not renamed: {renamed.name}")
+
+
 def test_vertex_color_set_and_copy_smoke(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
     collection = make_collection("VertexColorCase")
@@ -14260,6 +14377,9 @@ def main():
     context.run_case("pick_swatch_edit_mode_selected_faces_regression", test_pick_swatch_edit_mode_selected_faces_regression)
     context.run_case("quickweight_smoke", test_quickweight_smoke)
     context.run_case("set_bake_collection_smoke", test_set_bake_collection_smoke)
+    context.run_case("set_decal_mode_smoke", test_set_decal_mode_smoke)
+    context.run_case("decal_mode_import_reuse_regression", test_decal_mode_import_reuse_regression)
+    context.run_case("fix_duplicated_material_regression", test_fix_duplicated_material_regression)
     context.run_case("vertex_color_set_and_copy_smoke", test_vertex_color_set_and_copy_smoke)
     context.run_case("collision_and_extract_ucx_smoke", test_collision_and_extract_ucx_smoke)
     context.run_case("safe_bevel_weight_smoke", test_safe_bevel_weight_smoke)

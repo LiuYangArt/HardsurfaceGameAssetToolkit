@@ -6,7 +6,11 @@
 包含材质获取、导入、赋值等功能。
 """
 
+import re
+
 import bpy
+
+DUPLICATE_SUFFIX_PATTERN = re.compile(r"^(.+)\.(\d{3,})$")
 
 
 def get_materials(target_object: bpy.types.Object) -> list:
@@ -97,6 +101,86 @@ def get_scene_material(material_name: str) -> bpy.types.Material:
             material = mat
             break
     return material
+
+
+def get_duplicate_base_name(material: bpy.types.Material):
+    """
+    获取重复材质的原始名称，例如 MI_Mat.010 -> MI_Mat。
+
+    Args:
+        material: 目标材质
+
+    Returns:
+        原始名称；非本地材质或名称无 .NNN 后缀时返回 None
+    """
+    if material is None or material.library is not None:
+        return None
+    match = DUPLICATE_SUFFIX_PATTERN.match(material.name)
+    return match.group(1) if match else None
+
+
+def resolve_original_material(material: bpy.types.Material) -> bpy.types.Material:
+    """
+    找到重复材质应合并到的原始材质；原始名称尚未被占用时，把该材质本身改回原始名称。
+
+    Args:
+        material: 带 .NNN 后缀的本地材质
+
+    Returns:
+        原始材质（可能就是传入材质改名后的结果）
+    """
+    base_name = get_duplicate_base_name(material)
+    original_material = bpy.data.materials.get(base_name)
+    if original_material is None:
+        material.name = base_name
+        return material
+    return original_material
+
+
+def fix_duplicated_materials(mesh_objects=None) -> int:
+    """
+    把 MI_Mat.001 这类重复材质合并回 MI_Mat。
+
+    Args:
+        mesh_objects: 只处理这些 Mesh 物体的材质槽（副本无人使用时才删除）；
+            为 None 时处理整个文件：重定向所有使用者并删除重复材质。
+
+    Returns:
+        被合并（或改回原名）的重复材质数量
+    """
+    fixed_materials = set()
+    if mesh_objects is not None:
+        for mesh_object in mesh_objects:
+            for slot in mesh_object.material_slots:
+                material = slot.material
+                if get_duplicate_base_name(material) is None:
+                    continue
+                fixed_materials.add(material.as_pointer())
+                original_material = resolve_original_material(material)
+                if original_material is not material:
+                    slot.material = original_material
+                    if material.users == 0:  # 已无人使用的副本直接清掉，避免残留 .001
+                        bpy.data.materials.remove(material)
+        return len(fixed_materials)
+
+    duplicate_materials = [
+        material
+        for material in bpy.data.materials
+        if get_duplicate_base_name(material) is not None
+    ]
+    # 按后缀数字升序，使最小后缀优先成为原始材质
+    duplicate_materials.sort(
+        key=lambda material: (
+            get_duplicate_base_name(material),
+            int(DUPLICATE_SUFFIX_PATTERN.match(material.name).group(2)),
+        )
+    )
+    for material in duplicate_materials:
+        original_material = resolve_original_material(material)
+        if original_material is not material:
+            material.user_remap(original_material)
+            bpy.data.materials.remove(material)
+    return len(duplicate_materials)
 
 
 def find_scene_materials(material_name: str) -> list:
@@ -196,26 +280,3 @@ class Material:
         new_mat.use_nodes = True
         return new_mat
 
-    @staticmethod
-    def remove_duplicated_mats_ops(object):
-        """
-        移除对象上的重复材质（如 MI_Mat.001 替换为 MI_Mat）
-
-        Args:
-            object: 目标对象
-        """
-        import re
-        
-        for slot in object.material_slots:
-            if slot.material is None:
-                continue
-            
-            mat_name = slot.material.name
-            # 检查是否有 .001 等后缀
-            match = re.match(r"(.+)\.\d{3}$", mat_name)
-            if match:
-                base_name = match.group(1)
-                # 查找原始材质
-                original_mat = bpy.data.materials.get(base_name)
-                if original_mat:
-                    slot.material = original_mat
