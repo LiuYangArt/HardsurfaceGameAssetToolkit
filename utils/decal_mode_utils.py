@@ -42,16 +42,14 @@ def apply_decal_snap_settings(scene):
         scene: bpy.types.Scene，写入目标。Snap 开关本身保持不变。
     """
     tool_settings = scene.tool_settings
-    # base 与 individual 共用同一存储，分开赋值会互相覆盖，必须一次写入并集
+    # 一次设置全部吸附目标，确保进入时关闭 Face Project；保留用户的旋转对齐状态。
     tool_settings.snap_elements = {
         "VERTEX",
         "EDGE",
         "FACE",
         "EDGE_MIDPOINT",
-        "FACE_PROJECT",
     }
     tool_settings.snap_target = "CENTER"
-    tool_settings.use_snap_align_rotation = True
     tool_settings.use_snap_backface_culling = False
     tool_settings.use_snap_selectable = True
     tool_settings.use_snap_translate = True

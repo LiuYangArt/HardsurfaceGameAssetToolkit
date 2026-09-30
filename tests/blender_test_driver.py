@@ -1371,11 +1371,16 @@ def test_decal_mode_property_smoke(test_context: TestContext, result: TestCaseRe
     tool_settings.transform_pivot_point = "BOUNDING_BOX_CENTER"
     scene.transform_orientation_slots[0].type = "GLOBAL"
 
-    scene.hst_params.decal_mode = True
-    ensure(tool_settings.snap_elements_base == {"VERTEX", "EDGE", "FACE", "EDGE_MIDPOINT"}, f"Snap base elements: {tool_settings.snap_elements_base}")
-    ensure(tool_settings.snap_elements_individual == {"FACE_PROJECT"}, f"Snap individual: {tool_settings.snap_elements_individual}")
-    ensure(tool_settings.snap_target == "CENTER", f"Snap target: {tool_settings.snap_target}")
-    ensure(tool_settings.use_snap_align_rotation, "Align rotation to target not enabled")
+    # 覆盖两种旋转对齐初始状态，并通过 UI 使用的 Scene 开关验证重复进入。
+    for align_rotation in (False, True):
+        scene.hst_params.decal_mode = False
+        tool_settings.snap_elements = {"FACE_PROJECT"}
+        tool_settings.use_snap_align_rotation = align_rotation
+        scene.hst_params.decal_mode = True
+        ensure(tool_settings.snap_elements_base == {"VERTEX", "EDGE", "FACE", "EDGE_MIDPOINT"}, f"Snap base elements: {tool_settings.snap_elements_base}")
+        ensure(not tool_settings.snap_elements_individual, f"Snap individual should be empty: {tool_settings.snap_elements_individual}")
+        ensure(tool_settings.snap_target == "CENTER", f"Snap target: {tool_settings.snap_target}")
+        ensure(tool_settings.use_snap_align_rotation == align_rotation, f"Align rotation should stay {align_rotation}")
     ensure(not tool_settings.use_snap_backface_culling, "Backface culling should be off")
     ensure(tool_settings.transform_pivot_point == "MEDIAN_POINT", "Pivot point not MEDIAN_POINT")
     ensure(scene.transform_orientation_slots[0].type == "LOCAL", "Orientation not LOCAL")
