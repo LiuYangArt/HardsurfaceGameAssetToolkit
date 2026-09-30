@@ -1797,6 +1797,86 @@ def test_staticmeshexport_collection_type_filter_regression(test_context: TestCo
     result.add_detail("Prop, Decal, Bake, Static Mesh and Skeletal each exported only their target type")
 
 
+
+# 验证子 Decal 与最近父 Prop 共用导出原点，并保留源场景。
+# test_context: 已加载插件的上下文；result: 本次回归结果。
+def test_staticmeshexport_nested_decal_origin_regression(test_context, result):
+    for export_format in ("FBX", "GLB"):
+        for relative, collection_filter in ((True, "ALL"), (False, "ALL"), (True, "DECAL")):
+            reset_scene()
+            params = bpy.context.scene.hst_params
+            ensure(params.export_relative_to_prop_origin is True, "Scene relative Origin default must be enabled")
+            operator_properties = bpy.ops.hst.staticmeshexport.get_rna_type().properties
+            ensure(operator_properties["export_relative_to_prop_origin"].default is True,
+                   "Operator relative Origin default must be enabled")
+            outer = make_collection("OuterProp")
+            prop = bpy.data.collections.new("NestedProp")
+            outer.children.link(prop)
+            middle = bpy.data.collections.new("DecalFolder")
+            prop.children.link(middle)
+            decal_collection = bpy.data.collections.new("NestedDecal")
+            middle.children.link(decal_collection)
+            for collection, collection_type in ((outer, "PROP"), (prop, "PROP"), (decal_collection, "DECAL")):
+                test_context.addon.utils.collection_utils.Collection.mark_hst_type(collection, collection_type)
+            for collection, name, location in (
+                (outer, "OuterOrigin", (40.0, 20.0, 10.0)),
+                (prop, "NestedOrigin", (5.0, 3.0, 1.0)),
+            ):
+                origin = bpy.data.objects.new(name, None)
+                collection.objects.link(origin)
+                origin.location = location
+                origin.rotation_euler.z = math.radians(90.0)
+                origin.scale = (4.0, 2.0, 3.0)
+                test_context.addon.utils.object_utils.Object.mark_hst_type(origin, "ORIGIN")
+            body = make_test_mesh("NestedBody", prop, location=(7.0, 4.0, 2.0))
+            decal = make_test_mesh("NestedSticker", decal_collection, location=(7.0, 4.0, 3.1))
+            decal.scale = (0.7, 0.7, 0.1)
+            bpy.context.view_layer.update()
+            originals = {obj: obj.matrix_world.copy() for obj in bpy.context.scene.objects}
+            origin = bpy.data.objects["NestedOrigin"]
+            location, rotation, _scale = origin.matrix_world.decompose()
+            inverse_origin = Matrix.LocRotScale(location, rotation, Vector((1.0, 1.0, 1.0))).inverted_safe()
+            expected = {
+                obj.name: (inverse_origin @ originals[obj] if relative else originals[obj]).translation.copy()
+                for obj in (body, decal)
+            }
+            case_name = f"{export_format.lower()}_{'relative' if relative else 'world'}_{collection_filter.lower()}"
+            export_dir = ARTIFACT_DIR / "exports" / "nested_decal_origin" / case_name
+            export_dir.mkdir(parents=True, exist_ok=True)
+            params.export_path = str(export_dir)
+            params.export_format = export_format
+            params.file_prefix = ""
+            select_objects(body, [])
+            bpy.context.view_layer.active_layer_collection = bpy.context.view_layer.layer_collection
+            operator_result = bpy.ops.hst.staticmeshexport(
+                export_collection_type=collection_filter,
+                export_relative_to_prop_origin=relative,
+            )
+            ensure("FINISHED" in operator_result, f"{case_name}: export did not finish")
+            for obj, matrix in originals.items():
+                error = max(abs(obj.matrix_world[row][column] - matrix[row][column])
+                            for row in range(4) for column in range(4))
+                ensure(error < 1e-5, f"{case_name}: source transform changed for {obj.name}")
+            bpy.ops.object.select_all(action="SELECT")
+            bpy.ops.object.delete()
+            target_names = ("NestedProp", "NestedDecal") if collection_filter == "ALL" else ("NestedDecal",)
+            for name in target_names:
+                export_file = export_dir / f"SM_{name}.{export_format.lower()}"
+                ensure(export_file.exists(), f"{case_name}: missing {export_file.name}")
+                if export_format == "FBX":
+                    bpy.ops.wm.fbx_import(filepath=str(export_file))
+                else:
+                    bpy.ops.import_scene.gltf(filepath=str(export_file))
+            meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+            expected_names = {"NestedBody", "NestedSticker"} if collection_filter == "ALL" else {"NestedSticker"}
+            ensure({obj.name for obj in meshes} == expected_names, f"{case_name}: unexpected imported objects")
+            for obj in meshes:
+                error = (obj.matrix_world.translation - expected[obj.name]).length
+                ensure(error < 1e-4, f"{case_name}: {obj.name} export location error {error}")
+            blend_path = export_dir / "reimported.blend"
+            bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
+            result.add_detail(f"{case_name}: coordinates and source restoration passed; {blend_path}")
+
 def test_staticmeshexport_prop_origin_relative_transform_regression(
     test_context: TestContext,
     result: TestCaseResult,
@@ -14399,6 +14479,7 @@ def main():
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
     context.run_case("staticmeshexport_collection_type_filter_regression", test_staticmeshexport_collection_type_filter_regression)
     context.run_case("staticmeshexport_options_persist_in_blend_regression", test_staticmeshexport_options_persist_in_blend_regression)
+    context.run_case("staticmeshexport_nested_decal_origin_regression", test_staticmeshexport_nested_decal_origin_regression)
     context.run_case("staticmeshexport_prop_origin_relative_transform_regression", test_staticmeshexport_prop_origin_relative_transform_regression)
     context.run_case("staticmeshexport_prop_origin_validation_regression", test_staticmeshexport_prop_origin_validation_regression)
     context.run_case("staticmeshexport_current_scene_only_fbx", test_staticmeshexport_current_scene_only_fbx)

@@ -403,8 +403,8 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
     )
     export_relative_to_prop_origin: bpy.props.BoolProperty(
         name="Export Relative to Prop Origin",
-        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
-        default=False,
+        description="导出 Prop 及其 Decal 时抵消父 Prop Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
+        default=True,
     )
 #TODO: 增加对GPro Instance的支持， 增加对MeshGroupInstance的支持
 
@@ -559,22 +559,28 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                 file_path = export_path + new_name + export_ext
                 print(f"exporting {collection.name} to {file_path}")
                 relative_origin = None
-                if (
-                    self.export_relative_to_prop_origin
-                    and Collection.get_hst_type(collection) == "PROP"
-                ):
-                    origin_objects = Object.filter_hst_type(
-                        objects=collection.objects,
-                        type="ORIGIN",
-                        mode="INCLUDE",
-                    ) or []
-                    if len(origin_objects) == 1:
-                        relative_origin = origin_objects[0]
-                    elif len(origin_objects) == 0:
-                        self.report({"WARNING"}, f"{collection.name}: no Prop Origin, exported unchanged")
-                    else:
-                        self.report({"WARNING"}, f"{collection.name}: multiple Prop Origins, skipped")
-                        continue
+                if self.export_relative_to_prop_origin:
+                    collection_type = Collection.get_hst_type(collection)
+                    prop_collection = (
+                        collection
+                        if collection_type == "PROP"
+                        else Collection.find_parent_recur_by_type(collection, "PROP")
+                        if collection_type == "DECAL"
+                        else None
+                    )
+                    if prop_collection is not None:
+                        origin_objects = Object.filter_hst_type(
+                            objects=prop_collection.objects,
+                            type="ORIGIN",
+                            mode="INCLUDE",
+                        ) or []
+                        if len(origin_objects) == 1:
+                            relative_origin = origin_objects[0]
+                        elif len(origin_objects) == 0:
+                            self.report({"WARNING"}, f"{prop_collection.name}: no Prop Origin, exported unchanged")
+                        else:
+                            self.report({"WARNING"}, f"{prop_collection.name}: multiple Prop Origins, skipped")
+                            continue
 
                 staticmesh_exporter(
                     collection,

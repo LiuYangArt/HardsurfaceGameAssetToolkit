@@ -125,8 +125,8 @@ class UIParams(PropertyGroup):
 
     export_relative_to_prop_origin: BoolProperty(
         name="Export Relative to Prop Origin",
-        description="导出 Prop 时仅抵消 Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
-        default=False,
+        description="导出 Prop 及其 Decal 时抵消父 Prop Origin 的 Location 与 Rotation，保持对象相对布局和 Scale",
+        default=True,
     )
 
     file_prefix: StringProperty(
