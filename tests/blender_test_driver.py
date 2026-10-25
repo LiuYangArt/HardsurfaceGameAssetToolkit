@@ -1701,6 +1701,259 @@ def test_staticmeshexport_fbx_smoke(test_context: TestContext, result: TestCaseR
     result.add_detail(f"FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
 
 
+# 验证 Prop 直属 Decal Mesh 会阻止 FBX，而嵌套 Decal Collection 可独立导出。
+# test_context: 已加载插件的上下文；result: 当前测试结果记录器。
+def test_staticmeshexport_rejects_decal_in_prop_regression(
+    test_context: TestContext,
+    result: TestCaseResult,
+):
+    collection_tools = test_context.addon.utils.collection_utils.Collection
+    object_tools = test_context.addon.utils.object_utils.Object
+    export_utils = test_context.addon.utils.export_utils
+
+    for material_name in (
+        "Panel_Decal",
+        "Panel_MeshDecal",
+        "Panel_InfoDecal",
+        "Decal_Panel",
+    ):
+        material = bpy.data.materials.new(name=material_name)
+        ensure(
+            export_utils.is_decal_material(material),
+            f"Decal material rule was not recognized: {material_name}",
+        )
+    regular_material = bpy.data.materials.new(name="MI_Panel")
+    ensure(
+        not export_utils.is_decal_material(regular_material),
+        "Regular material was incorrectly recognized as Decal",
+    )
+
+    prop_collection = make_collection("PropDecalValidation")
+    collection_tools.mark_hst_type(prop_collection, "PROP")
+    make_test_mesh("Body", prop_collection)
+
+    marked_decal_mesh = make_plane("DirectMarkedDecal", prop_collection)
+    object_tools.mark_hst_type(marked_decal_mesh, "DECAL")
+
+    material_decal_mesh = make_plane("DirectMaterialDecal", prop_collection)
+    direct_decal_material = bpy.data.materials.new(name="MI_Direct_Decal")
+    material_decal_mesh.data.materials.append(direct_decal_material)
+
+    nested_decal_collection = bpy.data.collections.new("PropDecalValidation_Decal")
+    prop_collection.children.link(nested_decal_collection)
+    collection_tools.mark_hst_type(nested_decal_collection, "DECAL")
+    nested_decal_mesh = make_plane("NestedDecal", nested_decal_collection)
+    nested_decal_mesh.data.materials.append(
+        bpy.data.materials.new(name="Decal_Nested")
+    )
+    object_tools.mark_hst_type(nested_decal_mesh, "DECAL")
+
+    issues = export_utils.collect_prop_decal_export_issues([prop_collection])
+    ensure(
+        {issue[1] for issue in issues}
+        == {"DirectMarkedDecal", "DirectMaterialDecal"},
+        f"Prop Decal issue scope differs: {issues}",
+    )
+    ensure(
+        all(issue[1] != nested_decal_mesh.name for issue in issues),
+        "Nested Decal Collection must not be treated as mixed into Prop",
+    )
+
+    export_dir = ARTIFACT_DIR / "exports" / "prop_decal_validation"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for stale_file in export_dir.glob("*"):
+        if stale_file.is_file():
+            stale_file.unlink()
+
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = ""
+
+    export_module = importlib.import_module(f"{PACKAGE_NAME}.export")
+    popup_calls = []
+    original_message_box = export_module.message_box
+    export_module.message_box = (
+        lambda text="", title="WARNING", icon="ERROR":
+        popup_calls.append((text, title, icon))
+    )
+    try:
+        try:
+            blocked_result = bpy.ops.hst.staticmeshexport(
+                export_collection_type="ALL",
+                export_relative_to_prop_origin=False,
+            )
+        except RuntimeError as error:
+            ensure(
+                "FBX export cancelled" in str(error),
+                f"FBX export failed for an unexpected reason: {error}",
+            )
+            blocked_result = {"CANCELLED"}
+    finally:
+        export_module.message_box = original_message_box
+
+    ensure("CANCELLED" in blocked_result, "FBX export did not stop for mixed Decal Meshes")
+    ensure(not list(export_dir.glob("*.fbx")), "Blocked FBX export wrote partial files")
+    ensure(len(popup_calls) == 1, "Blocked FBX export did not show one summary popup")
+    popup_text = popup_calls[0][0]
+    ensure(
+        "DirectMarkedDecal" in popup_text
+        and "DirectMaterialDecal" in popup_text
+        and "NestedDecal" not in popup_text,
+        f"Popup did not identify only direct Prop violations: {popup_text}",
+    )
+
+    object_tools.mark_hst_type(marked_decal_mesh, "STATICMESH")
+    material_decal_mesh.data.materials.clear()
+    allowed_result = bpy.ops.hst.staticmeshexport(
+        export_collection_type="ALL",
+        export_relative_to_prop_origin=False,
+    )
+    ensure("FINISHED" in allowed_result, "Nested Decal Collection incorrectly blocked FBX export")
+    exported_files = {path.name for path in export_dir.glob("*.fbx")}
+    ensure(
+        exported_files
+        == {
+            "SM_PropDecalValidation.fbx",
+            "SM_PropDecalValidation_Decal.fbx",
+        },
+        f"Prop and nested Decal were not exported separately: {exported_files}",
+    )
+    result.add_detail("Direct Prop Decals blocked with one popup; nested Decal exported separately")
+
+
+# 验证正式 FBX 导出会写回通用命名、保持碰撞体对应，并在重复执行时稳定。
+# test_context: 已加载插件的上下文；result: 当前测试结果记录器。
+def test_staticmeshexport_asset_naming_regression(test_context: TestContext, result: TestCaseResult):
+    naming = test_context.addon.utils.asset_name_utils
+    for prefix, expected in (
+        ("Platform", "SM_PlatformPanel"),
+        ("Platform_", "SM_Platform_Panel"),
+        ("", "SM_Panel"),
+    ):
+        ensure(naming.asset_export_name("Panel", prefix) == expected, f"Unexpected prefix separator: {prefix}")
+    for prefix in ("sm_", "SK_", "sm_sm_"):
+        ensure(naming.asset_export_name("panel", prefix) == "SM_Panel", f"Type-only prefix duplicated: {prefix}")
+    collection_tools = test_context.addon.utils.collection_utils.Collection
+    prop = make_collection("sm_sm_testAsset-1")
+    first_mesh = make_test_mesh("bodyPanel-1", prop)
+    second_mesh = make_test_mesh("bodyPanel-1-part", prop, location=(3.0, 0.0, 0.0))
+    first_collision = make_test_mesh("UCX_bodyPanel-1_1", prop)
+    second_collision = make_test_mesh("ucx_bodyPanel-1-part_2", prop, location=(3.0, 0.0, 0.0))
+    collection_tools.mark_hst_type(prop, "PROP")
+    decal = make_collection("sm_labelPanel-decal-decal")
+    decal_mesh = make_plane("labelFace-1", decal)
+    collection_tools.mark_hst_type(decal, "DECAL")
+    material = bpy.data.materials.new(name="untouched-material_name")
+    first_mesh.data.materials.append(material)
+    decal_mesh.data.materials.append(material)
+    original_material_name = material.name
+
+    export_dir = ARTIFACT_DIR / "exports" / "asset_naming"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for stale_file in export_dir.glob("*.fbx"):
+        stale_file.unlink()
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = "sm_testPack-"
+    expected_files = {"SM_TestPackTestAsset_01.fbx", "SM_TestPackLabelPanel_Decal.fbx"}
+    tracked = (prop, decal, first_mesh, second_mesh, first_collision, second_collision, decal_mesh)
+    first_names = None
+    for iteration in range(2):
+        op_result = bpy.ops.hst.staticmeshexport(export_relative_to_prop_origin=False)
+        ensure("FINISHED" in op_result, f"Naming FBX export did not finish on run {iteration + 1}")
+        ensure(prop.name == "TestAsset_01", f"Prop name was not written back: {prop.name}")
+        ensure(decal.name == "LabelPanel_Decal", f"Decal suffix duplicated: {decal.name}")
+        ensure(first_mesh.name == "BodyPanel_01", f"First mesh naming failed: {first_mesh.name}")
+        ensure(second_mesh.name == "BodyPanel_01_Part", f"Second mesh naming failed: {second_mesh.name}")
+        ensure(first_collision.name == f"UCX_{first_mesh.name}_01", f"First collision lost its model: {first_collision.name}")
+        ensure(second_collision.name == f"UCX_{second_mesh.name}_02", f"Second collision lost its model: {second_collision.name}")
+        ensure(material.name == original_material_name, "Export renamed an out-of-scope material")
+        actual_files = {path.name for path in export_dir.glob("*.fbx")}
+        ensure(actual_files == expected_files, f"Export filenames differ: {actual_files}")
+        ensure(all((export_dir / filename).stat().st_size > 0 for filename in expected_files), "An exported FBX is empty")
+        names = tuple(item.name for item in tracked)
+        if first_names is not None:
+            ensure(names == first_names, f"Repeated export changed scene names: {names}")
+        first_names = names
+
+    blend_path = ARTIFACT_DIR / "asset_naming_review.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(blend_path), copy=True)
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
+    bpy.ops.wm.fbx_import(filepath=str(export_dir / "SM_TestPackTestAsset_01.fbx"))
+    imported_names = {obj.name for obj in bpy.context.scene.objects if obj.type == "MESH"}
+    expected_names = {"BodyPanel_01", "BodyPanel_01_Part", "UCX_BodyPanel_01_01", "UCX_BodyPanel_01_Part_02"}
+    ensure(imported_names == expected_names, f"FBX round trip lost collision/model names: {imported_names}")
+    result.add_detail(f"FBX names and two independent UCX mappings verified; manual review: {blend_path}")
+
+
+# 验证骨骼与逐模型导出分支使用统一前缀规则，并稳定写回名称。
+# test_context: 已加载插件的上下文；result: 当前测试结果记录器。
+def test_staticmeshexport_skeletal_naming_regression(test_context: TestContext, result: TestCaseResult):
+    collection_tools = test_context.addon.utils.collection_utils.Collection
+    rig = make_collection("sk_sk_rigAsset-1")
+    collection_tools.mark_hst_type(rig, "RIG")
+    armature = make_armature("NamingRig", rig)
+    rig_mesh = make_test_mesh("rigBody-1", rig)
+    rig_mesh.parent = armature
+    skm = make_collection("sm_parts-1")
+    collection_tools.mark_hst_type(skm, "SKM")
+    part = make_test_mesh("sm_sm_partAsset-1", skm)
+    export_dir = ARTIFACT_DIR / "exports" / "skeletal_naming"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for stale_file in export_dir.glob("*.fbx"):
+        stale_file.unlink()
+    params = bpy.context.scene.hst_params
+    params.export_path = str(export_dir)
+    params.export_format = "FBX"
+    params.file_prefix = "sm_testPack-"
+    first_names = None
+    for iteration in range(2):
+        op_result = bpy.ops.hst.staticmeshexport(export_relative_to_prop_origin=False)
+        ensure("FINISHED" in op_result, f"Skeletal naming export failed on run {iteration + 1}")
+        expected_files = {"SK_TestPackRigAsset_01.fbx", "SM_TestPackPartAsset_01.fbx"}
+        actual_files = {path.name for path in export_dir.glob("*.fbx")}
+        ensure(actual_files == expected_files, f"Skeletal naming filenames differ: {actual_files}")
+        ensure(rig.name == "RigAsset_01", f"Rig collection name not written back: {rig.name}")
+        ensure(skm.name == "Parts_01", f"SKM collection name not written back: {skm.name}")
+        names = (rig.name, rig_mesh.name, skm.name, part.name)
+        if first_names is not None:
+            ensure(names == first_names, f"Repeated skeletal export changed names: {names}")
+        first_names = names
+    result.add_detail("Rig and SKM normalized filenames and repeated scene-name writeback verified")
+
+
+# 验证创建 Decal 时父子集合使用同一规范基名，重复执行复用已有集合。
+# test_context: 已加载插件的上下文；result: 当前测试结果记录器。
+def test_make_decal_collection_naming_regression(test_context: TestContext, result: TestCaseResult):
+    collection_tools = test_context.addon.utils.collection_utils.Collection
+    object_tools = test_context.addon.utils.object_utils.Object
+    prop = make_collection("raw-parentAsset-1")
+    body = make_test_mesh("bodyMesh-1", prop)
+    sticker = make_plane("stickerFace-1", prop)
+    collection_tools.mark_hst_type(prop, "PROP")
+    object_tools.mark_hst_type(sticker, "DECAL")
+    decal_pointer = None
+    collection_count = len(bpy.data.collections)
+    for iteration in range(2):
+        select_objects(body, [body])
+        op_result = bpy.ops.hst.make_decal_collection()
+        ensure("FINISHED" in op_result, f"Make Decal did not finish on run {iteration + 1}")
+        ensure(prop.name == "Raw_ParentAsset_01", f"Parent name not normalized: {prop.name}")
+        children = [child for child in prop.children if collection_tools.get_hst_type(child) == "DECAL"]
+        ensure(len(children) == 1, f"Expected one child Decal collection, got {len(children)}")
+        decal = children[0]
+        ensure(decal.name == prop.name + "_Decal", f"Parent and Decal base names differ: {prop.name}, {decal.name}")
+        ensure(sticker.name in decal.objects, "Decal mesh was not moved to its collection")
+        ensure(len(bpy.data.collections) == collection_count + 1, "Repeated creation added an extra collection")
+        if decal_pointer is not None:
+            ensure(decal.as_pointer() == decal_pointer, "Repeated creation replaced the existing Decal collection")
+        decal_pointer = decal.as_pointer()
+    result.add_detail("Raw Prop base normalized and corresponding Decal collection reused")
+
+
 # 验证导出选项写入 Scene 参数，并可随 .blend 保存和重新打开。
 # test_context: 已加载的 add-on 测试上下文；result: 当前测试结果记录器。
 def test_staticmeshexport_options_persist_in_blend_regression(
@@ -1754,7 +2007,7 @@ def test_staticmeshexport_options_persist_in_blend_regression(
 def test_staticmeshexport_collection_type_filter_regression(test_context: TestContext, result: TestCaseResult):
     collection_types = [
         ("PROP", "PropFilterCase", "SM_PropFilterCase.fbx"),
-        ("DECAL", "DecalFilterCase", "SM_DecalFilterCase.fbx"),
+        ("DECAL", "DecalFilterCase", "SM_DecalFilterCase_Decal.fbx"),
         ("BAKE_LOW", "BakeFilterCase", "SM_BakeFilterCase.fbx"),
         (None, "StaticMeshFilterCase", "SM_StaticMeshFilterCase.fbx"),
         ("SKM", "SkeletalFilterCase", "SM_SkeletalFilterCaseMesh.fbx"),
@@ -1773,7 +2026,7 @@ def test_staticmeshexport_collection_type_filter_regression(test_context: TestCo
     params.file_prefix = ""
     export_cases = [
         ("PROP", "SM_PropFilterCase.fbx"),
-        ("DECAL", "SM_DecalFilterCase.fbx"),
+        ("DECAL", "SM_DecalFilterCase_Decal.fbx"),
         ("BAKE", "SM_BakeFilterCase.fbx"),
         ("STATIC_MESH", "SM_StaticMeshFilterCase.fbx"),
         ("SKELETAL", "SM_SkeletalFilterCaseMesh.fbx"),
@@ -1864,7 +2117,8 @@ def test_staticmeshexport_nested_decal_origin_regression(test_context, result):
                 ensure(error < 1e-5, f"{case_name}: source transform changed for {obj.name}")
             bpy.ops.object.select_all(action="SELECT")
             bpy.ops.object.delete()
-            target_names = ("NestedProp", "NestedDecal") if collection_filter == "ALL" else ("NestedDecal",)
+            decal_export_name = "NestedDecal_Decal" if export_format == "FBX" else "NestedDecal"
+            target_names = ("NestedProp", decal_export_name) if collection_filter == "ALL" else (decal_export_name,)
             for name in target_names:
                 export_file = export_dir / f"SM_{name}.{export_format.lower()}"
                 ensure(export_file.exists(), f"{case_name}: missing {export_file.name}")
@@ -2087,7 +2341,17 @@ def test_staticmeshexport_cat_meshgroup_instance_fbx(test_context: TestContext, 
         compat_utils.modifier_input_get(modifier, realize_identifier) == False,
         "CAT MeshGroup Realize socket was not restored",
     )
-    result.add_detail(f"CAT MeshGroup FBX export: {export_file.name} ({export_file.stat().st_size} bytes)")
+    for stale_file in export_dir.glob("*.fbx"):
+        stale_file.unlink()
+    instance.name = "inst_sm_sm_catAsset-1"
+    params.file_prefix = "sm_testPack-"
+    for iteration in range(2):
+        op_result = bpy.ops.hst.staticmeshexport()
+        ensure("FINISHED" in op_result, f"CAT naming export failed on run {iteration + 1}")
+        ensure(instance.name == "inst_CatAsset_01", f"CAT instance name drifted: {instance.name}")
+        actual_files = {path.name for path in export_dir.glob("*.fbx")}
+        ensure(actual_files == {"SM_TestPackCatAsset_01.fbx"}, f"CAT naming export differs: {actual_files}")
+    result.add_detail("CAT MeshGroup naming, repeated prefixes, file prefix and repeated export verified")
 
 
 def test_staticmeshexport_glb_smoke(test_context: TestContext, result: TestCaseResult):
@@ -2381,15 +2645,17 @@ def test_collection_unreal_rename_smoke(test_context: TestContext, result: TestC
         "pipe-cap-a": "Pipe_Cap_A",
         "pipe-01-a": "Pipe_01_A",
         "uv-pipe": "Uv_Pipe",
-        "pipe-cap.001": "Pipe_Cap_001",
+        "pipe-cap.001": "Pipe_Cap_01",
         "already__spaced-name": "Already_Spaced_Name",
+        "mixedCase-LOD-1": "MixedCase_LOD_01",
+        "panel-123": "Panel_123",
     }
     for source_name, expected_name in name_cases.items():
         actual_name = collection_utils.normalize_unreal_collection_name(source_name)
         ensure(actual_name == expected_name, f"Unreal name mismatch: {source_name} -> {actual_name}")
 
     occupied_name = make_collection("Pipe_Cap_A")
-    occupied_suffix = make_collection("Pipe_Cap_A_001")
+    occupied_suffix = make_collection("Pipe_Cap_A_01")
     target_collection = make_collection("pipe-cap-a")
     second_collection = make_collection("pipe-cap.001")
     compliant_collection = make_collection("Already_Compliant")
@@ -2406,23 +2672,23 @@ def test_collection_unreal_rename_smoke(test_context: TestContext, result: TestC
 
     rename_result = bpy.ops.hst.rename_collections_for_unreal()
     ensure("FINISHED" in rename_result, "Rename Collections for Unreal did not finish")
-    ensure(target_collection.name == "Pipe_Cap_A_002", f"Conflict suffix mismatch: {target_collection.name}")
-    ensure(second_collection.name == "Pipe_Cap_001", f"Numeric suffix conversion failed: {second_collection.name}")
+    ensure(target_collection.name == "Pipe_Cap_A_02", f"Conflict suffix mismatch: {target_collection.name}")
+    ensure(second_collection.name == "Pipe_Cap_01", f"Numeric suffix conversion failed: {second_collection.name}")
     ensure(compliant_collection.name == "Already_Compliant", "Compliant Collection name changed")
     ensure(parent_collection.name == "parent-untouched", "Parent Collection was renamed recursively")
     ensure(child_collection.name == "child-untouched", "Unselected child Collection was renamed")
     ensure(occupied_name.name == "Pipe_Cap_A", "Existing target Collection was changed")
-    ensure(occupied_suffix.name == "Pipe_Cap_A_001", "Existing numbered Collection was changed")
+    ensure(occupied_suffix.name == "Pipe_Cap_A_01", "Existing numbered Collection was changed")
 
     select_objects(child_object, [child_object])
     child_result = bpy.ops.hst.rename_collections_for_unreal()
     ensure("FINISHED" in child_result, "Direct child Collection rename did not finish")
     ensure(child_collection.name == "Child_Untouched", "Direct child Collection was not renamed")
     ensure(parent_collection.name == "parent-untouched", "Parent Collection changed with child selection")
-    result.add_detail("Unreal Collection naming handled direct membership and _002 conflict suffix")
+    result.add_detail("Unreal Collection naming handled direct membership and _02 conflict suffix")
 
 
-# 验证 Prop、Decal、Bake 标记入口的可选命名开关及默认旧行为。
+# 验证 Prop、Decal 自动命名与 Bake 可选命名。
 # test_context/result: 测试上下文与结果记录器；无返回值。
 def test_collection_marker_optional_rename_regression(test_context: TestContext, result: TestCaseResult):
     const = test_context.const
@@ -2440,12 +2706,12 @@ def test_collection_marker_optional_rename_regression(test_context: TestContext,
     prop_old_object = make_test_mesh("PropOldMesh", prop_old)
     select_objects(prop_old_object, [prop_old_object])
     ensure("FINISHED" in bpy.ops.hst.markpropcollection(), "Default Prop marker did not finish")
-    ensure(prop_old.name == "prop-old-name", f"Default Prop marker changed old naming: {prop_old.name}")
+    ensure(prop_old.name == "Prop_Old_Name", f"Default Prop marker changed old naming: {prop_old.name}")
 
     prop_new = make_collection("pipe-cap-a")
     prop_new_object = make_test_mesh("PropNewMesh", prop_new)
     select_objects(prop_new_object, [prop_new_object])
-    ensure("FINISHED" in bpy.ops.hst.markpropcollection(rename_for_unreal=True), "Renaming Prop marker did not finish")
+    ensure("FINISHED" in bpy.ops.hst.markpropcollection(), "Renaming Prop marker did not finish")
     ensure(prop_new.name == "Pipe_Cap_A", f"Prop Unreal rename failed: {prop_new.name}")
     ensure(prop_new.get(const.HST_PROP) == "PROP", "Prop type marker regressed")
 
@@ -2453,7 +2719,7 @@ def test_collection_marker_optional_rename_regression(test_context: TestContext,
     decal_old_object = make_plane("DecalOldMesh", decal_old)
     select_objects(decal_old_object, [decal_old_object])
     ensure("FINISHED" in bpy.ops.hst.markdecalcollection(), "Default Decal marker did not finish")
-    ensure(decal_old.name == "decal-old-name_Decal", f"Default Decal naming changed: {decal_old.name}")
+    ensure(decal_old.name == "Decal_Old_Name_Decal", f"Default Decal naming changed: {decal_old.name}")
 
     make_collection("Wall_Sign_A_Decal")
     decal_new = make_collection("wall-sign-a")
@@ -2461,11 +2727,11 @@ def test_collection_marker_optional_rename_regression(test_context: TestContext,
     decal_material = bpy.data.materials.new(name="Decal_Rename")
     decal_object.data.materials.append(decal_material)
     select_objects(decal_object, [decal_object])
-    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(rename_for_unreal=True), "Renaming Decal marker did not finish")
-    ensure(decal_new.name == "Wall_Sign_A_Decal_001", f"Decal conflict rename failed: {decal_new.name}")
+    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(), "Renaming Decal marker did not finish")
+    ensure(decal_new.name == "Wall_Sign_A_01_Decal", f"Decal conflict rename failed: {decal_new.name}")
     ensure(decal_new.get(const.HST_PROP) == "DECAL", "Decal type marker regressed")
-    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(rename_for_unreal=True), "Repeated Decal marker did not finish")
-    ensure(decal_new.name == "Wall_Sign_A_Decal_001", f"Repeated Decal rename drifted: {decal_new.name}")
+    ensure("FINISHED" in bpy.ops.hst.markdecalcollection(), "Repeated Decal marker did not finish")
+    ensure(decal_new.name == "Wall_Sign_A_01_Decal", f"Repeated Decal rename drifted: {decal_new.name}")
 
     bake_low_old = make_collection("bake-old-name")
     bake_low_old_object = make_test_mesh("BakeLowOldMesh", bake_low_old)
@@ -2478,10 +2744,10 @@ def test_collection_marker_optional_rename_regression(test_context: TestContext,
     bake_low_object = make_test_mesh("BakeLowRenameMesh", bake_low)
     select_objects(bake_low_object, [bake_low_object])
     ensure("FINISHED" in bpy.ops.hst.setbakecollectionlow(rename_for_unreal=True), "Renaming Bake Low did not finish")
-    ensure(bake_low.name == "Pipe_01_A_Low_001", f"Bake Low conflict rename failed: {bake_low.name}")
+    ensure(bake_low.name == "Pipe_01_A_Low_01", f"Bake Low conflict rename failed: {bake_low.name}")
     ensure(bake_low.get(const.HST_PROP) == "BAKE_LOW", "Bake Low type marker regressed")
     ensure("FINISHED" in bpy.ops.hst.setbakecollectionlow(rename_for_unreal=True), "Repeated Bake Low did not finish")
-    ensure(bake_low.name == "Pipe_01_A_Low_001", f"Repeated Bake Low rename drifted: {bake_low.name}")
+    ensure(bake_low.name == "Pipe_01_A_Low_01", f"Repeated Bake Low rename drifted: {bake_low.name}")
 
     bake_high = make_collection("uv-pipe")
     bake_high_object = make_test_mesh("BakeHighRenameMesh", bake_high)
@@ -2492,7 +2758,7 @@ def test_collection_marker_optional_rename_regression(test_context: TestContext,
     ensure(test_context.addon.utils.object_utils.Object.get_hst_type(bake_high_object) == "HIGH", "Bake High object marker regressed")
     ensure("FINISHED" in bpy.ops.hst.setbakecollectionhigh(rename_for_unreal=True), "Repeated Bake High did not finish")
     ensure(bake_high.name == "Uv_Pipe_High", f"Repeated Bake High rename drifted: {bake_high.name}")
-    result.add_detail("Prop, Decal, Bake Low/High optional Unreal naming passed")
+    result.add_detail("Prop/Decal automatic naming and Bake Low/High optional naming passed")
 
 
 
@@ -14482,6 +14748,10 @@ def main():
     context.run_case("collection_get_selected_outliner_precedence", test_collection_get_selected_outliner_precedence)
     context.run_case("isolate_collections_ignores_active_collection_without_object_selection_regression", test_isolate_collections_ignores_active_collection_without_object_selection_regression)
     context.run_case("staticmeshexport_fbx_smoke", test_staticmeshexport_fbx_smoke)
+    context.run_case("staticmeshexport_rejects_decal_in_prop_regression", test_staticmeshexport_rejects_decal_in_prop_regression)
+    context.run_case("staticmeshexport_asset_naming_regression", test_staticmeshexport_asset_naming_regression)
+    context.run_case("make_decal_collection_naming_regression", test_make_decal_collection_naming_regression)
+    context.run_case("staticmeshexport_skeletal_naming_regression", test_staticmeshexport_skeletal_naming_regression)
     context.run_case("staticmeshexport_collection_type_filter_regression", test_staticmeshexport_collection_type_filter_regression)
     context.run_case("staticmeshexport_options_persist_in_blend_regression", test_staticmeshexport_options_persist_in_blend_regression)
     context.run_case("staticmeshexport_nested_decal_origin_regression", test_staticmeshexport_nested_decal_origin_regression)

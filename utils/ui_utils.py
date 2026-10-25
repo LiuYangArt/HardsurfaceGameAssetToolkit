@@ -21,7 +21,8 @@ def message_box(text: str = "", title: str = "WARNING", icon: str = "ERROR") -> 
     """
 
     def draw(self, context):
-        self.layout.label(text=text)
+        for line in text.splitlines() or [""]:
+            self.layout.label(text=line)
 
     bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
 

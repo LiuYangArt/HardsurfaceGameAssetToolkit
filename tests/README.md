@@ -6,6 +6,9 @@
 
 ## 当前覆盖
 
+- Prop / Decal 自动命名、父子同基名与重复执行回归。
+- FBX 集合、CAT 实例、逐模型与骨骼导出的前缀整理、名称写回和碰撞体对应回归。说明及人工检查清单见 [命名整理](asset-naming.md)。
+
 - addon 注册 smoke test（包含全部 `hst.*` operator 注册检查，并确认旧 Sharp/Seam Feature Chamfer 不再注册）
 - 遗留 `Scene.hst_params` PointerProperty 安全替换的 UI 崩溃回归
 - `_TransferProxy` collection 复用回归
@@ -33,6 +36,7 @@
 - Collection Unreal 命名及 Prop / Decal / Bake 可选联动回归
 - isolate collection 空选择回归（active collection 不应被当作显式选择）
 - static mesh FBX export smoke test
+- FBX 导出阻止 Prop 直属 Decal Mesh，并允许嵌套 Decal Collection 独立导出回归
 - static mesh Collection Type（All / Prop / Decal / Bake / Static Mesh / Skeletal）筛选回归
 - static mesh 导出选项随 .blend 保存与重新打开的持久化回归
 - static mesh 按 Prop Origin 的 Location/Rotation 整体相对导出、忽略 Origin Scale、恢复变换，以及缺失/重复 Origin 边界回归

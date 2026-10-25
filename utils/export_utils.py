@@ -7,7 +7,80 @@
 """
 
 import bpy
-from ..const import HST_PROP
+from ..const import (
+    DECAL_PREFIX,
+    DECAL_SUFFIX,
+    HST_PROP,
+    INFODECAL_SUFFIX,
+    MESHDECAL_SUFFIX,
+)
+from .object_utils import Object
+
+
+# 判断 Material 是否符合项目现有的 Decal 命名规则。
+# 参数:
+#     material: 待检查的 Blender Material；允许为 None。
+def is_decal_material(material) -> bool:
+    if material is None:
+        return False
+
+    material_name = material.name
+    return (
+        material_name.endswith(MESHDECAL_SUFFIX)
+        or material_name.endswith(INFODECAL_SUFFIX)
+        or material_name.endswith(DECAL_SUFFIX)
+        or material_name.startswith(DECAL_PREFIX)
+    )
+
+
+# 收集直属于 Prop Collection 的违规 Decal Mesh，不进入任何子 Collection。
+# 参数:
+#     prop_collections: 本次实际参与 FBX 导出的 Prop Collection 列表。
+# 返回:
+#     (Prop 名称, Mesh 名称, 原因) 元组列表。
+def collect_prop_decal_export_issues(prop_collections) -> list:
+    issues = []
+
+    for prop_collection in prop_collections:
+        for obj in prop_collection.objects:
+            if obj.type != "MESH":
+                continue
+
+            reasons = []
+            if Object.get_hst_type(obj) == "DECAL":
+                reasons.append("Mesh 被标记为 Decal")
+
+            decal_material_names = [
+                material.name
+                for material in obj.data.materials
+                if is_decal_material(material)
+            ]
+            if decal_material_names:
+                reasons.append(
+                    "使用 Decal 材质：" + ", ".join(decal_material_names)
+                )
+
+            if reasons:
+                issues.append(
+                    (prop_collection.name, obj.name, "；".join(reasons))
+                )
+
+    return issues
+
+
+# 将 Prop Decal 检查结果整理为用户可直接处理的弹框文本。
+# 参数:
+#     issues: collect_prop_decal_export_issues 返回的违规项列表。
+def format_prop_decal_export_issues(issues) -> str:
+    lines = [
+        "Prop 中混入了 Decal Mesh，FBX 导出已取消。",
+        "请将以下 Mesh 移入嵌套的 Decal Collection 后重试：",
+    ]
+    lines.extend(
+        f"{prop_name} > {mesh_name}：{reason}"
+        for prop_name, mesh_name, reason in issues
+    )
+    return "\n".join(lines)
 
 
 def filter_static_meshes(collection):

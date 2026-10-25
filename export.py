@@ -1,8 +1,16 @@
 import bpy
+from .utils.asset_name_utils import (
+    asset_export_name, normalize_collection_asset, normalize_mesh_names, rename_unique, report_name_issues, strip_asset_prefix,
+)
 from .const import *
 from .functions.common_functions import *
 from .functions.asset_check_functions import *
+from .utils.export_utils import (
+    collect_prop_decal_export_issues,
+    format_prop_decal_export_issues,
+)
 from .utils.nodes_modifier_compat_utils import modifier_input_get, modifier_input_set
+from .utils.ui_utils import message_box
 
 GROUPPRO_SUFFIX = "_coll" #hack for group pro addon
 CAT_GROUP_MOD = "CAT_MeshGroup"
@@ -368,7 +376,13 @@ def export_cat_meshgroup_instance(
 ):
     export_name = make_cat_meshgroup_export_name(instance_object, source_collection)
     export_ext, _, staticmesh_exporter, _ = resolve_export_targets(export_format)
-    file_path = export_path + Const.STATICMESH_PREFIX + file_prefix + export_name + export_ext
+    if export_format == "FBX":
+        # 保留实例标记供下次导出识别，文件名使用实际写回后的基名。
+        rename_unique(instance_object, CAT_INSTANCE_PREFIX + strip_asset_prefix(export_name), bpy.data.objects)
+        export_name = asset_export_name(make_cat_meshgroup_export_name(instance_object, source_collection), file_prefix)
+        file_path = export_path + export_name + export_ext
+    else:
+        file_path = export_path + Const.STATICMESH_PREFIX + file_prefix + export_name + export_ext
     original_matrix = instance_object.matrix_world.copy()
     realize_identifier, original_realize = enable_cat_meshgroup_realize(modifier)
 
@@ -552,10 +566,40 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                 if collection in target_collections:
                     target_collections.remove(collection)
 
+            if export_format == "FBX":
+                exported_prop_collections = [
+                    collection
+                    for collection in prop_collections
+                    if collection in target_collections
+                ]
+                prop_decal_issues = collect_prop_decal_export_issues(
+                    exported_prop_collections
+                )
+                if prop_decal_issues:
+                    message_box(
+                        format_prop_decal_export_issues(prop_decal_issues),
+                        title="FBX Export Blocked",
+                        icon="ERROR",
+                    )
+                    restore_select_mode(store_mode)
+                    remove_instance_collection_from_scene(instance_collections)
+                    self.report(
+                        {"ERROR"},
+                        f"FBX export cancelled: {len(prop_decal_issues)} Decal Mesh(es) found in Prop Collection(s)",
+                    )
+                    return {"CANCELLED"}
+
             for collection in target_collections:
 
-                new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
-                new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
+                if export_format == "FBX":
+                    normalize_collection_asset(collection, decal=Collection.get_hst_type(collection) == "DECAL")
+                    if Collection.get_hst_type(collection) in {"BAKE_LOW", "BAKE_HIGH"}:
+                        normalize_mesh_names(collection.all_objects)
+                    new_name = asset_export_name(collection.name, file_prefix)
+                    report_name_issues(self, [new_name] + [obj.name for obj in collection.all_objects if obj.type == "MESH"])
+                else:
+                    new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
+                    new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
                 file_path = export_path + new_name + export_ext
                 print(f"exporting {collection.name} to {file_path}")
                 relative_origin = None
@@ -607,9 +651,13 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
             for collection in skm_collections:
                 # new_name = collection.name.removeprefix("SKM_")
                 # new_name = "SKM_" + new_name
+                if export_format == "FBX":
+                    normalize_collection_asset(collection)
                 for mesh in collection.objects:
                     new_name = mesh.name.removeprefix(Const.STATICMESH_PREFIX)
                     new_name = Const.STATICMESH_PREFIX + file_prefix + new_name
+                    if export_format == "FBX":
+                        new_name = asset_export_name(mesh.name, file_prefix)
                     file_path = export_path + new_name + export_ext
                     skm_count += 1
                     staticmesh_exporter(
@@ -621,9 +669,15 @@ class HST_OT_StaticMeshExport(bpy.types.Operator):
                     # mesh.select_set(True)
         if len(rig_collections) > 0:
             for collection in rig_collections:
+                if export_format == "FBX":
+                    normalize_mesh_names(collection.all_objects)
                 # for armature in collection.objects:
+                if export_format == "FBX":
+                    normalize_collection_asset(collection)
                 new_name = collection.name.removeprefix(Const.SKELETAL_MESH_PREFIX)
                 new_name = Const.SKELETAL_MESH_PREFIX + new_name
+                if export_format == "FBX":
+                    new_name = asset_export_name(collection.name, file_prefix, asset_type="SK")
                 file_path = export_path + new_name + export_ext
                 use_armature_as_root = parameters.use_armature_as_root
                 skeletal_exporter(collection, file_path, use_armature_as_root)

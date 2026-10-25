@@ -10,6 +10,7 @@ import bpy
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 from mathutils import Matrix, Vector
 from uuid import uuid4
+from ..utils.asset_name_utils import normalize_collection_asset
 from ..const import *
 from ..functions.common_functions import *
 from ..utils.image_utils import find_alpha_regions, get_linked_image_texture_node
@@ -55,6 +56,13 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
     bl_idname = "hst.make_decal_collection"
     bl_label = "Make Decal Collection"
     bl_description = "为Prop加对应的Decal Collection"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def invoke(self, context, event):
+        if not Collection.get_selected():
+            self.report({"WARNING"}, "没有选中的 Collection")
+            return {"CANCELLED"}
+        return self.execute(context)
 
     def execute(self, context):
         target_collections = Collection.get_selected()
@@ -83,6 +91,10 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
             parent_collection = Collection.find_parent_recur_by_type(
                 collection, type="PROP"
             )
+            if collection_type == "PROP":
+                normalize_collection_asset(collection)
+            elif parent_collection:
+                normalize_collection_asset(parent_collection)
             if parent_collection:
                 origin_objects = Object.filter_hst_type(
                     objects=parent_collection.objects, type="ORIGIN", mode="INCLUDE"
@@ -233,6 +245,8 @@ class HST_OT_MakeDecalCollection(bpy.types.Operator):
                         bpy.ops.object.parent_no_inverse_set(keep_transform=True)
                         decal_mesh.select_set(False)
                         origin_object.select_set(False)
+
+            normalize_collection_asset(decal_collection, decal=True)
 
             if remove_exist_collection:  # 删除重复Collection
                 bpy.data.collections.remove(exist_collection)

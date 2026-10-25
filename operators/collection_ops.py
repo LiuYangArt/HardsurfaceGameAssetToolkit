@@ -7,15 +7,12 @@ Collection 管理 Operators
 """
 
 import bpy
-from bpy.props import BoolProperty
+from ..utils.asset_name_utils import normalize_collection_asset, report_name_issues
 from ..const import *
 from ..functions.common_functions import *
 from ..utils.collection_utils import (
     collect_direct_object_collections,
-    normalize_unreal_collection_name,
-    remove_collection_business_suffix,
     rename_collection_for_unreal,
-    rename_collection_unique,
 )
 
 
@@ -59,15 +56,6 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
     bl_description = "设置所选为Decal Collection，对collection中的Mesh，如果材质名是decal类型，则标记Mesh为decal。"
     bl_options = {"REGISTER", "UNDO"}
 
-    rename_for_unreal: BoolProperty(
-        name="Rename for Unreal",
-        description="同时将本次 Decal Collection 的基础名规范为 Unreal 风格",
-        default=False,
-    )
-
-    def draw(self, context):
-        self.layout.prop(self, "rename_for_unreal")
-
     def invoke(self, context, event):
         if not Collection.get_selected():
             self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
@@ -86,6 +74,7 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
             return {"CANCELLED"}
 
         for decal_collection in selected_collections:
+            normalize_collection_asset(decal_collection, decal=True)
             static_meshes, ucx_meshes = filter_static_meshes(decal_collection)
             if len(ucx_meshes) > 0:
                 self.report(
@@ -95,20 +84,7 @@ class HST_OT_MarkDecalCollection(bpy.types.Operator):
                     + "collection内有UCX Mesh，请检查",
                 )
 
-            if self.rename_for_unreal:
-                decal_collection_name = remove_collection_business_suffix(
-                    decal_collection.name,
-                    (DECAL_SUFFIX,),
-                )
-                decal_collection_name = clean_collection_name(decal_collection_name)
-                decal_collection_name = normalize_unreal_collection_name(decal_collection_name)
-            else:
-                decal_collection_name = clean_collection_name(decal_collection.name)
-            new_name = decal_collection_name + DECAL_SUFFIX
-            if self.rename_for_unreal:
-                rename_collection_unique(decal_collection, new_name)
-            else:
-                decal_collection.name = new_name
+            report_name_issues(self, [decal_collection.name] + [obj.name for obj in decal_collection.objects if obj.type == "MESH"])
 
             decal_collection.hide_render = True
             Collection.mark_hst_type(decal_collection, "DECAL")
@@ -134,15 +110,6 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
     bl_description = "设置所选为Prop Collection"
     bl_options = {"REGISTER", "UNDO"}
 
-    rename_for_unreal: BoolProperty(
-        name="Rename for Unreal",
-        description="同时将本次 Prop Collection 的名称规范为 Unreal 风格",
-        default=False,
-    )
-
-    def draw(self, context):
-        self.layout.prop(self, "rename_for_unreal")
-
     def invoke(self, context, event):
         if not Collection.get_selected():
             self.report({"WARNING"}, "No selected Collection | 没有选中 Collection")
@@ -161,19 +128,15 @@ class HST_OT_MarkPropCollection(bpy.types.Operator):
             return {"CANCELLED"}
 
         for prop_collection in selected_collections:
-            prop_collection_name = clean_collection_name(prop_collection.name)
-            if self.rename_for_unreal:
-                rename_collection_for_unreal(prop_collection, prop_collection_name)
-            else:
-                prop_collection.name = prop_collection_name
+            normalize_collection_asset(prop_collection)
+            report_name_issues(self, [prop_collection.name] + [obj.name for obj in prop_collection.objects if obj.type == "MESH"])
             Collection.mark_hst_type(prop_collection, "PROP")
             prop_collection.hide_render = True
 
-        rename_targets = []
         for prop_collection in selected_collections:
-            rename_targets.extend(prop_collection.all_objects)
-        if rename_targets:
-            rename_prop_meshes(rename_targets)
+            for mesh in prop_collection.objects:
+                if mesh.type == "MESH" and Object.get_hst_type(mesh) != "UCX":
+                    Object.mark_hst_type(mesh, "STATICMESH")
 
         self.report({"INFO"}, str(len(selected_collections)) + " Prop collection marked")
         return {"FINISHED"}

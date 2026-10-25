@@ -16,10 +16,14 @@ from .outliner_utils import Outliner
 # 将 Collection 名称转换为 Unreal 常用的下划线分段格式。
 # collection_name: 原始 Collection 名称；返回规范名称，若名称不含有效片段则返回原值。
 def normalize_unreal_collection_name(collection_name: str) -> str:
-    name_parts = [part for part in re.split(r"[\s._-]+", collection_name.strip()) if part]
+    name_parts = [part for part in re.split(r"[\W_]+", collection_name.strip()) if part]
     if not name_parts:
         return collection_name
-    return "_".join(part[:1].upper() + part[1:].lower() for part in name_parts)
+    return "_".join(
+        f"{int(part):02d}" if part.isascii() and part.isdigit()
+        else part[:1].upper() + part[1:]
+        for part in name_parts
+    )
 
 
 # 移除业务后缀以及因同名冲突追加在业务后缀后的编号。
@@ -29,7 +33,7 @@ def remove_collection_business_suffix(
     business_suffixes,
 ) -> str:
     base_name = collection_name
-    numbered_match = re.fullmatch(r"(.+)_\d{3,}", base_name)
+    numbered_match = re.fullmatch(r"(.+)_\d{2,}", base_name)
     if numbered_match and any(
         numbered_match.group(1).endswith(suffix) for suffix in business_suffixes
     ):
@@ -53,9 +57,9 @@ def make_unique_collection_name(desired_name: str, target_collection=None) -> st
         return desired_name
 
     suffix_number = 1
-    while f"{desired_name}_{suffix_number:03d}" in existing_names:
+    while f"{desired_name}_{suffix_number:02d}" in existing_names:
         suffix_number += 1
-    return f"{desired_name}_{suffix_number:03d}"
+    return f"{desired_name}_{suffix_number:02d}"
 
 
 # 将指定 Collection 改为唯一名称。
